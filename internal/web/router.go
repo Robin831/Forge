@@ -135,6 +135,14 @@ func (s *Server) routes() http.Handler {
 		// internal/hotreload picks the change up.
 		r.Get("/forge/config", s.handleForgeConfigGet)
 		r.Patch("/forge/config", s.handleForgeConfigPatch)
+		// Per-anvil settings write (Forge-bfch). PATCH accepts a flat JSON
+		// object of allowlisted keys (e.g. {"auto_merge": true, "schematic_enabled": null})
+		// — the anvil name is taken from the URL, not the body. Validates the
+		// anvil name (404 if unknown) and every key, distinguishes tri-state
+		// *bool clears (JSON null → inherit) from explicit true/false, and
+		// persists to the same config.yaml so internal/hotreload picks the
+		// change up. The response reports per-key hot-reload coverage.
+		r.Patch("/forge/config/anvils/{name}", s.handleForgeAnvilConfigPatch)
 	})
 
 	// Static UI fallback. The next bead replaces this with the embedded

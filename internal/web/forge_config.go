@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/Robin831/Forge/internal/config"
+	"github.com/go-chi/chi/v5"
 	"gopkg.in/yaml.v3"
 )
 
@@ -288,6 +289,270 @@ func (s *Server) handleForgeConfigPatch(w http.ResponseWriter, r *http.Request) 
 	s.handleForgeConfigGet(w, r)
 }
 
+// applies* are the hot-reload coverage values reported per key by the
+// per-anvil PATCH handler. "instant" keys are applied by the running daemon
+// without a restart (see internal/hotreload); "next_run" keys are read fresh
+// on the next dispatch/run so they take effect for the next bead, not for
+// work already in flight.
+const (
+	appliesInstant = "instant"
+	appliesNextRun = "next_run"
+)
+
+// anvilKeyDef describes one allowlisted per-anvil settings key: whether it is
+// tri-state (a *bool that can be cleared to inherit) or a plain bool, and
+// whether the daemon hot-reloads it instantly. This is the single source of
+// truth for the anvils.<name>.<key> contract shared by validation and the
+// hot-reload coverage reported in the response.
+type anvilKeyDef struct {
+	Key string
+	// TriState marks a *bool field where JSON null clears the override
+	// (anvil inherits the global/default). Plain bools reject null.
+	TriState bool
+	// Instant marks keys the daemon applies live via internal/hotreload.
+	// Only auto_merge is instant; the rest apply on the next dispatch/run.
+	Instant bool
+}
+
+// managedAnvilKeys is the allowlist of the eight per-anvil settings exposed by
+// the config API, mirroring config.AnvilSettings. Order is preserved in the
+// response's per-key coverage list. Only auto_merge is hot-reloadable (see
+// internal/hotreload/hotreload.go, which diffs anvil auto_merge live); the
+// others are read on the next dispatch/run.
+var managedAnvilKeys = []anvilKeyDef{
+	{Key: "auto_merge", TriState: false, Instant: true},
+	{Key: "schematic_enabled", TriState: true},
+	{Key: "golangci_lint", TriState: true},
+	{Key: "go_race_detection", TriState: true},
+	{Key: "depcheck_enabled", TriState: true},
+	{Key: "questgiver_enabled", TriState: true},
+	{Key: "wicket_enabled", TriState: true},
+	{Key: "wicket_auto_dispatch", TriState: false},
+}
+
+// anvilKeyByName indexes managedAnvilKeys for O(1) allowlist validation.
+var anvilKeyByName = func() map[string]anvilKeyDef {
+	m := make(map[string]anvilKeyDef, len(managedAnvilKeys))
+	for _, d := range managedAnvilKeys {
+		m[d.Key] = d
+	}
+	return m
+}()
+
+// AnvilKeyApplied reports, per edited key, whether the change takes effect
+// instantly (hot-reloaded) or on the next dispatch/run, and whether the edit
+// cleared the override (tri-state *bool reset to inherit) rather than setting
+// an explicit value. The frontend uses Applies to show the "applies on next
+// run" note (consistent with Forge-3hvb).
+type AnvilKeyApplied struct {
+	Key     string `json:"key"`
+	Applies string `json:"applies"`
+	Cleared bool   `json:"cleared"`
+}
+
+// AnvilConfigPatchResponse is the PATCH /api/forge/config/anvils/{name} body.
+// Settings is the re-read projection of the anvil after the edit (same shape
+// as the per-anvil entries in GET /api/forge/config), so the caller sees the
+// persisted result without a second request. Applied lists per-key hot-reload
+// coverage for exactly the keys touched by this request.
+type AnvilConfigPatchResponse struct {
+	Anvil    string               `json:"anvil"`
+	Settings config.AnvilSettings `json:"settings"`
+	Applied  []AnvilKeyApplied    `json:"applied"`
+}
+
+// handleForgeAnvilConfigPatch accepts a map of per-anvil boolean key->value
+// for a single anvil, validates the anvil name (404 if unknown) and every key
+// (400 if unknown), distinguishes tri-state *bool clears (JSON null → remove
+// the key so the anvil inherits) from explicit true/false, persists the
+// changes via a YAML node-tree edit that preserves comments and unrelated
+// keys, and returns the re-read anvil settings plus per-key hot-reload
+// coverage. PATCH /api/forge/config/anvils/{name}.
+func (s *Server) handleForgeAnvilConfigPatch(w http.ResponseWriter, r *http.Request) {
+	name := chi.URLParam(r, "name")
+	if name == "" {
+		writeError(w, http.StatusBadRequest, "anvil name is required")
+		return
+	}
+
+	// Decode into raw messages so we can distinguish "key present with null"
+	// (clear/inherit) from an explicit true/false, and reject malformed values.
+	var req map[string]json.RawMessage
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body: "+err.Error())
+		return
+	}
+	if len(req) == 0 {
+		writeError(w, http.StatusBadRequest, "no config keys provided")
+		return
+	}
+
+	cfg, err := s.loadConfig()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to load config: "+err.Error())
+		return
+	}
+	anvilCfg, ok := cfg.Anvils[name]
+	if !ok {
+		writeError(w, http.StatusNotFound, "unknown anvil: "+name)
+		return
+	}
+
+	// All-or-nothing: validate every key and value before writing anything.
+	var unknown []string
+	sets := map[string]bool{}
+	var clears []string
+	applied := make([]AnvilKeyApplied, 0, len(req))
+	for k, raw := range req {
+		def, ok := anvilKeyByName[k]
+		if !ok {
+			unknown = append(unknown, k)
+			continue
+		}
+		switch strings.TrimSpace(string(raw)) {
+		case "true":
+			sets[k] = true
+		case "false":
+			sets[k] = false
+		case "null":
+			if !def.TriState {
+				writeError(w, http.StatusBadRequest,
+					fmt.Sprintf("key %q cannot be cleared (null); it is a plain boolean, send true or false", k))
+				return
+			}
+			clears = append(clears, k)
+		default:
+			allowed := "true or false"
+			if def.TriState {
+				allowed = "true, false, or null"
+			}
+			writeError(w, http.StatusBadRequest,
+				fmt.Sprintf("invalid value for key %q: expected %s", k, allowed))
+			return
+		}
+		appliesVal := appliesNextRun
+		if def.Instant {
+			appliesVal = appliesInstant
+		}
+		applied = append(applied, AnvilKeyApplied{
+			Key:     k,
+			Applies: appliesVal,
+			Cleared: strings.TrimSpace(string(raw)) == "null",
+		})
+	}
+	if len(unknown) > 0 {
+		sort.Strings(unknown)
+		writeError(w, http.StatusBadRequest, "unknown config key(s): "+strings.Join(unknown, ", "))
+		return
+	}
+
+	path := s.configWritePath()
+	if path == "" {
+		writeError(w, http.StatusInternalServerError, "could not resolve config file path")
+		return
+	}
+	if err := applyAnvilConfigPatch(path, name, anvilCfg.Path, sets, clears); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to persist config: "+err.Error())
+		return
+	}
+
+	// Re-read so the caller sees the persisted result (defaults/inherit
+	// applied) rather than echoing the request back.
+	reread, err := s.loadConfig()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to reload config: "+err.Error())
+		return
+	}
+	// Order the per-key coverage to match the allowlist for a stable response.
+	sort.SliceStable(applied, func(i, j int) bool {
+		return anvilKeyOrder(applied[i].Key) < anvilKeyOrder(applied[j].Key)
+	})
+	writeJSON(w, http.StatusOK, AnvilConfigPatchResponse{
+		Anvil:    name,
+		Settings: reread.AnvilSettingsMap()[name],
+		Applied:  applied,
+	})
+}
+
+// anvilKeyOrder returns the index of key within managedAnvilKeys, or a large
+// sentinel when absent, so the response coverage list renders deterministically.
+func anvilKeyOrder(key string) int {
+	for i, d := range managedAnvilKeys {
+		if d.Key == key {
+			return i
+		}
+	}
+	return len(managedAnvilKeys)
+}
+
+// applyAnvilConfigPatch edits the YAML document at path in place, setting each
+// anvils.<name>.<key> in sets to its boolean and removing each key in clears
+// (so the anvil inherits the global/default). Like applyConfigPatch it works
+// on a yaml.Node tree to preserve comments and unrelated keys, then writes the
+// result back atomically (temp file + rename) so the fsnotify watcher fires
+// once on a complete file. When creating a new anvil block, anvilPath is
+// persisted as the "path" key so the file remains a valid config.
+func applyAnvilConfigPatch(path, anvil, anvilPath string, sets map[string]bool, clears []string) error {
+	data, err := os.ReadFile(path)
+	if err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("read config: %w", err)
+	}
+
+	var doc yaml.Node
+	if len(strings.TrimSpace(string(data))) > 0 {
+		if err := yaml.Unmarshal(data, &doc); err != nil {
+			return fmt.Errorf("parse config: %w", err)
+		}
+	}
+	if doc.Kind == 0 {
+		doc.Kind = yaml.DocumentNode
+	}
+	if len(doc.Content) == 0 {
+		doc.Content = []*yaml.Node{{Kind: yaml.MappingNode}}
+	}
+	root := doc.Content[0]
+	if root.Kind != yaml.MappingNode {
+		root = &yaml.Node{Kind: yaml.MappingNode}
+		doc.Content[0] = root
+	}
+
+	anvils := mappingValueNode(root, "anvils")
+	if anvils == nil || anvils.Kind != yaml.MappingNode {
+		anvils = &yaml.Node{Kind: yaml.MappingNode}
+		setMappingChild(root, "anvils", anvils)
+	}
+	anvilNode := mappingValueNode(anvils, anvil)
+	if anvilNode == nil || anvilNode.Kind != yaml.MappingNode {
+		anvilNode = &yaml.Node{Kind: yaml.MappingNode}
+		setMappingChild(anvils, anvil, anvilNode)
+		if anvilPath != "" {
+			setMappingChild(anvilNode, "path", &yaml.Node{
+				Kind: yaml.ScalarNode, Tag: "!!str", Value: anvilPath,
+			})
+		}
+	}
+
+	// Apply sets in a stable order so the diff is deterministic.
+	keys := make([]string, 0, len(sets))
+	for k := range sets {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		setBoolNode(anvilNode, key, sets[key])
+	}
+	sort.Strings(clears)
+	for _, key := range clears {
+		removeMappingChild(anvilNode, key)
+	}
+
+	out, err := marshalNode(&doc)
+	if err != nil {
+		return fmt.Errorf("marshal config: %w", err)
+	}
+	return writeFileAtomic(path, out)
+}
+
 // applyConfigPatch edits the YAML document at path in place, setting each
 // settings.<key> to the given boolean. It parses into a yaml.Node tree
 // (rather than marshalling a full Config) so comments and unrelated keys are
@@ -366,6 +631,20 @@ func setMappingChild(m *yaml.Node, key string, valNode *yaml.Node) {
 	m.Content = append(m.Content,
 		&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: key},
 		valNode)
+}
+
+// removeMappingChild deletes the key/value pair for key from mapping m,
+// returning true when a pair was removed. Removing a tri-state *bool key
+// (rather than writing null) lets the anvil inherit the global/default and
+// keeps the persisted file minimal.
+func removeMappingChild(m *yaml.Node, key string) bool {
+	for i := 0; i+1 < len(m.Content); i += 2 {
+		if m.Content[i].Value == key {
+			m.Content = append(m.Content[:i:i], m.Content[i+2:]...)
+			return true
+		}
+	}
+	return false
 }
 
 // setBoolNode sets m[key] to a boolean scalar, editing the existing scalar in

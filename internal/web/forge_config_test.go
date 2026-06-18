@@ -360,6 +360,406 @@ func TestForgeConfig_GetIncludesPerAnvilSettings(t *testing.T) {
 	}
 }
 
+// anvilFixture seeds a config with a single "forge" anvil and points the
+// server's read/write hooks at it, returning the file path.
+func anvilFixture(t *testing.T, srv *Server, extra string) string {
+	t.Helper()
+	return withConfigFixture(t, srv, `anvils:
+  forge:
+    path: /tmp/forge
+`+extra)
+}
+
+// decodeAnvilPatch decodes an AnvilConfigPatchResponse from a recorder.
+func decodeAnvilPatch(t *testing.T, body []byte) AnvilConfigPatchResponse {
+	t.Helper()
+	var resp AnvilConfigPatchResponse
+	if err := json.Unmarshal(body, &resp); err != nil {
+		t.Fatalf("decode anvil patch response: %v (body=%s)", err, string(body))
+	}
+	return resp
+}
+
+func TestForgeAnvilConfig_PatchRequiresAuth(t *testing.T) {
+	srv := newServerWithDefaults(t, nil)
+	anvilFixture(t, srv, "")
+
+	rec := forgeRequest(t, srv, http.MethodPatch, "/api/forge/config/anvils/forge", `{"auto_merge":true}`, "")
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d", rec.Code)
+	}
+}
+
+// TestForgeAnvilConfig_PatchAutoMergeIsInstant verifies the hot-reloadable
+// key reports applies=instant and persists.
+func TestForgeAnvilConfig_PatchAutoMergeIsInstant(t *testing.T) {
+	srv := newServerWithDefaults(t, nil)
+	cookie := loginAndGetCookie(t, srv)
+	path := anvilFixture(t, srv, "")
+
+	rec := forgeRequest(t, srv, http.MethodPatch, "/api/forge/config/anvils/forge", `{"auto_merge":true}`, cookie)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	resp := decodeAnvilPatch(t, rec.Body.Bytes())
+	if resp.Anvil != "forge" {
+		t.Errorf("expected anvil=forge, got %q", resp.Anvil)
+	}
+	if !resp.Settings.AutoMerge {
+		t.Errorf("expected settings.auto_merge=true, got %+v", resp.Settings)
+	}
+	if len(resp.Applied) != 1 || resp.Applied[0].Key != "auto_merge" || resp.Applied[0].Applies != appliesInstant {
+		t.Errorf("expected auto_merge=instant, got %+v", resp.Applied)
+	}
+	if resp.Applied[0].Cleared {
+		t.Errorf("explicit true should not be marked cleared")
+	}
+
+	raw, _ := os.ReadFile(path)
+	if !strings.Contains(string(raw), "auto_merge: true") {
+		t.Errorf("expected auto_merge: true persisted, got:\n%s", string(raw))
+	}
+}
+
+// TestForgeAnvilConfig_PatchNextRunKey verifies a non-hot-reloadable key
+// reports applies=next_run.
+func TestForgeAnvilConfig_PatchNextRunKey(t *testing.T) {
+	srv := newServerWithDefaults(t, nil)
+	cookie := loginAndGetCookie(t, srv)
+	anvilFixture(t, srv, "")
+
+	rec := forgeRequest(t, srv, http.MethodPatch, "/api/forge/config/anvils/forge", `{"schematic_enabled":true}`, cookie)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	resp := decodeAnvilPatch(t, rec.Body.Bytes())
+	if len(resp.Applied) != 1 || resp.Applied[0].Applies != appliesNextRun {
+		t.Errorf("expected schematic_enabled=next_run, got %+v", resp.Applied)
+	}
+	if resp.Settings.SchematicEnabled == nil || !*resp.Settings.SchematicEnabled {
+		t.Errorf("expected schematic_enabled=true in settings, got %+v", resp.Settings.SchematicEnabled)
+	}
+}
+
+// TestForgeAnvilConfig_PatchExplicitTrueVsFalse verifies explicit true and
+// false both persist as concrete pointer values (not cleared/inherited).
+func TestForgeAnvilConfig_PatchExplicitTrueVsFalse(t *testing.T) {
+	srv := newServerWithDefaults(t, nil)
+	cookie := loginAndGetCookie(t, srv)
+	path := anvilFixture(t, srv, "")
+
+	// Explicit false.
+	rec := forgeRequest(t, srv, http.MethodPatch, "/api/forge/config/anvils/forge", `{"golangci_lint":false}`, cookie)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("explicit false: expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	resp := decodeAnvilPatch(t, rec.Body.Bytes())
+	if resp.Settings.GolangciLint == nil || *resp.Settings.GolangciLint {
+		t.Errorf("expected golangci_lint=false (non-nil), got %+v", resp.Settings.GolangciLint)
+	}
+	if resp.Applied[0].Cleared {
+		t.Errorf("explicit false should not be marked cleared")
+	}
+	raw, _ := os.ReadFile(path)
+	if !strings.Contains(string(raw), "golangci_lint: false") {
+		t.Errorf("expected golangci_lint: false persisted, got:\n%s", string(raw))
+	}
+
+	// Explicit true.
+	rec = forgeRequest(t, srv, http.MethodPatch, "/api/forge/config/anvils/forge", `{"golangci_lint":true}`, cookie)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("explicit true: expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	resp = decodeAnvilPatch(t, rec.Body.Bytes())
+	if resp.Settings.GolangciLint == nil || !*resp.Settings.GolangciLint {
+		t.Errorf("expected golangci_lint=true (non-nil), got %+v", resp.Settings.GolangciLint)
+	}
+}
+
+// TestForgeAnvilConfig_PatchClearInherits verifies that null clears a
+// tri-state key — the key is removed from the file (inherit) and the re-read
+// settings report nil, distinct from an explicit false.
+func TestForgeAnvilConfig_PatchClearInherits(t *testing.T) {
+	srv := newServerWithDefaults(t, nil)
+	cookie := loginAndGetCookie(t, srv)
+	path := anvilFixture(t, srv, "    schematic_enabled: true\n")
+
+	rec := forgeRequest(t, srv, http.MethodPatch, "/api/forge/config/anvils/forge", `{"schematic_enabled":null}`, cookie)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	resp := decodeAnvilPatch(t, rec.Body.Bytes())
+	if resp.Settings.SchematicEnabled != nil {
+		t.Errorf("expected schematic_enabled cleared to nil (inherit), got %v", *resp.Settings.SchematicEnabled)
+	}
+	if len(resp.Applied) != 1 || !resp.Applied[0].Cleared {
+		t.Errorf("expected schematic_enabled marked cleared, got %+v", resp.Applied)
+	}
+
+	raw, _ := os.ReadFile(path)
+	if strings.Contains(string(raw), "schematic_enabled") {
+		t.Errorf("expected schematic_enabled removed from file, got:\n%s", string(raw))
+	}
+	// The anvil itself and unrelated keys must survive.
+	if !strings.Contains(string(raw), "path: /tmp/forge") {
+		t.Errorf("expected anvil path preserved, got:\n%s", string(raw))
+	}
+}
+
+// TestForgeAnvilConfig_PatchClearRejectedForPlainBool verifies null is
+// rejected for plain bool keys (auto_merge, wicket_auto_dispatch) which have
+// no inherit semantics.
+func TestForgeAnvilConfig_PatchClearRejectedForPlainBool(t *testing.T) {
+	srv := newServerWithDefaults(t, nil)
+	cookie := loginAndGetCookie(t, srv)
+	path := anvilFixture(t, srv, "    auto_merge: true\n")
+
+	rec := forgeRequest(t, srv, http.MethodPatch, "/api/forge/config/anvils/forge", `{"auto_merge":null}`, cookie)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "auto_merge") {
+		t.Errorf("error should name the key, got %s", rec.Body.String())
+	}
+	// Nothing written: the original value survives.
+	raw, _ := os.ReadFile(path)
+	if !strings.Contains(string(raw), "auto_merge: true") {
+		t.Errorf("file should be unchanged, got:\n%s", string(raw))
+	}
+}
+
+// TestForgeAnvilConfig_PatchUnknownAnvil verifies an unknown anvil name is
+// rejected with 404 and nothing is written.
+func TestForgeAnvilConfig_PatchUnknownAnvil(t *testing.T) {
+	srv := newServerWithDefaults(t, nil)
+	cookie := loginAndGetCookie(t, srv)
+	path := anvilFixture(t, srv, "")
+	original, _ := os.ReadFile(path)
+
+	rec := forgeRequest(t, srv, http.MethodPatch, "/api/forge/config/anvils/nope", `{"auto_merge":true}`, cookie)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	raw, _ := os.ReadFile(path)
+	if string(raw) != string(original) {
+		t.Errorf("file should be unchanged, got:\n%s", string(raw))
+	}
+}
+
+// TestForgeAnvilConfig_PatchUnknownKey verifies an unknown key is rejected
+// 400 (all-or-nothing) and the valid key alongside it is not written.
+func TestForgeAnvilConfig_PatchUnknownKey(t *testing.T) {
+	srv := newServerWithDefaults(t, nil)
+	cookie := loginAndGetCookie(t, srv)
+	path := anvilFixture(t, srv, "")
+	original, _ := os.ReadFile(path)
+
+	rec := forgeRequest(t, srv, http.MethodPatch, "/api/forge/config/anvils/forge",
+		`{"auto_merge":true,"bogus_key":true}`, cookie)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "bogus_key") {
+		t.Errorf("error should name the offending key, got %s", rec.Body.String())
+	}
+	raw, _ := os.ReadFile(path)
+	if string(raw) != string(original) {
+		t.Errorf("all-or-nothing: file should be unchanged, got:\n%s", string(raw))
+	}
+}
+
+// TestForgeAnvilConfig_PatchInvalidValue verifies a non-bool/non-null value
+// is rejected with 400.
+func TestForgeAnvilConfig_PatchInvalidValue(t *testing.T) {
+	srv := newServerWithDefaults(t, nil)
+	cookie := loginAndGetCookie(t, srv)
+	anvilFixture(t, srv, "")
+
+	rec := forgeRequest(t, srv, http.MethodPatch, "/api/forge/config/anvils/forge", `{"auto_merge":"yes"}`, cookie)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestForgeAnvilConfig_PatchEmptyBody verifies an empty patch is rejected.
+func TestForgeAnvilConfig_PatchEmptyBody(t *testing.T) {
+	srv := newServerWithDefaults(t, nil)
+	cookie := loginAndGetCookie(t, srv)
+	anvilFixture(t, srv, "")
+
+	rec := forgeRequest(t, srv, http.MethodPatch, "/api/forge/config/anvils/forge", `{}`, cookie)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for empty patch, got %d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestForgeAnvilConfig_PatchPreservesCommentsAndOtherAnvils verifies the
+// node-tree edit preserves comments, unrelated keys, and sibling anvils, and
+// that the result is re-readable (atomic write).
+func TestForgeAnvilConfig_PatchPreservesCommentsAndOtherAnvils(t *testing.T) {
+	srv := newServerWithDefaults(t, nil)
+	cookie := loginAndGetCookie(t, srv)
+	path := withConfigFixture(t, srv, `# top comment
+settings:
+  poll_interval: 7m
+anvils:
+  forge:
+    # keep me
+    path: /tmp/forge
+    schematic_enabled: true
+  other:
+    path: /tmp/other
+    auto_merge: true
+`)
+
+	rec := forgeRequest(t, srv, http.MethodPatch, "/api/forge/config/anvils/forge",
+		`{"auto_merge":true,"schematic_enabled":null}`, cookie)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+	got := string(raw)
+	for _, want := range []string{
+		"# top comment",
+		"poll_interval: 7m",
+		"# keep me",
+		"path: /tmp/forge",
+		"path: /tmp/other",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("expected preserved %q, got:\n%s", want, got)
+		}
+	}
+	if !strings.Contains(got, "auto_merge: true") {
+		t.Errorf("expected auto_merge: true on forge, got:\n%s", got)
+	}
+
+	// The sibling anvil's auto_merge must be untouched, and the cleared key
+	// gone from the forge anvil.
+	reread, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if !reread.Anvils["forge"].AutoMerge {
+		t.Errorf("forge.auto_merge should be true after edit")
+	}
+	if reread.Anvils["forge"].SchematicEnabled != nil {
+		t.Errorf("forge.schematic_enabled should be cleared (nil)")
+	}
+	if !reread.Anvils["other"].AutoMerge {
+		t.Errorf("other.auto_merge should remain true")
+	}
+}
+
+// TestForgeAnvilConfig_PatchMultipleKeysOrderedCoverage verifies multiple
+// keys in one request all persist and the per-key coverage is reported in
+// allowlist order with the correct instant/next_run split.
+func TestForgeAnvilConfig_PatchMultipleKeysOrderedCoverage(t *testing.T) {
+	srv := newServerWithDefaults(t, nil)
+	cookie := loginAndGetCookie(t, srv)
+	anvilFixture(t, srv, "")
+
+	rec := forgeRequest(t, srv, http.MethodPatch, "/api/forge/config/anvils/forge",
+		`{"wicket_enabled":true,"auto_merge":true}`, cookie)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	resp := decodeAnvilPatch(t, rec.Body.Bytes())
+	if len(resp.Applied) != 2 {
+		t.Fatalf("expected 2 applied entries, got %d: %+v", len(resp.Applied), resp.Applied)
+	}
+	// auto_merge precedes wicket_enabled in the allowlist order.
+	if resp.Applied[0].Key != "auto_merge" || resp.Applied[0].Applies != appliesInstant {
+		t.Errorf("expected first=auto_merge/instant, got %+v", resp.Applied[0])
+	}
+	if resp.Applied[1].Key != "wicket_enabled" || resp.Applied[1].Applies != appliesNextRun {
+		t.Errorf("expected second=wicket_enabled/next_run, got %+v", resp.Applied[1])
+	}
+}
+
+// TestForgeAnvilConfig_PatchRequiresCSRFHeader mirrors the global config
+// CSRF guard for the per-anvil route.
+func TestForgeAnvilConfig_PatchRequiresCSRFHeader(t *testing.T) {
+	srv := newServerWithDefaults(t, nil)
+	cookie := loginAndGetCookie(t, srv)
+	anvilFixture(t, srv, "")
+
+	req := httptest.NewRequest(http.MethodPatch, "/api/forge/config/anvils/forge",
+		strings.NewReader(`{"auto_merge":true}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.AddCookie(&http.Cookie{Name: "forge_session", Value: cookie})
+	rec := httptest.NewRecorder()
+	srv.routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 without CSRF header, got %d", rec.Code)
+	}
+}
+
+// TestForgeAnvilConfig_PatchCreatesAnvilKeysWhenAbsent verifies that setting a
+// key on an anvil whose YAML block has only a path adds the key without
+// disturbing the path, and the file round-trips.
+func TestForgeAnvilConfig_PatchCreatesAnvilKeysWhenAbsent(t *testing.T) {
+	srv := newServerWithDefaults(t, nil)
+	cookie := loginAndGetCookie(t, srv)
+	path := anvilFixture(t, srv, "")
+
+	rec := forgeRequest(t, srv, http.MethodPatch, "/api/forge/config/anvils/forge",
+		`{"depcheck_enabled":false}`, cookie)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	reread, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	dc := reread.Anvils["forge"].DepcheckEnabled
+	if dc == nil || *dc {
+		t.Errorf("expected depcheck_enabled=false (non-nil), got %v", dc)
+	}
+}
+
+// TestForgeAnvilConfig_PatchCreatesAnvilBlockWithPath verifies that when the
+// anvil exists in the loaded config but not in the YAML file, patching it
+// creates a new anvil block that includes the path field so the file stays valid.
+func TestForgeAnvilConfig_PatchCreatesAnvilBlockWithPath(t *testing.T) {
+	srv := newServerWithDefaults(t, nil)
+	cookie := loginAndGetCookie(t, srv)
+
+	cfgPath := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(cfgPath, []byte(""), 0o644); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+	srv.configLoader = func() (*config.Config, error) {
+		return &config.Config{
+			Anvils: map[string]config.AnvilConfig{
+				"forge": {Path: "/srv/forge"},
+			},
+		}, nil
+	}
+	srv.configPath = func() string { return cfgPath }
+
+	rec := forgeRequest(t, srv, http.MethodPatch, "/api/forge/config/anvils/forge",
+		`{"auto_merge":true}`, cookie)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	raw, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatalf("read written config: %v", err)
+	}
+	content := string(raw)
+	if !strings.Contains(content, "path: /srv/forge") {
+		t.Errorf("expected written config to contain anvil path, got:\n%s", content)
+	}
+	if !strings.Contains(content, "auto_merge: true") {
+		t.Errorf("expected written config to contain auto_merge, got:\n%s", content)
+	}
+}
+
 // TestForgeConfig_GetEmptyAnvilsIsObjectNotNull verifies the no-anvils case
 // serializes anvils as {} rather than null.
 func TestForgeConfig_GetEmptyAnvilsIsObjectNotNull(t *testing.T) {
