@@ -1,61 +1,41 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 
-// TriState models a tri-state per-anvil override: `null` means "inherit"
-// (follow the global setting / built-in default), while `true`/`false` is an
-// explicit on/off override. It mirrors the nullable *bool keys in the backend's
-// per-anvil config contract (see internal/config AnvilSettings).
 export type TriState = boolean | null
 
 interface TriStateToggleProps {
-  // value is the source-of-truth state from the parent. The control mirrors it
-  // into local state so it can update optimistically while an async onChange
-  // settles, then reconciles back to the parent value afterwards.
   value: TriState
-  // onChange receives the desired next state. It may return a promise; while
-  // that promise is pending the control is disabled and shows the optimistic
-  // value. If the promise rejects, the optimistic value is reverted.
   onChange: (next: TriState) => void | Promise<void>
-  // disabled blocks interaction entirely (in addition to the in-flight lock).
   disabled?: boolean
-  // id wires the radiogroup to an external <label htmlFor>.
-  id?: string
-  // aria-label describes the group when there is no visible text label.
   'aria-label'?: string
+  'aria-labelledby'?: string
 }
 
-// OPTIONS is the fixed Inherit / On / Off ordering rendered by the control. The
-// `null` option (Inherit) comes first so the "unset, follow global" state reads
-// as the neutral default.
 const OPTIONS: { label: string; value: TriState }[] = [
   { label: 'Inherit', value: null },
   { label: 'On', value: true },
   { label: 'Off', value: false },
 ]
 
-// optionKey renders a stable React key/test id for each TriState option.
 function optionKey(value: TriState): string {
   return value === null ? 'inherit' : value ? 'on' : 'off'
 }
 
-// TriStateToggle is a dependency-free segmented control built on a native
-// radiogroup of <button role="radio"> elements. It models the same async-update
-// behaviour as Switch: the visual selection moves optimistically the moment an
-// option is clicked, the control disables itself while the onChange promise is
-// in flight, and it reverts to the previous selection if that promise rejects.
-//
-// Keyboard: each option is a focusable button; Space/Enter activate it. The
-// focus ring and disabled styling are driven entirely by Tailwind utilities.
+function activeIndex(value: TriState): number {
+  return OPTIONS.findIndex((o) => o.value === value)
+}
+
 export default function TriStateToggle({
   value,
   onChange,
   disabled,
-  id,
   'aria-label': ariaLabel,
+  'aria-labelledby': ariaLabelledBy,
 }: TriStateToggleProps) {
   const [optimistic, setOptimistic] = useState<TriState>(value)
   const [pending, setPending] = useState(false)
   const mounted = useRef(true)
   const pendingRef = useRef(false)
+  const buttonRefs = useRef<(HTMLButtonElement | null)[]>([])
 
   useEffect(() => {
     mounted.current = true
@@ -64,10 +44,6 @@ export default function TriStateToggle({
     }
   }, [])
 
-  // Sync optimistic state only when the controlled `value` prop changes. A ref
-  // guards against overwriting the optimistic value mid-flight without adding
-  // `pending` as a dependency (which would re-trigger on settle and flash the
-  // stale parent value before polling catches up).
   useEffect(() => {
     if (!pendingRef.current) setOptimistic(value)
   }, [value])
@@ -97,23 +73,49 @@ export default function TriStateToggle({
     [disabled, pending, optimistic, onChange],
   )
 
+  const handleKeyDown = useCallback(
+    (e: React.KeyboardEvent, index: number) => {
+      let nextIndex: number | null = null
+      if (e.key === 'ArrowRight' || e.key === 'ArrowDown') {
+        nextIndex = (index + 1) % OPTIONS.length
+      } else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') {
+        nextIndex = (index - 1 + OPTIONS.length) % OPTIONS.length
+      } else if (e.key === 'Home') {
+        nextIndex = 0
+      } else if (e.key === 'End') {
+        nextIndex = OPTIONS.length - 1
+      }
+      if (nextIndex !== null) {
+        e.preventDefault()
+        buttonRefs.current[nextIndex]?.focus()
+        select(OPTIONS[nextIndex].value)
+      }
+    },
+    [select],
+  )
+
+  const current = activeIndex(optimistic)
+
   return (
     <div
       role="radiogroup"
-      id={id}
       aria-label={ariaLabel}
+      aria-labelledby={ariaLabelledBy}
       className="inline-flex shrink-0 rounded-md border border-slate-700 bg-slate-800/60 p-0.5"
     >
-      {OPTIONS.map((opt) => {
+      {OPTIONS.map((opt, i) => {
         const active = optimistic === opt.value
         return (
           <button
             key={optionKey(opt.value)}
+            ref={(el) => { buttonRefs.current[i] = el }}
             type="button"
             role="radio"
             aria-checked={active}
+            tabIndex={i === current ? 0 : -1}
             disabled={isDisabled}
             onClick={() => select(opt.value)}
+            onKeyDown={(e) => handleKeyDown(e, i)}
             className={`rounded px-2.5 py-1 text-xs font-medium transition-colors duration-150 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400 focus-visible:ring-offset-1 focus-visible:ring-offset-slate-900 disabled:cursor-not-allowed disabled:opacity-50 ${
               active
                 ? 'bg-emerald-500 text-white shadow-sm'
