@@ -130,6 +130,23 @@ type Server struct {
 	// handleLoginPage can fall back to it without re-walking the embedded
 	// filesystem on every request.
 	staticH http.HandlerFunc
+
+	// configFile is the --config path the daemon was started with. When
+	// set, loadConfig and configWritePath use it instead of the default
+	// resolution chain, so GET/PATCH /api/forge/config read and write the
+	// same file the daemon hot-reloads.
+	configFile string
+
+	// configLoader loads the current forge config for the GET
+	// /api/forge/config endpoint. nil falls back to config.Load(""). Tests
+	// override it to point at a fixture file.
+	configLoader func() (*config.Config, error)
+
+	// configPath resolves the file the PATCH /api/forge/config handler
+	// writes to. nil falls back to defaultConfigWritePath() (the resolved
+	// config path, or ~/.forge/config.yaml when none exists yet). Tests
+	// override it to point at a temp fixture.
+	configPath func() string
 }
 
 // SetChatRunner installs the AI runner used by the Beads-Forge page. The
@@ -164,6 +181,13 @@ func (s *Server) SetAnvilDispatchTagLister(a AnvilDispatchTagLister) {
 // nil restores the default (forgechat.DefaultBdRunner).
 func (s *Server) SetBdRunner(r BdRunnerFn) {
 	s.bdRunner = r
+}
+
+// SetConfigFile tells the web server which config file the daemon is using.
+// When set, loadConfig and configWritePath honour the explicit path so
+// GET/PATCH /api/forge/config target the same file the daemon hot-reloads.
+func (s *Server) SetConfigFile(path string) {
+	s.configFile = path
 }
 
 // TurnStore exposes the in-flight turn registry for the SSE / polling

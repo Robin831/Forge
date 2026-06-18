@@ -49,6 +49,11 @@ func (d *Daemon) startWebServer(ctx context.Context) error {
 		return fmt.Errorf("constructing web server: %w", err)
 	}
 
+	// Tell the web server which config file the daemon is using so
+	// GET/PATCH /api/forge/config target the same file the hot-reloader
+	// watches (honours --config).
+	srv.SetConfigFile(d.configFile)
+
 	// Plug in the Beads-Forge AI runner using the daemon's configured
 	// providers. We pick the head of the resolved list — fallbacks are not
 	// needed here because a turn is interactive and should fail fast.
