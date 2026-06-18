@@ -1,4 +1,4 @@
-import { Activity, Coins, FlaskConical, GitPullRequest, Hammer, History, LayoutDashboard, LogOut, Package, Sparkles } from 'lucide-react'
+import { Activity, Coins, FlaskConical, GitPullRequest, Hammer, History, LayoutDashboard, LogOut, Package, Settings, Sparkles } from 'lucide-react'
 import { NavLink } from 'react-router-dom'
 import { useAuth } from '../auth'
 
@@ -17,6 +17,7 @@ const navItems: NavItem[] = [
   { to: '/prs', label: 'PRs', icon: GitPullRequest },
   { to: '/forge', label: 'Forge', icon: Sparkles },
   { to: '/costs', label: 'Costs', icon: Coins },
+  { to: '/settings', label: 'Settings', icon: Settings },
 ]
 
 interface AppHeaderProps {
