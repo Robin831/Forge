@@ -131,7 +131,7 @@ export default function SettingsPage() {
           loading={config.loading}
           error={config.error}
         >
-          <EmptyState message="Configuration unavailable." />
+          <></>
         </Pane>
       ) : groups.length === 0 ? (
         <Pane
