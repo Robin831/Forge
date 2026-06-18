@@ -722,6 +722,44 @@ func TestForgeAnvilConfig_PatchCreatesAnvilKeysWhenAbsent(t *testing.T) {
 	}
 }
 
+// TestForgeAnvilConfig_PatchCreatesAnvilBlockWithPath verifies that when the
+// anvil exists in the loaded config but not in the YAML file, patching it
+// creates a new anvil block that includes the path field so the file stays valid.
+func TestForgeAnvilConfig_PatchCreatesAnvilBlockWithPath(t *testing.T) {
+	srv := newServerWithDefaults(t, nil)
+	cookie := loginAndGetCookie(t, srv)
+
+	cfgPath := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(cfgPath, []byte(""), 0o644); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+	srv.configLoader = func() (*config.Config, error) {
+		return &config.Config{
+			Anvils: map[string]config.AnvilConfig{
+				"forge": {Path: "/srv/forge"},
+			},
+		}, nil
+	}
+	srv.configPath = func() string { return cfgPath }
+
+	rec := forgeRequest(t, srv, http.MethodPatch, "/api/forge/config/anvils/forge",
+		`{"auto_merge":true}`, cookie)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	raw, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatalf("read written config: %v", err)
+	}
+	content := string(raw)
+	if !strings.Contains(content, "path: /srv/forge") {
+		t.Errorf("expected written config to contain anvil path, got:\n%s", content)
+	}
+	if !strings.Contains(content, "auto_merge: true") {
+		t.Errorf("expected written config to contain auto_merge, got:\n%s", content)
+	}
+}
+
 // TestForgeConfig_GetEmptyAnvilsIsObjectNotNull verifies the no-anvils case
 // serializes anvils as {} rather than null.
 func TestForgeConfig_GetEmptyAnvilsIsObjectNotNull(t *testing.T) {

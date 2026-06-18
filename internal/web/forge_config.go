@@ -392,7 +392,8 @@ func (s *Server) handleForgeAnvilConfigPatch(w http.ResponseWriter, r *http.Requ
 		writeError(w, http.StatusInternalServerError, "failed to load config: "+err.Error())
 		return
 	}
-	if _, ok := cfg.Anvils[name]; !ok {
+	anvilCfg, ok := cfg.Anvils[name]
+	if !ok {
 		writeError(w, http.StatusNotFound, "unknown anvil: "+name)
 		return
 	}
@@ -450,7 +451,7 @@ func (s *Server) handleForgeAnvilConfigPatch(w http.ResponseWriter, r *http.Requ
 		writeError(w, http.StatusInternalServerError, "could not resolve config file path")
 		return
 	}
-	if err := applyAnvilConfigPatch(path, name, sets, clears); err != nil {
+	if err := applyAnvilConfigPatch(path, name, anvilCfg.Path, sets, clears); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to persist config: "+err.Error())
 		return
 	}
@@ -489,8 +490,9 @@ func anvilKeyOrder(key string) int {
 // (so the anvil inherits the global/default). Like applyConfigPatch it works
 // on a yaml.Node tree to preserve comments and unrelated keys, then writes the
 // result back atomically (temp file + rename) so the fsnotify watcher fires
-// once on a complete file.
-func applyAnvilConfigPatch(path, anvil string, sets map[string]bool, clears []string) error {
+// once on a complete file. When creating a new anvil block, anvilPath is
+// persisted as the "path" key so the file remains a valid config.
+func applyAnvilConfigPatch(path, anvil, anvilPath string, sets map[string]bool, clears []string) error {
 	data, err := os.ReadFile(path)
 	if err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("read config: %w", err)
@@ -523,6 +525,11 @@ func applyAnvilConfigPatch(path, anvil string, sets map[string]bool, clears []st
 	if anvilNode == nil || anvilNode.Kind != yaml.MappingNode {
 		anvilNode = &yaml.Node{Kind: yaml.MappingNode}
 		setMappingChild(anvils, anvil, anvilNode)
+		if anvilPath != "" {
+			setMappingChild(anvilNode, "path", &yaml.Node{
+				Kind: yaml.ScalarNode, Tag: "!!str", Value: anvilPath,
+			})
+		}
 	}
 
 	// Apply sets in a stable order so the diff is deterministic.
