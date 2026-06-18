@@ -36,9 +36,14 @@ type ConfigKeyInfo struct {
 }
 
 // ConfigResponse is the GET /api/forge/config body. Keys is ordered (stable)
-// so the frontend can render them deterministically.
+// so the frontend can render them deterministically. Anvils maps each
+// configured anvil name to its per-anvil settings (the anvils.<name>.<key>
+// contract); it is always present and serializes to "{}" when no anvils are
+// configured. Tri-state *bool settings serialize to null when unset, meaning
+// the anvil inherits the corresponding global setting or built-in default.
 type ConfigResponse struct {
-	Keys []ConfigKeyInfo `json:"keys"`
+	Keys   []ConfigKeyInfo                 `json:"keys"`
+	Anvils map[string]config.AnvilSettings `json:"anvils"`
 }
 
 // configKeyDef describes one managed boolean settings key: how to read its
@@ -221,7 +226,10 @@ func (s *Server) handleForgeConfigGet(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to load config: "+err.Error())
 		return
 	}
-	resp := ConfigResponse{Keys: make([]ConfigKeyInfo, 0, len(managedConfigKeys))}
+	resp := ConfigResponse{
+		Keys:   make([]ConfigKeyInfo, 0, len(managedConfigKeys)),
+		Anvils: cfg.AnvilSettingsMap(),
+	}
 	for _, d := range managedConfigKeys {
 		val := d.value(cfg.Settings)
 		resp.Keys = append(resp.Keys, ConfigKeyInfo{
