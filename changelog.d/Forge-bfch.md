@@ -1,0 +1,2 @@
+category: Added
+- **Per-anvil config write API** - Added `PATCH /api/forge/config/anvils/{name}` to update the eight allowlisted per-anvil settings. Validates the anvil name (404 if unknown) and every key (400 if unknown), distinguishes tri-state `*bool` clears (JSON `null` → inherit) from explicit `true`/`false`, persists atomically to `config.yaml` so the daemon hot-reloads, and reports per-key hot-reload coverage (`auto_merge` is instant; the rest apply on next run). (Forge-bfch)
