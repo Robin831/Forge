@@ -182,14 +182,14 @@ func TestSnapshotTransitionLogic(t *testing.T) {
 		},
 		{
 			name: "CI passes with no blockers → pr_ready_to_merge (no approval needed)",
-			old:  prSnapshot{CIPassing: false},
-			new:  prSnapshot{CIPassing: true},
+			old:  prSnapshot{CIPassing: false, AssayUpToDate: true},
+			new:  prSnapshot{CIPassing: true, AssayUpToDate: true},
 			wantEvents: []string{EventPRReadyToMerge},
 		},
 		{
 			name: "already ready → no pr_ready_to_merge event",
-			old:  prSnapshot{CIPassing: true},
-			new:  prSnapshot{CIPassing: true},
+			old:  prSnapshot{CIPassing: true, AssayUpToDate: true},
+			new:  prSnapshot{CIPassing: true, AssayUpToDate: true},
 			noEvents: []string{EventPRReadyToMerge},
 		},
 		{
@@ -224,8 +224,20 @@ func TestSnapshotTransitionLogic(t *testing.T) {
 		},
 		{
 			name: "threads resolved while CI passing → pr_ready_to_merge",
-			old:  prSnapshot{CIPassing: true, HasUnresolvedThreads: true},
-			new:  prSnapshot{CIPassing: true, HasUnresolvedThreads: false},
+			old:  prSnapshot{CIPassing: true, HasUnresolvedThreads: true, AssayUpToDate: true},
+			new:  prSnapshot{CIPassing: true, HasUnresolvedThreads: false, AssayUpToDate: true},
+			wantEvents: []string{EventPRReadyToMerge},
+		},
+		{
+			name:       "assay pending for current head → not ready even with green CI and no threads",
+			old:        prSnapshot{CIPassing: false, AssayUpToDate: false},
+			new:        prSnapshot{CIPassing: true, AssayUpToDate: false},
+			noEvents:   []string{EventPRReadyToMerge},
+		},
+		{
+			name:       "assay lands clean after green CI → pr_ready_to_merge fires once",
+			old:        prSnapshot{CIPassing: true, AssayUpToDate: false},
+			new:        prSnapshot{CIPassing: true, AssayUpToDate: true},
 			wantEvents: []string{EventPRReadyToMerge},
 		},
 		{
@@ -241,8 +253,8 @@ func TestSnapshotTransitionLogic(t *testing.T) {
 			// After CI completes passing following an in-progress poll, pr_ready_to_merge must fire.
 			// lastSnap has CIInProgress=true (from the in-progress poll); newSnap has CIInProgress=false.
 			name:       "CI completes passing after in-progress poll → pr_ready_to_merge fires",
-			old:        prSnapshot{CIPassing: true, CIInProgress: true},
-			new:        prSnapshot{CIPassing: true, CIInProgress: false},
+			old:        prSnapshot{CIPassing: true, CIInProgress: true, AssayUpToDate: true},
+			new:        prSnapshot{CIPassing: true, CIInProgress: false, AssayUpToDate: true},
 			wantEvents: []string{EventPRReadyToMerge},
 		},
 	}
@@ -312,8 +324,10 @@ func computeTransitionEventsWithPR(old, new *prSnapshot, prStatus string, ciFixC
 	// threads, or pending reviews. HasApproval is intentionally excluded
 	// because Copilot only submits COMMENTED reviews, never APPROVED.
 	// CIInProgress is excluded: a PR is not ready while CI is still running.
-	newReady := new.CIPassing && !new.CIInProgress && !new.IsConflicting && !new.HasUnresolvedThreads && !new.HasPendingReviews
-	lastReady := old.CIPassing && !old.CIInProgress && !old.IsConflicting && !old.HasUnresolvedThreads && !old.HasPendingReviews
+	// AssayUpToDate is required so the PR is not declared ready while an Assay
+	// review is still pending/in-flight for the current head (Forge-75cx).
+	newReady := new.CIPassing && !new.CIInProgress && !new.IsConflicting && !new.HasUnresolvedThreads && !new.HasPendingReviews && new.AssayUpToDate
+	lastReady := old.CIPassing && !old.CIInProgress && !old.IsConflicting && !old.HasUnresolvedThreads && !old.HasPendingReviews && old.AssayUpToDate
 	if newReady && !lastReady {
 		events = append(events, EventPRReadyToMerge)
 	}
@@ -750,6 +764,243 @@ func TestCheckPR_ReviewStillUnresolved_SkipsInFlightBurnish(t *testing.T) {
 
 	assert.NotContains(t, events, EventReviewChanges,
 		"EventReviewChanges must NOT fire while a burnish is already in flight (status=needs_fix)")
+}
+
+// assayEnabledMonitor builds a Monitor whose Assay trigger is enabled for the
+// given anvil, with a generous debounce/cost budget so the gate logic — not a
+// secondary limit — is what is under test.
+func assayEnabledMonitor(db *state.DB, fake vcs.Provider, anvil string) *Monitor {
+	m := New(db, func(_ string) vcs.Provider { return fake }, time.Minute,
+		map[string]string{anvil: "/fake"}, nil, nil, func() int { return 5 }, nil)
+	m.SetAssayConfig(func(string) AssayGateConfig {
+		return AssayGateConfig{Enabled: true, DebounceSeconds: 1}
+	})
+	return m
+}
+
+// TestCheckPR_AssayPending_BlocksReadyToMerge is the core regression test for
+// Forge-75cx: a PR with green CI, no conflicts, and no unresolved threads must
+// NOT be announced ready-to-merge while its current head has not yet been
+// assayed. Otherwise the in-flight Assay would post findings a poll later and
+// bounce the PR back to Burnish after it had already been declared ready.
+func TestCheckPR_AssayPending_BlocksReadyToMerge(t *testing.T) {
+	db, cleanup := openTempDB(t)
+	defer cleanup()
+
+	pr := &state.PR{
+		Number:    900,
+		Anvil:     "test-anvil",
+		BeadID:    "forge-assaypending",
+		Branch:    "forge/forge-assaypending",
+		Status:    state.PROpen,
+		CreatedAt: time.Now(),
+	}
+	require.NoError(t, db.InsertPR(pr))
+
+	// Green CI, no threads, no pending reviews — would be ready if not for the
+	// missing Assay. No assay_runs row exists, so LastReviewedSHA != head.
+	fake := &fakeVCSProvider{status: &vcs.PRStatus{
+		State:   "OPEN",
+		HeadSHA: "deadbeefcafe",
+	}}
+
+	var events []string
+	m := assayEnabledMonitor(db, fake, "test-anvil")
+	m.OnEvent(func(_ context.Context, e PREvent) {
+		events = append(events, e.EventType)
+	})
+
+	m.checkAll(context.Background())
+
+	assert.NotContains(t, events, EventPRReadyToMerge,
+		"ready-to-merge must NOT fire while the current head is unassayed")
+	assert.Contains(t, events, EventPRReviewNeeded,
+		"an Assay review should be requested for the unassayed head")
+
+	// The DB-level readiness queries must agree: a pending Assay worker blocks
+	// readiness even though CI/threads/conflicts are clean.
+	require.NoError(t, db.InsertWorker(&state.Worker{
+		ID:        "assay-test-anvil-900",
+		BeadID:    pr.BeadID,
+		Anvil:     pr.Anvil,
+		Status:    state.WorkerRunning,
+		Phase:     "assay",
+		PRNumber:  pr.Number,
+		StartedAt: time.Now(),
+	}))
+	ready, err := db.IsPRReadyToMerge(pr.ID)
+	require.NoError(t, err)
+	assert.False(t, ready, "IsPRReadyToMerge must be false while an Assay worker is in flight")
+	readyList, err := db.ReadyToMergePRs()
+	require.NoError(t, err)
+	assert.Empty(t, readyList, "ReadyToMergePRs must exclude PRs with an in-flight Assay worker")
+}
+
+// TestCheckPR_AssayClean_FiresReadyToMerge verifies the rising edge: once the
+// current head has been assayed cleanly (LastReviewedSHA == head, no findings),
+// the next poll emits EventPRReadyToMerge exactly once. This mirrors production,
+// where the Assay worker calls ResetPRState on completion, forcing a re-seed.
+func TestCheckPR_AssayClean_FiresReadyToMerge(t *testing.T) {
+	db, cleanup := openTempDB(t)
+	defer cleanup()
+
+	const head = "deadbeefcafe"
+	pr := &state.PR{
+		Number:    901,
+		Anvil:     "test-anvil",
+		BeadID:    "forge-assayclean",
+		Branch:    "forge/forge-assayclean",
+		Status:    state.PROpen,
+		CreatedAt: time.Now(),
+	}
+	require.NoError(t, db.InsertPR(pr))
+
+	fake := &fakeVCSProvider{status: &vcs.PRStatus{
+		State:   "OPEN",
+		HeadSHA: head,
+	}}
+
+	var events []string
+	m := assayEnabledMonitor(db, fake, "test-anvil")
+	m.OnEvent(func(_ context.Context, e PREvent) {
+		events = append(events, e.EventType)
+	})
+
+	// Poll 1: head unassayed → not ready.
+	m.checkAll(context.Background())
+	assert.NotContains(t, events, EventPRReadyToMerge,
+		"ready must not fire before the head is assayed")
+
+	// Assay lands cleanly for the current head and resets the snapshot, exactly
+	// as the Assay worker does on completion.
+	require.NoError(t, db.RecordAssayRun(&state.AssayRun{
+		Anvil:    pr.Anvil,
+		PRNumber: pr.Number,
+		HeadSHA:  head,
+	}))
+	m.ResetPRState(pr.Anvil, pr.Number)
+
+	events = nil
+	// Poll 2: head is now assayed → ready fires.
+	m.checkAll(context.Background())
+	readyCount := 0
+	for _, e := range events {
+		if e == EventPRReadyToMerge {
+			readyCount++
+		}
+	}
+	assert.Equal(t, 1, readyCount,
+		"ready-to-merge must fire exactly once after a clean assay lands; got events: %v", events)
+}
+
+// TestCheckPR_AssayDisabled_ReadyFiresImmediately verifies that the new gate is
+// inert when Assay is disabled: a clean PR is announced ready on first sighting
+// just as before, and the DB readiness queries surface it.
+func TestCheckPR_AssayDisabled_ReadyFiresImmediately(t *testing.T) {
+	db, cleanup := openTempDB(t)
+	defer cleanup()
+
+	pr := &state.PR{
+		Number:    902,
+		Anvil:     "test-anvil",
+		BeadID:    "forge-assaydisabled",
+		Branch:    "forge/forge-assaydisabled",
+		Status:    state.PROpen,
+		CreatedAt: time.Now(),
+	}
+	require.NoError(t, db.InsertPR(pr))
+
+	fake := &fakeVCSProvider{status: &vcs.PRStatus{
+		State:   "OPEN",
+		HeadSHA: "deadbeefcafe",
+	}}
+
+	var events []string
+	// No SetAssayConfig → Assay disabled.
+	m := New(db, func(_ string) vcs.Provider { return fake }, time.Minute,
+		map[string]string{"test-anvil": "/fake"}, nil, nil, func() int { return 5 }, nil)
+	m.OnEvent(func(_ context.Context, e PREvent) {
+		events = append(events, e.EventType)
+	})
+
+	m.checkAll(context.Background())
+
+	assert.Contains(t, events, EventPRReadyToMerge,
+		"ready-to-merge must fire immediately for a clean PR when Assay is disabled")
+
+	ready, err := db.IsPRReadyToMerge(pr.ID)
+	require.NoError(t, err)
+	assert.True(t, ready, "IsPRReadyToMerge must be true when Assay is disabled and the PR is clean")
+}
+
+// TestCheckPR_AssayEmptyHeadSHA_DoesNotBlockReady verifies that when GitHub
+// returns an empty HeadSHA, AssayUpToDate is true and does not permanently
+// block the ready-to-merge transition.
+func TestCheckPR_AssayEmptyHeadSHA_DoesNotBlockReady(t *testing.T) {
+	db, cleanup := openTempDB(t)
+	defer cleanup()
+
+	pr := &state.PR{
+		Number:    903,
+		Anvil:     "test-anvil",
+		BeadID:    "forge-assayemptysha",
+		Branch:    "forge/forge-assayemptysha",
+		Status:    state.PROpen,
+		CreatedAt: time.Now(),
+	}
+	require.NoError(t, db.InsertPR(pr))
+
+	fake := &fakeVCSProvider{status: &vcs.PRStatus{
+		State:   "OPEN",
+		HeadSHA: "", // empty — GitHub did not report it
+	}}
+
+	var events []string
+	m := assayEnabledMonitor(db, fake, "test-anvil")
+	m.OnEvent(func(_ context.Context, e PREvent) {
+		events = append(events, e.EventType)
+	})
+
+	m.checkAll(context.Background())
+
+	assert.Contains(t, events, EventPRReadyToMerge,
+		"ready-to-merge must fire when HeadSHA is empty (no Assay can be dispatched)")
+}
+
+// TestCheckPR_AssayCostQueryError_DoesNotBlockReady verifies that when the
+// daily Assay cost query fails (dailyAssayCost is nil), the Assay gate does
+// not block the ready-to-merge transition — since no Assay can be dispatched
+// without a cost check, blocking readiness would be permanent.
+func TestCheckPR_AssayCostQueryError_DoesNotBlockReady(t *testing.T) {
+	db, cleanup := openTempDB(t)
+	defer cleanup()
+
+	pr := &state.PR{
+		Number:    904,
+		Anvil:     "test-anvil",
+		BeadID:    "forge-assaycosterr",
+		Branch:    "forge/forge-assaycosterr",
+		Status:    state.PROpen,
+		CreatedAt: time.Now(),
+	}
+	require.NoError(t, db.InsertPR(pr))
+
+	fake := &fakeVCSProvider{status: &vcs.PRStatus{
+		State:   "OPEN",
+		HeadSHA: "deadbeefcafe",
+	}}
+
+	var events []string
+	m := assayEnabledMonitor(db, fake, "test-anvil")
+	m.OnEvent(func(_ context.Context, e PREvent) {
+		events = append(events, e.EventType)
+	})
+
+	// Simulate nil dailyAssayCost by calling checkPR directly with nil.
+	m.checkPR(context.Background(), pr, nil)
+
+	assert.Contains(t, events, EventPRReadyToMerge,
+		"ready-to-merge must fire when dailyAssayCost is nil (no Assay can be dispatched)")
 }
 
 // TestCheckPR_StillConflicting_ReemitsEvent is the end-to-end regression test

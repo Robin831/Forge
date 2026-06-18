@@ -129,6 +129,13 @@ type prSnapshot struct {
 	IsMerged             bool
 	IsClosed             bool
 	IsConflicting        bool
+	// AssayUpToDate is true when the PR's current head has been reviewed by
+	// Assay (or Assay is disabled for the anvil). It gates the ready-to-merge
+	// transition so a PR is not announced ready while an Assay review is still
+	// pending or in-flight for this head (Forge-75cx). It is tracked per
+	// snapshot so the ready transition fires on the rising edge — once the
+	// assay lands — rather than prematurely on first sighting.
+	AssayUpToDate bool
 }
 
 // New creates a Bellows monitor. The vcsLookup function returns the VCS
@@ -201,6 +208,36 @@ func (m *Monitor) lastReviewedSHA(pr *state.PR) string {
 		return ""
 	}
 	return sha
+}
+
+// assayEnabled reports whether the Assay trigger is enabled for the anvil. It is
+// false when no Assay config accessor has been registered (the feature is off).
+func (m *Monitor) assayEnabled(anvil string) bool {
+	return m.assayConfig != nil && m.assayConfig(anvil).Enabled
+}
+
+// assayUpToDate reports whether the PR's current head SHA has already been
+// reviewed by Assay, or whether Assay is disabled for the anvil. It gates the
+// ready-to-merge transition (and auto-merge) so a PR is not announced as ready
+// while an Assay review is still pending or in-flight for the head: the assay's
+// inline findings would otherwise land a poll or two later, flip
+// HasUnresolvedThreads 0->1, and bounce the PR back to needs_fix/Burnish after
+// it had already been declared ready (Forge-75cx). Comparing LastReviewedSHA to
+// the current head covers BOTH the pre-dispatch window (assay needed but not yet
+// started) and the in-flight window (assay running but findings not yet posted),
+// which a simple "no pending assay worker" check would miss.
+//
+// When headSHA is empty (GitHub did not report it), we return true: no Assay
+// review will be dispatched (shouldEmitReviewNeeded skips empty SHAs), so
+// blocking readiness would be permanent.
+func (m *Monitor) assayUpToDate(pr *state.PR, headSHA string) bool {
+	if !m.assayEnabled(pr.Anvil) {
+		return true
+	}
+	if headSHA == "" {
+		return true
+	}
+	return m.lastReviewedSHA(pr) == headSHA
 }
 
 // OnEvent registers a handler for PR events.
@@ -503,6 +540,19 @@ func (m *Monitor) checkPR(ctx context.Context, pr *state.PR, dailyAssayCost *flo
 		IsConflicting:        status.Mergeable == "CONFLICTING",
 	}
 
+	// Whether the current head has been reviewed by Assay (or Assay is disabled
+	// for the anvil). Gates ready-to-merge so a PR is not declared ready while an
+	// Assay review is pending or in-flight for this head (Forge-75cx). Computed
+	// before the snapshot lock so it can also seed lastSnap on first sighting.
+	// When dailyAssayCost is nil (query error), no Assay will be dispatched this
+	// cycle, so treat as up-to-date to avoid permanently blocking readiness for
+	// an Assay that cannot run.
+	assayUpToDate := m.assayUpToDate(pr, status.HeadSHA)
+	if dailyAssayCost == nil && m.assayEnabled(pr.Anvil) {
+		assayUpToDate = true
+	}
+	newSnap.AssayUpToDate = assayUpToDate
+
 	if ciInProgress {
 		log.Printf("[bellows] PR #%d (%s): CI checks still in progress, skipping failure evaluation", pr.Number, pr.Anvil)
 	}
@@ -553,6 +603,15 @@ func (m *Monitor) checkPR(ctx context.Context, pr *state.PR, dailyAssayCost *flo
 			// already in needs_fix or post-fix state — masking the secondary
 			// still-unresolved retry branch and dispatching duplicates.
 			NeedsChanges: threadsSeed,
+			// Seed the assay term as "up to date" only when Assay is disabled for
+			// the anvil, preserving the existing restart behaviour there. When Assay
+			// is enabled, seed it false so the ready transition fires on the rising
+			// edge once the head is assayed. This matters because the Assay worker
+			// calls ResetPRState when it finishes, forcing a re-seed on the next
+			// poll: seeding false keeps lastReady=false so a clean assay still emits
+			// EventPRReadyToMerge (and triggers auto-merge) rather than being masked
+			// by the DB's already-green mergeability state (Forge-75cx).
+			AssayUpToDate: !m.assayEnabled(pr.Anvil),
 		}
 	}
 	// When CI is still in progress, preserve the last *completed* CIPassing value
@@ -817,7 +876,9 @@ func (m *Monitor) checkPR(ctx context.Context, pr *state.PR, dailyAssayCost *flo
 	// COMMENTED reviews, never APPROVED, so requiring it would prevent PRs
 	// from ever reaching the Ready-to-Merge state.
 	// ciInProgress is excluded: a PR is not truly ready while CI is still running.
-	if newSnap.CIPassing && !ciInProgress && !newSnap.IsConflicting && !newSnap.HasUnresolvedThreads && !newSnap.HasPendingReviews {
+	// assayUpToDate is required so the status is not restored to approved while an
+	// Assay review is still pending/in-flight for the current head (Forge-75cx).
+	if newSnap.CIPassing && !ciInProgress && !newSnap.IsConflicting && !newSnap.HasUnresolvedThreads && !newSnap.HasPendingReviews && assayUpToDate {
 		_ = m.db.UpdatePRStatusIfNeedsFix(pr.ID, state.PRApproved)
 	}
 
@@ -834,8 +895,14 @@ func (m *Monitor) checkPR(ctx context.Context, pr *state.PR, dailyAssayCost *flo
 	// ciInProgress is excluded from both sides: a PR is not ready while CI is
 	// still running, and the previous poll must also have been fully completed
 	// (not in-progress) to count as "was already ready".
-	newReady := newSnap.CIPassing && !ciInProgress && !newSnap.IsConflicting && !newSnap.HasUnresolvedThreads && !newSnap.HasPendingReviews
-	lastReady := lastSnap.CIPassing && !lastSnap.CIInProgress && !lastSnap.IsConflicting && !lastSnap.HasUnresolvedThreads && !lastSnap.HasPendingReviews
+	// assayUpToDate gates both sides so the rising-edge transition fires only once
+	// the current head has been assayed (or Assay is disabled). Without it, a PR
+	// with green CI and no threads would be announced ready on first sighting,
+	// before its in-flight Assay posts findings — bouncing it back to Burnish a
+	// poll or two later (Forge-75cx). Tracking it per snapshot keeps lastReady
+	// honest so the transition still fires exactly once when the assay lands.
+	newReady := newSnap.CIPassing && !ciInProgress && !newSnap.IsConflicting && !newSnap.HasUnresolvedThreads && !newSnap.HasPendingReviews && newSnap.AssayUpToDate
+	lastReady := lastSnap.CIPassing && !lastSnap.CIInProgress && !lastSnap.IsConflicting && !lastSnap.HasUnresolvedThreads && !lastSnap.HasPendingReviews && lastSnap.AssayUpToDate
 	if newReady && !lastReady {
 		m.emit(ctx, PREvent{
 			PRNumber:  pr.Number,

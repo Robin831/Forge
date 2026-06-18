@@ -1983,6 +1983,89 @@ func TestDB_ReadyToMerge(t *testing.T) {
 	}
 }
 
+// TestDB_ReadyToMerge_PendingAssayWorker verifies the Forge-75cx guard: a PR
+// that is otherwise ready must be excluded from both IsPRReadyToMerge and
+// ReadyToMergePRs while an Assay review worker is pending or running for it, and
+// surface again once that worker completes.
+func TestDB_ReadyToMerge_PendingAssayWorker(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "forge-rtm-assay-test-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+	db, err := Open(filepath.Join(tmpDir, "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	pr := &PR{
+		Number:    300,
+		Anvil:     "anvil-assay",
+		BeadID:    "bd-300",
+		Branch:    "branch-300",
+		Status:    PRApproved,
+		CreatedAt: time.Now(),
+	}
+	if err := db.InsertPR(pr); err != nil {
+		t.Fatalf("InsertPR: %v", err)
+	}
+	// Clean mergeability: CI passing, no conflicts/threads/pending reviews.
+	if err := db.UpdatePRMergeability(pr.ID, true, false, false, false, false); err != nil {
+		t.Fatalf("UpdatePRMergeability: %v", err)
+	}
+
+	// Baseline: no assay worker → ready.
+	if ok, err := db.IsPRReadyToMerge(pr.ID); err != nil || !ok {
+		t.Fatalf("baseline IsPRReadyToMerge: got %v (err %v), want true", ok, err)
+	}
+	if list, err := db.ReadyToMergePRs(); err != nil || len(list) != 1 {
+		t.Fatalf("baseline ReadyToMergePRs: got %d (err %v), want 1", len(list), err)
+	}
+
+	// A running Assay worker for this PR blocks readiness.
+	worker := &Worker{
+		ID:        "assay-anvil-assay-300",
+		BeadID:    pr.BeadID,
+		Anvil:     pr.Anvil,
+		Status:    WorkerRunning,
+		Phase:     "assay",
+		PRNumber:  pr.Number,
+		StartedAt: time.Now(),
+	}
+	if err := db.InsertWorker(worker); err != nil {
+		t.Fatalf("InsertWorker: %v", err)
+	}
+	if ok, err := db.IsPRReadyToMerge(pr.ID); err != nil || ok {
+		t.Errorf("with running assay worker IsPRReadyToMerge: got %v (err %v), want false", ok, err)
+	}
+	if list, err := db.ReadyToMergePRs(); err != nil || len(list) != 0 {
+		t.Errorf("with running assay worker ReadyToMergePRs: got %d (err %v), want 0", len(list), err)
+	}
+
+	// A stalled Assay worker still blocks readiness (it may recover).
+	if err := db.UpdateWorkerStatus(worker.ID, WorkerStalled); err != nil {
+		t.Fatalf("UpdateWorkerStatus stalled: %v", err)
+	}
+	if ok, err := db.IsPRReadyToMerge(pr.ID); err != nil || ok {
+		t.Errorf("with stalled assay worker IsPRReadyToMerge: got %v (err %v), want false", ok, err)
+	}
+	if list, err := db.ReadyToMergePRs(); err != nil || len(list) != 0 {
+		t.Errorf("with stalled assay worker ReadyToMergePRs: got %d (err %v), want 0", len(list), err)
+	}
+
+	// Once the worker completes, the PR is ready again.
+	if err := db.UpdateWorkerStatus(worker.ID, WorkerDone); err != nil {
+		t.Fatalf("UpdateWorkerStatus: %v", err)
+	}
+	if ok, err := db.IsPRReadyToMerge(pr.ID); err != nil || !ok {
+		t.Errorf("after assay worker done IsPRReadyToMerge: got %v (err %v), want true", ok, err)
+	}
+	if list, err := db.ReadyToMergePRs(); err != nil || len(list) != 1 {
+		t.Errorf("after assay worker done ReadyToMergePRs: got %d (err %v), want 1", len(list), err)
+	}
+}
+
 // TestDB_InsertPR_DefaultsPendingReviews verifies that newly inserted PRs
 // default to has_pending_reviews=1 so they don't appear in Ready to Merge
 // until bellows confirms no reviews are pending.

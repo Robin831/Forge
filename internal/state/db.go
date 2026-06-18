@@ -1485,9 +1485,29 @@ func (db *DB) UpdatePRTitle(id int, title string) error {
 	return err
 }
 
+// pendingAssayExistsSQL returns a correlated subquery that matches when an Assay
+// review worker is still pending or running for the PR referenced by prAlias
+// (matched on anvil + pr_number). A PR with an in-flight Assay is not ready to
+// merge: its inline findings have not yet posted, so green CI and no unresolved
+// threads cannot yet be trusted — once the assay lands it may add threads and
+// bounce the PR back to Burnish (Forge-75cx). Stalled workers are included
+// because they may recover and still post findings. When Assay is disabled for
+// an anvil no such workers are ever created, so this predicate naturally
+// evaluates to false and readiness is unaffected.
+func pendingAssayExistsSQL(prAlias string) string {
+	return `EXISTS (
+		SELECT 1 FROM workers w
+		WHERE w.phase = 'assay'
+		  AND w.status IN ('pending', 'running', 'stalled')
+		  AND w.anvil = ` + prAlias + `.anvil
+		  AND w.pr_number = ` + prAlias + `.number
+	)`
+}
+
 // IsPRReadyToMerge reports whether the given PR currently satisfies all
 // ready-to-merge conditions: CI passing, not conflicting, no unresolved
-// review threads, no pending review requests, and not in a needs_fix/closed/merged state.
+// review threads, no pending review requests, no in-flight Assay review, and not
+// in a needs_fix/closed/merged state.
 // Approval is not required — repos without branch protection rules
 // should still surface PRs as mergeable; GitHub enforces required
 // reviews at merge time.
@@ -1500,7 +1520,8 @@ func (db *DB) IsPRReadyToMerge(id int) (bool, error) {
 		   AND ci_passing = 1
 		   AND is_conflicting = 0
 		   AND has_unresolved_threads = 0
-		   AND has_pending_reviews = 0`,
+		   AND has_pending_reviews = 0
+		   AND NOT `+pendingAssayExistsSQL("prs"),
 		id,
 	).Scan(&count)
 	if err != nil {
@@ -1520,7 +1541,8 @@ type ReadyToMergePR struct {
 }
 
 // ReadyToMergePRs returns PRs where: CI passing, not conflicting,
-// no unresolved review threads, no pending review requests, and not in a terminal/fix state.
+// no unresolved review threads, no pending review requests, no in-flight Assay
+// review, and not in a terminal/fix state.
 // Title is resolved with a best-effort lookup from queue_cache or workers.
 func (db *DB) ReadyToMergePRs() ([]ReadyToMergePR, error) {
 	rows, err := db.conn.Query(
@@ -1542,6 +1564,7 @@ func (db *DB) ReadyToMergePRs() ([]ReadyToMergePR, error) {
 		   AND p.is_conflicting = 0
 		   AND p.has_unresolved_threads = 0
 		   AND p.has_pending_reviews = 0
+		   AND NOT `+pendingAssayExistsSQL("p")+`
 		 ORDER BY p.number`,
 	)
 	if err != nil {
