@@ -726,19 +726,70 @@ export interface ConfigKeyInfo {
   description: string
 }
 
+// AnvilSettings mirrors Go's config.AnvilSettings — the per-anvil projection
+// served under `anvils.<name>` by GET /api/forge/config. The *bool keys are
+// tri-state: `null` means "inherit / unset" (the anvil follows the global
+// setting or built-in default), while `true`/`false` is an explicit override.
+// This nullable distinction must survive the round-trip, so callers must NOT
+// collapse `null` to `false`. `auto_merge` and `wicket_auto_dispatch` are plain
+// booleans with no inherit semantics.
+export interface AnvilSettings {
+  auto_merge: boolean
+  schematic_enabled: boolean | null
+  golangci_lint: boolean | null
+  go_race_detection: boolean | null
+  depcheck_enabled: boolean | null
+  questgiver_enabled: boolean | null
+  wicket_enabled: boolean | null
+  wicket_auto_dispatch: boolean
+}
+
 // ConfigResponse is the body of GET /api/forge/config (and the echo returned by
 // PATCH). `keys` is server-ordered so the UI renders deterministically.
+// `anvils` maps each configured anvil name to its per-anvil overrides; it is
+// always present (an empty object when no anvils are configured).
 export interface ConfigResponse {
   keys: ConfigKeyInfo[]
+  anvils: Record<string, AnvilSettings>
+}
+
+// AnvilKeyApplied mirrors Go's web.AnvilKeyApplied — per edited key, whether the
+// change takes effect instantly (hot-reloaded by the daemon) or on the next
+// dispatch/run, and whether the edit cleared the override (tri-state reset to
+// inherit) rather than setting an explicit value.
+export interface AnvilKeyApplied {
+  key: string
+  applies: 'instant' | 'next_run'
+  cleared: boolean
+}
+
+// AnvilConfigPatchResponse is the body of PATCH /api/forge/config/anvils/{name}.
+// `settings` is the re-read projection of the anvil after the edit (same shape
+// as the per-anvil entries in GET), so callers see the persisted result without
+// a second request. `applied` lists per-key hot-reload coverage for exactly the
+// keys touched by the request.
+export interface AnvilConfigPatchResponse {
+  anvil: string
+  settings: AnvilSettings
+  applied: AnvilKeyApplied[]
 }
 
 // forgeConfig wraps the managed-settings endpoints. `patch` sends a map of
 // key->boolean to PATCH /api/forge/config (validated all-or-nothing by the
 // backend) and returns the freshly re-read config, same shape as `get`.
+// `patchAnvil` writes per-anvil overrides: tri-state keys accept `null` to
+// clear the override (inherit the global/default), so the change map is
+// key->(boolean|null).
 export const forgeConfig = {
   get: (signal?: AbortSignal) => apiGet<ConfigResponse>('/api/forge/config', signal),
   patch: (changes: Record<string, boolean>) =>
     apiSend<ConfigResponse>('PATCH', '/api/forge/config', changes),
+  patchAnvil: (anvil: string, changes: Record<string, boolean | null>) =>
+    apiSend<AnvilConfigPatchResponse>(
+      'PATCH',
+      `/api/forge/config/anvils/${encodeURIComponent(anvil)}`,
+      changes,
+    ),
 }
 
 // PRActionKind enumerates the per-row actions exposed on the /prs tab. The
