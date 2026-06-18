@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 
 interface SwitchProps {
   // checked is the source-of-truth value coming from the parent. The component
@@ -33,12 +33,10 @@ export default function Switch({
   id,
   'aria-label': ariaLabel,
 }: SwitchProps) {
-  // optimistic holds the value shown to the user. It tracks `checked` except
-  // during an in-flight update, when it reflects the user's intended value.
   const [optimistic, setOptimistic] = useState(checked)
   const [pending, setPending] = useState(false)
-  // Guard against state updates after unmount when onChange resolves late.
   const mounted = useRef(true)
+  const pendingRef = useRef(false)
 
   useEffect(() => {
     mounted.current = true
@@ -47,31 +45,36 @@ export default function Switch({
     }
   }, [])
 
-  // When not mid-flight, stay in sync with the parent's value. While pending we
-  // intentionally ignore prop changes so the optimistic value is not clobbered.
+  // Sync optimistic state only when the controlled `checked` prop changes.
+  // A ref guards against overwriting the optimistic value mid-flight without
+  // adding `pending` as a dependency (which would re-trigger on settle and
+  // flash the stale parent value before polling catches up).
   useEffect(() => {
-    if (!pending) setOptimistic(checked)
-  }, [checked, pending])
+    if (!pendingRef.current) setOptimistic(checked)
+  }, [checked])
 
   const isDisabled = disabled || pending
 
-  const toggle = () => {
-    if (isDisabled) return
+  const toggle = useCallback(() => {
+    if (disabled || pending) return
     const next = !optimistic
     const previous = optimistic
     setOptimistic(next)
+    pendingRef.current = true
     setPending(true)
 
     Promise.resolve()
       .then(() => onChange(next))
       .catch(() => {
-        // Revert the optimistic flip on failure.
         if (mounted.current) setOptimistic(previous)
       })
       .finally(() => {
-        if (mounted.current) setPending(false)
+        if (mounted.current) {
+          pendingRef.current = false
+          setPending(false)
+        }
       })
-  }
+  }, [disabled, pending, optimistic, onChange])
 
   return (
     <button
@@ -79,7 +82,6 @@ export default function Switch({
       role="switch"
       id={id}
       aria-label={ariaLabel}
-      aria-pressed={optimistic}
       aria-checked={optimistic}
       disabled={isDisabled}
       onClick={toggle}
