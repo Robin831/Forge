@@ -1490,14 +1490,15 @@ func (db *DB) UpdatePRTitle(id int, title string) error {
 // (matched on anvil + pr_number). A PR with an in-flight Assay is not ready to
 // merge: its inline findings have not yet posted, so green CI and no unresolved
 // threads cannot yet be trusted — once the assay lands it may add threads and
-// bounce the PR back to Burnish (Forge-75cx). When Assay is disabled for an
-// anvil no such workers are ever created, so this predicate naturally evaluates
-// to false and readiness is unaffected.
+// bounce the PR back to Burnish (Forge-75cx). Stalled workers are included
+// because they may recover and still post findings. When Assay is disabled for
+// an anvil no such workers are ever created, so this predicate naturally
+// evaluates to false and readiness is unaffected.
 func pendingAssayExistsSQL(prAlias string) string {
 	return `EXISTS (
 		SELECT 1 FROM workers w
 		WHERE w.phase = 'assay'
-		  AND w.status IN ('pending', 'running')
+		  AND w.status IN ('pending', 'running', 'stalled')
 		  AND w.anvil = ` + prAlias + `.anvil
 		  AND w.pr_number = ` + prAlias + `.number
 	)`

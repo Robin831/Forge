@@ -2043,6 +2043,17 @@ func TestDB_ReadyToMerge_PendingAssayWorker(t *testing.T) {
 		t.Errorf("with running assay worker ReadyToMergePRs: got %d (err %v), want 0", len(list), err)
 	}
 
+	// A stalled Assay worker still blocks readiness (it may recover).
+	if err := db.UpdateWorkerStatus(worker.ID, WorkerStalled); err != nil {
+		t.Fatalf("UpdateWorkerStatus stalled: %v", err)
+	}
+	if ok, err := db.IsPRReadyToMerge(pr.ID); err != nil || ok {
+		t.Errorf("with stalled assay worker IsPRReadyToMerge: got %v (err %v), want false", ok, err)
+	}
+	if list, err := db.ReadyToMergePRs(); err != nil || len(list) != 0 {
+		t.Errorf("with stalled assay worker ReadyToMergePRs: got %d (err %v), want 0", len(list), err)
+	}
+
 	// Once the worker completes, the PR is ready again.
 	if err := db.UpdateWorkerStatus(worker.ID, WorkerDone); err != nil {
 		t.Fatalf("UpdateWorkerStatus: %v", err)

@@ -226,8 +226,15 @@ func (m *Monitor) assayEnabled(anvil string) bool {
 // the current head covers BOTH the pre-dispatch window (assay needed but not yet
 // started) and the in-flight window (assay running but findings not yet posted),
 // which a simple "no pending assay worker" check would miss.
+//
+// When headSHA is empty (GitHub did not report it), we return true: no Assay
+// review will be dispatched (shouldEmitReviewNeeded skips empty SHAs), so
+// blocking readiness would be permanent.
 func (m *Monitor) assayUpToDate(pr *state.PR, headSHA string) bool {
 	if !m.assayEnabled(pr.Anvil) {
+		return true
+	}
+	if headSHA == "" {
 		return true
 	}
 	return m.lastReviewedSHA(pr) == headSHA
@@ -537,7 +544,13 @@ func (m *Monitor) checkPR(ctx context.Context, pr *state.PR, dailyAssayCost *flo
 	// for the anvil). Gates ready-to-merge so a PR is not declared ready while an
 	// Assay review is pending or in-flight for this head (Forge-75cx). Computed
 	// before the snapshot lock so it can also seed lastSnap on first sighting.
+	// When dailyAssayCost is nil (query error), no Assay will be dispatched this
+	// cycle, so treat as up-to-date to avoid permanently blocking readiness for
+	// an Assay that cannot run.
 	assayUpToDate := m.assayUpToDate(pr, status.HeadSHA)
+	if dailyAssayCost == nil && m.assayEnabled(pr.Anvil) {
+		assayUpToDate = true
+	}
 	newSnap.AssayUpToDate = assayUpToDate
 
 	if ciInProgress {

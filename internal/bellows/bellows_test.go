@@ -933,6 +933,76 @@ func TestCheckPR_AssayDisabled_ReadyFiresImmediately(t *testing.T) {
 	assert.True(t, ready, "IsPRReadyToMerge must be true when Assay is disabled and the PR is clean")
 }
 
+// TestCheckPR_AssayEmptyHeadSHA_DoesNotBlockReady verifies that when GitHub
+// returns an empty HeadSHA, AssayUpToDate is true and does not permanently
+// block the ready-to-merge transition.
+func TestCheckPR_AssayEmptyHeadSHA_DoesNotBlockReady(t *testing.T) {
+	db, cleanup := openTempDB(t)
+	defer cleanup()
+
+	pr := &state.PR{
+		Number:    903,
+		Anvil:     "test-anvil",
+		BeadID:    "forge-assayemptysha",
+		Branch:    "forge/forge-assayemptysha",
+		Status:    state.PROpen,
+		CreatedAt: time.Now(),
+	}
+	require.NoError(t, db.InsertPR(pr))
+
+	fake := &fakeVCSProvider{status: &vcs.PRStatus{
+		State:   "OPEN",
+		HeadSHA: "", // empty — GitHub did not report it
+	}}
+
+	var events []string
+	m := assayEnabledMonitor(db, fake, "test-anvil")
+	m.OnEvent(func(_ context.Context, e PREvent) {
+		events = append(events, e.EventType)
+	})
+
+	m.checkAll(context.Background())
+
+	assert.Contains(t, events, EventPRReadyToMerge,
+		"ready-to-merge must fire when HeadSHA is empty (no Assay can be dispatched)")
+}
+
+// TestCheckPR_AssayCostQueryError_DoesNotBlockReady verifies that when the
+// daily Assay cost query fails (dailyAssayCost is nil), the Assay gate does
+// not block the ready-to-merge transition — since no Assay can be dispatched
+// without a cost check, blocking readiness would be permanent.
+func TestCheckPR_AssayCostQueryError_DoesNotBlockReady(t *testing.T) {
+	db, cleanup := openTempDB(t)
+	defer cleanup()
+
+	pr := &state.PR{
+		Number:    904,
+		Anvil:     "test-anvil",
+		BeadID:    "forge-assaycosterr",
+		Branch:    "forge/forge-assaycosterr",
+		Status:    state.PROpen,
+		CreatedAt: time.Now(),
+	}
+	require.NoError(t, db.InsertPR(pr))
+
+	fake := &fakeVCSProvider{status: &vcs.PRStatus{
+		State:   "OPEN",
+		HeadSHA: "deadbeefcafe",
+	}}
+
+	var events []string
+	m := assayEnabledMonitor(db, fake, "test-anvil")
+	m.OnEvent(func(_ context.Context, e PREvent) {
+		events = append(events, e.EventType)
+	})
+
+	// Simulate nil dailyAssayCost by calling checkPR directly with nil.
+	m.checkPR(context.Background(), pr, nil)
+
+	assert.Contains(t, events, EventPRReadyToMerge,
+		"ready-to-merge must fire when dailyAssayCost is nil (no Assay can be dispatched)")
+}
+
 // TestCheckPR_StillConflicting_ReemitsEvent is the end-to-end regression test
 // for Forge-h2a6: after a rebase action dispatched (whether it ran or bailed
 // at worktree creation) and the PR is still CONFLICTING, the next bellows
