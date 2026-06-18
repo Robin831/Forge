@@ -127,6 +127,14 @@ func (s *Server) routes() http.Handler {
 		// escalations are findable and resolvable regardless of whether a
 		// live worker row still exists.
 		r.Get("/forge/needs-attention", s.handleForgeNeedsAttention)
+
+		// Forge config read/write (Forge-e4xe). GET returns the managed
+		// boolean settings with per-key metadata; PATCH persists one or
+		// more of them to ~/.forge/config.yaml via a YAML node-tree edit
+		// (preserving comments/unrelated keys) so the fsnotify watcher in
+		// internal/hotreload picks the change up.
+		r.Get("/forge/config", s.handleForgeConfigGet)
+		r.Patch("/forge/config", s.handleForgeConfigPatch)
 	})
 
 	// Static UI fallback. The next bead replaces this with the embedded

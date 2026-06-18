@@ -130,6 +130,17 @@ type Server struct {
 	// handleLoginPage can fall back to it without re-walking the embedded
 	// filesystem on every request.
 	staticH http.HandlerFunc
+
+	// configLoader loads the current forge config for the GET
+	// /api/forge/config endpoint. nil falls back to config.Load(""). Tests
+	// override it to point at a fixture file.
+	configLoader func() (*config.Config, error)
+
+	// configPath resolves the file the PATCH /api/forge/config handler
+	// writes to. nil falls back to defaultConfigWritePath() (the resolved
+	// config path, or ~/.forge/config.yaml when none exists yet). Tests
+	// override it to point at a temp fixture.
+	configPath func() string
 }
 
 // SetChatRunner installs the AI runner used by the Beads-Forge page. The
