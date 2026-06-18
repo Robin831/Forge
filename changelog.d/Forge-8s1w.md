@@ -1,0 +1,2 @@
+category: Added
+- **Per-anvil settings in config API** - GET /api/forge/config now returns an `anvils` map keyed by anvil name, exposing each anvil's `auto_merge`, `schematic_enabled`, `golangci_lint`, `go_race_detection`, `depcheck_enabled`, `questgiver_enabled`, `wicket_enabled`, and `wicket_auto_dispatch` settings. Tri-state `*bool` fields serialize as JSON null when unset (inherit global). (Forge-8s1w)

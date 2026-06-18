@@ -141,6 +141,62 @@ type AnvilConfig struct {
 	Assay *AssayConfig `mapstructure:"assay" yaml:"assay,omitempty"`
 }
 
+// AnvilSettings is the serializable projection of an anvil's per-anvil
+// settings exposed by the config API (GET /api/forge/config), keyed as
+// anvils.<name>.<key>. It is the documented JSON contract that the config
+// write path persists and the settings UI consumes.
+//
+// The *bool fields are tri-state: a non-nil pointer serializes to the literal
+// JSON true/false, while nil serializes to JSON null. Null means "inherit /
+// unset" — the anvil has no explicit override and the corresponding global
+// setting (or built-in default) applies. This distinction must survive the
+// JSON round-trip, so callers must NOT collapse nil to false.
+//
+// AutoMerge and WicketAutoDispatch are plain booleans (no inherit semantics);
+// they are always present as true/false.
+type AnvilSettings struct {
+	AutoMerge          bool  `json:"auto_merge"`
+	SchematicEnabled   *bool `json:"schematic_enabled"`
+	GolangciLint       *bool `json:"golangci_lint"`
+	GoRaceDetection    *bool `json:"go_race_detection"`
+	DepcheckEnabled    *bool `json:"depcheck_enabled"`
+	QuestgiverEnabled  *bool `json:"questgiver_enabled"`
+	WicketEnabled      *bool `json:"wicket_enabled"`
+	WicketAutoDispatch bool  `json:"wicket_auto_dispatch"`
+}
+
+// AnvilSettingsMap projects every configured anvil into an AnvilSettings
+// keyed by anvil name. The result is always non-nil (an empty map when no
+// anvils are configured) so it marshals to "{}" rather than null. Tri-state
+// *bool fields are deep-copied so map entries never alias the same pointer.
+func (c *Config) AnvilSettingsMap() map[string]AnvilSettings {
+	out := make(map[string]AnvilSettings, len(c.Anvils))
+	for name, anvil := range c.Anvils {
+		out[name] = AnvilSettings{
+			AutoMerge:          anvil.AutoMerge,
+			SchematicEnabled:   copyBool(anvil.SchematicEnabled),
+			GolangciLint:       copyBool(anvil.GolangciLint),
+			GoRaceDetection:    copyBool(anvil.GoRaceDetection),
+			DepcheckEnabled:    copyBool(anvil.DepcheckEnabled),
+			QuestgiverEnabled:  copyBool(anvil.QuestgiverEnabled),
+			WicketEnabled:      copyBool(anvil.WicketEnabled),
+			WicketAutoDispatch: anvil.WicketAutoDispatch,
+		}
+	}
+	return out
+}
+
+// copyBool returns a new pointer to a copy of *b, or nil when b is nil. It
+// preserves the tri-state nil ("inherit/unset") semantics while ensuring no
+// two AnvilSettings entries share the same underlying pointer.
+func copyBool(b *bool) *bool {
+	if b == nil {
+		return nil
+	}
+	v := *b
+	return &v
+}
+
 // SmithConfig holds per-anvil Smith configuration.
 type SmithConfig struct {
 	// DenyPatterns defines file and command patterns that Smith is not

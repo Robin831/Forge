@@ -280,3 +280,98 @@ func TestForgeConfig_PatchCreatesFileWhenMissing(t *testing.T) {
 		t.Errorf("expected crucible_enabled: true in new file, got:\n%s", string(raw))
 	}
 }
+
+// TestForgeConfig_GetIncludesPerAnvilSettings verifies the anvils.<name>.<key>
+// contract: tri-state *bool settings round-trip as true/false/null and plain
+// bool settings (auto_merge, wicket_auto_dispatch) are always present.
+func TestForgeConfig_GetIncludesPerAnvilSettings(t *testing.T) {
+	srv := newServerWithDefaults(t, nil)
+	cookie := loginAndGetCookie(t, srv)
+	// "set" anvil overrides every tri-state field (mix of true/false) and
+	// enables the plain bools; "unset" anvil leaves all tri-state fields nil.
+	withConfigFixture(t, srv, `anvils:
+  set:
+    path: /tmp/set
+    auto_merge: true
+    wicket_auto_dispatch: true
+    schematic_enabled: true
+    golangci_lint: false
+    go_race_detection: true
+    depcheck_enabled: false
+    questgiver_enabled: true
+    wicket_enabled: false
+  unset:
+    path: /tmp/unset
+`)
+
+	rec := forgeRequest(t, srv, http.MethodGet, "/api/forge/config", "", cookie)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	// Decode into raw JSON to assert the literal null vs true/false distinction
+	// for tri-state fields, which a *bool struct decode would also handle but
+	// raw map makes the contract explicit.
+	var raw struct {
+		Anvils map[string]map[string]json.RawMessage `json:"anvils"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &raw); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(raw.Anvils) != 2 {
+		t.Fatalf("expected 2 anvils, got %d: %v", len(raw.Anvils), raw.Anvils)
+	}
+
+	set := raw.Anvils["set"]
+	if set == nil {
+		t.Fatalf("missing 'set' anvil")
+	}
+	expectSet := map[string]string{
+		"auto_merge":           "true",
+		"wicket_auto_dispatch": "true",
+		"schematic_enabled":    "true",
+		"golangci_lint":        "false",
+		"go_race_detection":    "true",
+		"depcheck_enabled":     "false",
+		"questgiver_enabled":   "true",
+		"wicket_enabled":       "false",
+	}
+	for k, want := range expectSet {
+		if got := strings.TrimSpace(string(set[k])); got != want {
+			t.Errorf("set.%s: expected %s, got %q", k, want, got)
+		}
+	}
+
+	unset := raw.Anvils["unset"]
+	if unset == nil {
+		t.Fatalf("missing 'unset' anvil")
+	}
+	// Tri-state fields must be JSON null (inherit/unset).
+	for _, k := range []string{"schematic_enabled", "golangci_lint", "go_race_detection", "depcheck_enabled", "questgiver_enabled", "wicket_enabled"} {
+		if got := strings.TrimSpace(string(unset[k])); got != "null" {
+			t.Errorf("unset.%s: expected null, got %q", k, got)
+		}
+	}
+	// Plain bools are always present and default to false.
+	for _, k := range []string{"auto_merge", "wicket_auto_dispatch"} {
+		if got := strings.TrimSpace(string(unset[k])); got != "false" {
+			t.Errorf("unset.%s: expected false, got %q", k, got)
+		}
+	}
+}
+
+// TestForgeConfig_GetEmptyAnvilsIsObjectNotNull verifies the no-anvils case
+// serializes anvils as {} rather than null.
+func TestForgeConfig_GetEmptyAnvilsIsObjectNotNull(t *testing.T) {
+	srv := newServerWithDefaults(t, nil)
+	cookie := loginAndGetCookie(t, srv)
+	withConfigFixture(t, srv, "")
+
+	rec := forgeRequest(t, srv, http.MethodGet, "/api/forge/config", "", cookie)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"anvils":{}`) {
+		t.Errorf("expected \"anvils\":{} in body, got: %s", rec.Body.String())
+	}
+}
