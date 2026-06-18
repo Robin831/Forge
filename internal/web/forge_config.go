@@ -176,21 +176,24 @@ var configKeyByName = func() map[string]configKeyDef {
 }()
 
 // loadConfig reads the current forge config. Tests override s.configLoader to
-// point at a fixture; production falls back to the standard resolution chain
-// (config.Load("")), which honours --config/forge.yaml/~/.forge/config.yaml.
+// point at a fixture; production uses s.configFile (the daemon's --config
+// path) so the web layer reads the same file the daemon hot-reloads.
 func (s *Server) loadConfig() (*config.Config, error) {
 	if s.configLoader != nil {
 		return s.configLoader()
 	}
-	return config.Load("")
+	return config.Load(s.configFile)
 }
 
 // configWritePath resolves the file the PATCH handler edits. Tests override
-// s.configPath; production uses the resolved config path, falling back to
-// ~/.forge/config.yaml when no file exists yet.
+// s.configPath; production uses s.configFile (the daemon's --config path) so
+// edits land in the same file the daemon hot-reloads.
 func (s *Server) configWritePath() string {
 	if s.configPath != nil {
 		return s.configPath()
+	}
+	if s.configFile != "" {
+		return s.configFile
 	}
 	return defaultConfigWritePath()
 }
@@ -316,8 +319,13 @@ func applyConfigPatch(path string, patch map[string]bool) error {
 		setMappingChild(root, "settings", settings)
 	}
 
-	for key, val := range patch {
-		setBoolNode(settings, key, val)
+	keys := make([]string, 0, len(patch))
+	for k := range patch {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		setBoolNode(settings, key, patch[key])
 	}
 
 	out, err := marshalNode(&doc)

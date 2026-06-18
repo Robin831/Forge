@@ -110,7 +110,9 @@ func TestForgeConfig_GetReflectsFileValues(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
 	}
-	_ = json.Unmarshal(rec.Body.Bytes(), &resp)
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
 	byKey := map[string]ConfigKeyInfo{}
 	for _, k := range resp.Keys {
 		byKey[k.Key] = k
