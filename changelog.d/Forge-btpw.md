@@ -1,0 +1,2 @@
+category: Fixed
+- **PRs no longer stuck out of Ready-to-Merge after Burnish** - When a PR hits the per-PR Assay run cap, the ready-to-merge gate no longer waits forever for a re-review that will never be dispatched. Once the cap is reached the Assay gate is treated as satisfied (unresolved review threads still block merge), so a clean PR whose comments were fixed by Burnish can reach Ready to merge instead of deadlocking. (Forge-btpw)
