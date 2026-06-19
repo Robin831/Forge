@@ -1,5 +1,15 @@
 import { useMemo } from 'react'
-import { ChevronRight } from 'lucide-react'
+import {
+  ChevronRight,
+  CircleCheck,
+  ClipboardList,
+  FlaskConical,
+  GitPullRequest,
+  Hammer,
+  Microscope,
+  ShieldCheck,
+  type LucideIcon,
+} from 'lucide-react'
 import type { WorkerInfo } from '../api'
 
 // StageKey labels the seven visible columns of the pipeline bar. The Bellows
@@ -36,6 +46,21 @@ const STAGE_ACCENT: Record<StageKey, string> = {
   pr: 'border-t-blue-500',
   assay: 'border-t-pink-500',
   ready_to_merge: 'border-t-emerald-500',
+}
+
+// STAGE_ICON gives each stage a distinct shape so stages are distinguishable
+// without relying on the accent colour alone — important for color-vision
+// deficiency, where adjacent accents (e.g. pink Assay vs emerald Ready to
+// merge) are easily confused. The icon is shown on every stage pill (next to
+// the label) and in the per-bead marker strip.
+const STAGE_ICON: Record<StageKey, LucideIcon> = {
+  schematic: ClipboardList,
+  smith: Hammer,
+  temper: FlaskConical,
+  warden: ShieldCheck,
+  pr: GitPullRequest,
+  assay: Microscope,
+  ready_to_merge: CircleCheck,
 }
 
 // phaseToStage projects a backend worker phase string onto one of the seven
@@ -235,6 +260,7 @@ function StagePill({ stage }: StagePillProps) {
   // queue blends in with the other idle stages.
   const isReady = stage.key === 'ready_to_merge'
   const readyActive = isReady && stage.count > 0
+  const StageIcon = STAGE_ICON[stage.key]
   const containerClass = readyActive
     ? `flex min-w-[88px] flex-1 flex-col rounded-md border border-emerald-500/50 border-t-2 bg-emerald-500/10 ${STAGE_ACCENT[stage.key]}`
     : `flex min-w-[88px] flex-1 flex-col rounded-md border border-slate-700/60 border-t-2 bg-slate-900/60 ${STAGE_ACCENT[stage.key]}`
@@ -254,8 +280,11 @@ function StagePill({ stage }: StagePillProps) {
       data-testid={`pipeline-stage-${stage.key}`}
       className={containerClass}
     >
-      <div className="flex items-center justify-between px-2.5 py-1.5">
-        <span className={labelClass}>{STAGE_LABEL[stage.key]}</span>
+      <div className="flex items-center justify-between gap-1 px-2.5 py-1.5">
+        <span className="flex min-w-0 items-center gap-1">
+          <StageIcon size={12} className="shrink-0" aria-hidden="true" />
+          <span className={`${labelClass} truncate`}>{STAGE_LABEL[stage.key]}</span>
+        </span>
         <span className={countClass} data-testid={`pipeline-count-${stage.key}`}>
           {stage.count}
         </span>
@@ -308,37 +337,46 @@ function BeadRow({ worker, stage }: BeadRowProps) {
         )
       ) : null}
       <div className="flex items-center gap-1">
-        {STAGES.map((s) => (
-          <span
-            key={s}
-            aria-label={STAGE_LABEL[s]}
-            className={`h-1.5 w-4 rounded-sm ${
-              s === stage
-                ? activeMarkerClass(stage)
-                : 'bg-slate-800'
-            }`}
-          />
-        ))}
+        {STAGES.map((s) => {
+          const MarkerIcon = STAGE_ICON[s]
+          const active = s === stage
+          return (
+            <span
+              key={s}
+              title={active ? `${STAGE_LABEL[s]} (current)` : STAGE_LABEL[s]}
+              aria-label={active ? `${STAGE_LABEL[s]} (current stage)` : STAGE_LABEL[s]}
+            >
+              <MarkerIcon
+                size={13}
+                className={active ? activeMarkerClass(stage) : 'text-slate-700'}
+                aria-hidden="true"
+              />
+            </span>
+          )
+        })}
       </div>
     </li>
   )
 }
 
+// activeMarkerClass returns the text colour for the current-stage marker icon.
+// Colour is a secondary cue only; the icon shape (STAGE_ICON) is what makes the
+// stage identifiable for color-vision-deficient users.
 function activeMarkerClass(stage: StageKey): string {
   switch (stage) {
     case 'schematic':
-      return 'bg-purple-400'
+      return 'text-purple-400'
     case 'smith':
-      return 'bg-orange-400'
+      return 'text-orange-400'
     case 'temper':
-      return 'bg-yellow-400'
+      return 'text-yellow-400'
     case 'warden':
-      return 'bg-cyan-400'
+      return 'text-cyan-400'
     case 'pr':
-      return 'bg-blue-400'
+      return 'text-blue-400'
     case 'assay':
-      return 'bg-pink-400'
+      return 'text-pink-400'
     case 'ready_to_merge':
-      return 'bg-emerald-400'
+      return 'text-emerald-400'
   }
 }

@@ -144,8 +144,14 @@ describe('PipelineBar', () => {
     render(<PipelineBar workers={workers} />)
 
     const row = screen.getByTestId('pipeline-bead-row')
-    const assayMarker = within(row).getByLabelText('Assay')
-    expect(assayMarker).toHaveClass('bg-pink-400')
+    // The current stage is identifiable by its accessible label (not colour
+    // alone) and carries a distinct icon — the colorblind-safety guarantee.
+    const assayMarker = within(row).getByLabelText('Assay (current stage)')
+    expect(assayMarker).toBeInTheDocument()
+    const icon = assayMarker.querySelector('svg')
+    expect(icon).not.toBeNull()
+    // Colour remains a secondary cue on the active marker.
+    expect(icon).toHaveClass('text-pink-400')
   })
 
   it('does not truncate long bead IDs', () => {
