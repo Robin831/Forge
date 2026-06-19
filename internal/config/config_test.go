@@ -252,6 +252,35 @@ anvils:
 	assert.Equal(t, cfgPath, ConfigFilePath(""))
 }
 
+// TestConfigFilePath_ExplicitHonoursFlag guards the regression behind Forge-vhro:
+// when an explicit --config path is given it MUST be returned, even when a
+// default-location config also exists. The daemon relies on this so its web
+// settings API and hot-reload watcher target the same file it loaded, rather
+// than a default-probe guess (which on non-default deployments points elsewhere
+// or nowhere).
+func TestConfigFilePath_ExplicitHonoursFlag(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	t.Setenv("USERPROFILE", tmpHome) // Windows
+	require.NoError(t, os.Mkdir(filepath.Join(tmpHome, ".forge"), 0o755))
+
+	// A default-location config exists and would be picked up by the empty-arg
+	// probe — proving the explicit path is honoured, not the default.
+	defaultPath := filepath.Join(tmpHome, ".forge", "config.yaml")
+	require.NoError(t, os.WriteFile(defaultPath, []byte("anvils: {}\n"), 0o644))
+
+	explicitPath := filepath.Join(t.TempDir(), "custom.yaml")
+	require.NoError(t, os.WriteFile(explicitPath, []byte("anvils: {}\n"), 0o644))
+
+	// Run from a directory with no ./forge.yaml so only the two files above exist.
+	t.Chdir(t.TempDir())
+
+	assert.Equal(t, explicitPath, ConfigFilePath(explicitPath),
+		"explicit --config path must be returned verbatim")
+	assert.Equal(t, defaultPath, ConfigFilePath(""),
+		"empty arg must fall back to the default location")
+}
+
 func TestLoad_AnvilDefaultAutoDispatch(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "forge.yaml")

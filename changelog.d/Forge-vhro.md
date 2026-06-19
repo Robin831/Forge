@@ -1,0 +1,2 @@
+category: Fixed
+- **Settings API & hot-reload honour --config** - The daemon now threads the resolved `--config` path into the web settings API and the hot-reload watcher instead of guessing via a default-location probe. On deployments started with a non-default `--config` (e.g. the k8s pod's `/etc/forge/forge.yaml`), the Settings page now shows the real anvils and values, PATCH writes to the file the daemon actually loaded, and config edits hot-reload. (Forge-vhro)

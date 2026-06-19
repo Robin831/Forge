@@ -72,7 +72,7 @@ var upCmd = &cobra.Command{
 
 		if foreground {
 			// Run in foreground (used by the background spawn and for debugging)
-			d, err := daemon.New(cfg)
+			d, err := daemon.New(cfg, configFile)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Error initializing daemon: %v\n", err)
 				os.Exit(1)

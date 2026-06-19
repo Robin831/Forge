@@ -300,8 +300,12 @@ type queueTimestamp struct {
 	UpdatedAt string
 }
 
-// New creates a new daemon instance.
-func New(cfg *config.Config) (*Daemon, error) {
+// New creates a new daemon instance. configPath is the resolved config file the
+// daemon was started with (honouring --config); it is used for the hot-reload
+// watcher and the web settings API so both read/write the SAME file the daemon
+// loaded, not a default-probe guess. An empty configPath falls back to the
+// documented default locations.
+func New(cfg *config.Config, configPath string) (*Daemon, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return nil, fmt.Errorf("finding home directory: %w", err)
@@ -380,7 +384,7 @@ func New(cfg *config.Config) (*Daemon, error) {
 		logger:                logger,
 		forgeDir:              forgeDir,
 		pidFile:               filepath.Join(forgeDir, PIDFileName),
-		configFile:            config.ConfigFilePath(""),
+		configFile:            config.ConfigFilePath(configPath),
 		logFile:               logFile,
 		shutdownMgr:           shutdown.NewManager(db, wtMgr, logger, anvilPathMap(cfg)),
 		worktreeMgr:           wtMgr,
