@@ -1,2 +1,0 @@
-category: Fixed
-- **Ready-to-merge no longer races in-flight Assay reviews** - Gate the ready-to-merge transition (and auto-merge) on the current PR head having been reviewed by Assay, so a PR with green CI and no threads is not announced ready while an Assay review is still pending or in-flight. The same guard is applied to the `IsPRReadyToMerge`/`ReadyToMergePRs` state queries (which exclude PRs with a pending Assay worker) so the Hearth panel and auto-merge agree. (Forge-75cx)

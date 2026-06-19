@@ -1,2 +1,0 @@
-category: Fixed
-- **Pipeline stages distinguishable without colour** - The Hearth 2.0 pipeline bar now shows a distinct icon per stage on each stage pill (next to the label) and in the per-bead marker strip, so stages are identifiable by shape, not colour alone. Fixes a colour-vision-deficiency issue where the pink Assay accent and emerald Ready-to-merge accent were indistinguishable. Colour is retained as a secondary cue. (Forge-il3b)

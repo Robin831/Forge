@@ -1,2 +1,0 @@
-category: Fixed
-- **Ready-to-Merge panel matches the Assay gate** - The `IsPRReadyToMerge`/`ReadyToMergePRs` state queries now require the current head to have been reviewed by Assay (a persisted `assay_up_to_date` flag mirroring the Bellows event gate), so the Hearth "Ready to Merge" panel no longer momentarily lists a PR as ready during the pre-dispatch / post-Burnish re-review window. (Forge-s0en)

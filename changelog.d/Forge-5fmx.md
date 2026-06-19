@@ -1,2 +1,0 @@
-category: Fixed
-- **Stalled workers auto-recover when log activity resumes** - A worker marked 'stalled' is now transitioned back to its prior active phase (running/reviewing/monitoring/pending) when its log file shows fresh activity again, instead of staying stuck in 'stalled' forever. This clears false 'Needs Attention' entries and stops live workers from permanently occupying dispatch capacity. (Forge-5fmx)
