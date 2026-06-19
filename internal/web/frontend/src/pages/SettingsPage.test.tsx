@@ -120,6 +120,55 @@ const ANVIL_KEYS: AnvilKeyInfo[] = [
     label: 'Platform',
     description: 'CI platform override for this anvil.',
   },
+  {
+    key: 'stage_providers',
+    type: 'provider_map',
+    triState: false,
+    hotReloadable: false,
+    label: 'Per-stage providers',
+    description: 'Per-anvil override of the global per-stage provider chains.',
+    options: ['smith', 'warden'],
+  },
+  {
+    key: 'wicket_trusted_users',
+    type: 'string_list',
+    triState: false,
+    hotReloadable: false,
+    label: 'Wicket trusted users',
+    description: 'GitHub logins whose issues are auto-dispatched.',
+  },
+  {
+    key: 'wicket_ignore_users',
+    type: 'string_list',
+    triState: false,
+    hotReloadable: false,
+    label: 'Wicket ignored users',
+    description: 'GitHub logins skipped entirely when triaging issues.',
+  },
+  {
+    key: 'wicket_repos',
+    type: 'string_list',
+    triState: false,
+    hotReloadable: false,
+    label: 'Wicket repositories',
+    description: '"owner/repo" strings Wicket scans for this anvil.',
+  },
+  {
+    key: 'wicket_issue_labels',
+    type: 'string_list',
+    triState: false,
+    hotReloadable: false,
+    label: 'Wicket issue labels',
+    description: 'Labels an issue must carry for Wicket to triage it.',
+  },
+  {
+    key: 'wicket_triage_prompt',
+    type: 'string',
+    triState: false,
+    hotReloadable: false,
+    label: 'Wicket triage prompt',
+    description: 'Optional prompt suffix appended to the triage system prompt.',
+  },
 ]
 
 const CONFIG: ConfigResponse = {
@@ -131,9 +180,24 @@ const CONFIG: ConfigResponse = {
     key({ key: 'daily_cost_limit', type: 'float', area: 'Pipeline', label: 'Daily cost limit', value: 25, hotReloadable: true, unit: 'USD' }),
     key({ key: 'log_level', type: 'enum', area: 'Pipeline', label: 'Log level', value: 'info', hotReloadable: true, options: ['debug', 'info', 'warn'] }),
     key({ key: 'default_branch', type: 'string', area: 'Pipeline', label: 'Default branch', value: 'main', hotReloadable: true }),
+    key({ key: 'providers', type: 'string_list', area: 'Providers', label: 'Provider chain', value: ['claude', 'gemini'], hotReloadable: true }),
+    key({ key: 'stage_providers', type: 'provider_map', area: 'Providers', label: 'Per-stage providers', value: { smith: ['claude'] }, hotReloadable: true, options: ['smith', 'warden'] }),
+    key({ key: 'poll_interval', type: 'duration', area: 'Scheduling', label: 'Poll interval', value: '5m0s', hotReloadable: false }),
+    key({ key: 'smith_timeout', type: 'duration', area: 'Scheduling', label: 'Smith timeout', value: '30m0s', hotReloadable: false }),
   ],
   anvilKeys: ANVIL_KEYS,
   anvils: {},
+}
+
+// COMPOSITE_ANVIL_FIELDS is the per-anvil composite override projection (all
+// inheriting by default) shared by the anvil fixtures below.
+const COMPOSITE_ANVIL_FIELDS = {
+  stage_providers: null,
+  wicket_trusted_users: null,
+  wicket_ignore_users: null,
+  wicket_repos: null,
+  wicket_issue_labels: null,
+  wicket_triage_prompt: '',
 }
 
 // CONFIG_WITH_ANVILS adds two registered anvils with a mix of inherit/explicit
@@ -156,6 +220,7 @@ const CONFIG_WITH_ANVILS: ConfigResponse = {
       auto_dispatch_tag: 'forgeReady',
       auto_dispatch_min_priority: 2,
       platform: 'github',
+      ...COMPOSITE_ANVIL_FIELDS,
     },
     metadata: {
       auto_merge: false,
@@ -171,6 +236,12 @@ const CONFIG_WITH_ANVILS: ConfigResponse = {
       auto_dispatch_tag: '',
       auto_dispatch_min_priority: 0,
       platform: '',
+      stage_providers: { smith: ['claude'] },
+      wicket_trusted_users: ['octocat'],
+      wicket_ignore_users: null,
+      wicket_repos: null,
+      wicket_issue_labels: null,
+      wicket_triage_prompt: 'Prioritise security issues.',
     },
   },
 }
@@ -306,6 +377,79 @@ describe('SettingsPage', () => {
     mockPoll({ data: null, error: 'HTTP 500' })
     renderPage()
     expect(screen.getByText('HTTP 500')).toBeInTheDocument()
+  })
+
+  describe('composite & timing global controls', () => {
+    it('renders a global string_list and PATCHes the appended item', async () => {
+      patchMock.mockResolvedValue(CONFIG)
+      mockPoll({ data: CONFIG })
+      renderPage()
+
+      const providers = screen.getByRole('group', { name: 'Provider chain' })
+      const input = within(providers).getByRole('textbox', {
+        name: /Add to Provider chain/i,
+      })
+      await userEvent.type(input, 'copilot{Enter}')
+
+      expect(patchMock).toHaveBeenCalledWith({
+        providers: ['claude', 'gemini', 'copilot'],
+      })
+    })
+
+    it('renders a global provider_map grouped by stage', () => {
+      mockPoll({ data: CONFIG })
+      renderPage()
+
+      const map = screen.getByRole('group', { name: 'Per-stage providers' })
+      // Stages come from the key's options metadata.
+      expect(within(map).getByText('smith')).toBeInTheDocument()
+      expect(within(map).getByText('warden')).toBeInTheDocument()
+    })
+
+    it('collects duration settings into a collapsible Advanced / timing section', async () => {
+      patchMock.mockResolvedValue(CONFIG)
+      mockPoll({ data: CONFIG })
+      renderPage()
+
+      const section = screen.getByRole('region', { name: 'Advanced / timing' })
+      // Collapsed by default: the duration inputs are not yet rendered.
+      expect(
+        screen.queryByRole('textbox', { name: 'Poll interval' }),
+      ).not.toBeInTheDocument()
+
+      // The section header is rendered outside the (hidden) body region.
+      await userEvent.click(
+        screen.getByRole('button', { name: /Advanced \/ timing/i }),
+      )
+
+      const input = within(section).getByRole('textbox', { name: 'Poll interval' })
+      expect(input).toHaveValue('5m0s')
+
+      await userEvent.clear(input)
+      await userEvent.type(input, '10m')
+      await userEvent.tab()
+
+      expect(patchMock).toHaveBeenCalledWith({ poll_interval: '10m' })
+    })
+
+    it('rejects an invalid duration without PATCHing', async () => {
+      patchMock.mockResolvedValue(CONFIG)
+      mockPoll({ data: CONFIG })
+      renderPage()
+
+      await userEvent.click(
+        screen.getByRole('button', { name: /Advanced \/ timing/i }),
+      )
+      const input = screen.getByRole('textbox', { name: 'Poll interval' })
+
+      await userEvent.clear(input)
+      await userEvent.type(input, 'not-a-duration')
+      await userEvent.tab()
+
+      expect(patchMock).not.toHaveBeenCalled()
+      expect(input).toHaveAttribute('aria-invalid', 'true')
+      expect(screen.getByText(/Invalid duration/i)).toBeInTheDocument()
+    })
   })
 
   describe('per-anvil overrides', () => {
@@ -460,6 +604,61 @@ describe('SettingsPage', () => {
       expect(
         within(autoMergeRow).queryByText(/applies on next run/i),
       ).not.toBeInTheDocument()
+    })
+
+    it('renders a per-anvil string_list as inheriting when null and overrides it', async () => {
+      patchAnvilMock.mockResolvedValue({})
+      mockPoll({ data: CONFIG_WITH_ANVILS })
+      renderPage()
+
+      // heimdall.wicket_trusted_users is null → ListField shows Override.
+      const list = within(
+        screen.getByRole('region', { name: 'heimdall' }),
+      ).getByRole('group', { name: 'heimdall Wicket trusted users' })
+      await userEvent.click(within(list).getByRole('button', { name: 'Override' }))
+
+      expect(patchAnvilMock).toHaveBeenCalledWith('heimdall', {
+        wicket_trusted_users: [],
+      })
+    })
+
+    it('reflects an explicit per-anvil string_list and clears it to inherit', async () => {
+      patchAnvilMock.mockResolvedValue({})
+      mockPoll({ data: CONFIG_WITH_ANVILS })
+      renderPage()
+
+      const list = within(
+        screen.getByRole('region', { name: 'metadata' }),
+      ).getByRole('group', { name: 'metadata Wicket trusted users' })
+      expect(within(list).getByText('octocat')).toBeInTheDocument()
+
+      await userEvent.click(
+        within(list).getByRole('button', {
+          name: /Reset metadata Wicket trusted users to inherit/i,
+        }),
+      )
+      expect(patchAnvilMock).toHaveBeenCalledWith('metadata', {
+        wicket_trusted_users: null,
+      })
+    })
+
+    it('renders a per-anvil multiline triage prompt and PATCHes the edited text', async () => {
+      patchAnvilMock.mockResolvedValue({})
+      mockPoll({ data: CONFIG_WITH_ANVILS })
+      renderPage()
+
+      const textarea = within(
+        screen.getByRole('region', { name: 'metadata' }),
+      ).getByRole('textbox', { name: 'metadata Wicket triage prompt' })
+      expect(textarea).toHaveValue('Prioritise security issues.')
+
+      await userEvent.clear(textarea)
+      await userEvent.type(textarea, 'Focus on bugs.')
+      await userEvent.tab()
+
+      expect(patchAnvilMock).toHaveBeenCalledWith('metadata', {
+        wicket_triage_prompt: 'Focus on bugs.',
+      })
     })
 
     it('does not render a per-anvil section when no anvils are configured', () => {

@@ -1,6 +1,7 @@
-import { useMemo } from 'react'
+import { useMemo, useState } from 'react'
 import {
   Beaker,
+  Clock,
   FlaskConical,
   GitBranch,
   Hammer,
@@ -19,6 +20,7 @@ import type {
   ConfigKeyInfo,
   ConfigResponse,
   ConfigValue,
+  ConfigValueType,
   StatusResponse,
 } from '../api'
 import AppHeader from '../components/AppHeader'
@@ -28,9 +30,45 @@ import TriStateToggle from '../components/TriStateToggle'
 import type { TriState } from '../components/TriStateToggle'
 import NumberField from '../components/NumberField'
 import TextField from '../components/TextField'
+import TextAreaField from '../components/TextAreaField'
 import SelectField from '../components/SelectField'
+import ListField from '../components/ListField'
+import ProviderMapField from '../components/ProviderMapField'
+import DurationField from '../components/DurationField'
 
 const POLL_INTERVAL_MS = 30000
+
+// ADVANCED_TIMING_AREA is the synthetic section that collects every duration
+// setting, regardless of the backend `area` it is tagged with, into a single
+// collapsible "Advanced / timing" group so the interval/timeout knobs don't
+// clutter the primary per-feature sections.
+const ADVANCED_TIMING_AREA = 'Advanced / timing'
+
+// LABELLABLE_TYPES are the value types whose control is a single focusable input
+// that can be associated with a <label htmlFor>. Composite editors (string_list,
+// provider_map) render a group of inputs instead, so their row uses a plain
+// <span> caption rather than a label.
+const LABELLABLE_TYPES = new Set<ConfigValueType>([
+  'int',
+  'float',
+  'enum',
+  'string',
+  'duration',
+])
+
+// MULTILINE_STRING_KEYS marks `string` settings that should render as a textarea
+// rather than a single-line input. The backend exposes these as plain strings;
+// this is the frontend's render-time hint for long-form values (e.g. the Wicket
+// triage prompt suffix).
+const MULTILINE_STRING_KEYS = new Set<string>(['wicket_triage_prompt'])
+
+function isMultilineString(type: ConfigValueType, key: string): boolean {
+  return type === 'string' && MULTILINE_STRING_KEYS.has(key)
+}
+
+function isLabellable(type: ConfigValueType): boolean {
+  return LABELLABLE_TYPES.has(type)
+}
 
 // AREA_ICON maps the backend `area` strings (see internal/web/forge_config.go)
 // to a lucide icon for the section header. Unknown areas fall back to the
@@ -117,10 +155,18 @@ export default function SettingsPage() {
 
   const configData = config.data
 
-  const groups = useMemo(
-    () => groupByArea(configData?.keys ?? []),
-    [configData],
-  )
+  // Duration settings are pulled out of their per-feature areas and collected
+  // into a single "Advanced / timing" section; everything else groups by area.
+  const { groups, durationKeys } = useMemo(() => {
+    const keys = configData?.keys ?? []
+    const durations = keys.filter((k) => k.type === 'duration')
+    const rest = keys.filter((k) => k.type !== 'duration')
+    return { groups: groupByArea(rest), durationKeys: durations }
+  }, [configData])
+
+  // The timing section is collapsed by default — these are advanced knobs most
+  // users never touch.
+  const [timingExpanded, setTimingExpanded] = useState(false)
 
   const anvilKeys = configData?.anvilKeys ?? []
 
@@ -191,7 +237,7 @@ export default function SettingsPage() {
           error={config.error}
           children={null}
         />
-      ) : groups.length === 0 ? (
+      ) : groups.length === 0 && durationKeys.length === 0 ? (
         <Pane
           title="Configuration"
           icon={<SettingsIcon size={16} className="text-amber-400" aria-hidden />}
@@ -200,18 +246,42 @@ export default function SettingsPage() {
           <EmptyState message="No configurable settings available." />
         </Pane>
       ) : (
-        groups.map((group) => {
-          const Icon = areaIcon(group.area)
-          return (
+        <>
+          {groups.map((group) => {
+            const Icon = areaIcon(group.area)
+            return (
+              <Pane
+                key={group.area}
+                title={group.area}
+                icon={<Icon size={16} className="text-amber-400" aria-hidden />}
+                count={group.keys.length}
+                loading={config.loading}
+              >
+                <ul className="divide-y divide-slate-800">
+                  {group.keys.map((k) => (
+                    <GlobalRow
+                      key={k.key}
+                      info={k}
+                      onChange={(next) => handleGlobalChange(k.key, next)}
+                    />
+                  ))}
+                </ul>
+              </Pane>
+            )
+          })}
+
+          {durationKeys.length > 0 && (
             <Pane
-              key={group.area}
-              title={group.area}
-              icon={<Icon size={16} className="text-amber-400" aria-hidden />}
-              count={group.keys.length}
+              title={ADVANCED_TIMING_AREA}
+              icon={<Clock size={16} className="text-amber-400" aria-hidden />}
+              count={durationKeys.length}
               loading={config.loading}
+              collapsible
+              expanded={timingExpanded}
+              onToggle={() => setTimingExpanded((v) => !v)}
             >
               <ul className="divide-y divide-slate-800">
-                {group.keys.map((k) => (
+                {durationKeys.map((k) => (
                   <GlobalRow
                     key={k.key}
                     info={k}
@@ -220,8 +290,8 @@ export default function SettingsPage() {
                 ))}
               </ul>
             </Pane>
-          )
-        })
+          )}
+        </>
       )}
 
       {anvilEntries.length > 0 && (
@@ -277,13 +347,9 @@ function GlobalRow({
   onChange: (next: ConfigValue) => void | Promise<void>
 }) {
   const controlId = `setting-${info.key}`
-  // bool controls (Switch) bind via aria-label, so only the labellable input
-  // types get an htmlFor association.
-  const labellable =
-    info.type === 'int' ||
-    info.type === 'float' ||
-    info.type === 'enum' ||
-    info.type === 'string'
+  // bool and composite (string_list / provider_map) controls bind via aria-label
+  // rather than htmlFor, so only the single-input types get a <label> association.
+  const labellable = isLabellable(info.type)
 
   return (
     <li className="flex items-start justify-between gap-4 px-4 py-3">
@@ -353,7 +419,57 @@ function GlobalControl({
           aria-label={info.label}
         />
       )
+    case 'duration':
+      return (
+        <DurationField
+          id={controlId}
+          value={typeof info.value === 'string' ? info.value : String(info.value ?? '')}
+          onChange={(next) => onChange(next)}
+          aria-label={info.label}
+        />
+      )
+    case 'string_list':
+      return (
+        <ListField
+          value={Array.isArray(info.value) ? (info.value as string[]) : []}
+          onChange={(next) => onChange(next ?? [])}
+          addLabel={`Add to ${info.label}`}
+          idPrefix={info.key}
+          aria-label={info.label}
+        />
+      )
+    case 'provider_map':
+      return (
+        <ProviderMapField
+          value={
+            info.value && typeof info.value === 'object' && !Array.isArray(info.value)
+              ? (info.value as Record<string, string[]>)
+              : {}
+          }
+          stages={info.options}
+          onChange={(next) => onChange(next ?? {})}
+          aria-label={info.label}
+        />
+      )
     case 'string':
+      if (isMultilineString(info.type, info.key)) {
+        return (
+          <TextAreaField
+            id={controlId}
+            value={String(info.value ?? '')}
+            onChange={(next) => onChange(next)}
+            aria-label={info.label}
+          />
+        )
+      }
+      return (
+        <TextField
+          id={controlId}
+          value={String(info.value)}
+          onChange={(next) => onChange(next)}
+          aria-label={info.label}
+        />
+      )
     default:
       return (
         <TextField
@@ -381,12 +497,8 @@ function AnvilRow({
 }) {
   const controlId = `anvil-${anvil}-${meta.key}`
   const raw = settings[meta.key as keyof AnvilSettings]
-  // bool controls (tri-state or plain Switch) bind via aria-label.
-  const labellable =
-    meta.type === 'int' ||
-    meta.type === 'float' ||
-    meta.type === 'enum' ||
-    meta.type === 'string'
+  // bool and composite (string_list / provider_map) controls bind via aria-label.
+  const labellable = isLabellable(meta.type)
 
   return (
     <li className="flex items-start justify-between gap-4 px-4 py-3">
@@ -494,7 +606,54 @@ function AnvilControl({
     )
   }
 
-  // string
+  if (meta.type === 'string_list') {
+    // ListField owns its own null=inherit affordance (an "Override" placeholder
+    // when null, an "Inherit" reset when set), so no separate InheritButton.
+    const value = (raw ?? null) as string[] | null
+    return (
+      <ListField
+        value={value}
+        inheritable
+        onChange={(next) => onChange(next)}
+        addLabel={`Add to ${meta.label}`}
+        idPrefix={`${anvil}-${meta.key}`}
+        aria-label={ariaLabel}
+      />
+    )
+  }
+
+  if (meta.type === 'provider_map') {
+    const value = (raw ?? null) as Record<string, string[]> | null
+    return (
+      <ProviderMapField
+        value={value}
+        stages={meta.options}
+        inheritable
+        onChange={(next) => onChange(next)}
+        aria-label={ariaLabel}
+      />
+    )
+  }
+
+  // string. Long-form keys (e.g. the Wicket triage prompt) render as a textarea;
+  // the rest use a single-line input. Both clear the override via InheritButton.
+  if (isMultilineString(meta.type, meta.key)) {
+    return (
+      <>
+        <TextAreaField
+          id={controlId}
+          value={String(raw ?? '')}
+          onChange={(next) => onChange(next)}
+          aria-label={ariaLabel}
+        />
+        <InheritButton
+          onClick={() => onChange(null)}
+          label={`Reset ${ariaLabel} to inherit`}
+        />
+      </>
+    )
+  }
+
   return (
     <>
       <TextField

@@ -793,6 +793,17 @@ export interface AnvilSettings {
   auto_dispatch_tag: string
   auto_dispatch_min_priority: number
   platform: string
+  // Composite per-anvil overrides (Forge-vo5a). Nil slices/maps serialize to
+  // JSON `null` and the empty triage prompt to `""`; all mean "inherit" — the
+  // anvil has no explicit override and the global/default applies. The null
+  // distinction must survive the round-trip (callers must NOT collapse it), so
+  // the list/map fields are nullable rather than defaulted to empty.
+  stage_providers: Record<string, string[]> | null
+  wicket_trusted_users: string[] | null
+  wicket_ignore_users: string[] | null
+  wicket_repos: string[] | null
+  wicket_issue_labels: string[] | null
+  wicket_triage_prompt: string
 }
 
 // ConfigResponse is the body of GET /api/forge/config (and the echo returned by
