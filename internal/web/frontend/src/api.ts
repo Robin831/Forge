@@ -712,10 +712,8 @@ export async function apiSend<T = unknown>(
 }
 
 // ConfigValueType is the value type of a managed setting; it selects which
-// control the SettingsPage renders (bool→switch, int/float→number, enum→select,
-// string→text, string_list→ListField, provider_map→ProviderMapField,
-// duration→text). The string_list/provider_map/duration names are a contract
-// shared verbatim with the backend (internal/web/forge_config.go).
+// editor control the SettingsPage renders for each key. The type strings are a
+// contract shared verbatim with the backend (internal/web/forge_config.go).
 export type ConfigValueType =
   | 'bool'
   | 'int'

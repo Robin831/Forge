@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useId, useState } from 'react'
 import { ChevronDown, ChevronUp, Plus, X } from 'lucide-react'
 
 interface ChainListProps {
@@ -40,6 +40,7 @@ export default function ChainList({
   idPrefix = 'chain',
 }: ChainListProps) {
   const [draft, setDraft] = useState('')
+  const uid = useId()
 
   const add = () => {
     if (disabled) return
@@ -51,7 +52,7 @@ export default function ChainList({
     setDraft('')
   }
 
-  const inputId = `${idPrefix}-add`
+  const inputId = `${idPrefix}-add${uid}`
 
   return (
     <div className="flex flex-col gap-2">
