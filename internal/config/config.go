@@ -173,6 +173,18 @@ type AnvilSettings struct {
 	AutoDispatchTag         string `json:"auto_dispatch_tag"`
 	AutoDispatchMinPriority int    `json:"auto_dispatch_min_priority"`
 	Platform                string `json:"platform"`
+
+	// Composite per-anvil overrides (Forge-vo5a). Nil slices/maps and the
+	// empty WicketTriagePrompt serialize to JSON null / "" and mean
+	// "inherit" — the anvil has no explicit override and the global setting
+	// (or built-in default) applies. The fields lack omitempty so a nil map /
+	// slice round-trips as an explicit null rather than being dropped.
+	StageProviders     map[string][]string `json:"stage_providers"`
+	WicketTrustedUsers []string            `json:"wicket_trusted_users"`
+	WicketIgnoreUsers  []string            `json:"wicket_ignore_users"`
+	WicketRepos        []string            `json:"wicket_repos"`
+	WicketIssueLabels  []string            `json:"wicket_issue_labels"`
+	WicketTriagePrompt string              `json:"wicket_triage_prompt"`
 }
 
 // AnvilSettingsMap projects every configured anvil into an AnvilSettings
@@ -196,7 +208,39 @@ func (c *Config) AnvilSettingsMap() map[string]AnvilSettings {
 			AutoDispatchTag:         anvil.AutoDispatchTag,
 			AutoDispatchMinPriority: anvil.AutoDispatchMinPriority,
 			Platform:                anvil.Platform,
+			StageProviders:          copyStringSliceMap(anvil.StageProviders),
+			WicketTrustedUsers:      copyStringSlice(anvil.WicketTrustedUsers),
+			WicketIgnoreUsers:       copyStringSlice(anvil.WicketIgnoreUsers),
+			WicketRepos:             copyStringSlice(anvil.WicketRepos),
+			WicketIssueLabels:       copyStringSlice(anvil.WicketIssueLabels),
+			WicketTriagePrompt:      anvil.WicketTriagePrompt,
 		}
+	}
+	return out
+}
+
+// copyStringSlice returns a copy of s, or nil when s is nil/empty, preserving
+// the nil ("inherit/unset") distinction for the per-anvil settings projection
+// and ensuring map entries never alias the source slice.
+func copyStringSlice(s []string) []string {
+	if len(s) == 0 {
+		return nil
+	}
+	out := make([]string, len(s))
+	copy(out, s)
+	return out
+}
+
+// copyStringSliceMap deep-copies a map[string][]string, returning nil when m is
+// nil/empty so it serializes as JSON null (inherit) and no entry aliases the
+// source slices.
+func copyStringSliceMap(m map[string][]string) map[string][]string {
+	if len(m) == 0 {
+		return nil
+	}
+	out := make(map[string][]string, len(m))
+	for k, v := range m {
+		out[k] = copyStringSlice(v)
 	}
 	return out
 }
