@@ -2216,6 +2216,57 @@ func TestDB_AssayWorkerInFlight(t *testing.T) {
 	check(false, "different PR")
 }
 
+// TestDB_BeadFixWorkerActive verifies the bead-in-flight check used by the
+// bellows Assay trigger to avoid busy-looping while a fix worker is running
+// (Forge-dkso): a non-Assay worker counts, but Assay/monitor workers and
+// completed workers do not.
+func TestDB_BeadFixWorkerActive(t *testing.T) {
+	tmpDir := t.TempDir()
+	db, err := Open(filepath.Join(tmpDir, "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	const anvil, bead = "munin", "Fhi.Metadata-cvstg"
+	check := func(want bool, msg string) {
+		t.Helper()
+		got, err := db.BeadFixWorkerActive(anvil, bead)
+		if err != nil {
+			t.Fatalf("BeadFixWorkerActive: %v", err)
+		}
+		if got != want {
+			t.Errorf("%s: BeadFixWorkerActive=%v, want %v", msg, got, want)
+		}
+	}
+
+	check(false, "no workers")
+
+	// The synthetic bellows monitor must NOT count as a fix worker.
+	if err := db.InsertWorker(&Worker{ID: "bellows-munin-4243", BeadID: bead, Anvil: anvil, Status: WorkerMonitoring, Phase: "bellows", PRNumber: 4243, StartedAt: time.Now()}); err != nil {
+		t.Fatalf("InsertWorker: %v", err)
+	}
+	check(false, "bellows monitor only")
+
+	// A running quench (CI-fix) worker counts.
+	if err := db.InsertWorker(&Worker{ID: "quench-1", BeadID: bead, Anvil: anvil, Status: WorkerRunning, Phase: "quench", PRNumber: 4243, StartedAt: time.Now()}); err != nil {
+		t.Fatalf("InsertWorker: %v", err)
+	}
+	check(true, "running quench worker")
+
+	// Once it completes, it no longer counts.
+	if err := db.InsertWorker(&Worker{ID: "quench-1", BeadID: bead, Anvil: anvil, Status: WorkerDone, Phase: "quench", PRNumber: 4243, StartedAt: time.Now()}); err != nil {
+		t.Fatalf("InsertWorker: %v", err)
+	}
+	check(false, "done quench worker")
+
+	// An in-flight Assay worker must NOT suppress itself.
+	if err := db.InsertWorker(&Worker{ID: "assay-x", BeadID: bead, Anvil: anvil, Status: WorkerRunning, Phase: "assay", PRNumber: 4243, StartedAt: time.Now()}); err != nil {
+		t.Fatalf("InsertWorker: %v", err)
+	}
+	check(false, "assay worker does not count as fix worker")
+}
+
 func TestDB_HasWorkerRecord(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "forge-state-test-*")
 	if err != nil {
@@ -2447,9 +2498,9 @@ func TestDB_LastPollPerAnvil(t *testing.T) {
 	}
 
 	logEvent(EventPollError, "anvil-a", "connect timeout")
-	logEvent(EventPoll, "anvil-a", "fetched 3 beads")   // newest for anvil-a
-	logEvent(EventPoll, "anvil-b", "fetched 0 beads")   // only event for anvil-b
-	logEvent(EventPoll, "anvil-c", "fetched 1 bead")    // not requested
+	logEvent(EventPoll, "anvil-a", "fetched 3 beads") // newest for anvil-a
+	logEvent(EventPoll, "anvil-b", "fetched 0 beads") // only event for anvil-b
+	logEvent(EventPoll, "anvil-c", "fetched 1 bead")  // not requested
 
 	t.Run("returns latest row per requested anvil", func(t *testing.T) {
 		results, err := db.LastPollPerAnvil([]string{"anvil-a", "anvil-b"})
@@ -2565,8 +2616,8 @@ func TestDB_LastPollAllAnvils(t *testing.T) {
 
 	// Seed events for two anvils.
 	logEvent(EventPollError, "forge", "connect timeout")
-	logEvent(EventPoll, "forge", "fetched 2 beads")  // newest for forge
-	logEvent(EventPoll, "hytte", "fetched 0 beads")  // only event for hytte
+	logEvent(EventPoll, "forge", "fetched 2 beads") // newest for forge
+	logEvent(EventPoll, "hytte", "fetched 0 beads") // only event for hytte
 
 	t.Run("returns latest row per distinct anvil", func(t *testing.T) {
 		results, err := db.LastPollAllAnvils()
@@ -3093,8 +3144,8 @@ func TestDB_GetWicketSummary(t *testing.T) {
 	insertIssue("org/repo-a", 1, "pending")
 	insertIssue("org/repo-a", 2, "needs_human")
 	insertIssue("org/repo-a", 3, "bead_created")
-	insertIssue("org/repo-a", 4, "closed")   // not counted as open
-	insertIssue("org/repo-a", 5, "merged")   // not counted as open
+	insertIssue("org/repo-a", 4, "closed") // not counted as open
+	insertIssue("org/repo-a", 5, "merged") // not counted as open
 
 	// repo-b: 2 open, 0 needs_human
 	insertIssue("org/repo-b", 10, "ask_clarify")

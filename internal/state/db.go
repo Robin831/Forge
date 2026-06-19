@@ -1570,7 +1570,7 @@ func (db *DB) ReadyToMergePRs() ([]ReadyToMergePR, error) {
 		   AND p.has_unresolved_threads = 0
 		   AND p.has_pending_reviews = 0
 		   AND p.assay_up_to_date = 1
-		   AND NOT `+pendingAssayExistsSQL("p")+`
+		   AND NOT ` + pendingAssayExistsSQL("p") + `
 		 ORDER BY p.number`,
 	)
 	if err != nil {
@@ -4014,6 +4014,29 @@ func (db *DB) AssayWorkerInFlight(anvil string, prNumber int) (bool, error) {
 		   AND status IN ('pending', 'running')
 		   AND anvil = ? AND pr_number = ?`,
 		anvil, prNumber,
+	).Scan(&n)
+	if err != nil {
+		return false, err
+	}
+	return n > 0, nil
+}
+
+// BeadFixWorkerActive reports whether a non-Assay, non-monitor worker
+// (smith/quench/burnish/rebase/temper/warden/...) is currently active for the
+// bead. The bellows Assay trigger uses this to avoid emitting pr_review_needed
+// while such a worker holds the bead "in flight": the dispatch would skip the
+// Assay anyway (daemon "bead in flight, skipping best-effort Assay review"), so
+// emitting just busy-loops every debounce (Forge-dkso). The synthetic bellows
+// monitor (phase 'bellows'/'ready_to_merge') and Assay itself are excluded so
+// they never suppress a review.
+func (db *DB) BeadFixWorkerActive(anvil, beadID string) (bool, error) {
+	var n int
+	err := db.conn.QueryRow(
+		`SELECT COUNT(*) FROM workers
+		 WHERE anvil = ? AND bead_id = ?
+		   AND status IN ('pending', 'running', 'reviewing')
+		   AND phase NOT IN ('assay', 'bellows', 'ready_to_merge')`,
+		anvil, beadID,
 	).Scan(&n)
 	if err != nil {
 		return false, err

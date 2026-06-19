@@ -223,6 +223,19 @@ func (m *Monitor) assayWorkerInFlight(anvil string, prNumber int) bool {
 	return inFlight
 }
 
+// beadFixWorkerActive reports whether a non-Assay worker is currently active for
+// the bead, so the trigger gate can avoid emitting pr_review_needed that the
+// daemon would only skip (busy-looping every debounce). On DB error it returns
+// false (fail open — don't permanently suppress reviews on a transient error).
+func (m *Monitor) beadFixWorkerActive(anvil, beadID string) bool {
+	active, err := m.db.BeadFixWorkerActive(anvil, beadID)
+	if err != nil {
+		log.Printf("[bellows] Failed to check active fix worker for bead %s (%s): %v", beadID, anvil, err)
+		return false
+	}
+	return active
+}
+
 // assayEnabled reports whether the Assay trigger is enabled for the anvil. It is
 // false when no Assay config accessor has been registered (the feature is off).
 func (m *Monitor) assayEnabled(anvil string) bool {
@@ -1253,6 +1266,11 @@ type reviewGateInputs struct {
 	// this PR. We suppress a fresh dispatch so a review that outlasts the
 	// debounce window is not re-queued for the same head (wasting an Assay run).
 	assayInFlight bool
+	// beadFixWorkerActive is true when a non-Assay worker (smith/quench/burnish/
+	// rebase/...) is active for the bead. While one is in flight the daemon skips
+	// the Assay dispatch, so emitting would just busy-loop every debounce; we
+	// suppress the emit and let it fire once the worker finishes (Forge-dkso).
+	beadFixWorkerActive bool
 }
 
 // shouldEmitReviewNeeded returns true when EventPRReviewNeeded should fire for a
@@ -1286,6 +1304,13 @@ func shouldEmitReviewNeeded(in reviewGateInputs) bool {
 	// second one. When it finishes, a head still unreviewed re-triggers the
 	// normal way (head != lastReviewedSHA).
 	if in.assayInFlight {
+		return false
+	}
+	// A non-Assay worker (smith/quench/burnish/rebase/...) holds the bead in
+	// flight; the daemon would skip the Assay dispatch, so emitting now just
+	// busy-loops every debounce. Suppress and let it fire once the worker
+	// finishes — the head it produces is reviewed on the next poll (Forge-dkso).
+	if in.beadFixWorkerActive {
 		return false
 	}
 	// An empty head SHA means GitHub did not report one; we cannot decide it is
@@ -1341,21 +1366,22 @@ func (m *Monitor) maybeEmitReviewNeeded(ctx context.Context, pr *state.PR, statu
 
 	managed := !(strings.HasPrefix(pr.BeadID, "ext-") && !pr.BellowsManaged)
 	in := reviewGateInputs{
-		enabled:         cfg.Enabled,
-		managed:         managed,
-		open:            !newSnap.IsMerged && !newSnap.IsClosed,
-		draft:           status.IsDraft,
-		skipDrafts:      cfg.SkipDrafts,
-		headSHA:         status.HeadSHA,
-		lastReviewedSHA: m.lastReviewedSHA(pr),
-		lastAssayRun:    lastRun,
-		now:             now,
-		debounceSeconds: cfg.DebounceSeconds,
-		dailyCostUSD:    *dailyAssayCost,
-		dailyCostLimit:  cfg.DailyCostLimitUSD,
-		runCount:        runCount,
-		maxRuns:         cfg.MaxRuns,
-		assayInFlight:   m.assayWorkerInFlight(pr.Anvil, pr.Number),
+		enabled:             cfg.Enabled,
+		managed:             managed,
+		open:                !newSnap.IsMerged && !newSnap.IsClosed,
+		draft:               status.IsDraft,
+		skipDrafts:          cfg.SkipDrafts,
+		headSHA:             status.HeadSHA,
+		lastReviewedSHA:     m.lastReviewedSHA(pr),
+		lastAssayRun:        lastRun,
+		now:                 now,
+		debounceSeconds:     cfg.DebounceSeconds,
+		dailyCostUSD:        *dailyAssayCost,
+		dailyCostLimit:      cfg.DailyCostLimitUSD,
+		runCount:            runCount,
+		maxRuns:             cfg.MaxRuns,
+		assayInFlight:       m.assayWorkerInFlight(pr.Anvil, pr.Number),
+		beadFixWorkerActive: m.beadFixWorkerActive(pr.Anvil, pr.BeadID),
 	}
 	if !shouldEmitReviewNeeded(in) {
 		return

@@ -1998,6 +1998,7 @@ func TestShouldEmitReviewNeeded(t *testing.T) {
 		{"over run cap", func(in *reviewGateInputs) { in.runCount = 5; in.maxRuns = 2 }, false},
 		{"run cap disabled", func(in *reviewGateInputs) { in.runCount = 99; in.maxRuns = 0 }, true},
 		{"assay already in-flight", func(in *reviewGateInputs) { in.assayInFlight = true }, false},
+		{"fix worker active for bead", func(in *reviewGateInputs) { in.beadFixWorkerActive = true }, false},
 	}
 
 	for _, tt := range tests {
