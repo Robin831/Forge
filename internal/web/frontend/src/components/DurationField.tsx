@@ -99,12 +99,17 @@ export default function DurationField({
   }, [])
 
   // Re-sync from props only when idle so a poll can't overwrite typing.
+  // Deliberately excludes `focused` from the dependency array: we only want to
+  // re-sync when the *prop* changes (e.g. poll delivers a new value), not when
+  // focus state flips — otherwise blurring would immediately clear the inline
+  // validation error and revert the user's invalid entry.
   useEffect(() => {
     if (!focused && !pendingRef.current) {
       setText(value)
       setInvalid(false)
     }
-  }, [value, focused])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [value])
 
   const isDisabled = disabled || pending
 
