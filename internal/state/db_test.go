@@ -1916,7 +1916,7 @@ func TestDB_ReadyToMerge(t *testing.T) {
 		if err := db.UpdatePRLifecycle(pr.ID, 0, 0, 0, ciPassing); err != nil {
 			t.Fatalf("UpdatePRLifecycle: %v", err)
 		}
-		if err := db.UpdatePRMergeability(pr.ID, ciPassing, conflicting, unresolvedThreads, pendingReviews, false); err != nil {
+		if err := db.UpdatePRMergeability(pr.ID, ciPassing, conflicting, unresolvedThreads, pendingReviews, false, true); err != nil {
 			t.Fatalf("UpdatePRMergeability: %v", err)
 		}
 		return pr
@@ -1971,7 +1971,7 @@ func TestDB_ReadyToMerge(t *testing.T) {
 	}
 
 	// UpdatePRMergeability: make prConflict non-conflicting → now ready
-	if err := db.UpdatePRMergeability(prConflict.ID, true, false, false, false, false); err != nil {
+	if err := db.UpdatePRMergeability(prConflict.ID, true, false, false, false, false, true); err != nil {
 		t.Fatalf("UpdatePRMergeability clear: %v", err)
 	}
 	ready, err = db.ReadyToMergePRs()
@@ -2011,7 +2011,7 @@ func TestDB_ReadyToMerge_PendingAssayWorker(t *testing.T) {
 		t.Fatalf("InsertPR: %v", err)
 	}
 	// Clean mergeability: CI passing, no conflicts/threads/pending reviews.
-	if err := db.UpdatePRMergeability(pr.ID, true, false, false, false, false); err != nil {
+	if err := db.UpdatePRMergeability(pr.ID, true, false, false, false, false, true); err != nil {
 		t.Fatalf("UpdatePRMergeability: %v", err)
 	}
 
@@ -2108,7 +2108,7 @@ func TestDB_InsertPR_DefaultsPendingReviews(t *testing.T) {
 	}
 
 	// After bellows confirms no pending reviews, the PR should be ready.
-	if err := db.UpdatePRMergeability(pr.ID, true, false, false, false, false); err != nil {
+	if err := db.UpdatePRMergeability(pr.ID, true, false, false, false, false, true); err != nil {
 		t.Fatalf("UpdatePRMergeability: %v", err)
 	}
 	ready, err = db.IsPRReadyToMerge(pr.ID)
@@ -2118,6 +2118,102 @@ func TestDB_InsertPR_DefaultsPendingReviews(t *testing.T) {
 	if !ready {
 		t.Error("PR should be ready to merge after bellows confirms no pending reviews")
 	}
+}
+
+// TestDB_ReadyToMerge_AssayGate verifies the assay_up_to_date column gates
+// readiness consistently with the bellows event gate (Forge-s0en): a PR that is
+// otherwise ready but whose current head has not been assayed must not appear
+// ready until assay_up_to_date is set true.
+func TestDB_ReadyToMerge_AssayGate(t *testing.T) {
+	tmpDir := t.TempDir()
+	db, err := Open(filepath.Join(tmpDir, "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	pr := &PR{Number: 4219, Anvil: "munin", BeadID: "bd-4219", Branch: "b", Status: PROpen, CreatedAt: time.Now()}
+	if err := db.InsertPR(pr); err != nil {
+		t.Fatalf("InsertPR: %v", err)
+	}
+
+	// Otherwise ready, but assay not yet up to date → not ready.
+	if err := db.UpdatePRMergeability(pr.ID, true, false, false, false, false, false); err != nil {
+		t.Fatalf("UpdatePRMergeability: %v", err)
+	}
+	ready, err := db.IsPRReadyToMerge(pr.ID)
+	if err != nil {
+		t.Fatalf("IsPRReadyToMerge: %v", err)
+	}
+	if ready {
+		t.Error("PR should NOT be ready while assay_up_to_date=0")
+	}
+	if rows, err := db.ReadyToMergePRs(); err != nil {
+		t.Fatalf("ReadyToMergePRs: %v", err)
+	} else if len(rows) != 0 {
+		t.Errorf("ReadyToMergePRs should be empty while assay_up_to_date=0, got %d", len(rows))
+	}
+
+	// Once the head is assayed → ready.
+	if err := db.UpdatePRMergeability(pr.ID, true, false, false, false, false, true); err != nil {
+		t.Fatalf("UpdatePRMergeability: %v", err)
+	}
+	ready, err = db.IsPRReadyToMerge(pr.ID)
+	if err != nil {
+		t.Fatalf("IsPRReadyToMerge: %v", err)
+	}
+	if !ready {
+		t.Error("PR should be ready once assay_up_to_date=1")
+	}
+}
+
+// TestDB_AssayWorkerInFlight verifies the in-flight check used by the bellows
+// trigger gate to avoid double-dispatching Assay (Forge-o81n).
+func TestDB_AssayWorkerInFlight(t *testing.T) {
+	tmpDir := t.TempDir()
+	db, err := Open(filepath.Join(tmpDir, "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	const anvil, pr = "munin", 4219
+	check := func(want bool, msg string) {
+		t.Helper()
+		got, err := db.AssayWorkerInFlight(anvil, pr)
+		if err != nil {
+			t.Fatalf("AssayWorkerInFlight: %v", err)
+		}
+		if got != want {
+			t.Errorf("%s: AssayWorkerInFlight=%v, want %v", msg, got, want)
+		}
+	}
+
+	check(false, "no workers")
+
+	// A running assay worker for this PR → in flight.
+	if err := db.InsertWorker(&Worker{ID: "assay-1", BeadID: "bd-4219", Anvil: anvil, Status: WorkerRunning, Phase: "assay", PRNumber: pr, StartedAt: time.Now()}); err != nil {
+		t.Fatalf("InsertWorker: %v", err)
+	}
+	check(true, "running assay worker")
+
+	// A completed assay worker does not count.
+	if err := db.InsertWorker(&Worker{ID: "assay-1", BeadID: "bd-4219", Anvil: anvil, Status: WorkerDone, Phase: "assay", PRNumber: pr, StartedAt: time.Now()}); err != nil {
+		t.Fatalf("InsertWorker: %v", err)
+	}
+	check(false, "done assay worker")
+
+	// A stalled assay worker is intentionally excluded (may be stuck).
+	if err := db.InsertWorker(&Worker{ID: "assay-1", BeadID: "bd-4219", Anvil: anvil, Status: WorkerStalled, Phase: "assay", PRNumber: pr, StartedAt: time.Now()}); err != nil {
+		t.Fatalf("InsertWorker: %v", err)
+	}
+	check(false, "stalled assay worker")
+
+	// A worker for a different PR does not count.
+	if err := db.InsertWorker(&Worker{ID: "assay-2", BeadID: "bd-9", Anvil: anvil, Status: WorkerRunning, Phase: "assay", PRNumber: 9999, StartedAt: time.Now()}); err != nil {
+		t.Fatalf("InsertWorker: %v", err)
+	}
+	check(false, "different PR")
 }
 
 func TestDB_HasWorkerRecord(t *testing.T) {

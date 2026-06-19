@@ -660,7 +660,7 @@ func TestCheckPR_ReviewStillUnresolved_ReemitsEvent(t *testing.T) {
 	}
 	require.NoError(t, db.InsertPR(pr))
 	// InsertPR does not write the mergeability flags; set them explicitly.
-	require.NoError(t, db.UpdatePRMergeability(pr.ID, true, false, true, false, false))
+	require.NoError(t, db.UpdatePRMergeability(pr.ID, true, false, true, false, false, true))
 
 	fake := &fakeVCSProvider{status: &vcs.PRStatus{
 		State:             "OPEN",
@@ -702,7 +702,7 @@ func TestCheckPR_ReviewStillUnresolved_RespectsMaxAttempts(t *testing.T) {
 		CreatedAt:      time.Now(),
 	}
 	require.NoError(t, db.InsertPR(pr))
-	require.NoError(t, db.UpdatePRMergeability(pr.ID, true, false, true, false, false))
+	require.NoError(t, db.UpdatePRMergeability(pr.ID, true, false, true, false, false, true))
 
 	fake := &fakeVCSProvider{status: &vcs.PRStatus{
 		State:             "OPEN",
@@ -745,7 +745,7 @@ func TestCheckPR_ReviewStillUnresolved_SkipsInFlightBurnish(t *testing.T) {
 		CreatedAt:      time.Now(),
 	}
 	require.NoError(t, db.InsertPR(pr))
-	require.NoError(t, db.UpdatePRMergeability(pr.ID, true, false, true, false, false))
+	require.NoError(t, db.UpdatePRMergeability(pr.ID, true, false, true, false, false, true))
 
 	fake := &fakeVCSProvider{status: &vcs.PRStatus{
 		State:             "OPEN",
@@ -1030,7 +1030,7 @@ func TestCheckPR_StillConflicting_ReemitsEvent(t *testing.T) {
 	require.NoError(t, db.InsertPR(pr))
 	// InsertPR does not persist rebase_count or mergeability flags; set them explicitly.
 	require.NoError(t, db.UpdatePRLifecycle(pr.ID, 0, 0, 1, true))
-	require.NoError(t, db.UpdatePRMergeability(pr.ID, true, true, false, false, false))
+	require.NoError(t, db.UpdatePRMergeability(pr.ID, true, true, false, false, false, true))
 
 	fake := &fakeVCSProvider{status: &vcs.PRStatus{
 		State:     "OPEN",
@@ -1073,7 +1073,7 @@ func TestCheckPR_StillConflicting_RespectsMaxAttempts(t *testing.T) {
 	}
 	require.NoError(t, db.InsertPR(pr))
 	require.NoError(t, db.UpdatePRLifecycle(pr.ID, 0, 0, 3, true))
-	require.NoError(t, db.UpdatePRMergeability(pr.ID, true, true, false, false, false))
+	require.NoError(t, db.UpdatePRMergeability(pr.ID, true, true, false, false, false, true))
 
 	fake := &fakeVCSProvider{status: &vcs.PRStatus{
 		State:     "OPEN",
@@ -1117,7 +1117,7 @@ func TestCheckPR_StillConflicting_SkipsInFlightRebase(t *testing.T) {
 	}
 	require.NoError(t, db.InsertPR(pr))
 	require.NoError(t, db.UpdatePRLifecycle(pr.ID, 0, 0, 1, true))
-	require.NoError(t, db.UpdatePRMergeability(pr.ID, true, true, false, false, false))
+	require.NoError(t, db.UpdatePRMergeability(pr.ID, true, true, false, false, false, true))
 
 	fake := &fakeVCSProvider{status: &vcs.PRStatus{
 		State:     "OPEN",
@@ -1456,7 +1456,7 @@ func TestCheckPR_TransientCheckStatusRetried(t *testing.T) {
 		CreatedAt: time.Now(),
 	}
 	require.NoError(t, db.InsertPR(pr))
-	require.NoError(t, db.UpdatePRMergeability(pr.ID, true, false, false, false, false))
+	require.NoError(t, db.UpdatePRMergeability(pr.ID, true, false, false, false, false, true))
 
 	fake := &fakeVCSProvider{
 		checkStatusFunc: func(call int) (*vcs.PRStatus, error) {
@@ -1997,6 +1997,7 @@ func TestShouldEmitReviewNeeded(t *testing.T) {
 		{"at run cap", func(in *reviewGateInputs) { in.runCount = 2; in.maxRuns = 2 }, false},
 		{"over run cap", func(in *reviewGateInputs) { in.runCount = 5; in.maxRuns = 2 }, false},
 		{"run cap disabled", func(in *reviewGateInputs) { in.runCount = 99; in.maxRuns = 0 }, true},
+		{"assay already in-flight", func(in *reviewGateInputs) { in.assayInFlight = true }, false},
 	}
 
 	for _, tt := range tests {

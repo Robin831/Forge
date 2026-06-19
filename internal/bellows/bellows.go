@@ -210,6 +210,19 @@ func (m *Monitor) lastReviewedSHA(pr *state.PR) string {
 	return sha
 }
 
+// assayWorkerInFlight reports whether an Assay worker is already pending or
+// running for the PR, so the trigger gate can avoid queuing a second review for
+// the same head. On DB error it returns false (fail open — better a rare
+// duplicate than a missed review).
+func (m *Monitor) assayWorkerInFlight(anvil string, prNumber int) bool {
+	inFlight, err := m.db.AssayWorkerInFlight(anvil, prNumber)
+	if err != nil {
+		log.Printf("[bellows] Failed to check in-flight Assay worker for PR #%d (%s): %v", prNumber, anvil, err)
+		return false
+	}
+	return inFlight
+}
+
 // assayEnabled reports whether the Assay trigger is enabled for the anvil. It is
 // false when no Assay config accessor has been registered (the feature is off).
 func (m *Monitor) assayEnabled(anvil string) bool {
@@ -647,7 +660,7 @@ func (m *Monitor) checkPR(ctx context.Context, pr *state.PR, dailyAssayCost *flo
 	// mergeability state and return early.
 	if strings.HasPrefix(pr.BeadID, "ext-") && !pr.BellowsManaged {
 		m.wasUnmanaged[key] = true
-		_ = m.db.UpdatePRMergeability(pr.ID, newSnap.CIPassing && !ciInProgress, newSnap.IsConflicting, newSnap.HasUnresolvedThreads, newSnap.HasPendingReviews, newSnap.HasApproval)
+		_ = m.db.UpdatePRMergeability(pr.ID, newSnap.CIPassing && !ciInProgress, newSnap.IsConflicting, newSnap.HasUnresolvedThreads, newSnap.HasPendingReviews, newSnap.HasApproval, newSnap.AssayUpToDate)
 		if newSnap.IsMerged {
 			_ = m.db.UpdatePRStatus(pr.ID, state.PRMerged)
 		} else if newSnap.IsClosed {
@@ -931,7 +944,7 @@ func (m *Monitor) checkPR(ctx context.Context, pr *state.PR, dailyAssayCost *flo
 	// false in the DB so the Ready-to-Merge panel does not show the PR
 	// prematurely. (newSnap.CIPassing may have been overridden to preserve
 	// the last completed value for transition detection — see above.)
-	_ = m.db.UpdatePRMergeability(pr.ID, newSnap.CIPassing && !ciInProgress, newSnap.IsConflicting, newSnap.HasUnresolvedThreads, newSnap.HasPendingReviews, newSnap.HasApproval)
+	_ = m.db.UpdatePRMergeability(pr.ID, newSnap.CIPassing && !ciInProgress, newSnap.IsConflicting, newSnap.HasUnresolvedThreads, newSnap.HasPendingReviews, newSnap.HasApproval, newSnap.AssayUpToDate)
 
 }
 
@@ -1222,6 +1235,10 @@ type reviewGateInputs struct {
 	dailyCostLimit  float64 // 0 = no limit
 	runCount        int     // executed Assay reviews so far for this PR
 	maxRuns         int     // 0 = no cap
+	// assayInFlight is true when an Assay worker is already pending/running for
+	// this PR. We suppress a fresh dispatch so a review that outlasts the
+	// debounce window is not re-queued for the same head (wasting an Assay run).
+	assayInFlight bool
 }
 
 // shouldEmitReviewNeeded returns true when EventPRReviewNeeded should fire for a
@@ -1249,6 +1266,12 @@ func shouldEmitReviewNeeded(in reviewGateInputs) bool {
 		return false
 	}
 	if in.draft && in.skipDrafts {
+		return false
+	}
+	// An Assay worker is already pending/running for this PR; don't queue a
+	// second one. When it finishes, a head still unreviewed re-triggers the
+	// normal way (head != lastReviewedSHA).
+	if in.assayInFlight {
 		return false
 	}
 	// An empty head SHA means GitHub did not report one; we cannot decide it is
@@ -1318,6 +1341,7 @@ func (m *Monitor) maybeEmitReviewNeeded(ctx context.Context, pr *state.PR, statu
 		dailyCostLimit:  cfg.DailyCostLimitUSD,
 		runCount:        runCount,
 		maxRuns:         cfg.MaxRuns,
+		assayInFlight:   m.assayWorkerInFlight(pr.Anvil, pr.Number),
 	}
 	if !shouldEmitReviewNeeded(in) {
 		return

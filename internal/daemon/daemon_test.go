@@ -759,7 +759,7 @@ func TestHandleIPC_RetryBead_ExhaustedPR(t *testing.T) {
 	require.NotZero(t, pr.ID, "InsertPR should set the ID")
 	// InsertPR doesn't set rebase_count/ci_passing/is_conflicting, so update them.
 	require.NoError(t, db.UpdatePRLifecycle(pr.ID, 0, 0, 3, true))
-	require.NoError(t, db.UpdatePRMergeability(pr.ID, true, true, false, false, false))
+	require.NoError(t, db.UpdatePRMergeability(pr.ID, true, true, false, false, false, true))
 
 	// Verify the PR shows up as exhausted.
 	exhausted, err := db.ExhaustedPRs(
@@ -909,7 +909,7 @@ func TestHandleIPC_RetryBead_NonBeadPR(t *testing.T) {
 	require.NoError(t, db.InsertPR(pr))
 	require.NotZero(t, pr.ID, "InsertPR should set the ID")
 	require.NoError(t, db.UpdatePRLifecycle(pr.ID, 0, 0, 3, true))
-	require.NoError(t, db.UpdatePRMergeability(pr.ID, true, true, false, false, false))
+	require.NoError(t, db.UpdatePRMergeability(pr.ID, true, true, false, false, false, true))
 
 	// Retry with only PRID set — no BeadID.
 	payload, _ := json.Marshal(ipc.RetryBeadPayload{
@@ -5398,9 +5398,9 @@ func TestHandleIPC_Workers_ReadyToMerge(t *testing.T) {
 	for i := range prs {
 		require.NoError(t, db.InsertPR(&prs[i]))
 	}
-	require.NoError(t, db.UpdatePRMergeability(prs[0].ID, true, false, false, false, true))
-	require.NoError(t, db.UpdatePRMergeability(prs[1].ID, false, false, false, false, true))
-	require.NoError(t, db.UpdatePRMergeability(prs[2].ID, true, false, false, false, true))
+	require.NoError(t, db.UpdatePRMergeability(prs[0].ID, true, false, false, false, true, true))
+	require.NoError(t, db.UpdatePRMergeability(prs[1].ID, false, false, false, false, true, true))
+	require.NoError(t, db.UpdatePRMergeability(prs[2].ID, true, false, false, false, true, true))
 
 	for _, p := range prs {
 		require.NoError(t, db.InsertWorkerIfMissing(&state.Worker{
@@ -5486,7 +5486,7 @@ func TestHandleIPC_Workers_ReadyToMerge_FlagSensitivity(t *testing.T) {
 			now := time.Now()
 			pr := state.PR{Number: 42, Anvil: "anvil", BeadID: "Forge-rtmflag", Branch: "forge/Forge-rtmflag", Status: state.PROpen, CreatedAt: now}
 			require.NoError(t, db.InsertPR(&pr))
-			require.NoError(t, db.UpdatePRMergeability(pr.ID, tc.ciPassing, tc.isConflicting, tc.hasUnresolvedThreads, tc.hasPendingReviews, true))
+			require.NoError(t, db.UpdatePRMergeability(pr.ID, tc.ciPassing, tc.isConflicting, tc.hasUnresolvedThreads, tc.hasPendingReviews, true, true))
 			require.NoError(t, db.InsertWorkerIfMissing(&state.Worker{
 				ID:        "bellows-anvil-42",
 				BeadID:    pr.BeadID,

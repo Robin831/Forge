@@ -139,6 +139,7 @@ func (p *Provider) CreatePR(ctx context.Context, params vcs.CreateParams) (*vcs.
 					false,                             // unresolved threads not fetched; Bellows is authoritative
 					true,                              // keep pending reviews safe default until Bellows confirms
 					false,                             // approval not checked here; Bellows is authoritative
+					true,                              // assay_up_to_date: default-eligible; Bellows sets the real value on first poll (pending_reviews=true already blocks readiness here)
 				); err != nil {
 					log.Printf("[vcs/github] warning: failed to UpdatePRMergeability for PR record %d (PR #%d): %v", dbPR.ID, prNumber, err)
 				}

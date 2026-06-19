@@ -137,6 +137,10 @@ func (db *DB) migrate() error {
 		// being flipped to 'stalled', so a recovered worker can be restored to its
 		// real phase (running/reviewing/monitoring/pending) instead of a guess.
 		{"workers", "prev_status", `ALTER TABLE workers ADD COLUMN prev_status TEXT NOT NULL DEFAULT ''`},
+		// assay_up_to_date mirrors the bellows ready-to-merge gate's assayUpToDate
+		// term (current head reviewed by Assay, or Assay disabled). Default 1 so
+		// assay-disabled and not-yet-polled PRs stay ready-eligible, like ci_passing.
+		{"prs", "assay_up_to_date", `ALTER TABLE prs ADD COLUMN assay_up_to_date INTEGER NOT NULL DEFAULT 1`},
 	}
 	for _, m := range migrations {
 		exists, err := db.columnExists(m.table, m.column)
@@ -1451,10 +1455,10 @@ func (db *DB) ResetPRFixCounts(id int) error {
 // hasApproval is stored so the last known approval state survives daemon restarts,
 // allowing Bellows to correctly seed lastSnap from DB and detect the ready-to-merge
 // transition even for PRs that were already ready when the daemon restarted.
-func (db *DB) UpdatePRMergeability(id int, ciPassing, isConflicting, hasUnresolvedThreads, hasPendingReviews, hasApproval bool) error {
+func (db *DB) UpdatePRMergeability(id int, ciPassing, isConflicting, hasUnresolvedThreads, hasPendingReviews, hasApproval, assayUpToDate bool) error {
 	_, err := db.conn.Exec(
-		`UPDATE prs SET ci_passing = ?, is_conflicting = ?, has_unresolved_threads = ?, has_pending_reviews = ?, has_approval = ?, last_checked = ? WHERE id = ?`,
-		boolToInt(ciPassing), boolToInt(isConflicting), boolToInt(hasUnresolvedThreads), boolToInt(hasPendingReviews), boolToInt(hasApproval),
+		`UPDATE prs SET ci_passing = ?, is_conflicting = ?, has_unresolved_threads = ?, has_pending_reviews = ?, has_approval = ?, assay_up_to_date = ?, last_checked = ? WHERE id = ?`,
+		boolToInt(ciPassing), boolToInt(isConflicting), boolToInt(hasUnresolvedThreads), boolToInt(hasPendingReviews), boolToInt(hasApproval), boolToInt(assayUpToDate),
 		time.Now().Format(dbTimeLayout), id,
 	)
 	return err
@@ -1521,6 +1525,7 @@ func (db *DB) IsPRReadyToMerge(id int) (bool, error) {
 		   AND is_conflicting = 0
 		   AND has_unresolved_threads = 0
 		   AND has_pending_reviews = 0
+		   AND assay_up_to_date = 1
 		   AND NOT `+pendingAssayExistsSQL("prs"),
 		id,
 	).Scan(&count)
@@ -1564,6 +1569,7 @@ func (db *DB) ReadyToMergePRs() ([]ReadyToMergePR, error) {
 		   AND p.is_conflicting = 0
 		   AND p.has_unresolved_threads = 0
 		   AND p.has_pending_reviews = 0
+		   AND p.assay_up_to_date = 1
 		   AND NOT `+pendingAssayExistsSQL("p")+`
 		 ORDER BY p.number`,
 	)
@@ -3993,6 +3999,26 @@ func (db *DB) LastReviewedSHA(anvil string, prNumber int) (string, error) {
 		return "", err
 	}
 	return headSHA, nil
+}
+
+// AssayWorkerInFlight reports whether an Assay worker is currently pending or
+// running for the given anvil + PR. Used by the bellows trigger gate to avoid
+// queuing a second review while one is already executing for the same PR.
+// 'stalled' is intentionally excluded: a stalled worker may be stuck, so a
+// fresh dispatch is allowed to supersede it.
+func (db *DB) AssayWorkerInFlight(anvil string, prNumber int) (bool, error) {
+	var n int
+	err := db.conn.QueryRow(
+		`SELECT COUNT(*) FROM workers
+		 WHERE phase = 'assay'
+		   AND status IN ('pending', 'running')
+		   AND anvil = ? AND pr_number = ?`,
+		anvil, prNumber,
+	).Scan(&n)
+	if err != nil {
+		return false, err
+	}
+	return n > 0, nil
 }
 
 // IncrementConsecutiveMiss bumps the consecutive_misses counter for the finding
