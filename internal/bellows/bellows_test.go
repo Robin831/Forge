@@ -181,27 +181,27 @@ func TestSnapshotTransitionLogic(t *testing.T) {
 			wantEvents: []string{EventPRClosed},
 		},
 		{
-			name: "CI passes with no blockers → pr_ready_to_merge (no approval needed)",
-			old:  prSnapshot{CIPassing: false, AssayUpToDate: true},
-			new:  prSnapshot{CIPassing: true, AssayUpToDate: true},
+			name:       "CI passes with no blockers → pr_ready_to_merge (no approval needed)",
+			old:        prSnapshot{CIPassing: false, AssayUpToDate: true},
+			new:        prSnapshot{CIPassing: true, AssayUpToDate: true},
 			wantEvents: []string{EventPRReadyToMerge},
 		},
 		{
-			name: "already ready → no pr_ready_to_merge event",
-			old:  prSnapshot{CIPassing: true, AssayUpToDate: true},
-			new:  prSnapshot{CIPassing: true, AssayUpToDate: true},
+			name:     "already ready → no pr_ready_to_merge event",
+			old:      prSnapshot{CIPassing: true, AssayUpToDate: true},
+			new:      prSnapshot{CIPassing: true, AssayUpToDate: true},
 			noEvents: []string{EventPRReadyToMerge},
 		},
 		{
-			name: "CI passes but has unresolved threads → not ready",
-			old:  prSnapshot{CIPassing: false},
-			new:  prSnapshot{CIPassing: true, HasUnresolvedThreads: true},
+			name:     "CI passes but has unresolved threads → not ready",
+			old:      prSnapshot{CIPassing: false},
+			new:      prSnapshot{CIPassing: true, HasUnresolvedThreads: true},
 			noEvents: []string{EventPRReadyToMerge},
 		},
 		{
-			name: "CI passes but conflicting → not ready",
-			old:  prSnapshot{CIPassing: false},
-			new:  prSnapshot{CIPassing: true, IsConflicting: true},
+			name:     "CI passes but conflicting → not ready",
+			old:      prSnapshot{CIPassing: false},
+			new:      prSnapshot{CIPassing: true, IsConflicting: true},
 			noEvents: []string{EventPRReadyToMerge},
 		},
 		{
@@ -223,16 +223,16 @@ func TestSnapshotTransitionLogic(t *testing.T) {
 			wantEvents: []string{EventCIFailed},
 		},
 		{
-			name: "threads resolved while CI passing → pr_ready_to_merge",
-			old:  prSnapshot{CIPassing: true, HasUnresolvedThreads: true, AssayUpToDate: true},
-			new:  prSnapshot{CIPassing: true, HasUnresolvedThreads: false, AssayUpToDate: true},
+			name:       "threads resolved while CI passing → pr_ready_to_merge",
+			old:        prSnapshot{CIPassing: true, HasUnresolvedThreads: true, AssayUpToDate: true},
+			new:        prSnapshot{CIPassing: true, HasUnresolvedThreads: false, AssayUpToDate: true},
 			wantEvents: []string{EventPRReadyToMerge},
 		},
 		{
-			name:       "assay pending for current head → not ready even with green CI and no threads",
-			old:        prSnapshot{CIPassing: false, AssayUpToDate: false},
-			new:        prSnapshot{CIPassing: true, AssayUpToDate: false},
-			noEvents:   []string{EventPRReadyToMerge},
+			name:     "assay pending for current head → not ready even with green CI and no threads",
+			old:      prSnapshot{CIPassing: false, AssayUpToDate: false},
+			new:      prSnapshot{CIPassing: true, AssayUpToDate: false},
+			noEvents: []string{EventPRReadyToMerge},
 		},
 		{
 			name:       "assay lands clean after green CI → pr_ready_to_merge fires once",
@@ -2110,4 +2110,40 @@ func TestMaybeEmitReviewNeeded_NoConfigIsNoop(t *testing.T) {
 	status := &vcs.PRStatus{State: "OPEN", HeadSHA: "abc1234"}
 	m.maybeEmitReviewNeeded(context.Background(), pr, status, &prSnapshot{CIPassing: true}, float64Ptr(0))
 	assert.Empty(t, got)
+}
+
+// TestAssayUpToDate_RunCapReleasesGate verifies the cap-reached escape
+// (Forge-btpw): once the per-PR Assay run cap is hit, a head that was never
+// reviewed must not deadlock readiness — assayUpToDate returns true so a clean
+// PR can reach ready-to-merge even though Assay will not re-review the new head.
+func TestAssayUpToDate_RunCapReleasesGate(t *testing.T) {
+	db, cleanup := openTempDB(t)
+	defer cleanup()
+
+	pr := &state.PR{Number: 4236, Anvil: "munin", BeadID: "bd-4236", Branch: "b", Status: state.PROpen, CreatedAt: time.Now()}
+	require.NoError(t, db.InsertPR(pr))
+
+	m := New(db, nil, time.Minute, map[string]string{"munin": "/fake"}, nil, nil, nil, nil)
+	m.SetAssayConfig(func(anvil string) AssayGateConfig {
+		return AssayGateConfig{Enabled: true, MaxRuns: 2}
+	})
+
+	// Two reviews against OLD heads; current head is newer and unreviewed.
+	require.NoError(t, db.RecordAssayRun(&state.AssayRun{Anvil: "munin", PRNumber: 4236, HeadSHA: "old1", StartedAt: time.Now().Add(-2 * time.Hour)}))
+
+	// One run, cap=2: not yet exhausted → head unreviewed → not up to date.
+	if m.assayUpToDate(pr, "newhead") {
+		t.Error("with runs(1) < cap(2) and an unreviewed head, assayUpToDate should be false")
+	}
+
+	// Second run (still on an old head) reaches the cap → gate released.
+	require.NoError(t, db.RecordAssayRun(&state.AssayRun{Anvil: "munin", PRNumber: 4236, HeadSHA: "old2", StartedAt: time.Now().Add(-1 * time.Hour)}))
+	if !m.assayUpToDate(pr, "newhead") {
+		t.Error("with runs(2) >= cap(2), assayUpToDate should be true so the PR is not deadlocked")
+	}
+
+	// Sanity: a matching head is always up to date regardless of cap.
+	if !m.assayUpToDate(pr, "old2") {
+		t.Error("a head equal to the last reviewed SHA must be up to date")
+	}
 }

@@ -90,26 +90,26 @@ type Handler func(ctx context.Context, event PREvent)
 
 // Monitor watches open PRs and dispatches events on status changes.
 type Monitor struct {
-	db               *state.DB
+	db                   *state.DB
 	vcsLookup            func(anvil string) vcs.Provider
 	interval             time.Duration
 	anvilPaths           map[string]string // anvil name → path
 	pathsMu              sync.RWMutex      // protects anvilPaths
 	handlers             []Handler
 	mu                   sync.Mutex
-	lastStatuses         map[string]*prSnapshot // anvil/PR number → last known state
-	refresh              chan struct{}          // channel to trigger immediate poll
-	autoLearnRules       func() bool            // auto-learn warden rules from Copilot comments on PR merge
-	maxCIFixAttempts     func() int             // returns current max CI fix attempts from config
-	maxReviewFixAttempts func() int             // returns current max review fix attempts from config
-	maxRebaseAttempts    func() int             // returns current max rebase attempts from config
-	learnMuGuard     sync.Mutex             // protects learnMu map
-	learnMu          map[string]*sync.Mutex // per-anvil mutex serializing auto-learn
-	learnSem         chan struct{}          // caps overall concurrent auto-learn goroutines
-	wasUnmanaged     map[string]bool       // keys of ext- PRs seen as unmanaged (for managed transition detection)
-	autoMergeHandler func(ctx context.Context, anvil string, pr state.PR) // called when a PR becomes ready-to-merge
-	smelterEnabled   func() bool           // when true, route learned rules to pending table instead of PR
-	assayConfig      func(anvil string) AssayGateConfig // resolved Assay gate config; nil disables the trigger
+	lastStatuses         map[string]*prSnapshot                               // anvil/PR number → last known state
+	refresh              chan struct{}                                        // channel to trigger immediate poll
+	autoLearnRules       func() bool                                          // auto-learn warden rules from Copilot comments on PR merge
+	maxCIFixAttempts     func() int                                           // returns current max CI fix attempts from config
+	maxReviewFixAttempts func() int                                           // returns current max review fix attempts from config
+	maxRebaseAttempts    func() int                                           // returns current max rebase attempts from config
+	learnMuGuard         sync.Mutex                                           // protects learnMu map
+	learnMu              map[string]*sync.Mutex                               // per-anvil mutex serializing auto-learn
+	learnSem             chan struct{}                                        // caps overall concurrent auto-learn goroutines
+	wasUnmanaged         map[string]bool                                      // keys of ext- PRs seen as unmanaged (for managed transition detection)
+	autoMergeHandler     func(ctx context.Context, anvil string, pr state.PR) // called when a PR becomes ready-to-merge
+	smelterEnabled       func() bool                                          // when true, route learned rules to pending table instead of PR
+	assayConfig          func(anvil string) AssayGateConfig                   // resolved Assay gate config; nil disables the trigger
 
 	// retryBackoff overrides the inline retry backoff used when wrapping gh
 	// status fetches in transient-failure retries. nil selects
@@ -250,7 +250,21 @@ func (m *Monitor) assayUpToDate(pr *state.PR, headSHA string) bool {
 	if headSHA == "" {
 		return true
 	}
-	return m.lastReviewedSHA(pr) == headSHA
+	if m.lastReviewedSHA(pr) == headSHA {
+		return true
+	}
+	// Per-PR run cap reached: shouldEmitReviewNeeded will not dispatch another
+	// review, so the head can never become "reviewed". Blocking readiness on it
+	// would deadlock the PR forever (e.g. Burnish fixes comments, pushes a new
+	// head, but the cap stops the confirming re-review). Treat an exhausted cap
+	// as "Assay done" — readiness is still gated by has_unresolved_threads, so
+	// only genuinely clean PRs are released. (Forge-btpw)
+	if cfg := m.assayConfig(pr.Anvil); cfg.MaxRuns > 0 {
+		if n, err := m.db.CountAssayRuns(pr.Anvil, pr.Number); err == nil && n >= cfg.MaxRuns {
+			return true
+		}
+	}
+	return false
 }
 
 // OnEvent registers a handler for PR events.
