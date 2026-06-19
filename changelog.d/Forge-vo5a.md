@@ -1,0 +1,2 @@
+category: Added
+- **String-list, provider-map, and duration settings in the web config API** - The Settings API now manages list (providers, wicket_trusted_users/ignore_users/repos/issue_labels), per-stage provider map (stage_providers, global and per-anvil), and duration settings (poll_interval, smith_timeout, bellows_interval, and the full interval/timeout set), with validation and comment-preserving YAML writes. The GET schema metadata advertises the new `string_list`, `provider_map`, and `duration` value types so the frontend renders them schema-driven. (Forge-vo5a)

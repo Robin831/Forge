@@ -6,9 +6,11 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/Robin831/Forge/internal/config"
 	"github.com/go-chi/chi/v5"
@@ -17,14 +19,35 @@ import (
 
 // Config value types (the "type" field in ConfigKeyInfo / AnvilKeyInfo). The
 // frontend renders a control per type: bool→switch, int/float→number input,
-// enum→dropdown, string→text input.
+// enum→dropdown, string→text input, string_list→string-array editor,
+// provider_map→per-stage provider editor, duration→duration input. The
+// string_list/provider_map/duration names are a contract shared verbatim with
+// the frontend (Forge-vo5a), which dispatches its rendering on these strings.
 const (
-	typeBool   = "bool"
-	typeInt    = "int"
-	typeFloat  = "float"
-	typeEnum   = "enum"
-	typeString = "string"
+	typeBool        = "bool"
+	typeInt         = "int"
+	typeFloat       = "float"
+	typeEnum        = "enum"
+	typeString      = "string"
+	typeStringList  = "string_list"
+	typeProviderMap = "provider_map"
+	typeDuration    = "duration"
 )
+
+// providerStages is the allowed key set for provider_map values: the pipeline
+// stages that accept their own provider chain. It doubles as the Options hint
+// in the schema metadata so the frontend can offer exactly these stage keys.
+var providerStages = []string{"smith", "warden", "schematic", "cifix", "reviewfix"}
+
+// providerStageSet indexes providerStages for O(1) membership checks during
+// provider_map validation.
+var providerStageSet = func() map[string]bool {
+	m := make(map[string]bool, len(providerStages))
+	for _, s := range providerStages {
+		m[s] = true
+	}
+	return m
+}()
 
 // ConfigKeyInfo is the per-key metadata returned by GET /api/forge/config and
 // consumed by the SettingsPage frontend. It is the documented data contract.
@@ -102,13 +125,29 @@ type configKeyDef struct {
 	value func(s config.SettingsConfig) any
 }
 
-// managedConfigKeys is the allowlist of boolean settings exposed by the
-// config API. Order is preserved in the GET response. HotReloadable is true
-// only for keys the daemon applies live (cross-checked against
-// internal/hotreload/hotreload.go: copilot_combined_smith_warden and
-// smelter_enabled). The tri-state *bool keys (auto_merge_crucible_children,
-// vulncheck_enabled, smelter_enabled) default to true and resolve nil via
-// their config helpers.
+// durationKey builds a configKeyDef for a duration setting. The current value
+// is exposed as a Go duration string (e.g. "5m0s") so the frontend renders it
+// in the duration control, and def is the documented default in the same
+// canonical string form (used to compute IsDefault).
+func durationKey(key, area, label, desc, def string, read func(config.SettingsConfig) time.Duration) configKeyDef {
+	return configKeyDef{
+		Key:         key,
+		Type:        typeDuration,
+		Area:        area,
+		Label:       label,
+		Description: desc,
+		Default:     def,
+		value:       func(s config.SettingsConfig) any { return read(s).String() },
+	}
+}
+
+// managedConfigKeys is the allowlist of settings exposed by the config API.
+// Includes booleans, scalars (int, float, string), composite types
+// (string_list, provider_map), and durations. Order is preserved in the GET
+// response. HotReloadable is true only for keys the daemon applies live
+// (cross-checked against internal/hotreload/hotreload.go). The tri-state
+// *bool keys (auto_merge_crucible_children, vulncheck_enabled,
+// smelter_enabled) default to true and resolve nil via their config helpers.
 var managedConfigKeys = []configKeyDef{
 	{
 		Key:         "schematic_enabled",
@@ -347,6 +386,72 @@ var managedConfigKeys = []configKeyDef{
 		Max:         fptr(200),
 		value:       func(s config.SettingsConfig) any { return s.WicketBatchSize },
 	},
+
+	// --- Composite & duration settings (Forge-vo5a) ---
+	{
+		Key:         "providers",
+		Type:        typeStringList,
+		Area:        "Providers",
+		Label:       "Provider chain",
+		Description: "Ordered list of AI providers to try (e.g. \"claude\", \"gemini\"). When a provider signals a rate limit the next one in the list is used.",
+		Default:     []string(nil),
+		value:       func(s config.SettingsConfig) any { return s.Providers },
+	},
+	{
+		Key:         "stage_providers",
+		Type:        typeProviderMap,
+		Area:        "Providers",
+		Label:       "Per-stage providers",
+		Description: "Per-stage provider overrides keyed by pipeline stage (smith, warden, schematic, cifix, reviewfix). Each value is an ordered provider chain.",
+		Options:     providerStages,
+		Default:     map[string][]string(nil),
+		value:       func(s config.SettingsConfig) any { return s.StageProviders },
+	},
+	durationKey("poll_interval", "Scheduling", "Poll interval",
+		"How often the poller checks each anvil for ready beads.", "5m0s",
+		func(s config.SettingsConfig) time.Duration { return s.PollInterval }),
+	durationKey("smith_timeout", "Scheduling", "Smith timeout",
+		"Maximum time a single Smith worker may run before it is terminated.", "30m0s",
+		func(s config.SettingsConfig) time.Duration { return s.SmithTimeout }),
+	durationKey("bellows_interval", "Bellows", "Bellows interval",
+		"How often Bellows polls open PRs for CI status, reviews, and conflicts.", "2m0s",
+		func(s config.SettingsConfig) time.Duration { return s.BellowsInterval }),
+	durationKey("stale_interval", "Watchdog", "Stale interval",
+		"How long a worker log may go idle before the worker is marked stalled. 0 disables stale detection.", "5m0s",
+		func(s config.SettingsConfig) time.Duration { return s.StaleInterval }),
+	durationKey("depcheck_interval", "Depcheck", "Depcheck interval",
+		"How often the dependency-update scanner runs. 0 disables it.", "168h0m0s",
+		func(s config.SettingsConfig) time.Duration { return s.DepcheckInterval }),
+	durationKey("depcheck_timeout", "Depcheck", "Depcheck timeout",
+		"Maximum time for a single dependency scan per anvil.", "5m0s",
+		func(s config.SettingsConfig) time.Duration { return s.DepcheckTimeout }),
+	durationKey("vulncheck_interval", "Vulncheck", "Vulncheck interval",
+		"How often govulncheck runs on Go anvils. 0 disables scheduled scanning.", "24h0m0s",
+		func(s config.SettingsConfig) time.Duration { return s.VulncheckInterval }),
+	durationKey("vulncheck_timeout", "Vulncheck", "Vulncheck timeout",
+		"Maximum time for a single govulncheck invocation per anvil.", "10m0s",
+		func(s config.SettingsConfig) time.Duration { return s.VulncheckTimeout }),
+	durationKey("smelter_interval", "Smelter", "Smelter interval",
+		"How often the Smelter batches pending Warden rules into PRs.", "8h0m0s",
+		func(s config.SettingsConfig) time.Duration { return s.SmelterInterval }),
+	durationKey("questgiver_interval", "QuestGiver", "QuestGiver interval",
+		"How often the QuestGiver monitor polls anvils for E2E quests.", "24h0m0s",
+		func(s config.SettingsConfig) time.Duration { return s.QuestgiverInterval }),
+	durationKey("wicket_interval", "Wicket", "Wicket interval",
+		"How often Wicket polls repositories for new GitHub issues.", "15m0s",
+		func(s config.SettingsConfig) time.Duration { return s.WicketInterval }),
+	durationKey("rate_limit_backoff", "Scheduling", "Rate-limit backoff",
+		"How long dispatch waits after releasing a bead when all providers are rate limited.", "5m0s",
+		func(s config.SettingsConfig) time.Duration { return s.RateLimitBackoff }),
+	durationKey("crucible_poll_interval", "Crucible", "Crucible poll interval",
+		"Interval for the slow unfiltered poll that rebuilds the Crucible parent-child graph. 0 disables two-tier polling.", "3m0s",
+		func(s config.SettingsConfig) time.Duration { return s.CruciblePollInterval }),
+	durationKey("burnish_verify_timeout", "Bellows", "Burnish verify timeout",
+		"Maximum time for the post-Smith temper step in a single Burnish (review-fix) attempt.", "5m0s",
+		func(s config.SettingsConfig) time.Duration { return s.BurnishVerifyTimeout }),
+	durationKey("adventurer_timeout", "QuestGiver", "Adventurer timeout",
+		"Maximum time for a single quest execution by the headless-browser adventurer.", "5m0s",
+		func(s config.SettingsConfig) time.Duration { return s.AdventurerTimeout }),
 }
 
 // configKeyByName indexes managedConfigKeys for O(1) allowlist validation in
@@ -416,7 +521,7 @@ func (s *Server) handleForgeConfigGet(w http.ResponseWriter, r *http.Request) {
 			Key:           d.Key,
 			Type:          d.Type,
 			Value:         val,
-			IsDefault:     val == d.Default,
+			IsDefault:     isDefault(val, d.Default),
 			HotReloadable: d.HotReloadable,
 			Area:          d.Area,
 			Label:         d.Label,
@@ -430,68 +535,153 @@ func (s *Server) handleForgeConfigGet(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
-// scalarNode is a validated YAML scalar (tag + rendered value) ready to write
-// into the config node tree.
-type scalarNode struct {
-	tag   string
-	value string
+// isDefault reports whether val equals def, normalizing nil and empty
+// slices/maps as equal so that e.g. providers: [] is treated as default.
+func isDefault(val, def any) bool {
+	if reflect.DeepEqual(val, def) {
+		return true
+	}
+	rv := reflect.ValueOf(val)
+	rd := reflect.ValueOf(def)
+	if rv.IsValid() && rd.IsValid() && rv.Type() == rd.Type() {
+		switch rv.Kind() {
+		case reflect.Slice, reflect.Map:
+			if rv.Len() == 0 && rd.Len() == 0 {
+				return true
+			}
+		}
+	}
+	if rv.IsValid() && (rv.Kind() == reflect.Slice || rv.Kind() == reflect.Map) && rv.Len() == 0 && def == nil {
+		return true
+	}
+	if rd.IsValid() && (rd.Kind() == reflect.Slice || rd.Kind() == reflect.Map) && rd.Len() == 0 && val == nil {
+		return true
+	}
+	return false
 }
 
-// validateScalar validates a JSON value against a typed key definition and
-// returns the YAML scalar to persist. It enforces enum membership and numeric
-// Min/Max bounds, and rejects non-integer values for int keys.
-func validateScalar(key, typ string, options []string, min, max *float64, raw json.RawMessage) (scalarNode, error) {
+// scalarYAML builds a scalar YAML node with the given tag and rendered value.
+func scalarYAML(tag, value string) *yaml.Node {
+	return &yaml.Node{Kind: yaml.ScalarNode, Tag: tag, Value: value}
+}
+
+// isEmptyStringNode reports whether n is an empty string scalar. An empty
+// optional string clears a per-anvil key so the anvil inherits the default.
+func isEmptyStringNode(n *yaml.Node) bool {
+	return n != nil && n.Kind == yaml.ScalarNode && n.Value == "" && (n.Tag == "!!str" || n.Tag == "")
+}
+
+// validateValue validates a JSON value against a typed key definition and
+// returns the YAML node to persist. Scalar types (bool/int/float/enum/string/
+// duration) produce a scalar node; string_list produces a sequence node of
+// scalar strings; provider_map produces a mapping node (stage → sequence of
+// provider strings). It enforces enum membership, numeric Min/Max bounds,
+// non-integer rejection for int keys, non-empty list elements, the allowed
+// provider_map stage set, and Go duration parseability.
+func validateValue(key, typ string, options []string, min, max *float64, raw json.RawMessage) (*yaml.Node, error) {
 	switch typ {
 	case typeBool:
 		var b bool
 		if err := json.Unmarshal(raw, &b); err != nil {
-			return scalarNode{}, fmt.Errorf("key %q expects a boolean", key)
+			return nil, fmt.Errorf("key %q expects a boolean", key)
 		}
 		v := "false"
 		if b {
 			v = "true"
 		}
-		return scalarNode{tag: "!!bool", value: v}, nil
+		return scalarYAML("!!bool", v), nil
 	case typeInt:
 		var f float64
 		if err := json.Unmarshal(raw, &f); err != nil {
-			return scalarNode{}, fmt.Errorf("key %q expects an integer", key)
+			return nil, fmt.Errorf("key %q expects an integer", key)
 		}
 		if f != float64(int64(f)) {
-			return scalarNode{}, fmt.Errorf("key %q expects a whole number", key)
+			return nil, fmt.Errorf("key %q expects a whole number", key)
 		}
 		if err := checkBounds(key, f, min, max); err != nil {
-			return scalarNode{}, err
+			return nil, err
 		}
-		return scalarNode{tag: "!!int", value: strconv.FormatInt(int64(f), 10)}, nil
+		return scalarYAML("!!int", strconv.FormatInt(int64(f), 10)), nil
 	case typeFloat:
 		var f float64
 		if err := json.Unmarshal(raw, &f); err != nil {
-			return scalarNode{}, fmt.Errorf("key %q expects a number", key)
+			return nil, fmt.Errorf("key %q expects a number", key)
 		}
 		if err := checkBounds(key, f, min, max); err != nil {
-			return scalarNode{}, err
+			return nil, err
 		}
-		return scalarNode{tag: "!!float", value: strconv.FormatFloat(f, 'g', -1, 64)}, nil
+		return scalarYAML("!!float", strconv.FormatFloat(f, 'g', -1, 64)), nil
 	case typeEnum:
 		var str string
 		if err := json.Unmarshal(raw, &str); err != nil {
-			return scalarNode{}, fmt.Errorf("key %q expects a string", key)
+			return nil, fmt.Errorf("key %q expects a string", key)
 		}
 		for _, opt := range options {
 			if opt == str {
-				return scalarNode{tag: "!!str", value: str}, nil
+				return scalarYAML("!!str", str), nil
 			}
 		}
-		return scalarNode{}, fmt.Errorf("invalid value %q for key %q: expected one of %s", str, key, strings.Join(options, ", "))
+		return nil, fmt.Errorf("invalid value %q for key %q: expected one of %s", str, key, strings.Join(options, ", "))
 	case typeString:
 		var str string
 		if err := json.Unmarshal(raw, &str); err != nil {
-			return scalarNode{}, fmt.Errorf("key %q expects a string", key)
+			return nil, fmt.Errorf("key %q expects a string", key)
 		}
-		return scalarNode{tag: "!!str", value: str}, nil
+		return scalarYAML("!!str", str), nil
+	case typeDuration:
+		var str string
+		if err := json.Unmarshal(raw, &str); err != nil {
+			return nil, fmt.Errorf("key %q expects a duration string", key)
+		}
+		str = strings.TrimSpace(str)
+		if _, err := time.ParseDuration(str); err != nil {
+			return nil, fmt.Errorf("key %q expects a Go duration string like \"5m\" or \"24h\"", key)
+		}
+		return scalarYAML("!!str", str), nil
+	case typeStringList:
+		var list []string
+		if err := json.Unmarshal(raw, &list); err != nil {
+			return nil, fmt.Errorf("key %q expects a list of strings", key)
+		}
+		seq := &yaml.Node{Kind: yaml.SequenceNode, Tag: "!!seq"}
+		for i, el := range list {
+			if strings.TrimSpace(el) == "" {
+				return nil, fmt.Errorf("key %q: element %d must be a non-empty string", key, i)
+			}
+			seq.Content = append(seq.Content, scalarYAML("!!str", el))
+		}
+		return seq, nil
+	case typeProviderMap:
+		var m map[string][]string
+		if err := json.Unmarshal(raw, &m); err != nil {
+			return nil, fmt.Errorf("key %q expects a map of stage to string list", key)
+		}
+		// Emit stages in a stable order so the persisted diff is deterministic.
+		stages := make([]string, 0, len(m))
+		for k := range m {
+			stages = append(stages, k)
+		}
+		sort.Strings(stages)
+		node := &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
+		for _, stage := range stages {
+			if !providerStageSet[stage] {
+				return nil, fmt.Errorf("key %q: unknown stage %q (allowed: %s)", key, stage, strings.Join(providerStages, ", "))
+			}
+			if len(m[stage]) == 0 {
+				return nil, fmt.Errorf("key %q: stage %q must have at least one provider", key, stage)
+			}
+			seq := &yaml.Node{Kind: yaml.SequenceNode, Tag: "!!seq"}
+			for i, el := range m[stage] {
+				if strings.TrimSpace(el) == "" {
+					return nil, fmt.Errorf("key %q: stage %q element %d must be a non-empty string", key, stage, i)
+				}
+				seq.Content = append(seq.Content, scalarYAML("!!str", el))
+			}
+			node.Content = append(node.Content, scalarYAML("!!str", stage), seq)
+		}
+		return node, nil
 	default:
-		return scalarNode{}, fmt.Errorf("key %q has unsupported type %q", key, typ)
+		return nil, fmt.Errorf("key %q has unsupported type %q", key, typ)
 	}
 }
 
@@ -523,19 +713,19 @@ func (s *Server) handleForgeConfigPatch(w http.ResponseWriter, r *http.Request) 
 
 	// All-or-nothing: validate every key and value before writing anything.
 	var unknown []string
-	scalars := make(map[string]scalarNode, len(req))
+	nodes := make(map[string]*yaml.Node, len(req))
 	for k, raw := range req {
 		def, ok := configKeyByName[k]
 		if !ok {
 			unknown = append(unknown, k)
 			continue
 		}
-		sn, err := validateScalar(def.Key, def.Type, def.Options, def.Min, def.Max, raw)
+		vn, err := validateValue(def.Key, def.Type, def.Options, def.Min, def.Max, raw)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		scalars[k] = sn
+		nodes[k] = vn
 	}
 	if len(unknown) > 0 {
 		sort.Strings(unknown)
@@ -548,7 +738,7 @@ func (s *Server) handleForgeConfigPatch(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusInternalServerError, "could not resolve config file path")
 		return
 	}
-	if err := applyConfigPatch(path, scalars); err != nil {
+	if err := applyConfigPatch(path, nodes); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to persist config: "+err.Error())
 		return
 	}
@@ -630,6 +820,20 @@ var managedAnvilKeys = []anvilKeyDef{
 		Label: "Auto-dispatch min priority", Description: "Minimum priority (0=highest) a bead needs to be auto-dispatched."},
 	{Key: "platform", Type: typeEnum, Options: []string{"github", "gitlab", "gitea", "bitbucket", "azuredevops"},
 		Label: "VCS platform", Description: "Hosting platform for this anvil's PR operations."},
+
+	// --- Composite per-anvil overrides (Forge-vo5a). Send null to inherit. ---
+	{Key: "stage_providers", Type: typeProviderMap, Options: providerStages,
+		Label: "Per-stage providers", Description: "Per-anvil override of the global per-stage provider chains (smith, warden, schematic, cifix, reviewfix)."},
+	{Key: "wicket_trusted_users", Type: typeStringList,
+		Label: "Wicket trusted users", Description: "GitHub logins whose issues are auto-dispatched without extra review for this anvil."},
+	{Key: "wicket_ignore_users", Type: typeStringList,
+		Label: "Wicket ignored users", Description: "GitHub logins skipped entirely when triaging issues for this anvil."},
+	{Key: "wicket_repos", Type: typeStringList,
+		Label: "Wicket repositories", Description: "\"owner/repo\" strings Wicket scans for this anvil. Empty derives the repo from the git remote."},
+	{Key: "wicket_issue_labels", Type: typeStringList,
+		Label: "Wicket issue labels", Description: "GitHub labels an issue must carry for Wicket to triage it in this anvil. Empty means all issues are eligible."},
+	{Key: "wicket_triage_prompt", Type: typeString,
+		Label: "Wicket triage prompt", Description: "Optional prompt suffix appended to the default Wicket triage system prompt for this anvil."},
 }
 
 // anvilKeySchema projects managedAnvilKeys into the GET response schema so the
@@ -722,7 +926,7 @@ func (s *Server) handleForgeAnvilConfigPatch(w http.ResponseWriter, r *http.Requ
 
 	// All-or-nothing: validate every key and value before writing anything.
 	var unknown []string
-	sets := map[string]scalarNode{}
+	sets := map[string]*yaml.Node{}
 	var clears []string
 	applied := make([]AnvilKeyApplied, 0, len(req))
 	for k, raw := range req {
@@ -741,17 +945,17 @@ func (s *Server) handleForgeAnvilConfigPatch(w http.ResponseWriter, r *http.Requ
 			clears = append(clears, k)
 			cleared = true
 		} else {
-			sn, err := validateScalar(def.Key, def.Type, def.Options, def.Min, def.Max, raw)
+			vn, err := validateValue(def.Key, def.Type, def.Options, def.Min, def.Max, raw)
 			if err != nil {
 				writeError(w, http.StatusBadRequest, err.Error())
 				return
 			}
 			// An empty optional string clears the key so the anvil inherits.
-			if def.Type == typeString && sn.value == "" {
+			if def.Type == typeString && isEmptyStringNode(vn) {
 				clears = append(clears, k)
 				cleared = true
 			} else {
-				sets[k] = sn
+				sets[k] = vn
 			}
 		}
 		appliesVal := appliesNextRun
@@ -816,7 +1020,7 @@ func anvilKeyOrder(key string) int {
 // result back atomically (temp file + rename) so the fsnotify watcher fires
 // once on a complete file. When creating a new anvil block, anvilPath is
 // persisted as the "path" key so the file remains a valid config.
-func applyAnvilConfigPatch(path, anvil, anvilPath string, sets map[string]scalarNode, clears []string) error {
+func applyAnvilConfigPatch(path, anvil, anvilPath string, sets map[string]*yaml.Node, clears []string) error {
 	data, err := os.ReadFile(path)
 	if err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("read config: %w", err)
@@ -863,7 +1067,7 @@ func applyAnvilConfigPatch(path, anvil, anvilPath string, sets map[string]scalar
 	}
 	sort.Strings(keys)
 	for _, key := range keys {
-		setScalarNode(anvilNode, key, sets[key])
+		setValueNode(anvilNode, key, sets[key])
 	}
 	sort.Strings(clears)
 	for _, key := range clears {
@@ -878,12 +1082,13 @@ func applyAnvilConfigPatch(path, anvil, anvilPath string, sets map[string]scalar
 }
 
 // applyConfigPatch edits the YAML document at path in place, setting each
-// settings.<key> to the given boolean. It parses into a yaml.Node tree
-// (rather than marshalling a full Config) so comments and unrelated keys are
-// preserved, locates or creates the top-level `settings` mapping and each
-// target scalar, then writes the result back atomically (temp file + rename)
-// so the fsnotify watcher fires once on a complete file.
-func applyConfigPatch(path string, patch map[string]scalarNode) error {
+// settings.<key> to the given YAML node (scalar, sequence, or mapping). It
+// parses into a yaml.Node tree (rather than marshalling a full Config) so
+// comments and unrelated keys are preserved, locates or creates the
+// top-level `settings` mapping and each target node, then writes the result
+// back atomically (temp file + rename) so the fsnotify watcher fires once
+// on a complete file.
+func applyConfigPatch(path string, patch map[string]*yaml.Node) error {
 	data, err := os.ReadFile(path)
 	if err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("read config: %w", err)
@@ -922,7 +1127,7 @@ func applyConfigPatch(path string, patch map[string]scalarNode) error {
 	}
 	sort.Strings(keys)
 	for _, key := range keys {
-		setScalarNode(settings, key, patch[key])
+		setValueNode(settings, key, patch[key])
 	}
 
 	out, err := marshalNode(&doc)
@@ -932,19 +1137,21 @@ func applyConfigPatch(path string, patch map[string]scalarNode) error {
 	return writeFileAtomic(path, out)
 }
 
-// setScalarNode sets m[key] to a typed scalar (sn.tag + sn.value), editing the
-// existing scalar in place (preserving surrounding comments) or appending a new
-// pair. It handles bool/int/float/string/enum scalar values.
-func setScalarNode(m *yaml.Node, key string, sn scalarNode) {
-	if vn := mappingValueNode(m, key); vn != nil {
-		vn.Kind = yaml.ScalarNode
-		vn.Tag = sn.tag
-		vn.Style = 0
-		vn.Value = sn.value
-		vn.Content = nil
+// setValueNode sets m[key] to vn, editing the existing value node in place
+// (preserving its surrounding comments) or appending a new key/value pair. It
+// handles scalar, sequence, and mapping value nodes, so it serializes the
+// scalar types as well as the string_list (sequence) and provider_map
+// (mapping) value types.
+func setValueNode(m *yaml.Node, key string, vn *yaml.Node) {
+	if existing := mappingValueNode(m, key); existing != nil {
+		// Replace the node's content but keep any comments attached to the
+		// existing value so a node-tree edit preserves surrounding annotations.
+		head, line, foot := existing.HeadComment, existing.LineComment, existing.FootComment
+		*existing = *vn
+		existing.HeadComment, existing.LineComment, existing.FootComment = head, line, foot
 		return
 	}
-	setMappingChild(m, key, &yaml.Node{Kind: yaml.ScalarNode, Tag: sn.tag, Value: sn.value})
+	setMappingChild(m, key, vn)
 }
 
 // mappingValueNode returns the value node for key in mapping m, or nil when

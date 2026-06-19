@@ -950,3 +950,274 @@ func TestForgeAnvilConfig_PatchScalars(t *testing.T) {
 		t.Errorf("expected max_smiths removed after null, got:\n%s", raw)
 	}
 }
+
+// --- Forge-vo5a: new value types (string_list / provider_map / duration) ---
+
+// TestForgeConfig_GetExposesNewValueTypes verifies the GET schema metadata
+// advertises the three new value types with the exact type names the frontend
+// dispatches on, plus the newly registered global and per-anvil keys.
+func TestForgeConfig_GetExposesNewValueTypes(t *testing.T) {
+	srv := newServerWithDefaults(t, nil)
+	cookie := loginAndGetCookie(t, srv)
+	withConfigFixture(t, srv, "")
+
+	var resp ConfigResponse
+	rec := forgeRequest(t, srv, http.MethodGet, "/api/forge/config", "", cookie)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	byKey := map[string]ConfigKeyInfo{}
+	for _, k := range resp.Keys {
+		byKey[k.Key] = k
+	}
+
+	// providers is a string_list; stage_providers is a provider_map whose
+	// Options advertise the allowed stage keys.
+	if byKey["providers"].Type != "string_list" {
+		t.Errorf("providers type = %q, want string_list", byKey["providers"].Type)
+	}
+	sp := byKey["stage_providers"]
+	if sp.Type != "provider_map" {
+		t.Errorf("stage_providers type = %q, want provider_map", sp.Type)
+	}
+	wantStages := map[string]bool{"smith": true, "warden": true, "schematic": true, "cifix": true, "reviewfix": true}
+	if len(sp.Options) != len(wantStages) {
+		t.Errorf("stage_providers options = %v, want the 5 stage keys", sp.Options)
+	}
+	for _, o := range sp.Options {
+		if !wantStages[o] {
+			t.Errorf("stage_providers unexpected stage option %q", o)
+		}
+	}
+
+	// Every duration key reports type=duration and a canonical default value;
+	// on an empty config they must all be IsDefault.
+	durKeys := []string{
+		"poll_interval", "smith_timeout", "bellows_interval", "stale_interval",
+		"depcheck_interval", "depcheck_timeout", "vulncheck_interval", "vulncheck_timeout",
+		"smelter_interval", "questgiver_interval", "wicket_interval", "rate_limit_backoff",
+		"crucible_poll_interval", "burnish_verify_timeout", "adventurer_timeout",
+	}
+	for _, k := range durKeys {
+		info, ok := byKey[k]
+		if !ok {
+			t.Errorf("duration key %s missing from response", k)
+			continue
+		}
+		if info.Type != "duration" {
+			t.Errorf("%s type = %q, want duration", k, info.Type)
+		}
+		if _, ok := info.Value.(string); !ok {
+			t.Errorf("%s value = %v (%T), want a duration string", k, info.Value, info.Value)
+		}
+		if !info.IsDefault {
+			t.Errorf("%s: expected IsDefault on empty config, value=%v", k, info.Value)
+		}
+	}
+	if byKey["smith_timeout"].Value != "30m0s" {
+		t.Errorf("smith_timeout value = %v, want 30m0s", byKey["smith_timeout"].Value)
+	}
+
+	// Per-anvil schema exposes the composite override keys.
+	anvilByKey := map[string]AnvilKeyInfo{}
+	for _, ak := range resp.AnvilKeys {
+		anvilByKey[ak.Key] = ak
+	}
+	if anvilByKey["stage_providers"].Type != "provider_map" {
+		t.Errorf("anvil stage_providers type = %q, want provider_map", anvilByKey["stage_providers"].Type)
+	}
+	if anvilByKey["wicket_trusted_users"].Type != "string_list" {
+		t.Errorf("anvil wicket_trusted_users type = %q, want string_list", anvilByKey["wicket_trusted_users"].Type)
+	}
+	if anvilByKey["wicket_triage_prompt"].Type != "string" {
+		t.Errorf("anvil wicket_triage_prompt type = %q, want string", anvilByKey["wicket_triage_prompt"].Type)
+	}
+}
+
+// TestForgeConfig_PatchStringListPersistsAndValidates checks a string_list
+// setting writes a YAML sequence and rejects empty elements / non-lists.
+func TestForgeConfig_PatchStringListPersistsAndValidates(t *testing.T) {
+	srv := newServerWithDefaults(t, nil)
+	cookie := loginAndGetCookie(t, srv)
+	// Block-style settings so the written sequence renders as block (- item),
+	// not flow ([item]) which a {} flow parent would force.
+	path := withConfigFixture(t, srv, "settings:\n  schematic_enabled: false\n")
+
+	rec := forgeRequest(t, srv, http.MethodPatch, "/api/forge/config",
+		`{"providers":["claude","gemini"]}`, cookie)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("PATCH string_list: expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	raw, _ := os.ReadFile(path)
+	got := string(raw)
+	for _, want := range []string{"providers:", "- claude", "- gemini"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("expected %q in file, got:\n%s", want, got)
+		}
+	}
+
+	// Empty element is rejected.
+	rec = forgeRequest(t, srv, http.MethodPatch, "/api/forge/config",
+		`{"providers":["claude",""]}`, cookie)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("empty element: expected 400, got %d", rec.Code)
+	}
+	// A non-list value is rejected.
+	rec = forgeRequest(t, srv, http.MethodPatch, "/api/forge/config",
+		`{"providers":"claude"}`, cookie)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("non-list: expected 400, got %d", rec.Code)
+	}
+}
+
+// TestForgeConfig_PatchProviderMapPersistsAndValidates checks a provider_map
+// setting writes a YAML mapping (stage → sequence) and rejects unknown stages
+// and empty elements.
+func TestForgeConfig_PatchProviderMapPersistsAndValidates(t *testing.T) {
+	srv := newServerWithDefaults(t, nil)
+	cookie := loginAndGetCookie(t, srv)
+	// Block-style settings so the written mapping/sequence render as block.
+	path := withConfigFixture(t, srv, "settings:\n  schematic_enabled: false\n")
+
+	rec := forgeRequest(t, srv, http.MethodPatch, "/api/forge/config",
+		`{"stage_providers":{"smith":["claude/claude-opus-4-6"],"warden":["claude/claude-sonnet-4-6"]}}`, cookie)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("PATCH provider_map: expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	raw, _ := os.ReadFile(path)
+	got := string(raw)
+	for _, want := range []string{"stage_providers:", "smith:", "- claude/claude-opus-4-6", "warden:", "- claude/claude-sonnet-4-6"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("expected %q in file, got:\n%s", want, got)
+		}
+	}
+
+	// Unknown stage key rejected.
+	rec = forgeRequest(t, srv, http.MethodPatch, "/api/forge/config",
+		`{"stage_providers":{"bogus":["claude"]}}`, cookie)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("unknown stage: expected 400, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	// Empty provider element rejected.
+	rec = forgeRequest(t, srv, http.MethodPatch, "/api/forge/config",
+		`{"stage_providers":{"smith":[""]}}`, cookie)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("empty element: expected 400, got %d", rec.Code)
+	}
+	// A non-list stage value rejected.
+	rec = forgeRequest(t, srv, http.MethodPatch, "/api/forge/config",
+		`{"stage_providers":{"smith":"claude"}}`, cookie)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("non-list stage value: expected 400, got %d", rec.Code)
+	}
+}
+
+// TestForgeConfig_PatchDurationPersistsAndValidates checks a duration setting
+// writes a scalar string and rejects unparseable / non-string values.
+func TestForgeConfig_PatchDurationPersistsAndValidates(t *testing.T) {
+	srv := newServerWithDefaults(t, nil)
+	cookie := loginAndGetCookie(t, srv)
+	path := withConfigFixture(t, srv, "settings: {}\n")
+
+	rec := forgeRequest(t, srv, http.MethodPatch, "/api/forge/config",
+		`{"smith_timeout":"45m"}`, cookie)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("PATCH duration: expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	raw, _ := os.ReadFile(path)
+	if !strings.Contains(string(raw), "smith_timeout: 45m") {
+		t.Errorf("expected smith_timeout: 45m in file, got:\n%s", raw)
+	}
+	// The re-read config reflects the new duration string.
+	var resp ConfigResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	for _, k := range resp.Keys {
+		if k.Key == "smith_timeout" && k.Value != "45m0s" {
+			t.Errorf("smith_timeout value = %v, want 45m0s", k.Value)
+		}
+	}
+
+	// Unparseable duration rejected.
+	rec = forgeRequest(t, srv, http.MethodPatch, "/api/forge/config",
+		`{"smith_timeout":"not-a-duration"}`, cookie)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("unparseable duration: expected 400, got %d", rec.Code)
+	}
+	// Non-string value rejected.
+	rec = forgeRequest(t, srv, http.MethodPatch, "/api/forge/config",
+		`{"smith_timeout":5}`, cookie)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("non-string duration: expected 400, got %d", rec.Code)
+	}
+}
+
+// TestForgeAnvilConfig_PatchCompositeRoundTrip covers per-anvil string_list and
+// provider_map overrides: set persists as YAML sequence/mapping and round-trips
+// through the re-read settings, and null clears the override (inherit).
+func TestForgeAnvilConfig_PatchCompositeRoundTrip(t *testing.T) {
+	srv := newServerWithDefaults(t, nil)
+	cookie := loginAndGetCookie(t, srv)
+	path := anvilFixture(t, srv, "")
+
+	rec := forgeRequest(t, srv, http.MethodPatch, "/api/forge/config/anvils/forge",
+		`{"wicket_repos":["org/a","org/b"],"stage_providers":{"smith":["claude/x"]}}`, cookie)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("PATCH composite: expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	resp := decodeAnvilPatch(t, rec.Body.Bytes())
+	if len(resp.Settings.WicketRepos) != 2 || resp.Settings.WicketRepos[0] != "org/a" {
+		t.Errorf("wicket_repos round-trip = %v, want [org/a org/b]", resp.Settings.WicketRepos)
+	}
+	if got := resp.Settings.StageProviders["smith"]; len(got) != 1 || got[0] != "claude/x" {
+		t.Errorf("stage_providers round-trip = %v, want smith:[claude/x]", resp.Settings.StageProviders)
+	}
+	raw, _ := os.ReadFile(path)
+	got := string(raw)
+	for _, want := range []string{"wicket_repos:", "- org/a", "stage_providers:", "smith:", "- claude/x"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("expected %q in file, got:\n%s", want, got)
+		}
+	}
+
+	// null clears both composite overrides → inherit (removed from file).
+	rec = forgeRequest(t, srv, http.MethodPatch, "/api/forge/config/anvils/forge",
+		`{"wicket_repos":null,"stage_providers":null}`, cookie)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("null clear: expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	resp = decodeAnvilPatch(t, rec.Body.Bytes())
+	if resp.Settings.WicketRepos != nil {
+		t.Errorf("expected wicket_repos cleared to nil, got %v", resp.Settings.WicketRepos)
+	}
+	if resp.Settings.StageProviders != nil {
+		t.Errorf("expected stage_providers cleared to nil, got %v", resp.Settings.StageProviders)
+	}
+	for _, a := range resp.Applied {
+		if !a.Cleared {
+			t.Errorf("expected %s marked cleared, got %+v", a.Key, a)
+		}
+	}
+	raw, _ = os.ReadFile(path)
+	if strings.Contains(string(raw), "wicket_repos") || strings.Contains(string(raw), "stage_providers") {
+		t.Errorf("expected composite keys removed after null, got:\n%s", raw)
+	}
+}
+
+// TestForgeAnvilConfig_PatchStringListRejectsEmptyElement verifies per-anvil
+// string_list validation rejects empty elements (parity with the global path).
+func TestForgeAnvilConfig_PatchStringListRejectsEmptyElement(t *testing.T) {
+	srv := newServerWithDefaults(t, nil)
+	cookie := loginAndGetCookie(t, srv)
+	anvilFixture(t, srv, "")
+
+	rec := forgeRequest(t, srv, http.MethodPatch, "/api/forge/config/anvils/forge",
+		`{"wicket_trusted_users":["alice",""]}`, cookie)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("empty element: expected 400, got %d body=%s", rec.Code, rec.Body.String())
+	}
+}
