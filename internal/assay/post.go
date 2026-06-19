@@ -59,6 +59,11 @@ type PostRequest struct {
 	// Findings is the aggregated set to post (already deduped/suppressed/capped
 	// by Review).
 	Findings []Finding
+	// Diff is the PR's unified diff. When non-empty it is used to keep inline
+	// comments to positions that actually exist in the diff (GitHub 422s
+	// otherwise); findings outside the diff are listed in the summary instead.
+	// When empty, all findings are attempted inline (legacy behaviour).
+	Diff string
 }
 
 // PostResult summarizes a posting run.
@@ -73,6 +78,9 @@ type PostResult struct {
 	// Resolved is the number of stale findings whose threads were resolved
 	// after crossing the consecutive-miss threshold.
 	Resolved int
+	// OutOfDiff is the number of findings that could not be anchored to the PR
+	// diff and were listed in the summary instead of posted inline.
+	OutOfDiff int
 }
 
 // Poster publishes Assay findings to a GitHub PR: a top-level summary review,
@@ -116,9 +124,30 @@ func (p *Poster) Post(ctx context.Context, cfg Config, req PostRequest) (*PostRe
 		return res, nil
 	}
 
-	// 1. Top-level summary review.
+	// Partition findings into those anchorable to the PR diff (postable inline)
+	// and those that are not (cross-file notes, wrong path, file-level/line=1).
+	// GitHub 422s any inline comment whose (path, line) is not in the diff, so
+	// out-of-diff findings are surfaced in the summary instead of silently lost.
+	// When no diff is supplied, fall back to attempting every finding inline.
+	idx := buildDiffIndex(req.Diff)
+	var outOfDiff []Finding
+	inlineEligible := req.Findings
+	if len(idx) > 0 {
+		inlineEligible = inlineEligible[:0:0]
+		for _, f := range req.Findings {
+			if anchorableInDiff(idx, f) {
+				inlineEligible = append(inlineEligible, f)
+			} else {
+				outOfDiff = append(outOfDiff, f)
+			}
+		}
+	}
+	res.OutOfDiff = len(outOfDiff)
+
+	// 1. Top-level summary review: severity table over all findings, plus the
+	// full detail of any out-of-diff findings so their content is never lost.
 	if req.SummaryLine != "" || len(req.Findings) > 0 {
-		body := buildSummaryBody(req.SummaryLine, req.Findings)
+		body := buildSummaryBody(req.SummaryLine, req.Findings) + buildOutOfDiffSection(outOfDiff)
 		if _, err := p.gh(ctx, req.WorktreePath,
 			"pr", "review", strconv.Itoa(req.PRNumber), "--comment", "--body", body,
 		); err != nil {
@@ -144,11 +173,14 @@ func (p *Poster) Post(ctx context.Context, cfg Config, req PostRequest) (*PostRe
 		}
 	}
 
-	// 2. Inline comments — one per finding.
+	// 2. Inline comments — one per anchorable finding. `current` tracks ALL
+	// findings (including out-of-diff ones) so resolveMisses does not treat a
+	// finding we deliberately routed to the summary as a disappeared one.
 	current := make(map[string]bool, len(req.Findings))
 	for _, f := range req.Findings {
 		current[f.Hash] = true
-
+	}
+	for _, f := range inlineEligible {
 		if postedHashes[f.Hash] {
 			// Already posted on a prior head; it is re-detected, so clear any
 			// accumulated misses and skip re-posting.
@@ -310,6 +342,38 @@ func buildSummaryBody(summaryLine string, findings []Finding) string {
 	return strings.TrimRight(b.String(), "\n")
 }
 
+// buildOutOfDiffSection renders the findings that could not be anchored to the
+// PR diff as a markdown list appended to the summary review, so their content
+// (location, severity, title, body) is preserved even though no inline comment
+// could be posted. Returns "" when there are none.
+func buildOutOfDiffSection(findings []Finding) string {
+	if len(findings) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("\n\n---\n\n")
+	b.WriteString("**Findings outside the diff** (not on changed lines, so not posted inline):\n\n")
+	for _, f := range findings {
+		loc := f.File
+		if _, end, ok := parseLineSpec(f.Anchor); ok && end > 0 {
+			loc = fmt.Sprintf("%s:%d", f.File, end)
+		}
+		if f.Severity != "" {
+			fmt.Fprintf(&b, "- **[%s] %s** — `%s`\n", f.Severity, f.Title, loc)
+		} else {
+			fmt.Fprintf(&b, "- **%s** — `%s`\n", f.Title, loc)
+		}
+		if f.Body != "" {
+			for _, line := range strings.Split(strings.TrimRight(f.Body, "\n"), "\n") {
+				b.WriteString("  ")
+				b.WriteString(line)
+				b.WriteByte('\n')
+			}
+		}
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
 // buildInlineBody renders a single inline comment body. It OPENS with the hash
 // marker (an HTML comment, invisible in rendered markdown) so re-reviews can
 // match the thread, followed by the severity-tagged title, the body, and any
@@ -381,7 +445,18 @@ func defaultGhExec(ctx context.Context, dir string, args ...string) ([]byte, err
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("gh %s: %w\nstderr: %s", strings.Join(args, " "), err, stderr.String())
+		// gh writes the HTTP summary ("Validation Failed (HTTP 422)") to stderr
+		// but the JSON error body — which carries the field-level reason, e.g.
+		// pull_request_review_thread.path could not be resolved — to stdout.
+		// Include both so the real cause is logged, not just the 422 summary.
+		msg := fmt.Sprintf("gh %s: %v", strings.Join(args, " "), err)
+		if s := strings.TrimSpace(stderr.String()); s != "" {
+			msg += "\nstderr: " + s
+		}
+		if s := strings.TrimSpace(stdout.String()); s != "" {
+			msg += "\nstdout: " + s
+		}
+		return nil, fmt.Errorf("%s", msg)
 	}
 	return stdout.Bytes(), nil
 }

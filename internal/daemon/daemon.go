@@ -1404,6 +1404,7 @@ func (d *Daemon) runAssayReview(ctx context.Context, anvil, anvilPath, beadID st
 					WorktreePath: worktreePath,
 					SummaryLine:  assaySummaryLine(result.Findings),
 					Findings:     result.Findings,
+					Diff:         string(diffBytes),
 				})
 				if perr != nil {
 					d.logger.Error("Assay posting failed", "pr", prNumber, "bead", beadID, "error", perr)
@@ -1413,6 +1414,7 @@ func (d *Daemon) runAssayReview(ctx context.Context, anvil, anvilPath, beadID st
 						"pr", prNumber, "bead", beadID,
 						"posted", postRes.Posted, "failed", postRes.Failed,
 						"resolved", postRes.Resolved, "summary", postRes.SummaryPosted,
+						"out_of_diff", postRes.OutOfDiff,
 					)
 				}
 			}

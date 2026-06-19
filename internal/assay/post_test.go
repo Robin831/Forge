@@ -461,3 +461,114 @@ func mustMarkPosted(t *testing.T, db *state.DB, hash string, id int64) {
 		t.Fatalf("MarkFindingPosted %s: %v", hash, err)
 	}
 }
+
+// --- diff-aware inline routing (Forge-teco) -------------------------------
+
+func TestBuildDiffIndex(t *testing.T) {
+	diff := strings.Join([]string{
+		"diff --git a/client/app/Foo.tsx b/client/app/Foo.tsx",
+		"--- a/client/app/Foo.tsx",
+		"+++ b/client/app/Foo.tsx",
+		"@@ -1,2 +18,3 @@ func",
+		" ctx18",
+		"+added19",
+		"+added20",
+		"diff --git a/gone.txt b/gone.txt",
+		"--- a/gone.txt",
+		"+++ /dev/null",
+		"@@ -1,1 +0,0 @@",
+		"-removed",
+	}, "\n")
+
+	idx := buildDiffIndex(diff)
+	foo := idx["client/app/Foo.tsx"]
+	if foo == nil {
+		t.Fatalf("expected Foo.tsx in index, got %v", idx)
+	}
+	for _, ln := range []int{18, 19, 20} {
+		if !foo[ln] {
+			t.Errorf("expected line %d anchorable in Foo.tsx", ln)
+		}
+	}
+	if foo[1] || foo[21] {
+		t.Errorf("lines 1/21 must not be anchorable: %v", foo)
+	}
+	if _, ok := idx["gone.txt"]; ok {
+		t.Errorf("deleted file (/dev/null) must not be in index")
+	}
+}
+
+func summaryBody(t *testing.T, gh *stubGh) string {
+	t.Helper()
+	for _, c := range gh.calls {
+		isReview := false
+		for _, a := range c.args {
+			if a == "review" {
+				isReview = true
+			}
+		}
+		if !isReview {
+			continue
+		}
+		for i, a := range c.args {
+			if a == "--body" && i+1 < len(c.args) {
+				return c.args[i+1]
+			}
+		}
+	}
+	return ""
+}
+
+func TestPostRoutesOutOfDiffFindingsToSummary(t *testing.T) {
+	db := newTestDB(t)
+	gh := newStubGh()
+	p := newPoster(db, gh.exec, nil)
+
+	diff := strings.Join([]string{
+		"diff --git a/client/app/Foo.tsx b/client/app/Foo.tsx",
+		"--- a/client/app/Foo.tsx",
+		"+++ b/client/app/Foo.tsx",
+		"@@ -1,1 +18,3 @@ func",
+		" ctx18",
+		"+added19",
+		"+added20",
+	}, "\n")
+
+	findings := []Finding{
+		{File: "client/app/Foo.tsx", Anchor: "client/app/Foo.tsx:19", Hash: "in1", Severity: SeverityImportant, Title: "on a changed line"},
+		{File: "client/app/Bar.tsx", Anchor: "client/app/Bar.tsx:5", Hash: "out1", Severity: SeverityNit, Title: "orphaned file note", Body: "should be deleted"},
+		{File: "client/app/Foo.tsx", Anchor: "client/app/Foo.tsx:1", Hash: "out2", Severity: SeverityNit, Title: "file-level note"},
+	}
+
+	res, err := p.Post(context.Background(), Config{}, PostRequest{
+		Anvil: "munin", PRNumber: 4219, HeadSHA: "head", WorktreePath: "/wt",
+		SummaryLine: "Assay (AI review)", Findings: findings, Diff: diff,
+	})
+	if err != nil {
+		t.Fatalf("Post: %v", err)
+	}
+
+	if res.Posted != 1 {
+		t.Errorf("expected 1 inline posted, got %d", res.Posted)
+	}
+	if res.OutOfDiff != 2 {
+		t.Errorf("expected 2 out-of-diff, got %d", res.OutOfDiff)
+	}
+	if res.Failed != 0 {
+		t.Errorf("expected 0 failed (out-of-diff are not attempted), got %d", res.Failed)
+	}
+	if gh.inlineCalls() != 1 {
+		t.Errorf("expected exactly 1 inline gh call, got %d", gh.inlineCalls())
+	}
+
+	body := summaryBody(t, gh)
+	if !strings.Contains(body, "Findings outside the diff") {
+		t.Errorf("summary missing out-of-diff section:\n%s", body)
+	}
+	if !strings.Contains(body, "orphaned file note") || !strings.Contains(body, "file-level note") {
+		t.Errorf("summary missing out-of-diff finding details:\n%s", body)
+	}
+	if strings.Contains(body, "on a changed line") {
+		t.Errorf("in-diff finding should be inline, not in the out-of-diff section:\n%s", body)
+	}
+}
