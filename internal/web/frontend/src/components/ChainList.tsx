@@ -58,7 +58,7 @@ export default function ChainList({
       {items.length > 0 && (
         <ul className="flex flex-col gap-1.5">
           {items.map((item, i) => (
-            <li key={item} className="flex items-center gap-1.5">
+            <li key={`${item}-${i}`} className="flex items-center gap-1.5">
               <span className="flex-1 truncate rounded-md border border-slate-700 bg-slate-800/60 px-2 py-1 text-sm text-slate-200">
                 {item}
               </span>
@@ -112,7 +112,7 @@ export default function ChainList({
         />
         <button
           type="button"
-          disabled={disabled || draft.trim() === ''}
+          disabled={disabled || draft.trim() === '' || items.includes(draft.trim())}
           onClick={add}
           aria-label={addLabel}
           className="inline-flex items-center gap-1 rounded-md border border-slate-700 px-2 py-1 text-xs font-medium text-slate-300 transition-colors hover:border-emerald-400/60 hover:text-slate-100 focus:outline-none focus-visible:ring-1 focus-visible:ring-emerald-400 disabled:cursor-not-allowed disabled:opacity-50"

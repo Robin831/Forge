@@ -52,6 +52,7 @@ describe('ProviderMapField', () => {
   })
 
   it('adds a provider to a stage and emits the full map', async () => {
+    const user = userEvent.setup()
     const d = deferred()
     const onChange = vi.fn(() => d.promise)
     render(
@@ -62,7 +63,7 @@ describe('ProviderMapField', () => {
       />,
     )
 
-    await userEvent.type(
+    await user.type(
       screen.getByRole('textbox', { name: 'Add provider for warden' }),
       'gemini{Enter}',
     )
@@ -77,6 +78,7 @@ describe('ProviderMapField', () => {
   })
 
   it('omits a stage from the map when its last provider is removed', async () => {
+    const user = userEvent.setup()
     const d = deferred()
     const onChange = vi.fn(() => d.promise)
     render(
@@ -87,7 +89,7 @@ describe('ProviderMapField', () => {
       />,
     )
 
-    await userEvent.click(screen.getByRole('button', { name: 'Remove gemini' }))
+    await user.click(screen.getByRole('button', { name: 'Remove gemini' }))
     expect(onChange).toHaveBeenCalledWith({ smith: ['claude'] })
     await act(() => {
       d.resolve()
@@ -96,6 +98,7 @@ describe('ProviderMapField', () => {
   })
 
   it('reorders providers within a stage', async () => {
+    const user = userEvent.setup()
     const d = deferred()
     const onChange = vi.fn(() => d.promise)
     render(
@@ -106,7 +109,7 @@ describe('ProviderMapField', () => {
       />,
     )
 
-    await userEvent.click(screen.getByRole('button', { name: 'Move claude down' }))
+    await user.click(screen.getByRole('button', { name: 'Move claude down' }))
     expect(onChange).toHaveBeenCalledWith({ smith: ['gemini', 'claude'] })
     await act(() => {
       d.resolve()
@@ -115,6 +118,7 @@ describe('ProviderMapField', () => {
   })
 
   it('reverts the optimistic map when onChange rejects', async () => {
+    const user = userEvent.setup()
     const d = deferred()
     const onChange = vi.fn(() => d.promise)
     render(
@@ -125,7 +129,7 @@ describe('ProviderMapField', () => {
       />,
     )
 
-    await userEvent.click(screen.getByRole('button', { name: 'Remove claude' }))
+    await user.click(screen.getByRole('button', { name: 'Remove claude' }))
     expect(screen.queryByText('claude')).not.toBeInTheDocument()
 
     await act(async () => {
@@ -140,6 +144,7 @@ describe('ProviderMapField', () => {
   })
 
   it('renders an inherit placeholder and overrides to an empty map', async () => {
+    const user = userEvent.setup()
     const d = deferred()
     const onChange = vi.fn(() => d.promise)
     render(
@@ -152,7 +157,7 @@ describe('ProviderMapField', () => {
     )
 
     expect(screen.getByText(/inherits global/i)).toBeInTheDocument()
-    await userEvent.click(screen.getByRole('button', { name: 'Override' }))
+    await user.click(screen.getByRole('button', { name: 'Override' }))
     expect(onChange).toHaveBeenCalledWith({})
     await act(() => {
       d.resolve()
@@ -161,6 +166,7 @@ describe('ProviderMapField', () => {
   })
 
   it('resets to inherit via the Inherit button', async () => {
+    const user = userEvent.setup()
     const d = deferred()
     const onChange = vi.fn(() => d.promise)
     render(
@@ -172,7 +178,7 @@ describe('ProviderMapField', () => {
       />,
     )
 
-    await userEvent.click(
+    await user.click(
       screen.getByRole('button', { name: 'Reset Stage providers to inherit' }),
     )
     expect(onChange).toHaveBeenCalledWith(null)

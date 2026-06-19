@@ -36,6 +36,7 @@ describe('ListField', () => {
   })
 
   it('appends a trimmed item on add', async () => {
+    const user = userEvent.setup()
     const d = deferred()
     const onChange = vi.fn(() => d.promise)
     render(
@@ -47,8 +48,8 @@ describe('ListField', () => {
       />,
     )
 
-    await userEvent.type(screen.getByRole('textbox', { name: 'Add provider' }), '  gemini  ')
-    await userEvent.click(screen.getByRole('button', { name: 'Add provider' }))
+    await user.type(screen.getByRole('textbox', { name: 'Add provider' }), '  gemini  ')
+    await user.click(screen.getByRole('button', { name: 'Add provider' }))
 
     expect(onChange).toHaveBeenCalledWith(['claude', 'gemini'])
     await act(() => {
@@ -58,6 +59,7 @@ describe('ListField', () => {
   })
 
   it('ignores empty and duplicate adds', async () => {
+    const user = userEvent.setup()
     const onChange = vi.fn()
     render(
       <ListField
@@ -70,11 +72,12 @@ describe('ListField', () => {
 
     const input = screen.getByRole('textbox', { name: 'Add provider' })
     // Duplicate.
-    await userEvent.type(input, 'claude{Enter}')
+    await user.type(input, 'claude{Enter}')
     expect(onChange).not.toHaveBeenCalled()
   })
 
   it('removes an item', async () => {
+    const user = userEvent.setup()
     const d = deferred()
     const onChange = vi.fn(() => d.promise)
     render(
@@ -85,7 +88,7 @@ describe('ListField', () => {
       />,
     )
 
-    await userEvent.click(screen.getByRole('button', { name: 'Remove claude' }))
+    await user.click(screen.getByRole('button', { name: 'Remove claude' }))
     expect(onChange).toHaveBeenCalledWith(['gemini'])
     await act(() => {
       d.resolve()
@@ -94,6 +97,7 @@ describe('ListField', () => {
   })
 
   it('reorders an item with the move-down control', async () => {
+    const user = userEvent.setup()
     const d = deferred()
     const onChange = vi.fn(() => d.promise)
     render(
@@ -104,7 +108,7 @@ describe('ListField', () => {
       />,
     )
 
-    await userEvent.click(screen.getByRole('button', { name: 'Move claude down' }))
+    await user.click(screen.getByRole('button', { name: 'Move claude down' }))
     expect(onChange).toHaveBeenCalledWith(['gemini', 'claude'])
     await act(() => {
       d.resolve()
@@ -127,6 +131,7 @@ describe('ListField', () => {
   })
 
   it('reverts the optimistic list when onChange rejects', async () => {
+    const user = userEvent.setup()
     const d = deferred()
     const onChange = vi.fn(() => d.promise)
     render(
@@ -137,7 +142,7 @@ describe('ListField', () => {
       />,
     )
 
-    await userEvent.click(screen.getByRole('button', { name: 'Remove claude' }))
+    await user.click(screen.getByRole('button', { name: 'Remove claude' }))
     // Optimistically gone.
     expect(screen.queryByText('claude')).not.toBeInTheDocument()
 
@@ -154,6 +159,7 @@ describe('ListField', () => {
   })
 
   it('renders an inherit placeholder and overrides to an empty list', async () => {
+    const user = userEvent.setup()
     const d = deferred()
     const onChange = vi.fn(() => d.promise)
     render(
@@ -166,7 +172,7 @@ describe('ListField', () => {
     )
 
     expect(screen.getByText(/inherits global/i)).toBeInTheDocument()
-    await userEvent.click(screen.getByRole('button', { name: 'Override' }))
+    await user.click(screen.getByRole('button', { name: 'Override' }))
     expect(onChange).toHaveBeenCalledWith([])
     await act(() => {
       d.resolve()
@@ -175,6 +181,7 @@ describe('ListField', () => {
   })
 
   it('resets to inherit via the Inherit button', async () => {
+    const user = userEvent.setup()
     const d = deferred()
     const onChange = vi.fn(() => d.promise)
     render(
@@ -186,7 +193,7 @@ describe('ListField', () => {
       />,
     )
 
-    await userEvent.click(
+    await user.click(
       screen.getByRole('button', { name: 'Reset Providers to inherit' }),
     )
     expect(onChange).toHaveBeenCalledWith(null)
