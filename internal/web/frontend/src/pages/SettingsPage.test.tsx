@@ -3,7 +3,12 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
-import type { ConfigKeyInfo, ConfigResponse } from '../api'
+import type {
+  AnvilKeyInfo,
+  ConfigKeyInfo,
+  ConfigResponse,
+  ConfigValue,
+} from '../api'
 
 const { useApiPollMock, patchMock, patchAnvilMock } = vi.hoisted(() => ({
   useApiPollMock: vi.fn(),
@@ -21,8 +26,8 @@ vi.mock('../api', async () => {
     ...actual,
     forgeConfig: {
       get: vi.fn(),
-      patch: (changes: Record<string, boolean>) => patchMock(changes),
-      patchAnvil: (anvil: string, changes: Record<string, boolean | null>) =>
+      patch: (changes: Record<string, ConfigValue>) => patchMock(changes),
+      patchAnvil: (anvil: string, changes: Record<string, ConfigValue | null>) =>
         patchAnvilMock(anvil, changes),
     },
   }
@@ -33,6 +38,7 @@ import SettingsPage from './SettingsPage'
 function key(overrides: Partial<ConfigKeyInfo>): ConfigKeyInfo {
   return {
     key: 'schematic_enabled',
+    type: 'bool',
     value: false,
     isDefault: true,
     hotReloadable: false,
@@ -43,19 +49,98 @@ function key(overrides: Partial<ConfigKeyInfo>): ConfigKeyInfo {
   }
 }
 
+// ANVIL_KEYS mirrors a representative slice of the backend per-anvil schema:
+// a hot-reloadable plain bool, several tri-state bools, and the non-bool
+// scalars (number / enum / string).
+const ANVIL_KEYS: AnvilKeyInfo[] = [
+  {
+    key: 'auto_merge',
+    type: 'bool',
+    triState: false,
+    hotReloadable: true,
+    label: 'Auto-merge PRs',
+    description: "Automatically merge this anvil's PRs once checks pass.",
+  },
+  {
+    key: 'schematic_enabled',
+    type: 'bool',
+    triState: true,
+    hotReloadable: false,
+    label: 'Schematic pre-analysis',
+    description: 'Override the global Schematic pre-worker for this anvil.',
+  },
+  {
+    key: 'golangci_lint',
+    type: 'bool',
+    triState: true,
+    hotReloadable: false,
+    label: 'golangci-lint',
+    description: 'Run golangci-lint as a Temper step for this anvil.',
+  },
+  {
+    key: 'go_race_detection',
+    type: 'bool',
+    triState: true,
+    hotReloadable: false,
+    label: 'Go race detection',
+    description: 'Run the Go race detector for this anvil.',
+  },
+  {
+    key: 'wicket_auto_dispatch',
+    type: 'bool',
+    triState: false,
+    hotReloadable: false,
+    label: 'Wicket auto-dispatch',
+    description: 'Auto-dispatch beads created by Wicket triage.',
+  },
+  {
+    key: 'max_smiths',
+    type: 'int',
+    triState: false,
+    hotReloadable: false,
+    label: 'Max smiths',
+    description: 'Cap concurrent smiths for this anvil.',
+    min: 0,
+    max: 16,
+  },
+  {
+    key: 'auto_dispatch',
+    type: 'enum',
+    triState: false,
+    hotReloadable: false,
+    label: 'Auto-dispatch mode',
+    description: 'How beads are auto-dispatched for this anvil.',
+    options: ['off', 'labeled', 'all'],
+  },
+  {
+    key: 'platform',
+    type: 'string',
+    triState: false,
+    hotReloadable: false,
+    label: 'Platform',
+    description: 'CI platform override for this anvil.',
+  },
+]
+
 const CONFIG: ConfigResponse = {
   keys: [
-    key({ key: 'schematic_enabled', area: 'Pipeline', label: 'Schematic pre-analysis', value: false, hotReloadable: false }),
-    key({ key: 'auto_learn_rules', area: 'Warden', label: 'Auto-learn Warden rules', value: true, hotReloadable: false }),
-    key({ key: 'smelter_enabled', area: 'Smelter', label: 'Smelter background process', value: true, hotReloadable: true }),
+    key({ key: 'schematic_enabled', type: 'bool', area: 'Pipeline', label: 'Schematic pre-analysis', value: false, hotReloadable: false }),
+    key({ key: 'auto_learn_rules', type: 'bool', area: 'Warden', label: 'Auto-learn Warden rules', value: true, hotReloadable: false }),
+    key({ key: 'smelter_enabled', type: 'bool', area: 'Smelter', label: 'Smelter background process', value: true, hotReloadable: true }),
+    key({ key: 'max_total_smiths', type: 'int', area: 'Pipeline', label: 'Max total smiths', value: 4, hotReloadable: true, min: 1, max: 32 }),
+    key({ key: 'daily_cost_limit', type: 'float', area: 'Pipeline', label: 'Daily cost limit', value: 25, hotReloadable: true, unit: 'USD' }),
+    key({ key: 'log_level', type: 'enum', area: 'Pipeline', label: 'Log level', value: 'info', hotReloadable: true, options: ['debug', 'info', 'warn'] }),
+    key({ key: 'default_branch', type: 'string', area: 'Pipeline', label: 'Default branch', value: 'main', hotReloadable: true }),
   ],
+  anvilKeys: ANVIL_KEYS,
   anvils: {},
 }
 
 // CONFIG_WITH_ANVILS adds two registered anvils with a mix of inherit/explicit
-// tri-state values and plain bools, exercising the per-anvil section.
+// tri-state values, plain bools, and the non-bool scalars.
 const CONFIG_WITH_ANVILS: ConfigResponse = {
   keys: CONFIG.keys,
+  anvilKeys: ANVIL_KEYS,
   anvils: {
     heimdall: {
       auto_merge: true,
@@ -66,6 +151,11 @@ const CONFIG_WITH_ANVILS: ConfigResponse = {
       questgiver_enabled: null,
       wicket_enabled: null,
       wicket_auto_dispatch: false,
+      max_smiths: 3,
+      auto_dispatch: 'labeled',
+      auto_dispatch_tag: 'forgeReady',
+      auto_dispatch_min_priority: 2,
+      platform: 'github',
     },
     metadata: {
       auto_merge: false,
@@ -76,6 +166,11 @@ const CONFIG_WITH_ANVILS: ConfigResponse = {
       questgiver_enabled: null,
       wicket_enabled: null,
       wicket_auto_dispatch: true,
+      max_smiths: 1,
+      auto_dispatch: 'off',
+      auto_dispatch_tag: '',
+      auto_dispatch_min_priority: 0,
+      platform: '',
     },
   },
 }
@@ -119,7 +214,7 @@ describe('SettingsPage', () => {
     expect(screen.getByText('Auto-learn Warden rules')).toBeInTheDocument()
   })
 
-  it('reflects the current value of each setting', () => {
+  it('reflects the current value of each bool setting', () => {
     mockPoll({ data: CONFIG })
     renderPage()
 
@@ -138,13 +233,14 @@ describe('SettingsPage', () => {
     renderPage()
 
     const pipeline = screen.getByRole('region', { name: 'Pipeline' })
-    expect(within(pipeline).getByText(/applies on next run/i)).toBeInTheDocument()
+    // schematic_enabled (in Pipeline) is non-hot-reloadable.
+    expect(within(pipeline).getAllByText(/applies on next run/i).length).toBeGreaterThan(0)
 
     const smelter = screen.getByRole('region', { name: 'Smelter' })
     expect(within(smelter).queryByText(/applies on next run/i)).not.toBeInTheDocument()
   })
 
-  it('PATCHes the toggled key and optimistically updates', async () => {
+  it('PATCHes the toggled bool key', async () => {
     patchMock.mockResolvedValue(CONFIG)
     mockPoll({ data: CONFIG })
     renderPage()
@@ -176,6 +272,34 @@ describe('SettingsPage', () => {
     })
 
     await waitFor(() => expect(sw).toHaveAttribute('aria-checked', 'false'))
+  })
+
+  it('renders a global number field and PATCHes the typed number on blur', async () => {
+    patchMock.mockResolvedValue(CONFIG)
+    mockPoll({ data: CONFIG })
+    renderPage()
+
+    const input = screen.getByRole('spinbutton', { name: 'Max total smiths' })
+    expect(input).toHaveValue(4)
+
+    await userEvent.clear(input)
+    await userEvent.type(input, '8')
+    await userEvent.tab() // commit on blur
+
+    expect(patchMock).toHaveBeenCalledWith({ max_total_smiths: 8 })
+  })
+
+  it('renders a global enum select and PATCHes the chosen option', async () => {
+    patchMock.mockResolvedValue(CONFIG)
+    mockPoll({ data: CONFIG })
+    renderPage()
+
+    const select = screen.getByRole('combobox', { name: 'Log level' })
+    expect(select).toHaveValue('info')
+
+    await userEvent.selectOptions(select, 'debug')
+
+    expect(patchMock).toHaveBeenCalledWith({ log_level: 'debug' })
   })
 
   it('renders an error pane when the config fails to load', () => {
@@ -274,6 +398,51 @@ describe('SettingsPage', () => {
       await userEvent.click(sw)
 
       expect(patchAnvilMock).toHaveBeenCalledWith('heimdall', { auto_merge: false })
+    })
+
+    it('renders a per-anvil scalar (max_smiths) and PATCHes the typed number', async () => {
+      patchAnvilMock.mockResolvedValue({})
+      mockPoll({ data: CONFIG_WITH_ANVILS })
+      renderPage()
+
+      const input = within(
+        screen.getByRole('region', { name: 'heimdall' }),
+      ).getByRole('spinbutton', { name: 'heimdall Max smiths' })
+      expect(input).toHaveValue(3)
+
+      await userEvent.clear(input)
+      await userEvent.type(input, '6')
+      await userEvent.tab()
+
+      expect(patchAnvilMock).toHaveBeenCalledWith('heimdall', { max_smiths: 6 })
+    })
+
+    it('renders a per-anvil enum and PATCHes the chosen option', async () => {
+      patchAnvilMock.mockResolvedValue({})
+      mockPoll({ data: CONFIG_WITH_ANVILS })
+      renderPage()
+
+      const select = within(
+        screen.getByRole('region', { name: 'heimdall' }),
+      ).getByRole('combobox', { name: 'heimdall Auto-dispatch mode' })
+      expect(select).toHaveValue('labeled')
+
+      await userEvent.selectOptions(select, 'all')
+
+      expect(patchAnvilMock).toHaveBeenCalledWith('heimdall', { auto_dispatch: 'all' })
+    })
+
+    it('PATCHes null when a per-anvil scalar Inherit reset is clicked', async () => {
+      patchAnvilMock.mockResolvedValue({})
+      mockPoll({ data: CONFIG_WITH_ANVILS })
+      renderPage()
+
+      const reset = within(
+        screen.getByRole('region', { name: 'heimdall' }),
+      ).getByRole('button', { name: /Reset heimdall Max smiths to inherit/i })
+      await userEvent.click(reset)
+
+      expect(patchAnvilMock).toHaveBeenCalledWith('heimdall', { max_smiths: null })
     })
 
     it('shows "applies on next run" for next-run keys but not for auto_merge', () => {

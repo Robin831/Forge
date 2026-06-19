@@ -163,6 +163,16 @@ type AnvilSettings struct {
 	QuestgiverEnabled  *bool `json:"questgiver_enabled"`
 	WicketEnabled      *bool `json:"wicket_enabled"`
 	WicketAutoDispatch bool  `json:"wicket_auto_dispatch"`
+
+	// Non-boolean per-anvil scalars (Forge-85wn). Plain values (no inherit
+	// semantics): MaxSmiths caps this anvil's concurrent workers; AutoDispatch
+	// selects the dispatch mode; AutoDispatchTag/MinPriority parameterise it;
+	// Platform selects the VCS provider.
+	MaxSmiths               int    `json:"max_smiths"`
+	AutoDispatch            string `json:"auto_dispatch"`
+	AutoDispatchTag         string `json:"auto_dispatch_tag"`
+	AutoDispatchMinPriority int    `json:"auto_dispatch_min_priority"`
+	Platform                string `json:"platform"`
 }
 
 // AnvilSettingsMap projects every configured anvil into an AnvilSettings
@@ -173,14 +183,19 @@ func (c *Config) AnvilSettingsMap() map[string]AnvilSettings {
 	out := make(map[string]AnvilSettings, len(c.Anvils))
 	for name, anvil := range c.Anvils {
 		out[name] = AnvilSettings{
-			AutoMerge:          anvil.AutoMerge,
-			SchematicEnabled:   copyBool(anvil.SchematicEnabled),
-			GolangciLint:       copyBool(anvil.GolangciLint),
-			GoRaceDetection:    copyBool(anvil.GoRaceDetection),
-			DepcheckEnabled:    copyBool(anvil.DepcheckEnabled),
-			QuestgiverEnabled:  copyBool(anvil.QuestgiverEnabled),
-			WicketEnabled:      copyBool(anvil.WicketEnabled),
-			WicketAutoDispatch: anvil.WicketAutoDispatch,
+			AutoMerge:               anvil.AutoMerge,
+			SchematicEnabled:        copyBool(anvil.SchematicEnabled),
+			GolangciLint:            copyBool(anvil.GolangciLint),
+			GoRaceDetection:         copyBool(anvil.GoRaceDetection),
+			DepcheckEnabled:         copyBool(anvil.DepcheckEnabled),
+			QuestgiverEnabled:       copyBool(anvil.QuestgiverEnabled),
+			WicketEnabled:           copyBool(anvil.WicketEnabled),
+			WicketAutoDispatch:      anvil.WicketAutoDispatch,
+			MaxSmiths:               anvil.MaxSmiths,
+			AutoDispatch:            anvil.AutoDispatch,
+			AutoDispatchTag:         anvil.AutoDispatchTag,
+			AutoDispatchMinPriority: anvil.AutoDispatchMinPriority,
+			Platform:                anvil.Platform,
 		}
 	}
 	return out
@@ -697,39 +712,39 @@ type forgeChatShadow struct {
 func (s SettingsConfig) MarshalYAML() (interface{}, error) {
 	// Shadow struct with durations replaced by strings.
 	type shadow struct {
-		PollInterval              string   `yaml:"poll_interval"`
-		SmithTimeout              string   `yaml:"smith_timeout"`
-		MaxTotalSmiths            int      `yaml:"max_total_smiths"`
-		MaxReviewAttempts         int      `yaml:"max_review_attempts"`
-		MaxPipelineIterations     int      `yaml:"max_pipeline_iterations"`
-		ClaudeFlags               []string `yaml:"claude_flags"`
-		Providers                 []string `yaml:"providers,omitempty"`
-		RateLimitBackoff          string   `yaml:"rate_limit_backoff"`
+		PollInterval              string              `yaml:"poll_interval"`
+		SmithTimeout              string              `yaml:"smith_timeout"`
+		MaxTotalSmiths            int                 `yaml:"max_total_smiths"`
+		MaxReviewAttempts         int                 `yaml:"max_review_attempts"`
+		MaxPipelineIterations     int                 `yaml:"max_pipeline_iterations"`
+		ClaudeFlags               []string            `yaml:"claude_flags"`
+		Providers                 []string            `yaml:"providers,omitempty"`
+		RateLimitBackoff          string              `yaml:"rate_limit_backoff"`
 		SmithProviders            []string            `yaml:"smith_providers,omitempty"`
 		StageProviders            map[string][]string `yaml:"stage_providers,omitempty"`
 		SchematicEnabled          bool                `yaml:"schematic_enabled"`
-		SchematicWordThreshold    int      `yaml:"schematic_word_threshold,omitempty"`
-		BellowsInterval           string   `yaml:"bellows_interval"`
-		DailyCostLimit            float64  `yaml:"daily_cost_limit,omitempty"`
-		MaxCIFixAttempts          int      `yaml:"max_ci_fix_attempts"`
-		MaxReviewFixAttempts      int      `yaml:"max_review_fix_attempts"`
-		MaxRebaseAttempts         int      `yaml:"max_rebase_attempts"`
-		MaxLifecycleWorkers       int      `yaml:"max_lifecycle_workers"`
-		BurnishVerifyTimeout      string   `yaml:"burnish_verify_timeout,omitempty"`
-		MergeStrategy             string   `yaml:"merge_strategy,omitempty"`
-		StaleInterval             string   `yaml:"stale_interval"`
-		DepcheckInterval          string   `yaml:"depcheck_interval,omitempty"`
-		DepcheckTimeout           string   `yaml:"depcheck_timeout,omitempty"`
-		VulncheckInterval         string   `yaml:"vulncheck_interval,omitempty"`
-		VulncheckTimeout          string   `yaml:"vulncheck_timeout,omitempty"`
-		VulncheckEnabled          *bool    `yaml:"vulncheck_enabled,omitempty"`
-		GoRaceDetection           bool     `yaml:"go_race_detection"`
-		AutoLearnRules            bool     `yaml:"auto_learn_rules"`
-		CopilotDailyRequestLimit  int      `yaml:"copilot_daily_request_limit,omitempty"`
-		CrucibleEnabled           bool     `yaml:"crucible_enabled"`
-		AutoMergeCrucibleChildren *bool    `yaml:"auto_merge_crucible_children,omitempty"`
-		WardenModelOverride       string   `yaml:"warden_model_override,omitempty"`
-		SchematicModelOverride    string   `yaml:"schematic_model_override,omitempty"`
+		SchematicWordThreshold    int                 `yaml:"schematic_word_threshold,omitempty"`
+		BellowsInterval           string              `yaml:"bellows_interval"`
+		DailyCostLimit            float64             `yaml:"daily_cost_limit,omitempty"`
+		MaxCIFixAttempts          int                 `yaml:"max_ci_fix_attempts"`
+		MaxReviewFixAttempts      int                 `yaml:"max_review_fix_attempts"`
+		MaxRebaseAttempts         int                 `yaml:"max_rebase_attempts"`
+		MaxLifecycleWorkers       int                 `yaml:"max_lifecycle_workers"`
+		BurnishVerifyTimeout      string              `yaml:"burnish_verify_timeout,omitempty"`
+		MergeStrategy             string              `yaml:"merge_strategy,omitempty"`
+		StaleInterval             string              `yaml:"stale_interval"`
+		DepcheckInterval          string              `yaml:"depcheck_interval,omitempty"`
+		DepcheckTimeout           string              `yaml:"depcheck_timeout,omitempty"`
+		VulncheckInterval         string              `yaml:"vulncheck_interval,omitempty"`
+		VulncheckTimeout          string              `yaml:"vulncheck_timeout,omitempty"`
+		VulncheckEnabled          *bool               `yaml:"vulncheck_enabled,omitempty"`
+		GoRaceDetection           bool                `yaml:"go_race_detection"`
+		AutoLearnRules            bool                `yaml:"auto_learn_rules"`
+		CopilotDailyRequestLimit  int                 `yaml:"copilot_daily_request_limit,omitempty"`
+		CrucibleEnabled           bool                `yaml:"crucible_enabled"`
+		AutoMergeCrucibleChildren *bool               `yaml:"auto_merge_crucible_children,omitempty"`
+		WardenModelOverride       string              `yaml:"warden_model_override,omitempty"`
+		SchematicModelOverride    string              `yaml:"schematic_model_override,omitempty"`
 
 		CopilotSkipWardenSmallDiffs bool    `yaml:"copilot_skip_warden_small_diffs"`
 		CopilotBatchCIFixes         bool    `yaml:"copilot_batch_ci_fixes"`
@@ -743,42 +758,42 @@ func (s SettingsConfig) MarshalYAML() (interface{}, error) {
 		QuestgiverInterval          string  `yaml:"questgiver_interval,omitempty"`
 		AdventurerTimeout           string  `yaml:"adventurer_timeout,omitempty"`
 
-		WicketEnabled          bool   `yaml:"wicket_enabled"`
-		WicketInterval         string `yaml:"wicket_interval"`
-		WicketProvider         string `yaml:"wicket_provider,omitempty"`
-		WicketBatchSize        int    `yaml:"wicket_batch_size,omitempty"`
-		WicketProcessedLabel   string `yaml:"wicket_processed_label,omitempty"`
-		WicketNeedsHumanLabel  string `yaml:"wicket_needs_human_label,omitempty"`
-		WicketBeadCreatedLabel string `yaml:"wicket_bead_created_label,omitempty"`
-		WicketTriggerLabel     string `yaml:"wicket_trigger_label,omitempty"`
-		WicketStaleDays          int            `yaml:"wicket_stale_days,omitempty"`
-		BdReadyLimit             int            `yaml:"bd_ready_limit,omitempty"`
-		CruciblePollInterval     string         `yaml:"crucible_poll_interval,omitempty"`
-		ForgeID                  string         `yaml:"forge_id,omitempty"`
-		Warden                   WardenSettings `yaml:"warden,omitempty"`
-		ForgeChat                forgeChatShadow `yaml:"forgechat,omitempty"`
+		WicketEnabled          bool            `yaml:"wicket_enabled"`
+		WicketInterval         string          `yaml:"wicket_interval"`
+		WicketProvider         string          `yaml:"wicket_provider,omitempty"`
+		WicketBatchSize        int             `yaml:"wicket_batch_size,omitempty"`
+		WicketProcessedLabel   string          `yaml:"wicket_processed_label,omitempty"`
+		WicketNeedsHumanLabel  string          `yaml:"wicket_needs_human_label,omitempty"`
+		WicketBeadCreatedLabel string          `yaml:"wicket_bead_created_label,omitempty"`
+		WicketTriggerLabel     string          `yaml:"wicket_trigger_label,omitempty"`
+		WicketStaleDays        int             `yaml:"wicket_stale_days,omitempty"`
+		BdReadyLimit           int             `yaml:"bd_ready_limit,omitempty"`
+		CruciblePollInterval   string          `yaml:"crucible_poll_interval,omitempty"`
+		ForgeID                string          `yaml:"forge_id,omitempty"`
+		Warden                 WardenSettings  `yaml:"warden,omitempty"`
+		ForgeChat              forgeChatShadow `yaml:"forgechat,omitempty"`
 	}
 
 	sh := shadow{
-		PollInterval:              durationString(s.PollInterval),
-		SmithTimeout:              durationString(s.SmithTimeout),
-		MaxTotalSmiths:            s.MaxTotalSmiths,
-		MaxReviewAttempts:         s.MaxReviewAttempts,
-		MaxPipelineIterations:     s.MaxPipelineIterations,
-		ClaudeFlags:               s.ClaudeFlags,
-		Providers:                 s.Providers,
-		RateLimitBackoff:          durationString(s.RateLimitBackoff),
-		SmithProviders:            s.SmithProviders,
-		StageProviders:            s.StageProviders,
-		SchematicEnabled:          s.SchematicEnabled,
-		SchematicWordThreshold:    s.SchematicWordThreshold,
-		BellowsInterval:           durationString(s.BellowsInterval),
-		DailyCostLimit:            s.DailyCostLimit,
-		MaxCIFixAttempts:          s.MaxCIFixAttempts,
-		MaxReviewFixAttempts:      s.MaxReviewFixAttempts,
-		MaxRebaseAttempts:         s.MaxRebaseAttempts,
-		MaxLifecycleWorkers:       s.MaxLifecycleWorkers,
-		BurnishVerifyTimeout:      func() string {
+		PollInterval:           durationString(s.PollInterval),
+		SmithTimeout:           durationString(s.SmithTimeout),
+		MaxTotalSmiths:         s.MaxTotalSmiths,
+		MaxReviewAttempts:      s.MaxReviewAttempts,
+		MaxPipelineIterations:  s.MaxPipelineIterations,
+		ClaudeFlags:            s.ClaudeFlags,
+		Providers:              s.Providers,
+		RateLimitBackoff:       durationString(s.RateLimitBackoff),
+		SmithProviders:         s.SmithProviders,
+		StageProviders:         s.StageProviders,
+		SchematicEnabled:       s.SchematicEnabled,
+		SchematicWordThreshold: s.SchematicWordThreshold,
+		BellowsInterval:        durationString(s.BellowsInterval),
+		DailyCostLimit:         s.DailyCostLimit,
+		MaxCIFixAttempts:       s.MaxCIFixAttempts,
+		MaxReviewFixAttempts:   s.MaxReviewFixAttempts,
+		MaxRebaseAttempts:      s.MaxRebaseAttempts,
+		MaxLifecycleWorkers:    s.MaxLifecycleWorkers,
+		BurnishVerifyTimeout: func() string {
 			if s.BurnishVerifyTimeout > 0 {
 				return durationString(s.BurnishVerifyTimeout)
 			}
@@ -1034,17 +1049,17 @@ func (n NotificationsConfig) ResolvedTeamsEvents() []string {
 type AssayConfig struct {
 	Enabled           *bool    `mapstructure:"enabled" yaml:"enabled,omitempty"`
 	ShadowMode        *bool    `mapstructure:"shadow_mode" yaml:"shadow_mode,omitempty"`
-	DebounceSeconds   *int      `mapstructure:"debounce_seconds" yaml:"debounce_seconds,omitempty"`
-	DailyCostLimitUSD *float64  `mapstructure:"daily_cost_limit_usd" yaml:"daily_cost_limit_usd,omitempty"`
-	MaxRuns           *int      `mapstructure:"max_runs" yaml:"max_runs,omitempty"`
+	DebounceSeconds   *int     `mapstructure:"debounce_seconds" yaml:"debounce_seconds,omitempty"`
+	DailyCostLimitUSD *float64 `mapstructure:"daily_cost_limit_usd" yaml:"daily_cost_limit_usd,omitempty"`
+	MaxRuns           *int     `mapstructure:"max_runs" yaml:"max_runs,omitempty"`
 	TriageProvider    string   `mapstructure:"triage_provider" yaml:"triage_provider,omitempty"`
 	ReviewProvider    string   `mapstructure:"review_provider" yaml:"review_provider,omitempty"`
 	ModelTier         string   `mapstructure:"model_tier" yaml:"model_tier,omitempty"`
 	TriageModel       string   `mapstructure:"triage_model" yaml:"triage_model,omitempty"` // model hint
 	ReviewModel       string   `mapstructure:"review_model" yaml:"review_model,omitempty"` // model hint
-	MaxDiffBytes      *int      `mapstructure:"max_diff_bytes" yaml:"max_diff_bytes,omitempty"`
-	MaxBaseFileBytes  *int      `mapstructure:"max_base_file_bytes" yaml:"max_base_file_bytes,omitempty"`
-	NitCap            *int      `mapstructure:"nit_cap" yaml:"nit_cap,omitempty"`
+	MaxDiffBytes      *int     `mapstructure:"max_diff_bytes" yaml:"max_diff_bytes,omitempty"`
+	MaxBaseFileBytes  *int     `mapstructure:"max_base_file_bytes" yaml:"max_base_file_bytes,omitempty"`
+	NitCap            *int     `mapstructure:"nit_cap" yaml:"nit_cap,omitempty"`
 	SkipDrafts        *bool    `mapstructure:"skip_drafts" yaml:"skip_drafts,omitempty"`
 	SkipPaths         []string `mapstructure:"skip_paths" yaml:"skip_paths,omitempty"`
 }
@@ -1213,9 +1228,9 @@ func Defaults() Config {
 			DepcheckTimeout:      5 * time.Minute,
 			VulncheckInterval:    24 * time.Hour,
 			VulncheckTimeout:     10 * time.Minute,
-			SmelterInterval:    8 * time.Hour,
-			QuestgiverInterval: 24 * time.Hour,
-			AdventurerTimeout:  5 * time.Minute,
+			SmelterInterval:      8 * time.Hour,
+			QuestgiverInterval:   24 * time.Hour,
+			AdventurerTimeout:    5 * time.Minute,
 			// Copilot combined Smith+Warden mode settings.
 			CopilotWardenSampleRate: 0.1,
 			// Wicket issue triage monitor defaults.
@@ -1241,9 +1256,9 @@ func Defaults() Config {
 			},
 		},
 		Assay: AssayConfig{
-			Enabled:          boolPtr(false),
-			ShadowMode:       boolPtr(true),
-			SkipDrafts:       boolPtr(true),
+			Enabled:    boolPtr(false),
+			ShadowMode: boolPtr(true),
+			SkipDrafts: boolPtr(true),
 			// Pilot-safety defaults: 5-minute debounce coalesces rapid push
 			// bursts; nit_cap=5 mirrors the design's noise budget; a non-zero
 			// daily cost cap means an unconfigured deployment can't silently

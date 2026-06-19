@@ -76,12 +76,12 @@ func TestForgeConfig_GetReturnsAllManagedKeys(t *testing.T) {
 
 	// Tri-state *bool keys default to true.
 	for _, key := range []string{"auto_merge_crucible_children", "vulncheck_enabled", "smelter_enabled"} {
-		if !byKey[key].Value {
+		if !cfgBool(t, byKey[key].Value) {
 			t.Errorf("tri-state key %s: expected default true, got false", key)
 		}
 	}
 	// Plain bool keys default to false.
-	if byKey["schematic_enabled"].Value {
+	if cfgBool(t, byKey["schematic_enabled"].Value) {
 		t.Errorf("schematic_enabled: expected default false")
 	}
 
@@ -119,11 +119,11 @@ func TestForgeConfig_GetReflectsFileValues(t *testing.T) {
 	}
 
 	// schematic_enabled flipped to true => not default.
-	if !byKey["schematic_enabled"].Value || byKey["schematic_enabled"].IsDefault {
+	if !cfgBool(t, byKey["schematic_enabled"].Value) || byKey["schematic_enabled"].IsDefault {
 		t.Errorf("schematic_enabled: expected value=true, isDefault=false, got %+v", byKey["schematic_enabled"])
 	}
 	// smelter_enabled explicitly false => not default (default is true).
-	if byKey["smelter_enabled"].Value || byKey["smelter_enabled"].IsDefault {
+	if cfgBool(t, byKey["smelter_enabled"].Value) || byKey["smelter_enabled"].IsDefault {
 		t.Errorf("smelter_enabled: expected value=false, isDefault=false, got %+v", byKey["smelter_enabled"])
 	}
 }
@@ -156,10 +156,10 @@ anvils:
 	for _, k := range resp.Keys {
 		byKey[k.Key] = k
 	}
-	if !byKey["schematic_enabled"].Value {
+	if !cfgBool(t, byKey["schematic_enabled"].Value) {
 		t.Errorf("response: schematic_enabled not true")
 	}
-	if byKey["vulncheck_enabled"].Value {
+	if cfgBool(t, byKey["vulncheck_enabled"].Value) {
 		t.Errorf("response: vulncheck_enabled not false")
 	}
 
@@ -244,6 +244,17 @@ func TestForgeConfig_PatchRequiresCSRFHeader(t *testing.T) {
 	}
 }
 
+// cfgBool extracts a boolean from a ConfigKeyInfo.Value (typed as any since
+// Forge-85wn made values typed). It fails the test if the value is not a bool.
+func cfgBool(t *testing.T, v any) bool {
+	t.Helper()
+	b, ok := v.(bool)
+	if !ok {
+		t.Fatalf("expected bool value, got %T (%v)", v, v)
+	}
+	return b
+}
+
 // TestForgeConfig_TriStateNilResolvesToDefault verifies the value accessors
 // resolve a nil *bool to its documented default directly (independent of the
 // viper loader, which may materialise defaults of its own).
@@ -251,10 +262,10 @@ func TestForgeConfig_TriStateNilResolvesToDefault(t *testing.T) {
 	var empty config.SettingsConfig // all *bool fields nil
 	for _, key := range []string{"auto_merge_crucible_children", "vulncheck_enabled", "smelter_enabled"} {
 		def := configKeyByName[key]
-		if !def.value(empty) {
+		if !cfgBool(t, def.value(empty)) {
 			t.Errorf("key %s: nil *bool should resolve to true, got false", key)
 		}
-		if !def.Default {
+		if !cfgBool(t, def.Default) {
 			t.Errorf("key %s: expected documented default true", key)
 		}
 	}
@@ -782,5 +793,160 @@ func TestForgeConfig_GetEmptyAnvilsIsObjectNotNull(t *testing.T) {
 	}
 	if len(resp.Anvils) != 0 {
 		t.Errorf("expected empty anvils map, got %d entries", len(resp.Anvils))
+	}
+}
+
+// --- Forge-85wn: typed (non-boolean) settings ---
+
+// TestForgeConfig_GetTypedMetadata verifies GET exposes type/min/max/options for
+// non-boolean global keys and a per-anvil key schema.
+func TestForgeConfig_GetTypedMetadata(t *testing.T) {
+	srv := newServerWithDefaults(t, nil)
+	cookie := loginAndGetCookie(t, srv)
+	withConfigFixture(t, srv, "")
+
+	var resp ConfigResponse
+	rec := forgeRequest(t, srv, http.MethodGet, "/api/forge/config", "", cookie)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	byKey := map[string]ConfigKeyInfo{}
+	for _, k := range resp.Keys {
+		byKey[k.Key] = k
+	}
+
+	smiths, ok := byKey["max_total_smiths"]
+	if !ok {
+		t.Fatal("max_total_smiths missing from response")
+	}
+	if smiths.Type != "int" {
+		t.Errorf("max_total_smiths type = %q, want int", smiths.Type)
+	}
+	if v, ok := smiths.Value.(float64); !ok || v != 4 {
+		t.Errorf("max_total_smiths value = %v (%T), want 4", smiths.Value, smiths.Value)
+	}
+	if smiths.Min == nil || *smiths.Min != 1 {
+		t.Errorf("max_total_smiths min = %v, want 1", smiths.Min)
+	}
+
+	merge, ok := byKey["merge_strategy"]
+	if !ok || merge.Type != "enum" {
+		t.Fatalf("merge_strategy missing or wrong type: %+v", merge)
+	}
+	if len(merge.Options) != 3 {
+		t.Errorf("merge_strategy options = %v, want 3", merge.Options)
+	}
+
+	// Per-anvil schema must be present and include a non-bool scalar.
+	var foundMaxSmiths bool
+	for _, ak := range resp.AnvilKeys {
+		if ak.Key == "max_smiths" && ak.Type == "int" {
+			foundMaxSmiths = true
+		}
+	}
+	if !foundMaxSmiths {
+		t.Errorf("anvilKeys missing max_smiths int entry: %+v", resp.AnvilKeys)
+	}
+}
+
+// TestForgeConfig_PatchIntPersistsAndValidates checks an int setting persists as
+// a YAML integer and that out-of-range / non-integer values are rejected.
+func TestForgeConfig_PatchIntPersistsAndValidates(t *testing.T) {
+	srv := newServerWithDefaults(t, nil)
+	cookie := loginAndGetCookie(t, srv)
+	path := withConfigFixture(t, srv, "settings: {}\n")
+
+	rec := forgeRequest(t, srv, http.MethodPatch, "/api/forge/config", `{"max_total_smiths":8}`, cookie)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("PATCH int: expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+	if !strings.Contains(string(raw), "max_total_smiths: 8") {
+		t.Errorf("expected 'max_total_smiths: 8' in file, got:\n%s", raw)
+	}
+
+	// Out of range (max is 64).
+	rec = forgeRequest(t, srv, http.MethodPatch, "/api/forge/config", `{"max_total_smiths":999}`, cookie)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("out-of-range int: expected 400, got %d", rec.Code)
+	}
+	// Non-integer for an int key.
+	rec = forgeRequest(t, srv, http.MethodPatch, "/api/forge/config", `{"max_total_smiths":2.5}`, cookie)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("non-integer int: expected 400, got %d", rec.Code)
+	}
+}
+
+// TestForgeConfig_PatchEnumValidates checks enum membership is enforced.
+func TestForgeConfig_PatchEnumValidates(t *testing.T) {
+	srv := newServerWithDefaults(t, nil)
+	cookie := loginAndGetCookie(t, srv)
+	path := withConfigFixture(t, srv, "settings: {}\n")
+
+	rec := forgeRequest(t, srv, http.MethodPatch, "/api/forge/config", `{"merge_strategy":"rebase"}`, cookie)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("PATCH enum: expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	raw, _ := os.ReadFile(path)
+	if !strings.Contains(string(raw), "merge_strategy: rebase") {
+		t.Errorf("expected merge_strategy: rebase, got:\n%s", raw)
+	}
+	rec = forgeRequest(t, srv, http.MethodPatch, "/api/forge/config", `{"merge_strategy":"bogus"}`, cookie)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("invalid enum: expected 400, got %d", rec.Code)
+	}
+}
+
+// TestForgeAnvilConfig_PatchScalars covers per-anvil non-bool scalars: int set,
+// enum validation, and null-clears-to-inherit.
+func TestForgeAnvilConfig_PatchScalars(t *testing.T) {
+	srv := newServerWithDefaults(t, nil)
+	cookie := loginAndGetCookie(t, srv)
+	path := withConfigFixture(t, srv, `anvils:
+  forge:
+    path: /tmp/forge
+    max_smiths: 1
+`)
+
+	// Set an int + enum together.
+	rec := forgeRequest(t, srv, http.MethodPatch, "/api/forge/config/anvils/forge",
+		`{"max_smiths":3,"auto_dispatch":"tagged"}`, cookie)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("PATCH scalars: expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	resp := decodeAnvilPatch(t, rec.Body.Bytes())
+	if resp.Settings.MaxSmiths != 3 {
+		t.Errorf("max_smiths = %d, want 3", resp.Settings.MaxSmiths)
+	}
+	if resp.Settings.AutoDispatch != "tagged" {
+		t.Errorf("auto_dispatch = %q, want tagged", resp.Settings.AutoDispatch)
+	}
+	raw, _ := os.ReadFile(path)
+	if !strings.Contains(string(raw), "max_smiths: 3") {
+		t.Errorf("expected max_smiths: 3 in file, got:\n%s", raw)
+	}
+
+	// Invalid enum rejected.
+	rec = forgeRequest(t, srv, http.MethodPatch, "/api/forge/config/anvils/forge",
+		`{"auto_dispatch":"sideways"}`, cookie)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("invalid per-anvil enum: expected 400, got %d", rec.Code)
+	}
+
+	// null clears the scalar (back to default 0).
+	rec = forgeRequest(t, srv, http.MethodPatch, "/api/forge/config/anvils/forge",
+		`{"max_smiths":null}`, cookie)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("null clear: expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	raw, _ = os.ReadFile(path)
+	if strings.Contains(string(raw), "max_smiths:") {
+		t.Errorf("expected max_smiths removed after null, got:\n%s", raw)
 	}
 }

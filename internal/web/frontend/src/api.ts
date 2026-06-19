@@ -711,19 +711,49 @@ export async function apiSend<T = unknown>(
   return (parsed ?? {}) as T
 }
 
-// ConfigKeyInfo mirrors Go's web.ConfigKeyInfo — one managed boolean setting
-// with the metadata the SettingsPage needs to render and group it. `value` is
-// the current effective value (defaults applied for tri-state keys);
-// `hotReloadable` is true only for keys the running daemon applies without a
-// restart, which drives the "applies on next run" hint for the rest.
+// ConfigValueType is the value type of a managed setting; it selects which
+// control the SettingsPage renders (bool→switch, int/float→number, enum→select,
+// string→text).
+export type ConfigValueType = 'bool' | 'int' | 'float' | 'enum' | 'string'
+
+// ConfigValue is the typed value of a managed setting as it appears in JSON.
+export type ConfigValue = boolean | number | string
+
+// ConfigKeyInfo mirrors Go's web.ConfigKeyInfo — one managed setting with the
+// metadata the SettingsPage needs to render and group it. `value` is typed per
+// `type`; `options` is the allowed set for enums; `min`/`max` bound numbers;
+// `unit` is an optional display suffix. `hotReloadable` is true only for keys
+// the running daemon applies without a restart, which drives the "applies on
+// next run" hint for the rest.
 export interface ConfigKeyInfo {
   key: string
-  value: boolean
+  type: ConfigValueType
+  value: ConfigValue
   isDefault: boolean
   hotReloadable: boolean
   area: string
   label: string
   description: string
+  options?: string[]
+  min?: number
+  max?: number
+  unit?: string
+}
+
+// AnvilKeyInfo mirrors Go's web.AnvilKeyInfo — the per-anvil key schema served
+// in `anvilKeys` so the UI renders per-anvil controls from metadata rather than
+// a hardcoded list. `triState` marks *bool keys where `null` clears the override
+// (anvil inherits the global/default).
+export interface AnvilKeyInfo {
+  key: string
+  type: ConfigValueType
+  triState: boolean
+  hotReloadable: boolean
+  label: string
+  description: string
+  options?: string[]
+  min?: number
+  max?: number
 }
 
 // AnvilSettings mirrors Go's config.AnvilSettings — the per-anvil projection
@@ -732,7 +762,8 @@ export interface ConfigKeyInfo {
 // setting or built-in default), while `true`/`false` is an explicit override.
 // This nullable distinction must survive the round-trip, so callers must NOT
 // collapse `null` to `false`. `auto_merge` and `wicket_auto_dispatch` are plain
-// booleans with no inherit semantics.
+// booleans with no inherit semantics. The remaining fields are non-boolean
+// per-anvil scalars (Forge-85wn).
 export interface AnvilSettings {
   auto_merge: boolean
   schematic_enabled: boolean | null
@@ -742,14 +773,21 @@ export interface AnvilSettings {
   questgiver_enabled: boolean | null
   wicket_enabled: boolean | null
   wicket_auto_dispatch: boolean
+  max_smiths: number
+  auto_dispatch: string
+  auto_dispatch_tag: string
+  auto_dispatch_min_priority: number
+  platform: string
 }
 
 // ConfigResponse is the body of GET /api/forge/config (and the echo returned by
 // PATCH). `keys` is server-ordered so the UI renders deterministically.
-// `anvils` maps each configured anvil name to its per-anvil overrides; it is
-// always present (an empty object when no anvils are configured).
+// `anvilKeys` is the per-anvil key schema. `anvils` maps each configured anvil
+// name to its per-anvil overrides; it is always present (an empty object when no
+// anvils are configured).
 export interface ConfigResponse {
   keys: ConfigKeyInfo[]
+  anvilKeys: AnvilKeyInfo[]
   anvils: Record<string, AnvilSettings>
 }
 
@@ -782,9 +820,9 @@ export interface AnvilConfigPatchResponse {
 // key->(boolean|null).
 export const forgeConfig = {
   get: (signal?: AbortSignal) => apiGet<ConfigResponse>('/api/forge/config', signal),
-  patch: (changes: Record<string, boolean>) =>
+  patch: (changes: Record<string, ConfigValue>) =>
     apiSend<ConfigResponse>('PATCH', '/api/forge/config', changes),
-  patchAnvil: (anvil: string, changes: Record<string, boolean | null>) =>
+  patchAnvil: (anvil: string, changes: Record<string, ConfigValue | null>) =>
     apiSend<AnvilConfigPatchResponse>(
       'PATCH',
       `/api/forge/config/anvils/${encodeURIComponent(anvil)}`,

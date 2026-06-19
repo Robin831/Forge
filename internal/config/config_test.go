@@ -653,8 +653,8 @@ func TestSave_RoundTrip_StageProviders(t *testing.T) {
 
 	original := Defaults()
 	original.Settings.StageProviders = map[string][]string{
-		"smith":    {"claude/claude-opus-4-6"},
-		"warden":   {"claude/claude-sonnet-4-6"},
+		"smith":     {"claude/claude-opus-4-6"},
+		"warden":    {"claude/claude-sonnet-4-6"},
 		"schematic": {"gemini/gemini-2.5-flash"},
 	}
 
@@ -675,8 +675,8 @@ func TestSave_RoundTrip_PerAnvilStageProviders(t *testing.T) {
 	original.Anvils["myrepo"] = AnvilConfig{
 		Path: "/some/path",
 		StageProviders: map[string][]string{
-			"warden":   {"gemini/gemini-2.5-pro"},
-			"cifix":    {"claude/claude-sonnet-4-6"},
+			"warden": {"gemini/gemini-2.5-pro"},
+			"cifix":  {"claude/claude-sonnet-4-6"},
 		},
 	}
 

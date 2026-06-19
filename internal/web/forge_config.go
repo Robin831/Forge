@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/Robin831/Forge/internal/config"
@@ -14,26 +15,37 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// Config value types (the "type" field in ConfigKeyInfo / AnvilKeyInfo). The
+// frontend renders a control per type: bool→switch, int/float→number input,
+// enum→dropdown, string→text input.
+const (
+	typeBool   = "bool"
+	typeInt    = "int"
+	typeFloat  = "float"
+	typeEnum   = "enum"
+	typeString = "string"
+)
+
 // ConfigKeyInfo is the per-key metadata returned by GET /api/forge/config and
-// consumed by the SettingsPage frontend. It is the documented data contract:
-//
-//   - Key           the forge.yaml settings key (e.g. "schematic_enabled")
-//   - Value         the current effective boolean value (defaults applied for
-//                   tri-state *bool keys that are unset)
-//   - IsDefault     true when Value equals the documented default
-//   - HotReloadable true only for keys the running daemon applies without a
-//                   restart (see internal/hotreload)
-//   - Area          UI grouping for the settings page
-//   - Label         short human-readable name
-//   - Description    one-line explanation sourced from config.go doc comments
+// consumed by the SettingsPage frontend. It is the documented data contract.
+// Value is typed per Type: a JSON boolean, number, or string. Options is the
+// allowed set for enum keys; Min/Max bound numeric keys; Unit is an optional
+// display suffix (e.g. "USD"). HotReloadable is true only for keys the running
+// daemon applies without a restart (see internal/hotreload); the frontend shows
+// an "applies on next run" note for the rest.
 type ConfigKeyInfo struct {
-	Key           string `json:"key"`
-	Value         bool   `json:"value"`
-	IsDefault     bool   `json:"isDefault"`
-	HotReloadable bool   `json:"hotReloadable"`
-	Area          string `json:"area"`
-	Label         string `json:"label"`
-	Description   string `json:"description"`
+	Key           string   `json:"key"`
+	Type          string   `json:"type"`
+	Value         any      `json:"value"`
+	IsDefault     bool     `json:"isDefault"`
+	HotReloadable bool     `json:"hotReloadable"`
+	Area          string   `json:"area"`
+	Label         string   `json:"label"`
+	Description   string   `json:"description"`
+	Options       []string `json:"options,omitempty"`
+	Min           *float64 `json:"min,omitempty"`
+	Max           *float64 `json:"max,omitempty"`
+	Unit          string   `json:"unit,omitempty"`
 }
 
 // ConfigResponse is the GET /api/forge/config body. Keys is ordered (stable)
@@ -43,24 +55,51 @@ type ConfigKeyInfo struct {
 // configured. Tri-state *bool settings serialize to null when unset, meaning
 // the anvil inherits the corresponding global setting or built-in default.
 type ConfigResponse struct {
-	Keys   []ConfigKeyInfo                 `json:"keys"`
-	Anvils map[string]config.AnvilSettings `json:"anvils"`
+	Keys      []ConfigKeyInfo                 `json:"keys"`
+	AnvilKeys []AnvilKeyInfo                  `json:"anvilKeys"`
+	Anvils    map[string]config.AnvilSettings `json:"anvils"`
 }
 
-// configKeyDef describes one managed boolean settings key: how to read its
-// current value, its documented default, its metadata, and whether the daemon
-// hot-reloads it. This is the single source of truth shared by the GET
-// (serialisation) and PATCH (allowlist validation) handlers.
+// AnvilKeyInfo is the per-anvil key schema returned by GET /api/forge/config so
+// the frontend renders per-anvil controls from metadata rather than a hardcoded
+// list. TriState marks *bool keys where a null value clears the override (the
+// anvil inherits the global/default). Type/Options/Min/Max mirror ConfigKeyInfo.
+type AnvilKeyInfo struct {
+	Key           string   `json:"key"`
+	Type          string   `json:"type"`
+	TriState      bool     `json:"triState"`
+	HotReloadable bool     `json:"hotReloadable"`
+	Label         string   `json:"label"`
+	Description   string   `json:"description"`
+	Options       []string `json:"options,omitempty"`
+	Min           *float64 `json:"min,omitempty"`
+	Max           *float64 `json:"max,omitempty"`
+}
+
+// fptr returns a pointer to f, for the optional Min/Max numeric bounds.
+func fptr(f float64) *float64 { return &f }
+
+// configKeyDef describes one managed settings key: its type, how to read its
+// current value, its documented default, its metadata, numeric bounds / enum
+// options, and whether the daemon hot-reloads it. This is the single source of
+// truth shared by the GET (serialisation) and PATCH (validation) handlers.
 type configKeyDef struct {
 	Key           string
+	Type          string
 	Area          string
 	Label         string
 	Description   string
 	HotReloadable bool
-	Default       bool
-	// value resolves the effective boolean from settings, applying the
+	Options       []string
+	Min           *float64
+	Max           *float64
+	Unit          string
+	// Default is the documented default value (typed: bool/int/float/string),
+	// used to compute IsDefault.
+	Default any
+	// value resolves the effective typed value from settings, applying the
 	// documented default for tri-state *bool keys that are nil/unset.
-	value func(s config.SettingsConfig) bool
+	value func(s config.SettingsConfig) any
 }
 
 // managedConfigKeys is the allowlist of boolean settings exposed by the
@@ -77,7 +116,8 @@ var managedConfigKeys = []configKeyDef{
 		Label:       "Schematic pre-analysis",
 		Description: "Enable the Schematic pre-worker globally. Beads exceeding the word threshold or carrying the \"decompose\" tag are analysed before Smith starts.",
 		Default:     false,
-		value:       func(s config.SettingsConfig) bool { return s.SchematicEnabled },
+		Type:        typeBool,
+		value:       func(s config.SettingsConfig) any { return s.SchematicEnabled },
 	},
 	{
 		Key:         "go_race_detection",
@@ -85,7 +125,8 @@ var managedConfigKeys = []configKeyDef{
 		Label:       "Go race detection",
 		Description: "Run the Go race detector (-race) as a separate temper step globally. Per-anvil settings override this.",
 		Default:     false,
-		value:       func(s config.SettingsConfig) bool { return s.GoRaceDetection },
+		Type:        typeBool,
+		value:       func(s config.SettingsConfig) any { return s.GoRaceDetection },
 	},
 	{
 		Key:         "auto_learn_rules",
@@ -93,7 +134,8 @@ var managedConfigKeys = []configKeyDef{
 		Label:       "Auto-learn Warden rules",
 		Description: "Automatically learn Warden review rules from Copilot comments when a PR is merged.",
 		Default:     false,
-		value:       func(s config.SettingsConfig) bool { return s.AutoLearnRules },
+		Type:        typeBool,
+		value:       func(s config.SettingsConfig) any { return s.AutoLearnRules },
 	},
 	{
 		Key:         "crucible_enabled",
@@ -101,7 +143,8 @@ var managedConfigKeys = []configKeyDef{
 		Label:       "Crucible orchestration",
 		Description: "Enable automatic Crucible orchestration for parent beads that have children (blocks other beads).",
 		Default:     false,
-		value:       func(s config.SettingsConfig) bool { return s.CrucibleEnabled },
+		Type:        typeBool,
+		value:       func(s config.SettingsConfig) any { return s.CrucibleEnabled },
 	},
 	{
 		Key:         "auto_merge_crucible_children",
@@ -109,7 +152,8 @@ var managedConfigKeys = []configKeyDef{
 		Label:       "Auto-merge Crucible children",
 		Description: "Automatically merge (squash) child PRs targeting a Crucible feature branch after the pipeline succeeds. Defaults to true.",
 		Default:     true,
-		value:       func(s config.SettingsConfig) bool { return s.IsAutoMergeCrucibleChildren() },
+		Type:        typeBool,
+		value:       func(s config.SettingsConfig) any { return s.IsAutoMergeCrucibleChildren() },
 	},
 	{
 		Key:         "copilot_skip_warden_small_diffs",
@@ -117,7 +161,8 @@ var managedConfigKeys = []configKeyDef{
 		Label:       "Skip Warden on small diffs",
 		Description: "Automatically skip Warden for small, low-risk diffs when the primary provider is Copilot. Saves one premium request for trivial changes.",
 		Default:     false,
-		value:       func(s config.SettingsConfig) bool { return s.CopilotSkipWardenSmallDiffs },
+		Type:        typeBool,
+		value:       func(s config.SettingsConfig) any { return s.CopilotSkipWardenSmallDiffs },
 	},
 	{
 		Key:         "copilot_batch_ci_fixes",
@@ -125,7 +170,8 @@ var managedConfigKeys = []configKeyDef{
 		Label:       "Batch CI fixes",
 		Description: "Batch multiple CI failures into a single Smith invocation when the provider is Copilot. Saves premium requests on PRs with multiple failing checks.",
 		Default:     false,
-		value:       func(s config.SettingsConfig) bool { return s.CopilotBatchCIFixes },
+		Type:        typeBool,
+		value:       func(s config.SettingsConfig) any { return s.CopilotBatchCIFixes },
 	},
 	{
 		Key:         "copilot_batch_review_fixes",
@@ -133,7 +179,8 @@ var managedConfigKeys = []configKeyDef{
 		Label:       "Batch review fixes",
 		Description: "Batch multiple review comments into a single Smith invocation when the provider is Copilot. Saves premium requests on PRs with multiple review comments.",
 		Default:     false,
-		value:       func(s config.SettingsConfig) bool { return s.CopilotBatchReviewFixes },
+		Type:        typeBool,
+		value:       func(s config.SettingsConfig) any { return s.CopilotBatchReviewFixes },
 	},
 	{
 		Key:         "warden_full_rereview",
@@ -141,7 +188,8 @@ var managedConfigKeys = []configKeyDef{
 		Label:       "Full Warden re-review",
 		Description: "Force the Warden to do a full independent review on every iteration instead of a focused re-review that only checks whether prior feedback was addressed.",
 		Default:     false,
-		value:       func(s config.SettingsConfig) bool { return s.WardenFullRereview },
+		Type:        typeBool,
+		value:       func(s config.SettingsConfig) any { return s.WardenFullRereview },
 	},
 	{
 		Key:           "copilot_combined_smith_warden",
@@ -150,7 +198,8 @@ var managedConfigKeys = []configKeyDef{
 		Description:   "Embed Warden review criteria into the Smith prompt so Smith self-reviews its own diff, eliminating the separate Warden request (Copilot only, high risk).",
 		Default:       false,
 		HotReloadable: true,
-		value:         func(s config.SettingsConfig) bool { return s.CopilotCombinedSmithWarden },
+		Type:          typeBool,
+		value:         func(s config.SettingsConfig) any { return s.CopilotCombinedSmithWarden },
 	},
 	{
 		Key:         "vulncheck_enabled",
@@ -158,7 +207,8 @@ var managedConfigKeys = []configKeyDef{
 		Label:       "Vulnerability scanning",
 		Description: "Enable vulnerability scanning with govulncheck. When false, scheduled scanning and \"forge scan\" are disabled. Defaults to true.",
 		Default:     true,
-		value:       func(s config.SettingsConfig) bool { return s.IsVulncheckEnabled() },
+		Type:        typeBool,
+		value:       func(s config.SettingsConfig) any { return s.IsVulncheckEnabled() },
 	},
 	{
 		Key:           "smelter_enabled",
@@ -167,7 +217,135 @@ var managedConfigKeys = []configKeyDef{
 		Description:   "Enable the Smelter background process, which batches pending Warden rules into PRs on a schedule. Defaults to true.",
 		Default:       true,
 		HotReloadable: true,
-		value:         func(s config.SettingsConfig) bool { return s.IsSmelterEnabled() },
+		Type:          typeBool,
+		value:         func(s config.SettingsConfig) any { return s.IsSmelterEnabled() },
+	},
+
+	// --- Non-boolean scalar settings (Forge-85wn) ---
+	{
+		Key:         "max_total_smiths",
+		Type:        typeInt,
+		Area:        "Concurrency",
+		Label:       "Max total smiths",
+		Description: "Maximum number of Smith workers running concurrently across all anvils.",
+		Default:     4,
+		Min:         fptr(1),
+		Max:         fptr(64),
+		value:       func(s config.SettingsConfig) any { return s.MaxTotalSmiths },
+	},
+	{
+		Key:         "max_lifecycle_workers",
+		Type:        typeInt,
+		Area:        "Concurrency",
+		Label:       "Max lifecycle workers",
+		Description: "Maximum concurrent lifecycle/bellows workers (CI-fix, review-fix, rebase). 0 disables the cap.",
+		Default:     config.DefaultMaxLifecycleWorkers,
+		Min:         fptr(0),
+		Max:         fptr(64),
+		value:       func(s config.SettingsConfig) any { return s.MaxLifecycleWorkers },
+	},
+	{
+		Key:         "daily_cost_limit",
+		Type:        typeFloat,
+		Area:        "Cost",
+		Label:       "Daily cost limit",
+		Description: "Maximum estimated spend per calendar day. 0 means unlimited. Dispatch pauses once the day's estimate exceeds this.",
+		Default:     float64(0),
+		Min:         fptr(0),
+		Unit:        "USD",
+		value:       func(s config.SettingsConfig) any { return s.DailyCostLimit },
+	},
+	{
+		Key:         "merge_strategy",
+		Type:        typeEnum,
+		Area:        "Pipeline",
+		Label:       "Merge strategy",
+		Description: "How PRs are merged when Forge merges them (squash, merge commit, or rebase).",
+		Default:     "squash",
+		Options:     []string{"squash", "merge", "rebase"},
+		value: func(s config.SettingsConfig) any {
+			if strings.TrimSpace(s.MergeStrategy) == "" {
+				return "squash"
+			}
+			return s.MergeStrategy
+		},
+	},
+	{
+		Key:         "max_pipeline_iterations",
+		Type:        typeInt,
+		Area:        "Retry limits",
+		Label:       "Max pipeline iterations",
+		Description: "Maximum Smith↔Warden loop iterations per bead before giving up.",
+		Default:     5,
+		Min:         fptr(1),
+		Max:         fptr(20),
+		value:       func(s config.SettingsConfig) any { return s.MaxPipelineIterations },
+	},
+	{
+		Key:         "max_review_attempts",
+		Type:        typeInt,
+		Area:        "Retry limits",
+		Label:       "Max review attempts",
+		Description: "Maximum Warden review cycles per bead.",
+		Default:     2,
+		Min:         fptr(1),
+		Max:         fptr(20),
+		value:       func(s config.SettingsConfig) any { return s.MaxReviewAttempts },
+	},
+	{
+		Key:         "max_ci_fix_attempts",
+		Type:        typeInt,
+		Area:        "Retry limits",
+		Label:       "Max CI-fix attempts",
+		Description: "Maximum CI-fix (Quench) cycles per PR before it needs a human.",
+		Default:     5,
+		Min:         fptr(1),
+		Max:         fptr(20),
+		value:       func(s config.SettingsConfig) any { return s.MaxCIFixAttempts },
+	},
+	{
+		Key:         "max_review_fix_attempts",
+		Type:        typeInt,
+		Area:        "Retry limits",
+		Label:       "Max review-fix attempts",
+		Description: "Maximum review-fix (Burnish) cycles per PR before it needs a human.",
+		Default:     5,
+		Min:         fptr(1),
+		Max:         fptr(20),
+		value:       func(s config.SettingsConfig) any { return s.MaxReviewFixAttempts },
+	},
+	{
+		Key:         "max_rebase_attempts",
+		Type:        typeInt,
+		Area:        "Retry limits",
+		Label:       "Max rebase attempts",
+		Description: "Maximum rebase retry cycles for a conflicting PR before it needs a human.",
+		Default:     3,
+		Min:         fptr(1),
+		Max:         fptr(20),
+		value:       func(s config.SettingsConfig) any { return s.MaxRebaseAttempts },
+	},
+	{
+		Key:         "copilot_warden_sample_rate",
+		Type:        typeFloat,
+		Area:        "Copilot",
+		Label:       "Warden sample rate",
+		Description: "Probability (0.0–1.0) of running a real Warden review when Smith self-review already approved (Copilot combined mode).",
+		Default:     0.1,
+		Min:         fptr(0),
+		Max:         fptr(1),
+		value:       func(s config.SettingsConfig) any { return s.CopilotWardenSampleRate },
+	},
+	{
+		Key:         "wicket_batch_size",
+		Type:        typeInt,
+		Area:        "Wicket",
+		Label:       "Wicket batch size",
+		Description: "Number of GitHub issues Wicket processes per scan per repository.",
+		Default:     20,
+		Min:         fptr(1),
+		Max:         fptr(200),
+		value:       func(s config.SettingsConfig) any { return s.WicketBatchSize },
 	},
 }
 
@@ -228,30 +406,112 @@ func (s *Server) handleForgeConfigGet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	resp := ConfigResponse{
-		Keys:   make([]ConfigKeyInfo, 0, len(managedConfigKeys)),
-		Anvils: cfg.AnvilSettingsMap(),
+		Keys:      make([]ConfigKeyInfo, 0, len(managedConfigKeys)),
+		AnvilKeys: anvilKeySchema(),
+		Anvils:    cfg.AnvilSettingsMap(),
 	}
 	for _, d := range managedConfigKeys {
 		val := d.value(cfg.Settings)
 		resp.Keys = append(resp.Keys, ConfigKeyInfo{
 			Key:           d.Key,
+			Type:          d.Type,
 			Value:         val,
 			IsDefault:     val == d.Default,
 			HotReloadable: d.HotReloadable,
 			Area:          d.Area,
 			Label:         d.Label,
 			Description:   d.Description,
+			Options:       d.Options,
+			Min:           d.Min,
+			Max:           d.Max,
+			Unit:          d.Unit,
 		})
 	}
 	writeJSON(w, http.StatusOK, resp)
 }
 
-// handleForgeConfigPatch accepts a map of boolean key->value, validates every
-// key against the allowlist (all-or-nothing), persists the changes via a YAML
-// node-tree edit that preserves comments and unrelated keys, and returns the
-// freshly re-read config (same shape as GET). PATCH /api/forge/config.
+// scalarNode is a validated YAML scalar (tag + rendered value) ready to write
+// into the config node tree.
+type scalarNode struct {
+	tag   string
+	value string
+}
+
+// validateScalar validates a JSON value against a typed key definition and
+// returns the YAML scalar to persist. It enforces enum membership and numeric
+// Min/Max bounds, and rejects non-integer values for int keys.
+func validateScalar(key, typ string, options []string, min, max *float64, raw json.RawMessage) (scalarNode, error) {
+	switch typ {
+	case typeBool:
+		var b bool
+		if err := json.Unmarshal(raw, &b); err != nil {
+			return scalarNode{}, fmt.Errorf("key %q expects a boolean", key)
+		}
+		v := "false"
+		if b {
+			v = "true"
+		}
+		return scalarNode{tag: "!!bool", value: v}, nil
+	case typeInt:
+		var f float64
+		if err := json.Unmarshal(raw, &f); err != nil {
+			return scalarNode{}, fmt.Errorf("key %q expects an integer", key)
+		}
+		if f != float64(int64(f)) {
+			return scalarNode{}, fmt.Errorf("key %q expects a whole number", key)
+		}
+		if err := checkBounds(key, f, min, max); err != nil {
+			return scalarNode{}, err
+		}
+		return scalarNode{tag: "!!int", value: strconv.FormatInt(int64(f), 10)}, nil
+	case typeFloat:
+		var f float64
+		if err := json.Unmarshal(raw, &f); err != nil {
+			return scalarNode{}, fmt.Errorf("key %q expects a number", key)
+		}
+		if err := checkBounds(key, f, min, max); err != nil {
+			return scalarNode{}, err
+		}
+		return scalarNode{tag: "!!float", value: strconv.FormatFloat(f, 'g', -1, 64)}, nil
+	case typeEnum:
+		var str string
+		if err := json.Unmarshal(raw, &str); err != nil {
+			return scalarNode{}, fmt.Errorf("key %q expects a string", key)
+		}
+		for _, opt := range options {
+			if opt == str {
+				return scalarNode{tag: "!!str", value: str}, nil
+			}
+		}
+		return scalarNode{}, fmt.Errorf("invalid value %q for key %q: expected one of %s", str, key, strings.Join(options, ", "))
+	case typeString:
+		var str string
+		if err := json.Unmarshal(raw, &str); err != nil {
+			return scalarNode{}, fmt.Errorf("key %q expects a string", key)
+		}
+		return scalarNode{tag: "!!str", value: str}, nil
+	default:
+		return scalarNode{}, fmt.Errorf("key %q has unsupported type %q", key, typ)
+	}
+}
+
+// checkBounds enforces the optional Min/Max numeric bounds.
+func checkBounds(key string, f float64, min, max *float64) error {
+	if min != nil && f < *min {
+		return fmt.Errorf("key %q must be >= %s", key, strconv.FormatFloat(*min, 'g', -1, 64))
+	}
+	if max != nil && f > *max {
+		return fmt.Errorf("key %q must be <= %s", key, strconv.FormatFloat(*max, 'g', -1, 64))
+	}
+	return nil
+}
+
+// handleForgeConfigPatch accepts a map of typed key->value, validates every key
+// and value against the allowlist/schema (all-or-nothing), persists the changes
+// via a YAML node-tree edit that preserves comments and unrelated keys, and
+// returns the freshly re-read config (same shape as GET). PATCH /api/forge/config.
 func (s *Server) handleForgeConfigPatch(w http.ResponseWriter, r *http.Request) {
-	var req map[string]bool
+	var req map[string]json.RawMessage
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON body: "+err.Error())
 		return
@@ -261,12 +521,21 @@ func (s *Server) handleForgeConfigPatch(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// All-or-nothing: validate every key before writing anything.
+	// All-or-nothing: validate every key and value before writing anything.
 	var unknown []string
-	for k := range req {
-		if _, ok := configKeyByName[k]; !ok {
+	scalars := make(map[string]scalarNode, len(req))
+	for k, raw := range req {
+		def, ok := configKeyByName[k]
+		if !ok {
 			unknown = append(unknown, k)
+			continue
 		}
+		sn, err := validateScalar(def.Key, def.Type, def.Options, def.Min, def.Max, raw)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		scalars[k] = sn
 	}
 	if len(unknown) > 0 {
 		sort.Strings(unknown)
@@ -279,7 +548,7 @@ func (s *Server) handleForgeConfigPatch(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusInternalServerError, "could not resolve config file path")
 		return
 	}
-	if err := applyConfigPatch(path, req); err != nil {
+	if err := applyConfigPatch(path, scalars); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to persist config: "+err.Error())
 		return
 	}
@@ -299,35 +568,88 @@ const (
 	appliesNextRun = "next_run"
 )
 
-// anvilKeyDef describes one allowlisted per-anvil settings key: whether it is
-// tri-state (a *bool that can be cleared to inherit) or a plain bool, and
-// whether the daemon hot-reloads it instantly. This is the single source of
-// truth for the anvils.<name>.<key> contract shared by validation and the
-// hot-reload coverage reported in the response.
+// anvilKeyDef describes one allowlisted per-anvil settings key: its type, UI
+// metadata, enum options / numeric bounds, whether it is tri-state (a *bool
+// that can be cleared to inherit), and whether the daemon hot-reloads it. This
+// is the single source of truth for the anvils.<name>.<key> contract shared by
+// the GET schema, PATCH validation, and the hot-reload coverage in the response.
 type anvilKeyDef struct {
-	Key string
+	Key         string
+	Type        string
+	Label       string
+	Description string
 	// TriState marks a *bool field where JSON null clears the override
 	// (anvil inherits the global/default). Plain bools reject null.
 	TriState bool
 	// Instant marks keys the daemon applies live via internal/hotreload.
 	// Only auto_merge is instant; the rest apply on the next dispatch/run.
 	Instant bool
+	Options []string
+	Min     *float64
+	Max     *float64
 }
 
-// managedAnvilKeys is the allowlist of the eight per-anvil settings exposed by
-// the config API, mirroring config.AnvilSettings. Order is preserved in the
-// response's per-key coverage list. Only auto_merge is hot-reloadable (see
+// clearable reports whether a JSON null is accepted for this key (removing it so
+// the anvil inherits the default). True for tri-state *bool keys and for every
+// non-bool scalar (which can be reset to the anvil/global default).
+func (d anvilKeyDef) clearable() bool {
+	return d.TriState || d.Type != typeBool
+}
+
+// managedAnvilKeys is the allowlist of per-anvil settings exposed by the config
+// API, mirroring config.AnvilSettings. Order is preserved in the response's
+// schema and per-key coverage. Only auto_merge is hot-reloadable (see
 // internal/hotreload/hotreload.go, which diffs anvil auto_merge live); the
 // others are read on the next dispatch/run.
 var managedAnvilKeys = []anvilKeyDef{
-	{Key: "auto_merge", TriState: false, Instant: true},
-	{Key: "schematic_enabled", TriState: true},
-	{Key: "golangci_lint", TriState: true},
-	{Key: "go_race_detection", TriState: true},
-	{Key: "depcheck_enabled", TriState: true},
-	{Key: "questgiver_enabled", TriState: true},
-	{Key: "wicket_enabled", TriState: true},
-	{Key: "wicket_auto_dispatch", TriState: false},
+	{Key: "auto_merge", Type: typeBool, TriState: false, Instant: true,
+		Label: "Auto-merge PRs", Description: "Automatically merge this anvil's PRs once required checks pass."},
+	{Key: "schematic_enabled", Type: typeBool, TriState: true,
+		Label: "Schematic pre-analysis", Description: "Override the global Schematic pre-worker for this anvil."},
+	{Key: "golangci_lint", Type: typeBool, TriState: true,
+		Label: "golangci-lint", Description: "Run golangci-lint as a Temper step for this anvil."},
+	{Key: "go_race_detection", Type: typeBool, TriState: true,
+		Label: "Go race detection", Description: "Run the Go race detector (-race) as a Temper step for this anvil."},
+	{Key: "depcheck_enabled", Type: typeBool, TriState: true,
+		Label: "Dependency scanning", Description: "Include this anvil in scheduled dependency-update scans."},
+	{Key: "questgiver_enabled", Type: typeBool, TriState: true,
+		Label: "QuestGiver E2E quests", Description: "Discover and run E2E quests for this anvil."},
+	{Key: "wicket_enabled", Type: typeBool, TriState: true,
+		Label: "Wicket issue triage", Description: "Poll this anvil's GitHub issues and triage them into beads."},
+	{Key: "wicket_auto_dispatch", Type: typeBool, TriState: false,
+		Label: "Wicket auto-dispatch", Description: "Auto-dispatch beads created by Wicket triage for this anvil."},
+
+	// --- Non-boolean per-anvil scalars (Forge-85wn). Send null to reset. ---
+	{Key: "max_smiths", Type: typeInt, Min: fptr(0), Max: fptr(32),
+		Label: "Max smiths", Description: "Maximum concurrent Smith workers for this anvil (0 uses the default)."},
+	{Key: "auto_dispatch", Type: typeEnum, Options: []string{"off", "all", "tagged", "priority"},
+		Label: "Auto-dispatch mode", Description: "How ready beads are dispatched for this anvil."},
+	{Key: "auto_dispatch_tag", Type: typeString,
+		Label: "Auto-dispatch tag", Description: "Label a bead must carry when auto-dispatch is \"tagged\" (e.g. forgeReady)."},
+	{Key: "auto_dispatch_min_priority", Type: typeInt, Min: fptr(0), Max: fptr(4),
+		Label: "Auto-dispatch min priority", Description: "Minimum priority (0=highest) a bead needs to be auto-dispatched."},
+	{Key: "platform", Type: typeEnum, Options: []string{"github", "gitlab", "gitea", "bitbucket", "azuredevops"},
+		Label: "VCS platform", Description: "Hosting platform for this anvil's PR operations."},
+}
+
+// anvilKeySchema projects managedAnvilKeys into the GET response schema so the
+// frontend renders per-anvil controls from metadata rather than a hardcoded list.
+func anvilKeySchema() []AnvilKeyInfo {
+	out := make([]AnvilKeyInfo, 0, len(managedAnvilKeys))
+	for _, d := range managedAnvilKeys {
+		out = append(out, AnvilKeyInfo{
+			Key:           d.Key,
+			Type:          d.Type,
+			TriState:      d.TriState,
+			HotReloadable: d.Instant,
+			Label:         d.Label,
+			Description:   d.Description,
+			Options:       d.Options,
+			Min:           d.Min,
+			Max:           d.Max,
+		})
+	}
+	return out
 }
 
 // anvilKeyByName indexes managedAnvilKeys for O(1) allowlist validation.
@@ -400,7 +722,7 @@ func (s *Server) handleForgeAnvilConfigPatch(w http.ResponseWriter, r *http.Requ
 
 	// All-or-nothing: validate every key and value before writing anything.
 	var unknown []string
-	sets := map[string]bool{}
+	sets := map[string]scalarNode{}
 	var clears []string
 	applied := make([]AnvilKeyApplied, 0, len(req))
 	for k, raw := range req {
@@ -409,26 +731,28 @@ func (s *Server) handleForgeAnvilConfigPatch(w http.ResponseWriter, r *http.Requ
 			unknown = append(unknown, k)
 			continue
 		}
-		switch strings.TrimSpace(string(raw)) {
-		case "true":
-			sets[k] = true
-		case "false":
-			sets[k] = false
-		case "null":
-			if !def.TriState {
+		cleared := false
+		if strings.TrimSpace(string(raw)) == "null" {
+			if !def.clearable() {
 				writeError(w, http.StatusBadRequest,
 					fmt.Sprintf("key %q cannot be cleared (null); it is a plain boolean, send true or false", k))
 				return
 			}
 			clears = append(clears, k)
-		default:
-			allowed := "true or false"
-			if def.TriState {
-				allowed = "true, false, or null"
+			cleared = true
+		} else {
+			sn, err := validateScalar(def.Key, def.Type, def.Options, def.Min, def.Max, raw)
+			if err != nil {
+				writeError(w, http.StatusBadRequest, err.Error())
+				return
 			}
-			writeError(w, http.StatusBadRequest,
-				fmt.Sprintf("invalid value for key %q: expected %s", k, allowed))
-			return
+			// An empty optional string clears the key so the anvil inherits.
+			if def.Type == typeString && sn.value == "" {
+				clears = append(clears, k)
+				cleared = true
+			} else {
+				sets[k] = sn
+			}
 		}
 		appliesVal := appliesNextRun
 		if def.Instant {
@@ -437,7 +761,7 @@ func (s *Server) handleForgeAnvilConfigPatch(w http.ResponseWriter, r *http.Requ
 		applied = append(applied, AnvilKeyApplied{
 			Key:     k,
 			Applies: appliesVal,
-			Cleared: strings.TrimSpace(string(raw)) == "null",
+			Cleared: cleared,
 		})
 	}
 	if len(unknown) > 0 {
@@ -492,7 +816,7 @@ func anvilKeyOrder(key string) int {
 // result back atomically (temp file + rename) so the fsnotify watcher fires
 // once on a complete file. When creating a new anvil block, anvilPath is
 // persisted as the "path" key so the file remains a valid config.
-func applyAnvilConfigPatch(path, anvil, anvilPath string, sets map[string]bool, clears []string) error {
+func applyAnvilConfigPatch(path, anvil, anvilPath string, sets map[string]scalarNode, clears []string) error {
 	data, err := os.ReadFile(path)
 	if err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("read config: %w", err)
@@ -539,7 +863,7 @@ func applyAnvilConfigPatch(path, anvil, anvilPath string, sets map[string]bool, 
 	}
 	sort.Strings(keys)
 	for _, key := range keys {
-		setBoolNode(anvilNode, key, sets[key])
+		setScalarNode(anvilNode, key, sets[key])
 	}
 	sort.Strings(clears)
 	for _, key := range clears {
@@ -559,7 +883,7 @@ func applyAnvilConfigPatch(path, anvil, anvilPath string, sets map[string]bool, 
 // preserved, locates or creates the top-level `settings` mapping and each
 // target scalar, then writes the result back atomically (temp file + rename)
 // so the fsnotify watcher fires once on a complete file.
-func applyConfigPatch(path string, patch map[string]bool) error {
+func applyConfigPatch(path string, patch map[string]scalarNode) error {
 	data, err := os.ReadFile(path)
 	if err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("read config: %w", err)
@@ -598,7 +922,7 @@ func applyConfigPatch(path string, patch map[string]bool) error {
 	}
 	sort.Strings(keys)
 	for _, key := range keys {
-		setBoolNode(settings, key, patch[key])
+		setScalarNode(settings, key, patch[key])
 	}
 
 	out, err := marshalNode(&doc)
@@ -606,6 +930,21 @@ func applyConfigPatch(path string, patch map[string]bool) error {
 		return fmt.Errorf("marshal config: %w", err)
 	}
 	return writeFileAtomic(path, out)
+}
+
+// setScalarNode sets m[key] to a typed scalar (sn.tag + sn.value), editing the
+// existing scalar in place (preserving surrounding comments) or appending a new
+// pair. It handles bool/int/float/string/enum scalar values.
+func setScalarNode(m *yaml.Node, key string, sn scalarNode) {
+	if vn := mappingValueNode(m, key); vn != nil {
+		vn.Kind = yaml.ScalarNode
+		vn.Tag = sn.tag
+		vn.Style = 0
+		vn.Value = sn.value
+		vn.Content = nil
+		return
+	}
+	setMappingChild(m, key, &yaml.Node{Kind: yaml.ScalarNode, Tag: sn.tag, Value: sn.value})
 }
 
 // mappingValueNode returns the value node for key in mapping m, or nil when
@@ -645,25 +984,6 @@ func removeMappingChild(m *yaml.Node, key string) bool {
 		}
 	}
 	return false
-}
-
-// setBoolNode sets m[key] to a boolean scalar, editing the existing scalar in
-// place (preserving its surrounding comments) or appending a new pair.
-func setBoolNode(m *yaml.Node, key string, val bool) {
-	valStr := "false"
-	if val {
-		valStr = "true"
-	}
-	if vn := mappingValueNode(m, key); vn != nil {
-		vn.Kind = yaml.ScalarNode
-		vn.Tag = "!!bool"
-		vn.Style = 0
-		vn.Value = valStr
-		// Drop any child content a previous non-scalar value may have held.
-		vn.Content = nil
-		return
-	}
-	setMappingChild(m, key, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!bool", Value: valStr})
 }
 
 // marshalNode renders a yaml.Node tree with 2-space indentation to match the
