@@ -141,13 +141,13 @@ func durationKey(key, area, label, desc, def string, read func(config.SettingsCo
 	}
 }
 
-// managedConfigKeys is the allowlist of boolean settings exposed by the
-// config API. Order is preserved in the GET response. HotReloadable is true
-// only for keys the daemon applies live (cross-checked against
-// internal/hotreload/hotreload.go: copilot_combined_smith_warden and
-// smelter_enabled). The tri-state *bool keys (auto_merge_crucible_children,
-// vulncheck_enabled, smelter_enabled) default to true and resolve nil via
-// their config helpers.
+// managedConfigKeys is the allowlist of settings exposed by the config API.
+// Includes booleans, scalars (int, float, string), composite types
+// (string_list, provider_map), and durations. Order is preserved in the GET
+// response. HotReloadable is true only for keys the daemon applies live
+// (cross-checked against internal/hotreload/hotreload.go). The tri-state
+// *bool keys (auto_merge_crucible_children, vulncheck_enabled,
+// smelter_enabled) default to true and resolve nil via their config helpers.
 var managedConfigKeys = []configKeyDef{
 	{
 		Key:         "schematic_enabled",
@@ -521,7 +521,7 @@ func (s *Server) handleForgeConfigGet(w http.ResponseWriter, r *http.Request) {
 			Key:           d.Key,
 			Type:          d.Type,
 			Value:         val,
-			IsDefault:     reflect.DeepEqual(val, d.Default),
+			IsDefault:     isDefault(val, d.Default),
 			HotReloadable: d.HotReloadable,
 			Area:          d.Area,
 			Label:         d.Label,
@@ -533,6 +533,31 @@ func (s *Server) handleForgeConfigGet(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// isDefault reports whether val equals def, normalizing nil and empty
+// slices/maps as equal so that e.g. providers: [] is treated as default.
+func isDefault(val, def any) bool {
+	if reflect.DeepEqual(val, def) {
+		return true
+	}
+	rv := reflect.ValueOf(val)
+	rd := reflect.ValueOf(def)
+	if rv.IsValid() && rd.IsValid() && rv.Type() == rd.Type() {
+		switch rv.Kind() {
+		case reflect.Slice, reflect.Map:
+			if rv.Len() == 0 && rd.Len() == 0 {
+				return true
+			}
+		}
+	}
+	if rv.IsValid() && (rv.Kind() == reflect.Slice || rv.Kind() == reflect.Map) && rv.Len() == 0 && def == nil {
+		return true
+	}
+	if rd.IsValid() && (rd.Kind() == reflect.Slice || rd.Kind() == reflect.Map) && rd.Len() == 0 && val == nil {
+		return true
+	}
+	return false
 }
 
 // scalarYAML builds a scalar YAML node with the given tag and rendered value.
@@ -641,6 +666,9 @@ func validateValue(key, typ string, options []string, min, max *float64, raw jso
 		for _, stage := range stages {
 			if !providerStageSet[stage] {
 				return nil, fmt.Errorf("key %q: unknown stage %q (allowed: %s)", key, stage, strings.Join(providerStages, ", "))
+			}
+			if len(m[stage]) == 0 {
+				return nil, fmt.Errorf("key %q: stage %q must have at least one provider", key, stage)
 			}
 			seq := &yaml.Node{Kind: yaml.SequenceNode, Tag: "!!seq"}
 			for i, el := range m[stage] {
@@ -1054,11 +1082,12 @@ func applyAnvilConfigPatch(path, anvil, anvilPath string, sets map[string]*yaml.
 }
 
 // applyConfigPatch edits the YAML document at path in place, setting each
-// settings.<key> to the given boolean. It parses into a yaml.Node tree
-// (rather than marshalling a full Config) so comments and unrelated keys are
-// preserved, locates or creates the top-level `settings` mapping and each
-// target scalar, then writes the result back atomically (temp file + rename)
-// so the fsnotify watcher fires once on a complete file.
+// settings.<key> to the given YAML node (scalar, sequence, or mapping). It
+// parses into a yaml.Node tree (rather than marshalling a full Config) so
+// comments and unrelated keys are preserved, locates or creates the
+// top-level `settings` mapping and each target node, then writes the result
+// back atomically (temp file + rename) so the fsnotify watcher fires once
+// on a complete file.
 func applyConfigPatch(path string, patch map[string]*yaml.Node) error {
 	data, err := os.ReadFile(path)
 	if err != nil && !os.IsNotExist(err) {
