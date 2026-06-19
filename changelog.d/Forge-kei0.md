@@ -1,0 +1,2 @@
+category: Added
+- **List & provider-map Settings editors** - New reusable Hearth 2.0 Settings controls: a `ListField` string-array editor (add / remove / reorder) for `string_list` settings such as the provider chain and Wicket lists, and a `ProviderMapField` per-stage chain editor for the `stage_providers` `provider_map` setting. Both follow the existing optimistic async-onChange contract and support the per-anvil `null`=inherit semantics. (Forge-kei0)
