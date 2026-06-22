@@ -96,6 +96,7 @@ type bellowsMonitorIface interface {
 	SetAutoMergeHandler(h func(ctx context.Context, anvil string, pr state.PR))
 	SetSmelterEnabled(f func() bool)
 	SetAssayConfig(f func(anvil string) bellows.AssayGateConfig)
+	SetInFlightChecker(f func(beadID string) bool)
 	UpdateAnvilPaths(paths map[string]string)
 	Refresh()
 	Run(ctx context.Context) error
@@ -131,8 +132,15 @@ type Daemon struct {
 	configWatcher *hotreload.Watcher
 
 	// Dispatch state
-	activeBeads    sync.Map       // beadID -> true, currently in-flight
-	pendingActions sync.Map       // beadID -> lifecycle.ActionRequest; single parked action per bead, latest-wins
+	activeBeads sync.Map // beadID -> true, currently in-flight
+	// pendingActions parks lifecycle actions that arrived while a bead was in
+	// flight, to dispatch once it frees. Value is map[lifecycle.Action]ActionRequest
+	// (one slot PER ACTION TYPE, latest-wins within a type) so a CI-fix and a
+	// review-fix for the same bead no longer clobber each other — the old
+	// single-slot latest-wins silently dropped one, stranding the PR in needs_fix
+	// (PR #4257 / Fhi.Metadata-hyc4g). Guarded by pendingMu for the read-modify-write.
+	pendingActions sync.Map
+	pendingMu      sync.Mutex
 	wg             sync.WaitGroup // tracks running pipeline goroutines
 	pollRunning    atomic.Bool    // true while pollAndDispatch is executing; prevents concurrent overlapping polls
 	worktreeMgr    *worktree.Manager
@@ -1092,6 +1100,17 @@ func (d *Daemon) Run(ctx context.Context) error {
 			MaxRuns:           ra.GetMaxRuns(),
 		}
 	})
+	// Let the still-failing/unresolved retry branches re-dispatch a fix only
+	// when no worker is actually running for the bead — keyed off the same
+	// activeBeads lock the dispatcher uses — instead of the old
+	// `pr.Status != needs_fix` proxy that wedged PRs parked in needs_fix.
+	d.bellowsMonitor.SetInFlightChecker(func(beadID string) bool {
+		if beadID == "" {
+			return false
+		}
+		_, inFlight := d.activeBeads.Load(beadID)
+		return inFlight
+	})
 	d.bellowsMonitor.OnEvent(d.lifecycleMgr.HandleEvent)
 	d.bellowsMonitor.OnEvent(d.handleBellowsNotifications)
 	d.bellowsMonitor.OnEvent(d.handleBeadCloseOnMerge)
@@ -1498,9 +1517,10 @@ func (d *Daemon) handleLifecycleAction(ctx context.Context, req lifecycle.Action
 			d.logger.Info("bead in flight, skipping best-effort Assay review (re-fires on next head)", "bead", req.BeadID, "pr", req.PRNumber)
 			return
 		}
-		// Mutating actions (review-fix, rebase, ...) still park latest-wins as
-		// before — and since Assay no longer parks, it can no longer clobber them.
-		d.pendingActions.Store(lockKey, req)
+		// Mutating actions (review-fix, CI-fix, rebase, ...) park per action type
+		// so distinct fix kinds for the same bead coexist instead of clobbering
+		// (latest-wins only within a single action type).
+		d.parkPendingAction(lockKey, req)
 		d.logger.Info("bead in flight, queued lifecycle action for later", "bead", req.BeadID, "action", req.Action)
 		return
 	}
@@ -2158,21 +2178,88 @@ func (d *Daemon) doAutoMerge(ctx context.Context, anvil, anvilPath string, pr st
 	d.logger.Info("PR auto-merged successfully", "pr_number", pr.Number, "anvil", anvil, "bead", pr.BeadID)
 }
 
-// drainPendingAction checks whether a lifecycle action was parked for beadID
-// while it was in flight, and if so dispatches it now. Called after
-// activeBeads.Delete so the bead is considered free before the action runs.
+// drainActionPriority is the order parked lifecycle actions are dispatched when
+// more than one kind is queued for a bead. CI fixes go first (a red build blocks
+// everything), then review fixes, then rebase. Any action not listed drains
+// after these in unspecified-but-deterministic order (by Action value).
+var drainActionPriority = []lifecycle.Action{
+	lifecycle.ActionFixCI,
+	lifecycle.ActionFixReview,
+	lifecycle.ActionRebase,
+}
+
+// parkPendingAction stashes a lifecycle action to run once the bead frees,
+// keyed by action type so distinct fix kinds for the same bead coexist (the old
+// single-slot latest-wins dropped one, stranding PRs in needs_fix). Latest-wins
+// only within a single action type.
+func (d *Daemon) parkPendingAction(lockKey string, req lifecycle.ActionRequest) {
+	d.pendingMu.Lock()
+	defer d.pendingMu.Unlock()
+	m, _ := d.pendingActions.Load(lockKey)
+	actions, _ := m.(map[lifecycle.Action]lifecycle.ActionRequest)
+	if actions == nil {
+		actions = make(map[lifecycle.Action]lifecycle.ActionRequest)
+	}
+	actions[req.Action] = req
+	d.pendingActions.Store(lockKey, actions)
+}
+
+// drainPendingAction dispatches ONE parked lifecycle action for beadID (highest
+// priority first), re-parking the rest. Called after activeBeads.Delete so the
+// bead is free. The dispatched action's own completion calls drainPendingAction
+// again, so multiple parked actions drain in sequence (one worktree at a time).
 func (d *Daemon) drainPendingAction(ctx context.Context, beadID string) {
-	v, ok := d.pendingActions.LoadAndDelete(beadID)
+	d.pendingMu.Lock()
+	v, ok := d.pendingActions.Load(beadID)
 	if !ok {
+		d.pendingMu.Unlock()
 		return
 	}
-	req, ok := v.(lifecycle.ActionRequest)
+	actions, ok := v.(map[lifecycle.Action]lifecycle.ActionRequest)
 	if !ok {
-		d.logger.Error("pending lifecycle action has unexpected type", "bead", beadID, "valueType", fmt.Sprintf("%T", v))
+		d.pendingActions.Delete(beadID)
+		d.pendingMu.Unlock()
+		d.logger.Error("pending lifecycle actions have unexpected type", "bead", beadID, "valueType", fmt.Sprintf("%T", v))
 		return
 	}
-	d.logger.Info("draining parked lifecycle action", "bead", beadID, "action", req.Action)
+	req, found := popPriorityAction(actions)
+	if !found {
+		d.pendingActions.Delete(beadID)
+		d.pendingMu.Unlock()
+		return
+	}
+	delete(actions, req.Action)
+	remaining := len(actions)
+	if remaining == 0 {
+		d.pendingActions.Delete(beadID)
+	} else {
+		d.pendingActions.Store(beadID, actions)
+	}
+	d.pendingMu.Unlock()
+	d.logger.Info("draining parked lifecycle action", "bead", beadID, "action", req.Action, "remaining", remaining)
 	d.handleLifecycleAction(ctx, req)
+}
+
+// popPriorityAction selects which parked action to dispatch next: the highest
+// priority present (see drainActionPriority), falling back to the lowest Action
+// value so the choice is deterministic (Go map iteration order is random).
+func popPriorityAction(actions map[lifecycle.Action]lifecycle.ActionRequest) (lifecycle.ActionRequest, bool) {
+	if len(actions) == 0 {
+		return lifecycle.ActionRequest{}, false
+	}
+	for _, a := range drainActionPriority {
+		if req, ok := actions[a]; ok {
+			return req, true
+		}
+	}
+	var best lifecycle.Action
+	first := true
+	for a := range actions {
+		if first || a < best {
+			best, first = a, false
+		}
+	}
+	return actions[best], true
 }
 
 // effectiveMaxLifecycleWorkers resolves the configured lifecycle concurrency cap,

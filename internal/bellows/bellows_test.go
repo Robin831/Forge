@@ -276,14 +276,14 @@ func TestSnapshotTransitionLogic(t *testing.T) {
 // returning the event types that would be emitted for a given state change.
 // This is used only in tests to verify the logic is correct.
 func computeTransitionEvents(old, new *prSnapshot) []string {
-	return computeTransitionEventsWithPR(old, new, "", 0, 5, 0, 5)
+	return computeTransitionEventsWithPR(old, new, false, 0, 5, 0, 5)
 }
 
 // computeTransitionEventsWithPR extends computeTransitionEvents with PR-level
 // state for the secondary CI and review-fix retry checks. prStatus, ciFixCount
 // and reviewFixCount come from the state.PR record; maxCI / maxReview are the
 // configured caps.
-func computeTransitionEventsWithPR(old, new *prSnapshot, prStatus string, ciFixCount, maxCI, reviewFixCount, maxReview int) []string {
+func computeTransitionEventsWithPR(old, new *prSnapshot, inFlight bool, ciFixCount, maxCI, reviewFixCount, maxReview int) []string {
 	var events []string
 
 	if new.IsMerged && !old.IsMerged {
@@ -297,8 +297,8 @@ func computeTransitionEventsWithPR(old, new *prSnapshot, prStatus string, ciFixC
 	} else if !new.CIPassing && !new.CIInProgress && old.CIPassing {
 		events = append(events, EventCIFailed)
 	} else if !new.CIPassing && !new.CIInProgress && !old.CIPassing {
-		// Secondary check: CI still failing after a completed fix attempt.
-		if prStatus != "needs_fix" && ciFixCount > 0 && ciFixCount < maxCI {
+		// Secondary check: CI still failing and no quench worker in flight.
+		if !inFlight && ciFixCount > 0 && ciFixCount < maxCI {
 			events = append(events, EventCIFailed)
 		}
 	}
@@ -310,8 +310,8 @@ func computeTransitionEventsWithPR(old, new *prSnapshot, prStatus string, ciFixC
 	if (new.NeedsChanges && !old.NeedsChanges) || (new.HasUnresolvedThreads && !old.HasUnresolvedThreads) {
 		events = append(events, EventReviewChanges)
 	} else if new.HasUnresolvedThreads && old.HasUnresolvedThreads {
-		// Secondary check: review threads still unresolved after a completed fix attempt.
-		if prStatus != "needs_fix" && reviewFixCount > 0 && reviewFixCount < maxReview {
+		// Secondary check: review threads still unresolved and no burnish worker in flight.
+		if !inFlight && reviewFixCount > 0 && reviewFixCount < maxReview {
 			events = append(events, EventReviewChanges)
 		}
 	}
@@ -451,34 +451,43 @@ func TestCIFixRetryLogic(t *testing.T) {
 		name       string
 		old        prSnapshot
 		new        prSnapshot
-		prStatus   string
+		inFlight   bool
 		ciFixCount int
 		maxCI      int
 		wantCIFail bool
 	}{
 		{
-			name:       "CI still failing, fix completed (status=open), retries remain → ci_failed",
+			name:       "CI still failing, fix completed (no worker in flight), retries remain → ci_failed",
 			old:        prSnapshot{CIPassing: false},
 			new:        prSnapshot{CIPassing: false},
-			prStatus:   "open",
+			inFlight:   false,
 			ciFixCount: 1,
 			maxCI:      5,
 			wantCIFail: true,
 		},
 		{
-			name:       "CI still failing, fix in progress (status=needs_fix) → no event",
+			name:       "CI still failing, quench worker in flight → no event",
 			old:        prSnapshot{CIPassing: false},
 			new:        prSnapshot{CIPassing: false},
-			prStatus:   "needs_fix",
+			inFlight:   true,
 			ciFixCount: 1,
 			maxCI:      5,
 			wantCIFail: false,
 		},
 		{
+			name:       "CI still failing, parked in needs_fix with NO worker in flight → ci_failed (re-dispatch)",
+			old:        prSnapshot{CIPassing: false},
+			new:        prSnapshot{CIPassing: false},
+			inFlight:   false,
+			ciFixCount: 2,
+			maxCI:      5,
+			wantCIFail: true,
+		},
+		{
 			name:       "CI still failing, max attempts reached → no event",
 			old:        prSnapshot{CIPassing: false},
 			new:        prSnapshot{CIPassing: false},
-			prStatus:   "open",
+			inFlight:   false,
 			ciFixCount: 5,
 			maxCI:      5,
 			wantCIFail: false,
@@ -487,7 +496,7 @@ func TestCIFixRetryLogic(t *testing.T) {
 			name:       "CI still failing, no previous fix attempts → no event",
 			old:        prSnapshot{CIPassing: false},
 			new:        prSnapshot{CIPassing: false},
-			prStatus:   "open",
+			inFlight:   false,
 			ciFixCount: 0,
 			maxCI:      5,
 			wantCIFail: false,
@@ -496,7 +505,7 @@ func TestCIFixRetryLogic(t *testing.T) {
 			name:       "CI still failing, attempt 4 of 5 → ci_failed",
 			old:        prSnapshot{CIPassing: false},
 			new:        prSnapshot{CIPassing: false},
-			prStatus:   "open",
+			inFlight:   false,
 			ciFixCount: 4,
 			maxCI:      5,
 			wantCIFail: true,
@@ -505,7 +514,7 @@ func TestCIFixRetryLogic(t *testing.T) {
 			name:       "CI transition passing→failing still works normally",
 			old:        prSnapshot{CIPassing: true},
 			new:        prSnapshot{CIPassing: false},
-			prStatus:   "open",
+			inFlight:   false,
 			ciFixCount: 0,
 			maxCI:      5,
 			wantCIFail: true,
@@ -514,7 +523,7 @@ func TestCIFixRetryLogic(t *testing.T) {
 			name:       "CI checks in progress after fix attempt → no ci_failed",
 			old:        prSnapshot{CIPassing: false},
 			new:        prSnapshot{CIPassing: false, CIInProgress: true},
-			prStatus:   "open",
+			inFlight:   false,
 			ciFixCount: 1,
 			maxCI:      5,
 			wantCIFail: false,
@@ -523,7 +532,7 @@ func TestCIFixRetryLogic(t *testing.T) {
 			name:       "CI checks in progress on initial transition → no ci_failed",
 			old:        prSnapshot{CIPassing: true},
 			new:        prSnapshot{CIPassing: false, CIInProgress: true},
-			prStatus:   "open",
+			inFlight:   false,
 			ciFixCount: 0,
 			maxCI:      5,
 			wantCIFail: false,
@@ -532,7 +541,7 @@ func TestCIFixRetryLogic(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			fired := computeTransitionEventsWithPR(&tt.old, &tt.new, tt.prStatus, tt.ciFixCount, tt.maxCI, 0, 5)
+			fired := computeTransitionEventsWithPR(&tt.old, &tt.new, tt.inFlight, tt.ciFixCount, tt.maxCI, 0, 5)
 			if tt.wantCIFail {
 				assert.Contains(t, fired, EventCIFailed)
 			} else {
@@ -551,34 +560,43 @@ func TestReviewFixRetryLogic(t *testing.T) {
 		name           string
 		old            prSnapshot
 		new            prSnapshot
-		prStatus       string
+		inFlight       bool
 		reviewFixCount int
 		maxReview      int
 		wantReview     bool
 	}{
 		{
-			name:           "threads still unresolved, fix completed (status=open), retries remain → review_changes",
+			name:           "threads still unresolved, fix completed (no worker in flight), retries remain → review_changes",
 			old:            prSnapshot{HasUnresolvedThreads: true},
 			new:            prSnapshot{HasUnresolvedThreads: true},
-			prStatus:       "open",
+			inFlight:       false,
 			reviewFixCount: 1,
 			maxReview:      5,
 			wantReview:     true,
 		},
 		{
-			name:           "threads still unresolved, fix in progress (status=needs_fix) → no event",
+			name:           "threads still unresolved, burnish worker in flight → no event",
 			old:            prSnapshot{HasUnresolvedThreads: true},
 			new:            prSnapshot{HasUnresolvedThreads: true},
-			prStatus:       "needs_fix",
+			inFlight:       true,
 			reviewFixCount: 1,
 			maxReview:      5,
 			wantReview:     false,
 		},
 		{
+			name:           "threads still unresolved, parked in needs_fix with NO worker in flight → review_changes (re-dispatch) [PR #4257 regression]",
+			old:            prSnapshot{HasUnresolvedThreads: true},
+			new:            prSnapshot{HasUnresolvedThreads: true},
+			inFlight:       false,
+			reviewFixCount: 2,
+			maxReview:      5,
+			wantReview:     true,
+		},
+		{
 			name:           "threads still unresolved, max attempts reached → no event",
 			old:            prSnapshot{HasUnresolvedThreads: true},
 			new:            prSnapshot{HasUnresolvedThreads: true},
-			prStatus:       "open",
+			inFlight:       false,
 			reviewFixCount: 5,
 			maxReview:      5,
 			wantReview:     false,
@@ -587,7 +605,7 @@ func TestReviewFixRetryLogic(t *testing.T) {
 			name:           "threads still unresolved, no previous fix attempts → no event",
 			old:            prSnapshot{HasUnresolvedThreads: true},
 			new:            prSnapshot{HasUnresolvedThreads: true},
-			prStatus:       "open",
+			inFlight:       false,
 			reviewFixCount: 0,
 			maxReview:      5,
 			wantReview:     false,
@@ -596,7 +614,7 @@ func TestReviewFixRetryLogic(t *testing.T) {
 			name:           "threads still unresolved, attempt 4 of 5 → review_changes",
 			old:            prSnapshot{HasUnresolvedThreads: true},
 			new:            prSnapshot{HasUnresolvedThreads: true},
-			prStatus:       "open",
+			inFlight:       false,
 			reviewFixCount: 4,
 			maxReview:      5,
 			wantReview:     true,
@@ -605,7 +623,7 @@ func TestReviewFixRetryLogic(t *testing.T) {
 			name:           "threads transition 0→>0 still fires via primary branch",
 			old:            prSnapshot{HasUnresolvedThreads: false},
 			new:            prSnapshot{HasUnresolvedThreads: true},
-			prStatus:       "open",
+			inFlight:       false,
 			reviewFixCount: 0,
 			maxReview:      5,
 			wantReview:     true,
@@ -614,7 +632,7 @@ func TestReviewFixRetryLogic(t *testing.T) {
 			name:           "genuinely zero threads on both polls → no event",
 			old:            prSnapshot{HasUnresolvedThreads: false},
 			new:            prSnapshot{HasUnresolvedThreads: false},
-			prStatus:       "open",
+			inFlight:       false,
 			reviewFixCount: 1,
 			maxReview:      5,
 			wantReview:     false,
@@ -623,7 +641,7 @@ func TestReviewFixRetryLogic(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			fired := computeTransitionEventsWithPR(&tt.old, &tt.new, tt.prStatus, 0, 5, tt.reviewFixCount, tt.maxReview)
+			fired := computeTransitionEventsWithPR(&tt.old, &tt.new, tt.inFlight, 0, 5, tt.reviewFixCount, tt.maxReview)
 			if tt.wantReview {
 				assert.Contains(t, fired, EventReviewChanges)
 			} else {
@@ -729,8 +747,11 @@ func TestCheckPR_ReviewStillUnresolved_RespectsMaxAttempts(t *testing.T) {
 }
 
 // TestCheckPR_ReviewStillUnresolved_SkipsInFlightBurnish verifies that a PR
-// already in needs_fix (a burnish is in flight) does not receive a duplicate
-// dispatch from the still-unresolved branch.
+// whose burnish worker is currently in flight does not receive a duplicate
+// dispatch from the still-unresolved branch. In-flight is reported by the
+// wired checker (the daemon keys it off activeBeads), not by pr.Status — a
+// needs_fix PR with NO active worker must instead re-dispatch (the PR #4257
+// regression), which the still-unresolved unit test covers.
 func TestCheckPR_ReviewStillUnresolved_SkipsInFlightBurnish(t *testing.T) {
 	db, cleanup := openTempDB(t)
 	defer cleanup()
@@ -756,6 +777,8 @@ func TestCheckPR_ReviewStillUnresolved_SkipsInFlightBurnish(t *testing.T) {
 	m := New(db, func(_ string) vcs.Provider { return fake }, time.Minute,
 		map[string]string{"test-anvil": "/fake"}, nil, nil,
 		func() int { return 5 }, nil)
+	// A burnish worker is in flight for this bead.
+	m.SetInFlightChecker(func(string) bool { return true })
 	m.OnEvent(func(_ context.Context, e PREvent) {
 		events = append(events, e.EventType)
 	})
@@ -763,7 +786,7 @@ func TestCheckPR_ReviewStillUnresolved_SkipsInFlightBurnish(t *testing.T) {
 	m.checkAll(context.Background())
 
 	assert.NotContains(t, events, EventReviewChanges,
-		"EventReviewChanges must NOT fire while a burnish is already in flight (status=needs_fix)")
+		"EventReviewChanges must NOT fire while a burnish worker is already in flight")
 }
 
 // assayEnabledMonitor builds a Monitor whose Assay trigger is enabled for the
@@ -1099,9 +1122,10 @@ func TestCheckPR_StillConflicting_RespectsMaxAttempts(t *testing.T) {
 		"PR status must not be flipped to needs_fix when the cap is reached")
 }
 
-// TestCheckPR_StillConflicting_SkipsInFlightRebase verifies that a PR
-// already in needs_fix (a rebase is in flight) does not receive a duplicate
-// dispatch from the still-conflicting branch.
+// TestCheckPR_StillConflicting_SkipsInFlightRebase verifies that a PR whose
+// rebase worker is currently in flight does not receive a duplicate dispatch
+// from the still-conflicting branch. In-flight is reported by the wired
+// checker, not by pr.Status.
 func TestCheckPR_StillConflicting_SkipsInFlightRebase(t *testing.T) {
 	db, cleanup := openTempDB(t)
 	defer cleanup()
@@ -1128,6 +1152,8 @@ func TestCheckPR_StillConflicting_SkipsInFlightRebase(t *testing.T) {
 	m := New(db, func(_ string) vcs.Provider { return fake }, time.Minute,
 		map[string]string{"test-anvil": "/fake"}, nil, nil, nil,
 		func() int { return 3 })
+	// A rebase worker is in flight for this bead.
+	m.SetInFlightChecker(func(string) bool { return true })
 	m.OnEvent(func(_ context.Context, e PREvent) {
 		events = append(events, e.EventType)
 	})
@@ -1135,7 +1161,7 @@ func TestCheckPR_StillConflicting_SkipsInFlightRebase(t *testing.T) {
 	m.checkAll(context.Background())
 
 	assert.NotContains(t, events, EventPRConflicting,
-		"EventPRConflicting must NOT fire while a rebase is already in flight (status=needs_fix)")
+		"EventPRConflicting must NOT fire while a rebase worker is already in flight")
 }
 
 // TestCheckPR_CIInProgressDoesNotTriggerFailure verifies that bellows does not

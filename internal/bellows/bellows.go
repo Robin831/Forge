@@ -110,6 +110,7 @@ type Monitor struct {
 	autoMergeHandler     func(ctx context.Context, anvil string, pr state.PR) // called when a PR becomes ready-to-merge
 	smelterEnabled       func() bool                                          // when true, route learned rules to pending table instead of PR
 	assayConfig          func(anvil string) AssayGateConfig                   // resolved Assay gate config; nil disables the trigger
+	beadInFlight         func(beadID string) bool                             // reports whether a lifecycle fix worker is active for a bead; nil disables (tests)
 
 	// retryBackoff overrides the inline retry backoff used when wrapping gh
 	// status fetches in transient-failure retries. nil selects
@@ -195,6 +196,24 @@ func (m *Monitor) SetSmelterEnabled(f func() bool) {
 // EventPRReviewNeeded. When nil (the default), the Assay trigger is disabled.
 func (m *Monitor) SetAssayConfig(f func(anvil string) AssayGateConfig) {
 	m.assayConfig = f
+}
+
+// SetInFlightChecker wires a predicate reporting whether a lifecycle fix worker
+// is currently running for a bead. The "still failing/unresolved" retry
+// branches use it to decide whether to re-dispatch a fix. It replaces the older
+// `pr.Status != needs_fix` proxy, which silently wedged any PR parked in
+// needs_fix with no active worker — e.g. when a parked lifecycle action was
+// dropped (single-slot latest-wins overwrite) or the daemon restarted mid-fix:
+// the status never flips back, so the retry never re-fires. When no checker is
+// wired (tests), inFlight() returns false so retries fall through as before.
+func (m *Monitor) SetInFlightChecker(f func(beadID string) bool) {
+	m.beadInFlight = f
+}
+
+// inFlight reports whether a lifecycle fix worker is currently running for
+// beadID. Safe with no checker wired (returns false).
+func (m *Monitor) inFlight(beadID string) bool {
+	return m.beadInFlight != nil && m.beadInFlight(beadID)
 }
 
 // lastReviewedSHA returns the head SHA most recently reviewed by Assay for the
@@ -794,14 +813,16 @@ func (m *Monitor) checkPR(ctx context.Context, pr *state.PR, dailyAssayCost *flo
 		_ = m.db.LogEvent(state.EventCIFailed, fmt.Sprintf("PR #%d CI checks failed", pr.Number), pr.BeadID, pr.Anvil)
 		_ = m.db.LogEvent(state.EventPRNeedsFix, fmt.Sprintf("PR #%d CI failed", pr.Number), pr.BeadID, pr.Anvil)
 	} else if !newSnap.CIPassing && !newSnap.CIInProgress && !lastSnap.CIPassing {
-		// CI is still failing with no transition. Check if a previous quench
-		// attempt completed (PR status reset to open) and retries remain.
-		// This catches the gap where NotifyCIFixCompleted() clears the fix
-		// state but bellows never re-emits EventCIFailed because it only
-		// detected transitions.
+		// CI is still failing with no transition. Re-emit when no quench worker
+		// is currently in flight for the bead and retries remain. This catches
+		// the gap where NotifyCIFixCompleted() clears the fix state but bellows
+		// never re-emits EventCIFailed because it only detected transitions —
+		// AND the gap where the PR is parked in needs_fix with no active worker
+		// (dropped parked action / mid-fix restart), which the old
+		// `pr.Status != needs_fix` proxy left wedged forever.
 		// Skip if checks are still in progress — wait for completion.
 		maxCI := m.maxCIFixAttempts()
-		if pr.Status != state.PRNeedsFix && pr.CIFixCount > 0 && pr.CIFixCount < maxCI {
+		if !m.inFlight(pr.BeadID) && pr.CIFixCount > 0 && pr.CIFixCount < maxCI {
 			m.emit(ctx, PREvent{
 				PRNumber:  pr.Number,
 				BeadID:    pr.BeadID,
@@ -853,7 +874,7 @@ func (m *Monitor) checkPR(ctx context.Context, pr *state.PR, dailyAssayCost *flo
 		// keeps lastSnap.IsConflicting=true forever and no new event ever fires.
 		// Mirrors the CI still-failing and review still-unresolved branches.
 		maxR := m.maxRebaseAttempts()
-		if pr.Status != state.PRNeedsFix && pr.RebaseCount > 0 && pr.RebaseCount < maxR {
+		if !m.inFlight(pr.BeadID) && pr.RebaseCount > 0 && pr.RebaseCount < maxR {
 			m.emit(ctx, PREvent{
 				PRNumber:  pr.Number,
 				BeadID:    pr.BeadID,
@@ -889,12 +910,16 @@ func (m *Monitor) checkPR(ctx context.Context, pr *state.PR, dailyAssayCost *flo
 		_ = m.db.LogEvent(state.EventReviewChanges, fmt.Sprintf("PR #%d: %s", pr.Number, details), pr.BeadID, pr.Anvil)
 		_ = m.db.LogEvent(state.EventPRNeedsFix, fmt.Sprintf("PR #%d: review fix needed", pr.Number), pr.BeadID, pr.Anvil)
 	} else if newSnap.HasUnresolvedThreads && lastSnap.HasUnresolvedThreads {
-		// Review still has unresolved threads with no transition. Catches the gap
-		// where NotifyReviewFixCompleted() resets pr.Status to open after a burnish
-		// cycle but bellows never re-emits EventReviewChanges because threads stayed
-		// > 0 across the cycle. Mirrors the CI-fix still-failing branch above.
+		// Review still has unresolved threads with no transition. Re-emit when no
+		// burnish worker is in flight for the bead and retries remain. Catches the
+		// gap where NotifyReviewFixCompleted() resets pr.Status to open after a
+		// burnish cycle but bellows never re-emits because threads stayed > 0
+		// across the cycle — AND the gap where the PR is parked in needs_fix with
+		// no active worker (a dropped parked review-fix action, or a mid-fix
+		// restart), which the old `pr.Status != needs_fix` proxy wedged forever
+		// (observed: PR #4257 / Fhi.Metadata-hyc4g). Mirrors the CI-fix branch above.
 		maxR := m.maxReviewFixAttempts()
-		if pr.Status != state.PRNeedsFix && pr.ReviewFixCount > 0 && pr.ReviewFixCount < maxR {
+		if !m.inFlight(pr.BeadID) && pr.ReviewFixCount > 0 && pr.ReviewFixCount < maxR {
 			m.emit(ctx, PREvent{
 				PRNumber:  pr.Number,
 				BeadID:    pr.BeadID,
