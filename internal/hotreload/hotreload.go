@@ -113,8 +113,9 @@ func (w *Watcher) Start() error {
 			if !ok {
 				return nil
 			}
-			// Only react to events for our config file.
-			if filepath.Base(event.Name) != configBase {
+			// Only react to events for our config file (or the ConfigMap
+			// atomic-update marker — see configEventIsRelevant).
+			if !configEventIsRelevant(event.Name, configBase) {
 				continue
 			}
 			if event.Has(fsnotify.Write) || event.Has(fsnotify.Create) || event.Has(fsnotify.Rename) {
@@ -134,6 +135,26 @@ func (w *Watcher) Start() error {
 			w.logger.Error("config watcher error", "error", err)
 		}
 	}
+}
+
+// configEventIsRelevant reports whether a directory event should trigger a
+// reload. It matches two cases:
+//
+//   - A direct edit of the config file (basename == configBase). This covers
+//     local `forge.yaml` edits and the write-to-temp+rename that editors and
+//     the web config PATCH use.
+//   - A Kubernetes ConfigMap/Secret atomic update. A mounted ConfigMap is a
+//     symlink tree: `forge.yaml -> ..data/forge.yaml` and `..data -> ..<ts>/`.
+//     kubelet updates it by writing a new timestamped directory and atomically
+//     renaming `..data` to point at it — the mounted `forge.yaml` symlink is
+//     never touched. So a filter keyed only on basename == "forge.yaml" never
+//     fires for ConfigMap-delivered changes, which is exactly how the daemon
+//     runs in production (config mounted read-only from a ConfigMap). Reacting
+//     to the `..data` rename closes that gap; reload()'s applyChanges() no-op
+//     guard keeps a spurious swap cheap.
+func configEventIsRelevant(eventName, configBase string) bool {
+	base := filepath.Base(eventName)
+	return base == configBase || base == "..data"
 }
 
 // Stop terminates the watcher.

@@ -43,3 +43,30 @@ func TestApplyChanges_CopilotSettingsUnchanged(t *testing.T) {
 		}
 	}
 }
+
+func TestConfigEventIsRelevant(t *testing.T) {
+	const base = "forge.yaml"
+	cases := []struct {
+		name      string
+		eventName string
+		want      bool
+	}{
+		{"direct edit of config file", "/etc/forge/forge.yaml", true},
+		{"editor write-to-temp rename target", "/home/u/.forge/forge.yaml", true},
+		// Kubernetes ConfigMap atomic update: kubelet renames ..data, never
+		// touching forge.yaml. This is the production path and MUST trigger.
+		{"configmap ..data symlink swap", "/etc/forge/..data", true},
+		// The new timestamped dir is created too, but ..data is the marker we
+		// key on; the timestamped dir alone should not trigger.
+		{"configmap timestamped dir (ignored)", "/etc/forge/..2026_06_19_12_17_24.513680161", false},
+		{"unrelated file in dir", "/etc/forge/bootstrap-anvils.sh", false},
+		{"unrelated dotfile", "/etc/forge/.swp", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := configEventIsRelevant(tc.eventName, base); got != tc.want {
+				t.Errorf("configEventIsRelevant(%q, %q) = %v, want %v", tc.eventName, base, got, tc.want)
+			}
+		})
+	}
+}
