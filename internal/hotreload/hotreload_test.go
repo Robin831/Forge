@@ -70,3 +70,34 @@ func TestConfigEventIsRelevant(t *testing.T) {
 		})
 	}
 }
+
+// TestApplyChanges_AssayConfig verifies that an assay-config edit (e.g. bumping
+// daily_cost_limit_usd via the ConfigMap) is detected so reload() stores the new
+// config instead of early-returning on "no changes". Without this, assay edits
+// silently never hot-applied and required a pod restart.
+func TestApplyChanges_AssayConfig(t *testing.T) {
+	mk := func(limit float64) *config.Config {
+		l := limit
+		return &config.Config{Assay: config.AssayConfig{DailyCostLimitUSD: &l}}
+	}
+	if ch := applyChanges(mk(50), mk(150)); len(ch) == 0 {
+		t.Error("assay daily_cost_limit change must be detected so reload() stores the new config")
+	}
+	if ch := applyChanges(mk(50), mk(50)); len(ch) != 0 {
+		t.Errorf("identical assay config must not register a change, got %v", ch)
+	}
+}
+
+// TestApplyChanges_PerAnvilAssayConfig verifies a per-anvil assay overlay edit
+// is detected too.
+func TestApplyChanges_PerAnvilAssayConfig(t *testing.T) {
+	mk := func(shadow bool) *config.Config {
+		s := shadow
+		return &config.Config{Anvils: map[string]config.AnvilConfig{
+			"munin": {Assay: &config.AssayConfig{ShadowMode: &s}},
+		}}
+	}
+	if ch := applyChanges(mk(true), mk(false)); len(ch) == 0 {
+		t.Error("per-anvil assay overlay change must be detected")
+	}
+}

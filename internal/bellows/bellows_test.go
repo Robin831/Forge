@@ -2159,18 +2159,49 @@ func TestAssayUpToDate_RunCapReleasesGate(t *testing.T) {
 	require.NoError(t, db.RecordAssayRun(&state.AssayRun{Anvil: "munin", PRNumber: 4236, HeadSHA: "old1", StartedAt: time.Now().Add(-2 * time.Hour)}))
 
 	// One run, cap=2: not yet exhausted → head unreviewed → not up to date.
-	if m.assayUpToDate(pr, "newhead") {
+	if m.assayUpToDate(pr, "newhead", nil) {
 		t.Error("with runs(1) < cap(2) and an unreviewed head, assayUpToDate should be false")
 	}
 
 	// Second run (still on an old head) reaches the cap → gate released.
 	require.NoError(t, db.RecordAssayRun(&state.AssayRun{Anvil: "munin", PRNumber: 4236, HeadSHA: "old2", StartedAt: time.Now().Add(-1 * time.Hour)}))
-	if !m.assayUpToDate(pr, "newhead") {
+	if !m.assayUpToDate(pr, "newhead", nil) {
 		t.Error("with runs(2) >= cap(2), assayUpToDate should be true so the PR is not deadlocked")
 	}
 
 	// Sanity: a matching head is always up to date regardless of cap.
-	if !m.assayUpToDate(pr, "old2") {
+	if !m.assayUpToDate(pr, "old2", nil) {
 		t.Error("a head equal to the last reviewed SHA must be up to date")
+	}
+}
+
+// TestAssayUpToDate_DailyCostCapReleasesGate verifies the daily-cost-cap escape:
+// when today's Assay spend has reached the cap, no re-review will be dispatched
+// (shouldEmitReviewNeeded bails on the same condition), so an unreviewed head
+// must not deadlock readiness — assayUpToDate releases the gate, mirroring the
+// run-cap behaviour. Under the cap (re-review still possible) it stays false.
+func TestAssayUpToDate_DailyCostCapReleasesGate(t *testing.T) {
+	db, cleanup := openTempDB(t)
+	defer cleanup()
+
+	pr := &state.PR{Number: 4335, Anvil: "munin", BeadID: "bd-4335", Branch: "b", Status: state.PROpen, CreatedAt: time.Now()}
+	require.NoError(t, db.InsertPR(pr))
+
+	m := New(db, nil, time.Minute, map[string]string{"munin": "/fake"}, nil, nil, nil, nil)
+	m.SetAssayConfig(func(anvil string) AssayGateConfig {
+		return AssayGateConfig{Enabled: true, MaxRuns: 2, DailyCostLimitUSD: 50}
+	})
+	// One run on an OLD head; current head unreviewed; run cap (2) NOT reached,
+	// so only the cost path can release the gate here.
+	require.NoError(t, db.RecordAssayRun(&state.AssayRun{Anvil: "munin", PRNumber: 4335, HeadSHA: "old1", StartedAt: time.Now().Add(-time.Hour)}))
+
+	if m.assayUpToDate(pr, "newhead", float64Ptr(40)) {
+		t.Error("under the daily cost cap, an unreviewed head must not be up to date (re-review still possible)")
+	}
+	if !m.assayUpToDate(pr, "newhead", float64Ptr(52)) {
+		t.Error("with the daily cost cap reached, assayUpToDate must release the gate")
+	}
+	if m.assayUpToDate(pr, "newhead", nil) {
+		t.Error("a nil daily cost (query error) must not release the gate via the cost path")
 	}
 }

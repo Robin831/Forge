@@ -275,7 +275,7 @@ func (m *Monitor) assayEnabled(anvil string) bool {
 // When headSHA is empty (GitHub did not report it), we return true: no Assay
 // review will be dispatched (shouldEmitReviewNeeded skips empty SHAs), so
 // blocking readiness would be permanent.
-func (m *Monitor) assayUpToDate(pr *state.PR, headSHA string) bool {
+func (m *Monitor) assayUpToDate(pr *state.PR, headSHA string, dailyAssayCost *float64) bool {
 	if !m.assayEnabled(pr.Anvil) {
 		return true
 	}
@@ -285,16 +285,28 @@ func (m *Monitor) assayUpToDate(pr *state.PR, headSHA string) bool {
 	if m.lastReviewedSHA(pr) == headSHA {
 		return true
 	}
+	cfg := m.assayConfig(pr.Anvil)
 	// Per-PR run cap reached: shouldEmitReviewNeeded will not dispatch another
 	// review, so the head can never become "reviewed". Blocking readiness on it
 	// would deadlock the PR forever (e.g. Burnish fixes comments, pushes a new
 	// head, but the cap stops the confirming re-review). Treat an exhausted cap
 	// as "Assay done" — readiness is still gated by has_unresolved_threads, so
 	// only genuinely clean PRs are released. (Forge-btpw)
-	if cfg := m.assayConfig(pr.Anvil); cfg.MaxRuns > 0 {
+	if cfg.MaxRuns > 0 {
 		if n, err := m.db.CountAssayRuns(pr.Anvil, pr.Number); err == nil && n >= cfg.MaxRuns {
 			return true
 		}
+	}
+	// Daily Assay cost cap reached: shouldEmitReviewNeeded bails on the exact
+	// same condition (dailyCostUSD >= dailyCostLimit), so no re-review will be
+	// dispatched until the budget resets at UTC midnight. Without releasing the
+	// gate here, every otherwise-green PR whose head advanced after its last
+	// assay (e.g. via Burnish) silently stalls out of ready-to-merge for the
+	// rest of the day — invisible in both the Ready-to-Merge and Needs-Attention
+	// panels. Treat the budget-exhausted head as "Assay done" for the day, same
+	// rationale as the run cap; readiness is still gated by has_unresolved_threads.
+	if dailyAssayCost != nil && cfg.DailyCostLimitUSD > 0 && *dailyAssayCost >= cfg.DailyCostLimitUSD {
+		return true
 	}
 	return false
 }
@@ -606,7 +618,7 @@ func (m *Monitor) checkPR(ctx context.Context, pr *state.PR, dailyAssayCost *flo
 	// When dailyAssayCost is nil (query error), no Assay will be dispatched this
 	// cycle, so treat as up-to-date to avoid permanently blocking readiness for
 	// an Assay that cannot run.
-	assayUpToDate := m.assayUpToDate(pr, status.HeadSHA)
+	assayUpToDate := m.assayUpToDate(pr, status.HeadSHA, dailyAssayCost)
 	if dailyAssayCost == nil && m.assayEnabled(pr.Anvil) {
 		assayUpToDate = true
 	}

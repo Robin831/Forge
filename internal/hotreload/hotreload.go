@@ -29,6 +29,7 @@ import (
 	"fmt"
 	"log/slog"
 	"path/filepath"
+	"reflect"
 	"sync"
 	"time"
 
@@ -302,6 +303,16 @@ func applyChanges(old, new *config.Config) []string {
 			old.Settings.SmelterInterval, new.Settings.SmelterInterval))
 	}
 
+	// Assay config (global block). The daemon reads the resolved Assay config
+	// live via SetAssayConfig (d.cfg.Load().ResolvedAssay), but reload() only
+	// stores the new config when applyChanges reports a change — so without
+	// detecting assay edits here, a ConfigMap change to e.g.
+	// daily_cost_limit_usd would be silently ignored until a restart. DeepEqual
+	// covers the tri-state *bool / []string (skip_paths) fields cleanly.
+	if !reflect.DeepEqual(old.Assay, new.Assay) {
+		changes = append(changes, "assay config changed")
+	}
+
 	// Detect anvil changes (add, remove, path change, max_smiths)
 	for name, newAnvil := range new.Anvils {
 		if oldAnvil, ok := old.Anvils[name]; ok {
@@ -319,6 +330,9 @@ func applyChanges(old, new *config.Config) []string {
 			}
 			if !stageProvidersEqual(oldAnvil.StageProviders, newAnvil.StageProviders) {
 				changes = append(changes, fmt.Sprintf("anvil %s stage_providers changed", name))
+			}
+			if !reflect.DeepEqual(oldAnvil.Assay, newAnvil.Assay) {
+				changes = append(changes, fmt.Sprintf("anvil %s assay config changed", name))
 			}
 		} else {
 			changes = append(changes, fmt.Sprintf("anvil %s added", name))
