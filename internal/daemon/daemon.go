@@ -3850,7 +3850,8 @@ func (d *Daemon) preDispatchRemoteBranchCheck(ctx context.Context, bead poller.B
 }
 
 // branchHasChangelogFragment reports whether a changelog fragment for beadID
-// (changelog.d/<bead-id>.md) is reachable from the given commit SHA. Forge
+// (changelog.d/<bead-id>.md or the language-split <bead-id>.<lang>.md) is
+// reachable from the given commit SHA. Forge
 // requires a fragment per PR, so its presence on a stranded forge branch is a
 // completion signal: the prior worker finished its work and merely failed to
 // open a PR. The SHA's tree is already local because CheckRemoteBranchState
@@ -3868,13 +3869,30 @@ func (d *Daemon) branchHasChangelogFragment(ctx context.Context, anvilPath, sha,
 	if err != nil {
 		return false, err
 	}
-	target := "changelog.d/" + beadID + ".md"
 	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
-		if strings.TrimSpace(line) == target {
+		if changelogFragmentMatches(line, beadID) {
 			return true, nil
 		}
 	}
 	return false, nil
+}
+
+// changelogFragmentMatches reports whether a changelog.d/ path is a changelog
+// fragment for beadID. It accepts both the single-file form
+// (changelog.d/<bead>.md) and the language-split form some repos use — e.g.
+// Munin's changelog.d/<bead>.en.md + <bead>.nb.md. Matching only the .md form
+// made recoverStrandedBranchPR/openPRForExistingBranch treat completed
+// language-split work as incomplete, stranding it in needs_human
+// (Fhi.Metadata-15ed9). It does NOT match a different bead whose id shares a
+// prefix (e.g. <bead>1.md), by requiring the extra segment to be dot-delimited.
+func changelogFragmentMatches(path, beadID string) bool {
+	const dir = "changelog.d/"
+	path = strings.TrimSpace(path)
+	if !strings.HasPrefix(path, dir) || !strings.HasSuffix(path, ".md") {
+		return false
+	}
+	stem := strings.TrimSuffix(strings.TrimPrefix(path, dir), ".md")
+	return stem == beadID || strings.HasPrefix(stem, beadID+".")
 }
 
 // recoverStrandedBranchPR auto-opens a PR for a stranded forge branch that
@@ -4095,7 +4113,7 @@ func (d *Daemon) openPRForExistingBranch(ctx context.Context, beadID, anvilName 
 		return 0, "", fmt.Errorf("checking changelog fragment on %s: %w", branch, fragErr)
 	}
 	if !hasFragment {
-		return 0, "", fmt.Errorf("origin/%s does not carry a changelog fragment (changelog.d/%s.md); refusing to open a PR for incomplete work", branch, beadID)
+		return 0, "", fmt.Errorf("origin/%s does not carry a changelog fragment (changelog.d/%s.md or %s.<lang>.md); refusing to open a PR for incomplete work", branch, beadID, beadID)
 	}
 
 	// Last-chance external_ref lookup in case it was empty in the bead record.
