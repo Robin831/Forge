@@ -113,7 +113,8 @@ RUN set -eux; \
         git \
         gnupg \
         openssh-client \
-        tini; \
+        tini \
+        tmux; \
     \
     # Node.js 24 LTS via NodeSource keyring + sources.list entry (no curl|bash)
     install -d -m 0755 /etc/apt/keyrings; \
@@ -165,6 +166,23 @@ RUN set -eux; \
     install -m 0755 "/tmp/dolt-linux-${dolt_arch}/bin/dolt" /usr/local/bin/dolt; \
     rm -rf /tmp/dolt.tar.gz /tmp/dolt-linux-${dolt_arch}; \
     dolt version
+
+# Install ttyd (a single static binary) so the devbox can expose a browser
+# terminal (xterm.js over websocket) behind the ingress — more resilient than
+# `kubectl exec`, whose stream gets cut by idle timeouts in the API-server path.
+# Unused by the Forge daemon itself; harmless there, needed for the devbox.
+ARG TTYD_VERSION=1.7.7
+RUN set -eux; \
+    arch=$(dpkg --print-architecture); \
+    case "$arch" in \
+        amd64) ttyd_arch=x86_64 ;; \
+        arm64) ttyd_arch=aarch64 ;; \
+        *) echo "unsupported arch: $arch" >&2; exit 1 ;; \
+    esac; \
+    curl -fsSL "https://github.com/tsl0922/ttyd/releases/download/${TTYD_VERSION}/ttyd.${ttyd_arch}" \
+        -o /usr/local/bin/ttyd; \
+    chmod 0755 /usr/local/bin/ttyd; \
+    ttyd --version
 
 # Copy the freshly-built forge binary from the Go builder stage.
 COPY --from=forge-builder --chmod=0755 /out/forge /usr/local/bin/forge
