@@ -48,3 +48,6 @@ tmp/
 
 # Beads / Dolt files (added by bd init)
 .beads-credential-key
+
+# Node (do not commit node_modules — incl. the self-ref symlink from PR #701)
+node_modules
