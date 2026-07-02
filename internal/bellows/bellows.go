@@ -216,6 +216,32 @@ func (m *Monitor) inFlight(beadID string) bool {
 	return m.beadInFlight != nil && m.beadInFlight(beadID)
 }
 
+// escalateFixExhausted flags a PR needs_human once when an auto-fix loop
+// (CI-fix or review-fix) has used all its retries but the underlying problem
+// (failing CI / unresolved review threads) persists and no worker is running.
+// Without this the PR silently stalls: auto-fix stops at the cap (the
+// re-dispatch branches require count < max) but nothing surfaces it, so it sits
+// green-but-blocked and invisible until someone notices and clicks Fix Comments
+// by hand (observed: PR #4471 / Fhi.Metadata-eyizi). Marking needs_human routes
+// it into the Needs-Attention panel for triage, consistent with the dispatch
+// and recovery circuit breakers. Fires once — it no-ops if the bead is already
+// flagged, so it neither re-logs nor churns updated_at every poll. Uses
+// LogEvent (not emit) so it does not re-trigger the lifecycle fix handlers.
+func (m *Monitor) escalateFixExhausted(pr *state.PR, reason string) {
+	if rec, err := m.db.GetRetry(pr.BeadID, pr.Anvil); err == nil && rec != nil && rec.NeedsHuman {
+		return
+	}
+	if err := m.db.MarkNeedsHuman(pr.BeadID, pr.Anvil, reason); err != nil {
+		log.Printf("[bellows] PR #%d: failed to flag needs_human after fix-loop exhaustion: %v", pr.Number, err)
+		return
+	}
+	// EventSmithFailed so the Needs-Attention panel classifies it as a
+	// worker-level failure (retry / clear / re-review actions), the closest
+	// existing terminal escalation type for an exhausted fix loop.
+	_ = m.db.LogEvent(state.EventSmithFailed, fmt.Sprintf("PR #%d: %s", pr.Number, reason), pr.BeadID, pr.Anvil)
+	log.Printf("[bellows] PR #%d flagged needs_human: %s", pr.Number, reason)
+}
+
 // lastReviewedSHA returns the head SHA most recently reviewed by Assay for the
 // given PR, or "" when no review has run (or on DB error). It wraps the
 // state-layer LastReviewedSHA helper (added in sub-task 1) so the trigger gate
@@ -834,19 +860,25 @@ func (m *Monitor) checkPR(ctx context.Context, pr *state.PR, dailyAssayCost *flo
 		// `pr.Status != needs_fix` proxy left wedged forever.
 		// Skip if checks are still in progress — wait for completion.
 		maxCI := m.maxCIFixAttempts()
-		if !m.inFlight(pr.BeadID) && pr.CIFixCount > 0 && pr.CIFixCount < maxCI {
-			m.emit(ctx, PREvent{
-				PRNumber:  pr.Number,
-				BeadID:    pr.BeadID,
-				Anvil:     pr.Anvil,
-				Branch:    status.HeadRefName,
-				EventType: EventCIFailed,
-				Details:   fmt.Sprintf("CI checks still failing after fix attempt %d/%d", pr.CIFixCount, maxCI),
-				Timestamp: time.Now(),
-			})
-			_ = m.db.UpdatePRStatus(pr.ID, state.PRNeedsFix)
-			_ = m.db.LogEvent(state.EventCIFailed, fmt.Sprintf("PR #%d CI still failing (attempt %d/%d)", pr.Number, pr.CIFixCount, maxCI), pr.BeadID, pr.Anvil)
-			_ = m.db.LogEvent(state.EventPRNeedsFix, fmt.Sprintf("PR #%d CI fix retry needed", pr.Number), pr.BeadID, pr.Anvil)
+		if !m.inFlight(pr.BeadID) {
+			if pr.CIFixCount > 0 && pr.CIFixCount < maxCI {
+				m.emit(ctx, PREvent{
+					PRNumber:  pr.Number,
+					BeadID:    pr.BeadID,
+					Anvil:     pr.Anvil,
+					Branch:    status.HeadRefName,
+					EventType: EventCIFailed,
+					Details:   fmt.Sprintf("CI checks still failing after fix attempt %d/%d", pr.CIFixCount, maxCI),
+					Timestamp: time.Now(),
+				})
+				_ = m.db.UpdatePRStatus(pr.ID, state.PRNeedsFix)
+				_ = m.db.LogEvent(state.EventCIFailed, fmt.Sprintf("PR #%d CI still failing (attempt %d/%d)", pr.Number, pr.CIFixCount, maxCI), pr.BeadID, pr.Anvil)
+				_ = m.db.LogEvent(state.EventPRNeedsFix, fmt.Sprintf("PR #%d CI fix retry needed", pr.Number), pr.BeadID, pr.Anvil)
+			} else if pr.CIFixCount >= maxCI {
+				// Quench used all its retries and CI is still failing: no more
+				// auto-fixes will dispatch. Surface it instead of stalling silently.
+				m.escalateFixExhausted(pr, fmt.Sprintf("CI-fix loop exhausted after %d/%d attempts; CI still failing", pr.CIFixCount, maxCI))
+			}
 		}
 	}
 
@@ -931,19 +963,26 @@ func (m *Monitor) checkPR(ctx context.Context, pr *state.PR, dailyAssayCost *flo
 		// restart), which the old `pr.Status != needs_fix` proxy wedged forever
 		// (observed: PR #4257 / Fhi.Metadata-hyc4g). Mirrors the CI-fix branch above.
 		maxR := m.maxReviewFixAttempts()
-		if !m.inFlight(pr.BeadID) && pr.ReviewFixCount > 0 && pr.ReviewFixCount < maxR {
-			m.emit(ctx, PREvent{
-				PRNumber:  pr.Number,
-				BeadID:    pr.BeadID,
-				Anvil:     pr.Anvil,
-				Branch:    status.HeadRefName,
-				EventType: EventReviewChanges,
-				Details:   fmt.Sprintf("PR still has unresolved review threads after fix attempt %d/%d", pr.ReviewFixCount, maxR),
-				Timestamp: time.Now(),
-			})
-			_ = m.db.UpdatePRStatus(pr.ID, state.PRNeedsFix)
-			_ = m.db.LogEvent(state.EventReviewChanges, fmt.Sprintf("PR #%d review fix retry needed (attempt %d/%d)", pr.Number, pr.ReviewFixCount, maxR), pr.BeadID, pr.Anvil)
-			_ = m.db.LogEvent(state.EventPRNeedsFix, fmt.Sprintf("PR #%d review fix retry needed", pr.Number), pr.BeadID, pr.Anvil)
+		if !m.inFlight(pr.BeadID) {
+			if pr.ReviewFixCount > 0 && pr.ReviewFixCount < maxR {
+				m.emit(ctx, PREvent{
+					PRNumber:  pr.Number,
+					BeadID:    pr.BeadID,
+					Anvil:     pr.Anvil,
+					Branch:    status.HeadRefName,
+					EventType: EventReviewChanges,
+					Details:   fmt.Sprintf("PR still has unresolved review threads after fix attempt %d/%d", pr.ReviewFixCount, maxR),
+					Timestamp: time.Now(),
+				})
+				_ = m.db.UpdatePRStatus(pr.ID, state.PRNeedsFix)
+				_ = m.db.LogEvent(state.EventReviewChanges, fmt.Sprintf("PR #%d review fix retry needed (attempt %d/%d)", pr.Number, pr.ReviewFixCount, maxR), pr.BeadID, pr.Anvil)
+				_ = m.db.LogEvent(state.EventPRNeedsFix, fmt.Sprintf("PR #%d review fix retry needed", pr.Number), pr.BeadID, pr.Anvil)
+			} else if pr.ReviewFixCount >= maxR {
+				// Burnish used all its retries and threads are still unresolved:
+				// no more auto-fixes will dispatch. Surface it for triage instead
+				// of stalling silently (PR #4471 / Fhi.Metadata-eyizi).
+				m.escalateFixExhausted(pr, fmt.Sprintf("review-fix loop exhausted after %d/%d attempts; unresolved review threads remain", pr.ReviewFixCount, maxR))
+			}
 		}
 	}
 

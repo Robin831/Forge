@@ -705,7 +705,10 @@ func TestCheckPR_ReviewStillUnresolved_ReemitsEvent(t *testing.T) {
 }
 
 // TestCheckPR_ReviewStillUnresolved_RespectsMaxAttempts verifies that the
-// retry cap honoured by the still-unresolved branch matches max_review_fix_attempts.
+// retry cap honoured by the still-unresolved branch matches
+// max_review_fix_attempts: no further burnish is auto-dispatched, and the PR is
+// escalated to needs_human so it surfaces in Needs-Attention rather than
+// silently stalling (PR #4471 / Fhi.Metadata-eyizi).
 func TestCheckPR_ReviewStillUnresolved_RespectsMaxAttempts(t *testing.T) {
 	db, cleanup := openTempDB(t)
 	defer cleanup()
@@ -744,6 +747,14 @@ func TestCheckPR_ReviewStillUnresolved_RespectsMaxAttempts(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, state.PROpen, updated.Status,
 		"PR status must not be flipped to needs_fix when the cap is reached")
+
+	// Exhausting the cap must escalate to needs_human so the PR appears in the
+	// Needs-Attention panel instead of stalling invisibly.
+	rec, err := db.GetRetry("forge-reviewcap", "test-anvil")
+	require.NoError(t, err)
+	require.NotNil(t, rec, "exhausted review-fix loop must create a retry row")
+	assert.True(t, rec.NeedsHuman,
+		"exhausted review-fix loop must flag needs_human")
 }
 
 // TestCheckPR_ReviewStillUnresolved_SkipsInFlightBurnish verifies that a PR
@@ -2204,4 +2215,46 @@ func TestAssayUpToDate_DailyCostCapReleasesGate(t *testing.T) {
 	if m.assayUpToDate(pr, "newhead", nil) {
 		t.Error("a nil daily cost (query error) must not release the gate via the cost path")
 	}
+}
+
+// TestCheckPR_CIFixExhausted_FlagsNeedsHuman verifies the CI-fix side of the
+// fix-loop-exhaustion escalation: once max_ci_fix_attempts is reached and CI is
+// still failing, no further quench is auto-dispatched and the PR is flagged
+// needs_human so it surfaces in Needs-Attention rather than stalling silently.
+func TestCheckPR_CIFixExhausted_FlagsNeedsHuman(t *testing.T) {
+	db, cleanup := openTempDB(t)
+	defer cleanup()
+
+	pr := &state.PR{
+		Number:     705,
+		Anvil:      "test-anvil",
+		BeadID:     "forge-cicap",
+		Branch:     "forge/forge-cicap",
+		Status:     state.PROpen,
+		CIFixCount: 5, // at the cap
+		CreatedAt:  time.Now(),
+	}
+	require.NoError(t, db.InsertPR(pr))
+	// ci_passing=false so the seeded lastSnap.CIPassing stays false (CIFixCount>0
+	// means the seed is not force-trued), letting the still-failing branch fire.
+	require.NoError(t, db.UpdatePRMergeability(pr.ID, false, false, false, false, false, true))
+
+	fake := &fakeVCSProvider{status: &vcs.PRStatus{
+		State:             "OPEN",
+		StatusCheckRollup: []vcs.CheckRun{{Name: "build", Status: "COMPLETED", Conclusion: "FAILURE"}},
+	}}
+
+	var events []string
+	m := New(db, func(_ string) vcs.Provider { return fake }, time.Minute,
+		map[string]string{"test-anvil": "/fake"}, nil, func() int { return 5 }, nil, nil)
+	m.OnEvent(func(_ context.Context, e PREvent) { events = append(events, e.EventType) })
+
+	m.checkAll(context.Background())
+
+	assert.NotContains(t, events, EventCIFailed,
+		"EventCIFailed must NOT re-fire once the CI-fix cap is reached")
+	rec, err := db.GetRetry("forge-cicap", "test-anvil")
+	require.NoError(t, err)
+	require.NotNil(t, rec, "exhausted CI-fix loop must create a retry row")
+	assert.True(t, rec.NeedsHuman, "exhausted CI-fix loop must flag needs_human")
 }
