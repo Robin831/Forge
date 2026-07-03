@@ -346,6 +346,14 @@ type TemperStepConfig struct {
 	// which depends on a rebuild and can miss markers committed directly
 	// into build output.
 	VerifyNoConflictMarkers []string `mapstructure:"verify_no_conflict_markers" yaml:"verify_no_conflict_markers,omitempty"`
+	// TolerateHostCrash, when true, re-classifies a non-zero exit from this
+	// step as a pass IF the output shows a completed all-passed .NET test
+	// summary AND an explicit test-host crash/abort marker. It exists for the
+	// api-test step on repos whose .NET test host occasionally OOMs/crashes at
+	// teardown after every test has already passed (VSTest then returns
+	// non-zero with no failing test), producing false temper failures. A real
+	// test failure (Failed: N>0) or a build error (no crash marker) still fails.
+	TolerateHostCrash bool `mapstructure:"tolerate_host_crash" yaml:"tolerate_host_crash,omitempty"`
 }
 
 // IsEmpty returns true if no custom commands are configured.

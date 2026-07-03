@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -114,6 +115,12 @@ type Step struct {
 	// that the freshness check would miss when the rebuild is skipped or
 	// happens to land the same bytes.
 	VerifyNoConflictMarkers []string
+	// TolerateHostCrash re-classifies a non-zero exit as a pass when the output
+	// shows a completed all-passed .NET test summary AND a test-host crash/abort
+	// marker — the "testhost OOM'd at teardown after all tests passed" case that
+	// otherwise fails the step for no real test failure. See
+	// dotnetTestHostCrashTolerable.
+	TolerateHostCrash bool
 }
 
 // Config holds per-anvil verification configuration.
@@ -259,6 +266,7 @@ func ConfigFromSteps(steps []config.TemperStepConfig) *Config {
 			Paths:                   s.Paths,
 			VerifyClean:             s.VerifyClean,
 			VerifyNoConflictMarkers: s.VerifyNoConflictMarkers,
+			TolerateHostCrash:       s.TolerateHostCrash,
 		}
 	}
 	return &Config{Steps: out}
@@ -547,6 +555,19 @@ func runStep(ctx context.Context, worktreePath string, step Step) StepResult {
 		}
 	}
 
+	// Tolerate a .NET test-host teardown crash: when opted in, a non-zero exit
+	// whose output shows all tests passed AND an explicit host-crash marker is
+	// treated as a pass. This is the "testhost OOM'd at teardown after every
+	// test passed" case — a real test failure (Failed: N>0) or a build error
+	// (no crash marker) is NOT tolerated.
+	if !passed && step.TolerateHostCrash && dotnetTestHostCrashTolerable(output.String()) {
+		log.Printf("[temper] step %q: exit %d tolerated — all tests passed but the .NET test host crashed at teardown", step.Name, exitCode)
+		output.WriteString(fmt.Sprintf(
+			"\n\n[temper] NOTE: step exited %d, but every test passed and the .NET test host crashed/aborted at teardown (tolerate_host_crash). Treated as PASS — this is a host-level failure, not a test failure.\n",
+			exitCode))
+		passed = true
+	}
+
 	return StepResult{
 		Name:     step.Name,
 		Command:  fmt.Sprintf("%s %s", step.Command, strings.Join(step.Args, " ")),
@@ -556,6 +577,37 @@ func runStep(ctx context.Context, worktreePath string, step Step) StepResult {
 		Passed:   passed,
 		Optional: step.Optional,
 	}
+}
+
+// dotnetTestHostCrashRE detects an explicit .NET/VSTest test-host crash or abort
+// marker — the signal that a non-zero exit is a host-level failure rather than a
+// failing test. Covers the observed "Test host process crashed : Out of memory"
+// plus the common VSTest phrasings and a native "Aborted (core dumped)".
+var dotnetTestHostCrashRE = regexp.MustCompile(`(?i)test host process crashed|active test run was aborted|testhost process .*(crashed|exited)|aborted \(core dumped\)`)
+
+// dotnetTestPassedSummaryRE matches a VSTest all-passed summary line, e.g.
+// "Passed!  - Failed:     0, Passed:   455, ...". Requires the "Passed!" prefix
+// and a zero failed count.
+var dotnetTestPassedSummaryRE = regexp.MustCompile(`Passed!\s*-\s*Failed:\s*0\b`)
+
+// dotnetTestFailureRE matches a failing VSTest summary — either the "Failed!"
+// prefix or a non-zero failed count — so a run with any real test failure is
+// never tolerated.
+var dotnetTestFailureRE = regexp.MustCompile(`Failed!\s*-\s*Failed:|Failed:\s*[1-9]`)
+
+// dotnetTestHostCrashTolerable reports whether a non-zero test-step exit is a
+// post-test .NET host crash rather than a real test failure. It requires BOTH a
+// completed all-passed summary with no failing tests AND an explicit host-crash
+// marker, so a genuine test failure (Failed: N>0) or a build failure (no crash
+// marker) still fails the step.
+func dotnetTestHostCrashTolerable(output string) bool {
+	if !dotnetTestHostCrashRE.MatchString(output) {
+		return false
+	}
+	if dotnetTestFailureRE.MatchString(output) {
+		return false
+	}
+	return dotnetTestPassedSummaryRE.MatchString(output)
 }
 
 // detectSteps auto-detects project type and returns appropriate steps.
