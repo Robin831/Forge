@@ -329,6 +329,240 @@ func TestRun_NoDiffChild_ClosesAndContinues(t *testing.T) {
 	}
 }
 
+// TestRun_ChildPRCreationFailure_Pauses verifies that a child PR-creation
+// failure pauses the Crucible (setting PausedChildID) instead of continuing on
+// to ship a final PR without that child's work. Retrying once must not swallow
+// a persistent failure, and the parent must stay open.
+func TestRun_ChildPRCreationFailure_Pauses(t *testing.T) {
+	db := testDB(t)
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+
+	var closedBeads []string
+	prAttempts := 0
+
+	p := Params{
+		DB:     db,
+		Logger: logger,
+		ParentBead: poller.Bead{
+			ID:    "parent-1",
+			Title: "Parent bead",
+		},
+		AnvilName:                 "test-anvil",
+		AnvilConfig:               config.AnvilConfig{Path: t.TempDir()},
+		AutoMergeCrucibleChildren: true,
+
+		EpicBranchCreator: func(ctx context.Context, dir, branch string) error { return nil },
+
+		ChildFetcher: func(ctx context.Context, parentID, dir string) ([]poller.Bead, error) {
+			return []poller.Bead{
+				{ID: "child-1", Title: "First child", DependsOn: []string{"parent-1"}},
+			}, nil
+		},
+
+		PipelineRunner: func(ctx context.Context, pp pipeline.Params) *pipeline.Outcome {
+			return &pipeline.Outcome{Success: true, Branch: "forge/child-1"}
+		},
+
+		BeadClaimer: func(ctx context.Context, beadID, dir string) error { return nil },
+
+		BeadCloser: func(ctx context.Context, beadID, dir string) error {
+			closedBeads = append(closedBeads, beadID)
+			return nil
+		},
+
+		PRCreator: func(ctx context.Context, params vcs.CreateParams) (*vcs.PR, error) {
+			prAttempts++
+			return nil, fmt.Errorf("gh timed out")
+		},
+
+		PRMerger: func(ctx context.Context, prNumber int, dir string) error { return nil },
+	}
+
+	result := Run(context.Background(), p)
+
+	if result.Error == nil {
+		t.Fatal("expected error when child PR creation fails")
+	}
+	if result.Success {
+		t.Error("expected Success=false when a child PR could not be created")
+	}
+	if result.PausedChildID != "child-1" {
+		t.Errorf("expected paused child to be child-1, got %q", result.PausedChildID)
+	}
+	// One automatic retry means exactly two attempts for the failing child, and
+	// no final-PR attempt (which would be a third).
+	if prAttempts != 2 {
+		t.Errorf("expected 2 PR creation attempts (initial + retry), got %d", prAttempts)
+	}
+	if result.FinalPR != nil {
+		t.Error("expected no final PR when a child PR failed")
+	}
+	// The parent bead must NOT be closed while the epic is incomplete.
+	for _, b := range closedBeads {
+		if b == "parent-1" {
+			t.Error("parent bead must not be closed when a child PR failed")
+		}
+	}
+}
+
+// TestRun_ChildPRCreationFailure_RetrySucceeds verifies the single automatic
+// retry absorbs a transient PR-creation failure: the second attempt succeeds
+// and the Crucible completes normally without pausing.
+func TestRun_ChildPRCreationFailure_RetrySucceeds(t *testing.T) {
+	db := testDB(t)
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+
+	var closedBeads []string
+	prAttempts := 0
+
+	p := Params{
+		DB:     db,
+		Logger: logger,
+		ParentBead: poller.Bead{
+			ID:    "parent-1",
+			Title: "Parent bead",
+		},
+		AnvilName:                 "test-anvil",
+		AnvilConfig:               config.AnvilConfig{Path: t.TempDir()},
+		AutoMergeCrucibleChildren: true,
+
+		EpicBranchCreator: func(ctx context.Context, dir, branch string) error { return nil },
+
+		ChildFetcher: func(ctx context.Context, parentID, dir string) ([]poller.Bead, error) {
+			return []poller.Bead{
+				{ID: "child-1", Title: "First child", DependsOn: []string{"parent-1"}},
+			}, nil
+		},
+
+		PipelineRunner: func(ctx context.Context, pp pipeline.Params) *pipeline.Outcome {
+			return &pipeline.Outcome{Success: true, Branch: "forge/child-1"}
+		},
+
+		BeadClaimer: func(ctx context.Context, beadID, dir string) error { return nil },
+
+		BeadCloser: func(ctx context.Context, beadID, dir string) error {
+			closedBeads = append(closedBeads, beadID)
+			return nil
+		},
+
+		PRCreator: func(ctx context.Context, params vcs.CreateParams) (*vcs.PR, error) {
+			prAttempts++
+			// Fail only the very first attempt (transient), succeed thereafter.
+			if prAttempts == 1 {
+				return nil, fmt.Errorf("transient gh failure")
+			}
+			return &vcs.PR{Number: prAttempts, URL: fmt.Sprintf("https://github.com/test/pr/%d", prAttempts)}, nil
+		},
+
+		PRMerger: func(ctx context.Context, prNumber int, dir string) error { return nil },
+	}
+
+	result := Run(context.Background(), p)
+
+	if result.Error != nil {
+		t.Fatalf("expected success after retry, got error: %v", result.Error)
+	}
+	if !result.Success {
+		t.Error("expected Success=true after the retry succeeds")
+	}
+	if result.PausedChildID != "" {
+		t.Errorf("expected no paused child, got %q", result.PausedChildID)
+	}
+	// child-1: attempt 1 fails, attempt 2 succeeds; final PR: attempt 3.
+	if prAttempts != 3 {
+		t.Errorf("expected 3 PR creation attempts (child retry + final), got %d", prAttempts)
+	}
+	if result.ChildrenDone != 1 {
+		t.Errorf("expected 1 child done, got %d", result.ChildrenDone)
+	}
+	if result.ChildrenSkipped != 0 {
+		t.Errorf("expected 0 children skipped, got %d", result.ChildrenSkipped)
+	}
+}
+
+// TestRun_SkippedChild_DoesNotShipIncompleteEpic verifies that a child skipped
+// for external blockers leaves the epic incomplete: the Crucible pauses instead
+// of shipping a final PR, the parent is not closed, and the accounting
+// distinguishes completed from skipped children.
+func TestRun_SkippedChild_DoesNotShipIncompleteEpic(t *testing.T) {
+	db := testDB(t)
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+
+	var closedBeads []string
+	var createdPRs []vcs.CreateParams
+
+	p := Params{
+		DB:     db,
+		Logger: logger,
+		ParentBead: poller.Bead{
+			ID:    "parent-1",
+			Title: "Parent bead",
+		},
+		AnvilName:                 "test-anvil",
+		AnvilConfig:               config.AnvilConfig{Path: t.TempDir()},
+		AutoMergeCrucibleChildren: true,
+
+		EpicBranchCreator: func(ctx context.Context, dir, branch string) error { return nil },
+
+		ChildFetcher: func(ctx context.Context, parentID, dir string) ([]poller.Bead, error) {
+			return []poller.Bead{
+				// child-1 completes normally.
+				{ID: "child-1", Title: "First child", DependsOn: []string{"parent-1"}},
+				// child-2 has an unresolved external dependency and is skipped.
+				{ID: "child-2", Title: "Second child", DependsOn: []string{"parent-1", "external-dep"}},
+			}, nil
+		},
+
+		PipelineRunner: func(ctx context.Context, pp pipeline.Params) *pipeline.Outcome {
+			return &pipeline.Outcome{Success: true, Branch: fmt.Sprintf("forge/%s", pp.Bead.ID)}
+		},
+
+		BeadClaimer: func(ctx context.Context, beadID, dir string) error { return nil },
+
+		BeadCloser: func(ctx context.Context, beadID, dir string) error {
+			closedBeads = append(closedBeads, beadID)
+			return nil
+		},
+
+		PRCreator: func(ctx context.Context, params vcs.CreateParams) (*vcs.PR, error) {
+			createdPRs = append(createdPRs, params)
+			return &vcs.PR{Number: len(createdPRs)}, nil
+		},
+
+		PRMerger: func(ctx context.Context, prNumber int, dir string) error { return nil },
+	}
+
+	result := Run(context.Background(), p)
+
+	if result.Error == nil {
+		t.Fatal("expected error when a child is skipped")
+	}
+	if result.Success {
+		t.Error("expected Success=false when a child was skipped")
+	}
+	if result.ChildrenDone != 1 {
+		t.Errorf("expected 1 child completed, got %d", result.ChildrenDone)
+	}
+	if result.ChildrenSkipped != 1 {
+		t.Errorf("expected 1 child skipped, got %d", result.ChildrenSkipped)
+	}
+	if result.PausedChildID != "child-2" {
+		t.Errorf("expected paused child to be child-2, got %q", result.PausedChildID)
+	}
+	// The parent bead must NOT be closed while a child was skipped.
+	for _, b := range closedBeads {
+		if b == "parent-1" {
+			t.Error("parent bead must not be closed when a child was skipped")
+		}
+	}
+	// Only child-1's PR should have been created — no final PR for the incomplete epic.
+	for _, pr := range createdPRs {
+		if pr.BeadID == "parent-1" {
+			t.Error("no final PR should be created for an incomplete epic")
+		}
+	}
+}
+
 func TestIsCrucibleCandidate(t *testing.T) {
 	tests := []struct {
 		name   string
