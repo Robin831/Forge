@@ -660,18 +660,17 @@ func TestDispatchPause_PersistAndRestore(t *testing.T) {
 	require.NoError(t, err)
 	defer db.Close()
 
-	// Use a cancelled context so the async pollAndDispatch goroutine spawned
-	// by resume_dispatch exits immediately without accessing the DB.
-	cancelledCtx, cancel := context.WithCancel(context.Background())
-	cancel()
-
 	newDaemon := func() *Daemon {
 		d := &Daemon{
 			db:     db,
 			logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
 		}
 		d.cfg.Store(&config.Config{})
-		d.runCtx = cancelledCtx
+		d.runCtx = context.Background()
+		// Pre-set pollRunning so the async pollAndDispatch goroutine spawned
+		// by resume_dispatch no-ops immediately (the CompareAndSwap guard
+		// returns false), avoiding races with test teardown.
+		d.pollRunning.Store(true)
 		return d
 	}
 
