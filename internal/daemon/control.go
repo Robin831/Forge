@@ -15,9 +15,10 @@ const steerMailboxSize = 16
 // beadID, pushes a steer message into the mailbox, and/or triggers the
 // interrupt to stop the currently running spawn.
 //
-// A handle is registered when a bead enters dispatchBead and deregistered in
-// the same defer that removes it from activeBeads, so its lifetime is exactly
-// the lifetime of the active pipeline.
+// A handle is registered at the same site as activeBeads (before launching the
+// dispatchBead goroutine) so steering can be queued immediately. It is
+// deregistered in dispatchBead's defer stack after activeBeads.Delete, so
+// there is no window where the bead is in-flight but has no handle.
 type controlHandle struct {
 	// workerID is the DB worker row ID for the pipeline this handle controls.
 	workerID string
@@ -84,9 +85,9 @@ func (d *Daemon) registerControlHandle(beadID string, h *controlHandle) {
 	d.controlHandles.Store(beadID, h)
 }
 
-// deregisterControlHandle removes the control handle for a bead. Called from
-// the same defer that removes the bead from activeBeads, so handle lifetime is
-// symmetric with the active-dispatch lifetime.
+// deregisterControlHandle removes the control handle for a bead. Called in
+// dispatchBead's defer stack after activeBeads.Delete, so the handle remains
+// accessible for the full duration the bead is marked in-flight.
 func (d *Daemon) deregisterControlHandle(beadID string) {
 	d.controlHandles.Delete(beadID)
 }

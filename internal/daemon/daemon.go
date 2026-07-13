@@ -134,12 +134,11 @@ type Daemon struct {
 	// Dispatch state
 	activeBeads sync.Map // beadID -> true, currently in-flight
 	// controlHandles is the in-memory registry of active pipeline control
-	// handles keyed by beadID (beadID string -> *controlHandle). It runs
-	// alongside activeBeads: a handle is registered when a bead enters
-	// dispatchBead and deregistered in the same defer that removes it from
-	// activeBeads, so the two maps stay lifecycle-symmetric. The IPC/API layer
-	// uses lookupControlHandle to push steer messages and trigger interrupts on
-	// a running pipeline. See control.go.
+	// handles keyed by beadID (beadID string -> *controlHandle). A handle is
+	// registered at the same site as activeBeads.LoadOrStore (before launching
+	// the dispatchBead goroutine) and deregistered in dispatchBead's defer
+	// stack after activeBeads.Delete, so there is no window where a bead is
+	// in-flight but has no handle. See control.go.
 	controlHandles sync.Map
 	// pendingActions parks lifecycle actions that arrived while a bead was in
 	// flight, to dispatch once it frees. Value is map[lifecycle.Action]ActionRequest
@@ -2897,8 +2896,10 @@ func (d *Daemon) pollAndDispatch(ctx context.Context, fullPoll bool) {
 
 		thisCycleAnvil[bead.Anvil]++
 		thisCycleTotal++
+		ctrl := newControlHandle(claimWorkerID)
+		d.registerControlHandle(bead.ID, ctrl)
 		d.wg.Add(1)
-		go d.dispatchBead(ctx, bead, anvilCfg, claimWorkerID)
+		go d.dispatchBead(ctx, bead, anvilCfg, claimWorkerID, ctrl)
 	}
 
 	// Optionally log a summary of this poll cycle's dispatch activity.
@@ -2910,26 +2911,21 @@ func (d *Daemon) pollAndDispatch(ctx context.Context, fullPoll bool) {
 // dispatchBead runs the full pipeline for a single bead in a goroutine.
 // claimWorkerID is the ID of the pending worker row inserted at claim time;
 // it is passed into the pipeline so the running row overwrites the pending one.
-func (d *Daemon) dispatchBead(ctx context.Context, bead poller.Bead, anvilCfg config.AnvilConfig, claimWorkerID string) {
+// ctrl is the control handle registered by the caller before launching this
+// goroutine, so there is no window where the bead is in activeBeads but has
+// no handle (the IPC layer can steer/interrupt immediately).
+func (d *Daemon) dispatchBead(ctx context.Context, bead poller.Bead, anvilCfg config.AnvilConfig, claimWorkerID string, ctrl *controlHandle) {
 	defer d.wg.Done()
-	// Drain order: activeBeads.Delete runs first (registered last → LIFO),
-	// then drainPendingAction fires so any parked lifecycle action sees the bead as free.
-	// Skip draining during shutdown to avoid wg.Add after wg.Wait.
+	// Drain order: deregisterControlHandle runs first (registered last → LIFO),
+	// then activeBeads.Delete, then drainPendingAction fires so any parked
+	// lifecycle action sees the bead as free. This keeps the control handle
+	// alive for as long as the bead is marked in-flight.
 	defer func() {
 		if ctx.Err() == nil {
 			d.drainPendingAction(ctx, bead.ID)
 		}
 	}()
 	defer d.activeBeads.Delete(bead.ID)
-
-	// Register the control handle for this bead's pipeline so the IPC/API layer
-	// can steer/interrupt the in-flight spawn. Deregister in the same defer
-	// window as activeBeads.Delete so handle lifetime is symmetric with the
-	// active-dispatch lifetime. The interrupt is wired later, once the pipeline
-	// context exists (see normalPipeline). This registration also covers the
-	// manual run_bead path, which dispatches through dispatchBead.
-	ctrl := newControlHandle(claimWorkerID)
-	d.registerControlHandle(bead.ID, ctrl)
 	defer d.deregisterControlHandle(bead.ID)
 
 	d.logger.Info("dispatching bead", "bead", bead.ID, "anvil", bead.Anvil, "title", bead.Title)
@@ -3183,11 +3179,10 @@ normalPipeline:
 	defer cancel()
 
 	// Wire the control handle's interrupt to the pipeline context cancel so the
-	// IPC/API layer can stop the currently running spawn. Clear it once the
-	// pipeline returns so a late interrupt is a no-op rather than cancelling a
-	// reused context. The handle is deregistered shortly after by the defer above.
+	// IPC/API layer can stop the currently running spawn. Cleared immediately
+	// after pipeline.Run returns (not via defer) so a late interrupt cannot
+	// cancel post-pipeline work like PR creation.
 	ctrl.setInterrupt(cancel)
-	defer ctrl.setInterrupt(nil)
 
 	// Build pipeline params, optionally enabling Schematic pre-worker.
 	// Resolve per-stage providers via stage_providers → smith_providers → providers fallback.
@@ -3245,6 +3240,7 @@ normalPipeline:
 	}
 
 	outcome := pipeline.Run(pipelineCtx, pipelineParams)
+	ctrl.setInterrupt(nil)
 
 	if outcome.Error != nil {
 		if outcome.RateLimited {
@@ -4966,8 +4962,10 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 			return ipc.Response{Type: "error", Payload: msg}
 		}
 
+		ctrl := newControlHandle(claimWorkerID)
+		d.registerControlHandle(targetBead.ID, ctrl)
 		d.wg.Add(1)
-		go d.dispatchBead(context.Background(), *targetBead, anvilCfg, claimWorkerID)
+		go d.dispatchBead(context.Background(), *targetBead, anvilCfg, claimWorkerID, ctrl)
 
 		data, _ := json.Marshal(map[string]string{"message": "dispatched"})
 		return ipc.Response{Type: "ok", Payload: data}
