@@ -1375,10 +1375,15 @@ func (d *Daemon) restoreDispatchPause() {
 	at, ok, err := d.db.GetSetting(state.SettingDispatchPausedAt)
 	if err != nil {
 		d.logger.Warn("failed to read dispatch pause timestamp", "error", err)
+		d.pausedSince.Store(time.Time{})
 	} else if ok && at != "" {
 		if t, perr := time.Parse(time.RFC3339, at); perr == nil {
 			d.pausedSince.Store(t)
+		} else {
+			d.pausedSince.Store(time.Time{})
 		}
+	} else {
+		d.pausedSince.Store(time.Time{})
 	}
 	_ = d.db.LogEvent(state.EventDispatchPaused, "Dispatch pause restored from previous run", "", "")
 	d.logger.Info("dispatch pause restored from previous run")
@@ -4671,13 +4676,10 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 
 	case "resume_dispatch":
 		// Idempotent: resuming while not paused is a no-op success.
-		was := d.dispatchPaused.Swap(false)
-		if was {
-			prevSince, _ := d.pausedSince.Load().(time.Time)
-			d.pausedSince.Store(time.Time{})
+		if !d.dispatchPaused.Load() {
+			// Already unpaused — no-op.
+		} else {
 			if err := d.db.SetSetting(state.SettingDispatchPaused, "0"); err != nil {
-				d.dispatchPaused.Store(true)
-				d.pausedSince.Store(prevSince)
 				d.logger.Error("failed to persist dispatch resume", "error", err)
 				msg, _ := json.Marshal(map[string]string{"message": "failed to persist dispatch resume: " + err.Error()})
 				return ipc.Response{Type: "error", Payload: msg}
@@ -4685,6 +4687,8 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 			if err := d.db.SetSetting(state.SettingDispatchPausedAt, ""); err != nil {
 				d.logger.Warn("failed to clear dispatch pause timestamp", "error", err)
 			}
+			d.dispatchPaused.Store(false)
+			d.pausedSince.Store(time.Time{})
 			if err := d.db.LogEvent(state.EventDispatchResumed, "Dispatch manually resumed", "", ""); err != nil {
 				d.logger.Warn("failed to log dispatch resume event", "error", err)
 			}
