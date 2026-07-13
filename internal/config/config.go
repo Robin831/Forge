@@ -413,7 +413,19 @@ type SettingsConfig struct {
 	// DailyCostLimit is the maximum estimated USD spend per calendar day.
 	// When the running total exceeds this value, auto-dispatch is paused until
 	// the next calendar day. Zero means no limit (default).
+	//
+	// The gate accounts for in-flight (not-yet-recorded) spend: it projects the
+	// sum of active workers' reserved estimates plus one per-worker estimate on
+	// top of the recorded total, so N concurrent workers cannot overshoot the
+	// limit by roughly N × per-bead cost. See PerWorkerCostEstimate.
 	DailyCostLimit float64 `mapstructure:"daily_cost_limit" yaml:"daily_cost_limit,omitempty"`
+	// PerWorkerCostEstimate is the floor (USD) used to estimate the in-flight
+	// spend of a single not-yet-completed worker when projecting against
+	// DailyCostLimit. The daemon maintains a rolling average of recorded
+	// per-bead cost and uses max(rolling average, this floor) so the estimate
+	// is never zero before any cost data exists. A value <= 0 falls back to
+	// DefaultPerWorkerCostEstimate. Only relevant when daily_cost_limit > 0.
+	PerWorkerCostEstimate float64 `mapstructure:"per_worker_cost_estimate" yaml:"per_worker_cost_estimate,omitempty"`
 	// MaxCIFixAttempts is the maximum number of CI fix cycles per PR before
 	// the PR is considered exhausted. Default: 5.
 	MaxCIFixAttempts int `mapstructure:"max_ci_fix_attempts" yaml:"max_ci_fix_attempts"`
@@ -625,6 +637,14 @@ type SettingsConfig struct {
 // cap; an unbounded fan-out previously OOM-crashed the host (Forge-3m06).
 const DefaultMaxLifecycleWorkers = 2
 
+// DefaultPerWorkerCostEstimate is the fallback per-worker in-flight cost estimate
+// (USD) used by the daily_cost_limit gate when settings.per_worker_cost_estimate
+// is unset or <= 0 and no rolling per-bead cost average has accumulated yet. It is
+// deliberately conservative so the gate reserves a non-zero amount for each active
+// worker from the very first dispatch, preventing the "N concurrent workers blow
+// past the limit by ~N × per-bead cost" overshoot (Forge-s3w7).
+const DefaultPerWorkerCostEstimate = 2.0
+
 // MaxForgeChatTurnTimeout is the hard upper bound for settings.forgechat.turn_timeout.
 // Values above this are clamped on load and a warning is logged. Picked so that
 // even a worst-case grilling turn returns to the user before the browser /
@@ -786,6 +806,7 @@ func (s SettingsConfig) MarshalYAML() (interface{}, error) {
 		SchematicWordThreshold    int                 `yaml:"schematic_word_threshold,omitempty"`
 		BellowsInterval           string              `yaml:"bellows_interval"`
 		DailyCostLimit            float64             `yaml:"daily_cost_limit,omitempty"`
+		PerWorkerCostEstimate     float64             `yaml:"per_worker_cost_estimate,omitempty"`
 		MaxCIFixAttempts          int                 `yaml:"max_ci_fix_attempts"`
 		MaxReviewFixAttempts      int                 `yaml:"max_review_fix_attempts"`
 		MaxRebaseAttempts         int                 `yaml:"max_rebase_attempts"`
@@ -851,6 +872,7 @@ func (s SettingsConfig) MarshalYAML() (interface{}, error) {
 		SchematicWordThreshold: s.SchematicWordThreshold,
 		BellowsInterval:        durationString(s.BellowsInterval),
 		DailyCostLimit:         s.DailyCostLimit,
+		PerWorkerCostEstimate:  s.PerWorkerCostEstimate,
 		MaxCIFixAttempts:       s.MaxCIFixAttempts,
 		MaxReviewFixAttempts:   s.MaxReviewFixAttempts,
 		MaxRebaseAttempts:      s.MaxRebaseAttempts,
@@ -1646,6 +1668,9 @@ func (c *Config) Validate() []string {
 	}
 	if c.Settings.DailyCostLimit < 0 || math.IsNaN(c.Settings.DailyCostLimit) || math.IsInf(c.Settings.DailyCostLimit, 0) {
 		errs = append(errs, "settings.daily_cost_limit must be a non-negative finite number")
+	}
+	if c.Settings.PerWorkerCostEstimate < 0 || math.IsNaN(c.Settings.PerWorkerCostEstimate) || math.IsInf(c.Settings.PerWorkerCostEstimate, 0) {
+		errs = append(errs, "settings.per_worker_cost_estimate must be a non-negative finite number (omit or set to 0 to use the default)")
 	}
 	if c.Settings.StaleInterval < 0 {
 		errs = append(errs, "settings.stale_interval must not be negative (set to 0 to disable)")

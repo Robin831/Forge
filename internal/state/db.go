@@ -853,7 +853,7 @@ func (db *DB) RepointWorkerLogPaths(beadID, oldLogDir, newDir string) (int, erro
 	return count, nil
 }
 
-// NullWorkerLogPathsUnder clears (sets to '') the log_path of every workers row
+// NullWorkerLogPathsUnder clears (sets to ”) the log_path of every workers row
 // whose log_path points at a file inside dir. It is called after the log
 // retention sweep removes a preserved bead-log directory so the API reports
 // "no log" rather than a dangling path. Returns the number of rows updated.
@@ -3420,6 +3420,21 @@ func (db *DB) GetDailyCost(date string) (inputTokens, outputTokens, cacheRead, c
 		 FROM daily_costs WHERE date = ?`, date).
 		Scan(&inputTokens, &outputTokens, &cacheRead, &cacheWrite, &cost, &limit)
 	return
+}
+
+// GetBeadCost returns the recorded estimated cost (USD) accumulated for a single
+// bead on the given anvil. Returns 0 if no cost has been recorded for that bead
+// yet. Used to fold completed-bead cost into the daemon's rolling per-worker cost
+// estimate for the daily_cost_limit gate.
+func (db *DB) GetBeadCost(beadID, anvil string) (float64, error) {
+	var cost float64
+	err := db.conn.QueryRow(
+		`SELECT estimated_cost FROM bead_costs WHERE bead_id = ? AND anvil = ?`,
+		beadID, anvil).Scan(&cost)
+	if err == sql.ErrNoRows {
+		return 0, nil
+	}
+	return cost, err
 }
 
 // GetTodayCost returns today's estimated cost total. Returns 0 if no row exists yet.

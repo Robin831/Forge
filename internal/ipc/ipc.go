@@ -85,9 +85,15 @@ type StatusPayload struct {
 	Quotas         map[string]provider.Quota `json:"quotas,omitempty"`
 	DailyCost      float64                   `json:"daily_cost"`
 	DailyCostLimit float64                   `json:"daily_cost_limit,omitempty"`
+	// ReservedCost is the sum of estimated in-flight (not-yet-recorded) spend
+	// for currently active workers. The daily_cost_limit gate projects
+	// DailyCost + ReservedCost (+ one per-worker estimate) against the limit so
+	// concurrent workers cannot overshoot it by ~N × per-bead cost (Forge-s3w7).
+	ReservedCost float64 `json:"reserved_cost,omitempty"`
 	// CostLimitPaused reports that cost-based auto-dispatch via the Poller is
-	// currently paused due to hitting the daily cost limit. Manual run_bead
-	// dispatch remains allowed while this flag is true.
+	// currently paused due to hitting the daily cost limit. This accounts for
+	// projected in-flight spend (DailyCost + ReservedCost), not just recorded
+	// spend. Manual run_bead dispatch remains allowed while this flag is true.
 	CostLimitPaused bool `json:"cost_limit_paused,omitempty"`
 	// DispatchPaused reports that auto-dispatch is manually paused via the
 	// pause_dispatch IPC command (forge pause / Hearth toggle). Running workers

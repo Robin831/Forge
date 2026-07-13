@@ -273,6 +273,21 @@ type Daemon struct {
 	// to avoid spamming the event log every poll cycle.
 	costLimitLoggedDate atomic.Value // stores string (YYYY-MM-DD)
 
+	// In-flight cost reservation for the daily_cost_limit gate. Recorded daily
+	// cost only reflects COMPLETED spend, so without this the gate is blind to
+	// the spend of workers that are already running: with N concurrent workers
+	// the day could overshoot the limit by roughly N × per-bead cost
+	// (Forge-s3w7). At dispatch we reserve a per-worker estimate here; the gate
+	// projects recorded + reserved + one more estimate, and re-checks before
+	// EACH dispatch. On worker completion the exact reserved amount is released
+	// and the actual recorded cost is folded into a rolling average that feeds
+	// future estimates. All fields are guarded by costReservationMu.
+	costReservationMu sync.Mutex
+	reservationSeq    atomic.Uint64      // monotonic key generator for reservations
+	costReservations  map[uint64]float64 // reservation key -> reserved USD estimate
+	avgBeadCost       float64            // rolling mean of recorded per-bead cost
+	avgBeadCostN      int                // number of completed beads folded into avgBeadCost
+
 	// pauseMu serializes pause/resume/restore transitions so the in-memory
 	// atomics and persisted daemon_settings stay consistent under concurrent
 	// IPC commands.
@@ -1706,6 +1721,16 @@ func (d *Daemon) handleLifecycleAction(ctx context.Context, req lifecycle.Action
 			defer d.releaseLifecycleSlot()
 		}
 
+		// Reserve estimated in-flight spend for this fix worker (quench/burnish/
+		// rebase/assay) so its cost counts against the daily_cost_limit gate.
+		// Unlike Smith dispatch these workers are NOT blocked by the gate — they
+		// address already-open PRs and blocking them would strand work — but
+		// reserving here makes the poll-loop gate back off *new* Smith dispatch
+		// while lifecycle spend is in flight, and the reservation is reconciled
+		// when this worker returns (Forge-s3w7).
+		lifecycleReservation := d.reserveWorkerCost(d.perWorkerCostEstimate(d.cfg.Load()))
+		defer d.releaseWorkerCost(lifecycleReservation)
+
 		// Create/get worktree for the PR branch. Use lockKey (which may be
 		// "pr-{N}" for non-bead PRs) so the path is always non-empty/valid.
 		wt, err := d.worktreeMgr.Create(ctx, anvilCfg.Path, lockKey, req.Branch)
@@ -2860,18 +2885,32 @@ func (d *Daemon) pollAndDispatch(ctx context.Context, fullPoll bool) {
 		return
 	}
 
-	// Check daily cost limit before dispatching new work.
+	// Check daily cost limit before dispatching new work. The gate projects
+	// in-flight (not-yet-recorded) spend on top of the recorded daily total —
+	// the sum of active workers' reservations plus one per-worker estimate for
+	// the worker about to be dispatched — so N concurrent workers cannot blow
+	// past the limit by roughly N × per-bead cost (Forge-s3w7). This pre-loop
+	// check handles the once-per-day notification and the fully-blocked case;
+	// the gate is re-evaluated before EACH dispatch inside the loop below.
+	//
+	// Capture the date once so the cost lookup, the per-dispatch re-checks, and
+	// the event-suppression key all use the same day even if midnight rolls
+	// over mid-poll.
 	costLimit := cfg.Settings.DailyCostLimit
+	today := time.Now().Format("2006-01-02")
 	if costLimit > 0 {
-		// Capture date once so both the cost lookup and the event-suppression
-		// key use the same day even if midnight rolls over between calls.
-		today := time.Now().Format("2006-01-02")
-		todayCost, err := d.db.GetTodayCostOn(today)
+		allowed, projected, err := d.costGateAllows(cfg, today)
 		if err != nil {
 			d.logger.Error("checking daily cost", "error", err)
 			return
 		}
-		if todayCost >= costLimit {
+		if !allowed {
+			// Recorded (completed) spend for the message/notification tokens.
+			todayCost, terr := d.db.GetTodayCostOn(today)
+			if terr != nil {
+				d.logger.Error("checking daily cost", "error", terr)
+				return
+			}
 			// Notify once per calendar day — even across daemon restarts.
 			// Use a DB-backed check (persists across restarts) with an
 			// in-memory fast-path to avoid a DB query on every poll cycle.
@@ -2891,10 +2930,11 @@ func (d *Daemon) pollAndDispatch(ctx context.Context, fullPoll bool) {
 			if !alreadyNotified {
 				d.costLimitLoggedDate.Store(today)
 				_ = d.db.LogEvent(state.EventCostLimitHit,
-					fmt.Sprintf("Daily cost $%.2f reached limit $%.2f — dispatch paused", todayCost, costLimit),
+					fmt.Sprintf("Daily cost $%.2f (projected $%.2f incl. in-flight reserve) reached limit $%.2f — dispatch paused", todayCost, projected, costLimit),
 					"", "")
 				d.logger.Warn("daily cost limit reached, dispatch paused",
 					"cost", fmt.Sprintf("$%.2f", todayCost),
+					"projected", fmt.Sprintf("$%.2f", projected),
 					"limit", fmt.Sprintf("$%.2f", costLimit))
 
 				// Fire daily_cost notifications — once per day when the limit is hit.
@@ -2997,6 +3037,26 @@ func (d *Daemon) pollAndDispatch(ctx context.Context, fullPoll bool) {
 			break
 		}
 
+		// Re-check the daily cost gate before EACH dispatch. Reservations made
+		// for beads dispatched earlier in this same loop have grown the
+		// projected total, so a batch of ready beads stops once the projection
+		// reaches the limit rather than all dispatching off a single stale
+		// once-per-poll check (Forge-s3w7). Once blocked, later beads in this
+		// cycle stay blocked (recorded cost is fixed and reservations only
+		// grow), so break rather than continue.
+		if costLimit > 0 {
+			allowed, _, gerr := d.costGateAllows(cfg, today)
+			if gerr != nil {
+				d.logger.Error("checking daily cost before dispatch", "bead", bead.ID, "error", gerr)
+				d.releaseBeadSlot(bead.ID)
+				break
+			}
+			if !allowed {
+				d.releaseBeadSlot(bead.ID)
+				break
+			}
+		}
+
 		// Insert a pending worker row BEFORE claiming the bead. A cold-start
 		// `bd update --status=in_progress` can exceed DefaultBdTimeout and be
 		// killed *after* its write has already committed server-side, leaving the
@@ -3024,14 +3084,108 @@ func (d *Daemon) pollAndDispatch(ctx context.Context, fullPoll bool) {
 
 		thisCycleAnvil[bead.Anvil]++
 		thisCycleTotal++
+		// Reserve this worker's estimated in-flight spend so the next iteration's
+		// gate re-check (and future polls) account for it. Released in
+		// dispatchBead once the worker completes (Forge-s3w7).
+		costReservation := d.reserveWorkerCost(d.perWorkerCostEstimate(cfg))
 		d.wg.Add(1)
-		go d.dispatchBead(ctx, bead, anvilCfg, claimWorkerID, ctrl, nil)
+		go d.dispatchBead(ctx, bead, anvilCfg, claimWorkerID, ctrl, nil, costReservation)
 	}
 
 	// Optionally log a summary of this poll cycle's dispatch activity.
 	if len(thisCycleAnvil) > 0 {
 		d.logger.Debug("poll cycle dispatch summary", "anvil_dispatch_counts", thisCycleAnvil)
 	}
+}
+
+// reserveWorkerCost records an in-flight cost reservation of `amount` USD and
+// returns an opaque key used to release it via releaseWorkerCost when the worker
+// finishes. Reservations make the daily_cost_limit gate aware of spend that has
+// not yet been recorded in the daily_costs table (Forge-s3w7).
+func (d *Daemon) reserveWorkerCost(amount float64) uint64 {
+	key := d.reservationSeq.Add(1)
+	d.costReservationMu.Lock()
+	if d.costReservations == nil {
+		d.costReservations = make(map[uint64]float64)
+	}
+	d.costReservations[key] = amount
+	d.costReservationMu.Unlock()
+	return key
+}
+
+// releaseWorkerCost releases the reservation previously created by
+// reserveWorkerCost. It is safe to call with a zero/unknown key (no-op).
+func (d *Daemon) releaseWorkerCost(key uint64) {
+	if key == 0 {
+		return
+	}
+	d.costReservationMu.Lock()
+	delete(d.costReservations, key)
+	d.costReservationMu.Unlock()
+}
+
+// totalReservedCost returns the sum of all outstanding in-flight cost reservations.
+func (d *Daemon) totalReservedCost() float64 {
+	d.costReservationMu.Lock()
+	defer d.costReservationMu.Unlock()
+	var total float64
+	for _, v := range d.costReservations {
+		total += v
+	}
+	return total
+}
+
+// recordBeadCostSample folds a completed bead's recorded cost into the rolling
+// per-bead cost average used to estimate future in-flight spend. Non-positive
+// samples are ignored so a bead with no recorded cost does not drag the average
+// toward zero.
+func (d *Daemon) recordBeadCostSample(cost float64) {
+	if cost <= 0 {
+		return
+	}
+	d.costReservationMu.Lock()
+	d.avgBeadCostN++
+	d.avgBeadCost += (cost - d.avgBeadCost) / float64(d.avgBeadCostN)
+	d.costReservationMu.Unlock()
+}
+
+// perWorkerCostEstimate returns the estimated in-flight spend (USD) for one
+// not-yet-completed worker. It is the larger of the rolling average recorded
+// per-bead cost and the configured floor (settings.per_worker_cost_estimate,
+// falling back to DefaultPerWorkerCostEstimate) so the estimate is never zero
+// before any cost data has accumulated.
+func (d *Daemon) perWorkerCostEstimate(cfg *config.Config) float64 {
+	floor := cfg.Settings.PerWorkerCostEstimate
+	if floor <= 0 {
+		floor = config.DefaultPerWorkerCostEstimate
+	}
+	d.costReservationMu.Lock()
+	avg := d.avgBeadCost
+	d.costReservationMu.Unlock()
+	if avg > floor {
+		return avg
+	}
+	return floor
+}
+
+// costGateAllows reports whether dispatching one more worker keeps the projected
+// daily spend at or below the configured daily_cost_limit. Projected spend is the
+// recorded cost for `today` plus the sum of outstanding in-flight reservations
+// plus one per-worker estimate for the worker about to be dispatched. When the
+// limit is 0 (disabled) it always allows. The returned projected value is the
+// spend the daemon expects once the pending worker is reserved; it is surfaced in
+// status output and the cost-limit event message.
+func (d *Daemon) costGateAllows(cfg *config.Config, today string) (allowed bool, projected float64, err error) {
+	recorded, err := d.db.GetTodayCostOn(today)
+	if err != nil {
+		return false, 0, err
+	}
+	projected = recorded + d.totalReservedCost() + d.perWorkerCostEstimate(cfg)
+	limit := cfg.Settings.DailyCostLimit
+	if limit <= 0 {
+		return true, projected, nil
+	}
+	return projected <= limit, projected, nil
 }
 
 // dispatchBead runs the full pipeline for a single bead in a goroutine.
@@ -3044,9 +3198,23 @@ func (d *Daemon) pollAndDispatch(ctx context.Context, fullPoll bool) {
 // reused as-is (no branch reset), and the pipeline is seeded to resume the
 // recorded Claude session on its first iteration. Pass nil for a normal fresh
 // dispatch.
-func (d *Daemon) dispatchBead(ctx context.Context, bead poller.Bead, anvilCfg config.AnvilConfig, claimWorkerID string, ctrl *controlHandle, resume *pipeline.ResumeSession) {
+//
+// costReservation is the in-flight cost reservation key created by the caller
+// just before launch (0 when no reservation was made). It is released — and the
+// bead's actual recorded cost folded into the rolling per-worker estimate — when
+// this goroutine returns, so the daily_cost_limit gate reconciles reservation →
+// actual on completion or failure (Forge-s3w7).
+func (d *Daemon) dispatchBead(ctx context.Context, bead poller.Bead, anvilCfg config.AnvilConfig, claimWorkerID string, ctrl *controlHandle, resume *pipeline.ResumeSession, costReservation uint64) {
 	defer d.wg.Done()
 	defer func() {
+		// Release the in-flight cost reservation and fold the bead's actual
+		// recorded cost into the rolling average so future estimates track real
+		// spend. Runs on every exit path (success, failure, early abort) so a
+		// reservation is never leaked.
+		d.releaseWorkerCost(costReservation)
+		if cost, err := d.db.GetBeadCost(bead.ID, bead.Anvil); err == nil {
+			d.recordBeadCostSample(cost)
+		}
 		// Use releaseBeadSlotIfOwner so that if stop_bead/handleQueueStop
 		// already released our slot and a new dispatch registered a different
 		// handle, this cleanup is a no-op instead of deleting the new handle.
@@ -4594,6 +4762,11 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 		quotas, _ := d.db.GetAllProviderQuotas()
 		todayCost, _ := d.db.GetTodayCost()
 		costLimit := d.cfg.Load().Settings.DailyCostLimit
+		// Reserved in-flight spend and projected total (recorded + reserved) so
+		// `forge status` can show why dispatch paused before recorded cost alone
+		// reaches the limit (Forge-s3w7).
+		reservedCost := d.totalReservedCost()
+		projectedCost := todayCost + reservedCost
 		copilotReqs, _ := d.db.GetTodayCopilotRequests()
 		copilotLimit := d.cfg.Load().Settings.CopilotDailyRequestLimit
 		queueCount, _ := d.db.QueueCount()
@@ -4623,17 +4796,23 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 			}
 		}
 		payload := ipc.StatusPayload{
-			Running:                true,
-			PID:                    os.Getpid(),
-			Uptime:                 time.Since(d.startTime).Round(time.Second).String(),
-			Workers:                len(workers),
-			QueueSize:              queueCount,
-			OpenPRs:                len(prs),
-			LastPoll:               lastPoll,
-			Quotas:                 quotas,
-			DailyCost:              todayCost,
-			DailyCostLimit:         costLimit,
-			CostLimitPaused:        costLimit > 0 && todayCost >= costLimit,
+			Running:        true,
+			PID:            os.Getpid(),
+			Uptime:         time.Since(d.startTime).Round(time.Second).String(),
+			Workers:        len(workers),
+			QueueSize:      queueCount,
+			OpenPRs:        len(prs),
+			LastPoll:       lastPoll,
+			Quotas:         quotas,
+			DailyCost:      todayCost,
+			DailyCostLimit: costLimit,
+			ReservedCost:   reservedCost,
+			// Paused once the projected total (recorded + in-flight reserve)
+			// reaches the limit — matching the poll-loop gate, which also adds
+			// one per-worker estimate, so status may briefly show paused=false
+			// while the gate blocks the very next dispatch. Close enough for a
+			// human-facing status line (Forge-s3w7).
+			CostLimitPaused:        costLimit > 0 && projectedCost >= costLimit,
 			DispatchPaused:         d.dispatchPaused.Load(),
 			CopilotPremiumRequests: copilotReqs,
 			CopilotRequestLimit:    copilotLimit,
@@ -5196,8 +5375,12 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 		ctrl := newControlHandle(claimWorkerID)
 		d.registerControlHandle(targetBead.ID, ctrl)
 
+		// Reserve in-flight spend so this manually-dispatched worker still counts
+		// against the daily_cost_limit gate for subsequent auto-dispatch, even
+		// though the manual path itself bypasses the gate (Forge-s3w7).
+		manualReservation := d.reserveWorkerCost(d.perWorkerCostEstimate(d.cfg.Load()))
 		d.wg.Add(1)
-		go d.dispatchBead(context.Background(), *targetBead, anvilCfg, claimWorkerID, ctrl, nil)
+		go d.dispatchBead(context.Background(), *targetBead, anvilCfg, claimWorkerID, ctrl, nil, manualReservation)
 
 		data, _ := json.Marshal(map[string]string{"message": "dispatched"})
 		return ipc.Response{Type: "ok", Payload: data}
@@ -6778,8 +6961,11 @@ func (d *Daemon) coldResumePausedWorker(beadID, message string) ipc.Response {
 	d.logger.Info("cold-resuming paused bead after restart",
 		"bead", beadID, "anvil", w.Anvil, "worker", w.ID, "session", w.SessionID)
 
+	// Reserve in-flight spend for the resumed worker so it counts against the
+	// daily_cost_limit gate like any other active worker (Forge-s3w7).
+	resumeReservation := d.reserveWorkerCost(d.perWorkerCostEstimate(d.cfg.Load()))
 	d.wg.Add(1)
-	go d.dispatchBead(context.Background(), bead, anvilCfg, w.ID, ctrl, resume)
+	go d.dispatchBead(context.Background(), bead, anvilCfg, w.ID, ctrl, resume, resumeReservation)
 
 	data, _ := json.Marshal(ipc.ResumeBeadResponse{
 		BeadID:  beadID,
