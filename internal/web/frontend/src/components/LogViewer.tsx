@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import { Loader2, ScrollText } from 'lucide-react'
+import { ArrowDown, Loader2, ScrollText } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import {
   parseTranscript,
@@ -26,6 +26,16 @@ export interface LogViewerProps {
   // keyPrefix disambiguates row keys when the same viewer instance is reused
   // for different sources (e.g. switching stage files).
   keyPrefix?: string
+  // heightClass overrides the scroll container sizing. Defaults to the modal /
+  // bead-logs full-height sizing (`min-h-[16rem] flex-1`); the worker panels
+  // pass a bounded height such as `max-h-96` so the transcript scrolls inside a
+  // fixed-height card instead of growing the page.
+  heightClass?: string
+  // jumpToBottom renders a floating "jump to bottom" control whenever the user
+  // has scrolled up and auto-follow is suspended. Off by default so the modal
+  // and bead-logs section keep their existing chrome; clicking it snaps back to
+  // the tail and re-enables auto-follow.
+  jumpToBottom?: boolean
 }
 
 // LogViewer renders a claude session log as a Claude Code CLI-style transcript:
@@ -39,8 +49,15 @@ export default function LogViewer({
   liveWaiting = false,
   statusText,
   keyPrefix = 'log',
+  heightClass,
+  jumpToBottom = false,
 }: LogViewerProps) {
   const [verbose, setVerbose] = useState(false)
+  // atBottom drives the optional jump-to-bottom control. It mirrors
+  // stickToBottomRef but lives in state so a scroll-up re-renders the button
+  // into view; the ref stays the source of truth for the auto-scroll effect to
+  // avoid stale-closure surprises under rapid streaming.
+  const [atBottom, setAtBottom] = useState(true)
 
   const entries = useMemo(() => parseTranscript(rawLines), [rawLines])
   const visible = useMemo(
@@ -60,17 +77,30 @@ export default function LogViewer({
     if (!el) return
     if (stickToBottomRef.current) {
       el.scrollTop = el.scrollHeight
+      // Re-render the jump button out of view once new entries land while we
+      // are following. setState bails out when already true, so this is cheap.
+      setAtBottom(true)
     }
   }, [visible])
 
   function onScroll(e: React.UIEvent<HTMLDivElement>) {
     const el = e.currentTarget
     const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight
-    stickToBottomRef.current = distanceFromBottom < 32
+    const stick = distanceFromBottom < 32
+    stickToBottomRef.current = stick
+    setAtBottom(stick)
+  }
+
+  function scrollToBottom() {
+    const el = scrollRef.current
+    if (!el) return
+    el.scrollTop = el.scrollHeight
+    stickToBottomRef.current = true
+    setAtBottom(true)
   }
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col">
+    <div className={`relative flex min-h-0 flex-col ${heightClass ? '' : 'flex-1'}`}>
       <div className="flex items-center gap-3 border-b border-slate-800 px-4 py-1.5 text-xs text-slate-500">
         {statusText != null && <span className="min-w-0 truncate">{statusText}</span>}
         <label className="ml-auto flex items-center gap-1.5 select-none text-slate-400">
@@ -87,7 +117,7 @@ export default function LogViewer({
       <div
         ref={scrollRef}
         onScroll={onScroll}
-        className="min-h-[16rem] flex-1 overflow-y-auto bg-slate-950/60 font-mono text-xs"
+        className={`${heightClass ?? 'min-h-[16rem] flex-1'} overflow-y-auto bg-slate-950/60 font-mono text-xs`}
         role="log"
         aria-live="polite"
       >
@@ -113,6 +143,18 @@ export default function LogViewer({
           </div>
         )}
       </div>
+
+      {jumpToBottom && !atBottom && (
+        <button
+          type="button"
+          onClick={scrollToBottom}
+          data-testid="log-jump-to-bottom"
+          className="absolute bottom-3 right-3 inline-flex items-center gap-1 rounded-full border border-slate-700 bg-slate-800/90 px-3 py-1 text-xs text-slate-200 shadow-lg backdrop-blur transition-colors hover:bg-slate-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-300"
+        >
+          <ArrowDown size={12} aria-hidden />
+          Jump to bottom
+        </button>
+      )}
     </div>
   )
 }

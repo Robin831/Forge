@@ -1,0 +1,2 @@
+category: Added
+- **Multi-panel live worker grid on the dashboard** - The Hearth 2.0 dashboard now shows a full-width grid of large live worker panels — one per active worker, each streaming CLI-style output via the existing per-worker SSE feed with auto-follow, a jump-to-bottom control, a live duration ticker, and collapsible panels (persisted per worker, with a dimmed last-lines preview) plus kill and expand-to-modal actions. NeedsAttentionPane moves into the main three-column grid where the worker list used to sit. (Forge-f0iz)
