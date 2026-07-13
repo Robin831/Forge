@@ -82,7 +82,9 @@ func waitSmithWithSteer(proc *smith.Process, steerCh <-chan string, interrupt fu
 
 // drainSteer performs a single non-blocking receive from the steer mailbox. It
 // returns the message and true when one was waiting, or ("", false) when the
-// channel is nil, closed, or currently empty. Used for steer mode B, where a
+// channel is nil, currently empty, or closed and empty. A closed channel with
+// buffered messages still delivers them with ok==true — false is only returned
+// once the channel is both closed and drained. Used for steer mode B, where a
 // message enqueued while Temper/Warden ran is consumed BETWEEN spawns (as
 // opposed to waitSmithWithSteer, which drains the same channel DURING a spawn).
 func drainSteer(ch <-chan string) (string, bool) {
@@ -1089,7 +1091,11 @@ func Run(ctx context.Context, p Params) *Outcome {
 	// lastSessionID is the session_id captured from the most recently completed
 	// Smith spawn (fresh or resumed). Steer mode B uses it to resume that
 	// session when a steer message is consumed between spawns.
+	// lastSessionProvider is the provider that produced lastSessionID, so mode B
+	// resumes with the correct provider even if activeProviderIdx has since
+	// advanced to a different fallback.
 	var lastSessionID string
+	var lastSessionProvider provider.Provider
 
 	// Feedback loop
 	for iteration := 1; iteration <= maxIter; iteration++ {
@@ -1140,6 +1146,10 @@ func Run(ctx context.Context, p Params) *Outcome {
 		// steerMsgThisIter is set when a steer message interrupted this
 		// iteration's spawn (steer mode A). Handled after the spawn completes.
 		var steerMsgThisIter string
+		// spawnProvider is the provider that ran this iteration's Smith spawn
+		// (resume or fresh). Captured alongside lastSessionID so mode B resumes
+		// with the correct provider.
+		var spawnProvider provider.Provider
 
 		// Steer mode B: a steer message may have been enqueued while Temper/
 		// Warden ran on a prior iteration, when no spawn was active to
@@ -1170,10 +1180,12 @@ func Run(ctx context.Context, p Params) *Outcome {
 				if lastSessionID != "" {
 					// Resume the last completed session with the steer text merged
 					// into the pending Warden/Temper feedback that would otherwise
-					// have driven this iteration's fresh prompt.
+					// have driven this iteration's fresh prompt. Use lastSessionProvider
+					// (the provider that produced lastSessionID) rather than the current
+					// activeProviderIdx, which may have advanced to a different fallback.
 					pendingResume = true
 					resumeSessionID = lastSessionID
-					resumeProvider = providers[activeProviderIdx]
+					resumeProvider = lastSessionProvider
 					resumeMessage = mergeSteerWithFeedback(beadCtx.PriorFeedback, steerMsg)
 					log.Printf("[pipeline:%s] Steer mode B: resuming session %s with queued steer message (iteration %d)", workerID, resumeSessionID, iteration)
 				} else {
@@ -1194,6 +1206,7 @@ func Run(ctx context.Context, p Params) *Outcome {
 			// is session-bound to a single provider, so there is no rate-limit
 			// fallback here.
 			pv := resumeProvider
+			spawnProvider = pv
 			log.Printf("[pipeline:%s] Resuming session %s with steer message (iteration %d, provider: %s)", workerID, resumeSessionID, iteration, pv.Label())
 			_ = p.DB.LogEvent(state.EventSmithStarted, fmt.Sprintf("Steer resume of session %s (iteration %d)", resumeSessionID, iteration), p.Bead.ID, p.AnvilName)
 
@@ -1274,12 +1287,14 @@ func Run(ctx context.Context, p Params) *Outcome {
 				// owner for the resume and stop trying other providers.
 				if steerMsgThisIter != "" {
 					activeProviderIdx = pi
+					spawnProvider = pv
 					resumeProvider = pv
 					break
 				}
 
 				if !smithResult.RateLimited {
 					activeProviderIdx = pi // remember for the next iteration
+					spawnProvider = pv
 					break
 				}
 			}
@@ -1292,6 +1307,7 @@ func Run(ctx context.Context, p Params) *Outcome {
 		// provider) does not clobber a session captured earlier.
 		if smithResult != nil && smithResult.SessionID != "" {
 			lastSessionID = smithResult.SessionID
+			lastSessionProvider = spawnProvider
 		}
 
 		// Steer mode A: a steer message interrupted this spawn. Preserve the
