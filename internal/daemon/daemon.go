@@ -135,10 +135,11 @@ type Daemon struct {
 	activeBeads sync.Map // beadID -> true, currently in-flight
 	// controlHandles is the in-memory registry of active pipeline control
 	// handles keyed by beadID (beadID string -> *controlHandle). A handle is
-	// registered atomically alongside activeBeads.LoadOrStore and cleaned up
-	// via releaseBeadSlot (which pairs activeBeads.Delete +
-	// deregisterControlHandle), so there is no window where a bead is
-	// in-flight but has no handle. See control.go.
+	// registered after activeBeads.LoadOrStore and a successful claim, just
+	// before the dispatchBead goroutine launches. Cleaned up via
+	// releaseBeadSlot (activeBeads.Delete first, then deregisterControlHandle)
+	// so the handle remains accessible for the full in-flight duration.
+	// See control.go.
 	controlHandles sync.Map
 	// pendingActions parks lifecycle actions that arrived while a bead was in
 	// flight, to dispatch once it frees. Value is map[lifecycle.Action]ActionRequest
@@ -2912,9 +2913,8 @@ func (d *Daemon) pollAndDispatch(ctx context.Context, fullPoll bool) {
 // dispatchBead runs the full pipeline for a single bead in a goroutine.
 // claimWorkerID is the ID of the pending worker row inserted at claim time;
 // it is passed into the pipeline so the running row overwrites the pending one.
-// ctrl is the control handle registered by the caller before launching this
-// goroutine, so there is no window where the bead is in activeBeads but has
-// no handle (the IPC layer can steer/interrupt immediately).
+// ctrl is the control handle registered by the caller after a successful claim,
+// just before launching this goroutine.
 func (d *Daemon) dispatchBead(ctx context.Context, bead poller.Bead, anvilCfg config.AnvilConfig, claimWorkerID string, ctrl *controlHandle) {
 	defer d.wg.Done()
 	defer func() {

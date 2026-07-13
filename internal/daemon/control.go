@@ -15,11 +15,11 @@ const steerMailboxSize = 16
 // beadID, pushes a steer message into the mailbox, and/or triggers the
 // interrupt to stop the currently running spawn.
 //
-// A handle is registered atomically alongside activeBeads.LoadOrStore so
-// steering can be queued immediately after dispatch. It is deregistered via
-// releaseBeadSlot (which pairs activeBeads.Delete + deregisterControlHandle
-// in a single call), so there is no window where the bead is in-flight but
-// has no handle.
+// A handle is registered after activeBeads.LoadOrStore and a successful
+// claim, just before the dispatchBead goroutine launches. It is deregistered
+// via releaseBeadSlot (which runs activeBeads.Delete first, then
+// deregisterControlHandle) so the handle remains accessible for the full
+// duration the bead is marked in-flight.
 type controlHandle struct {
 	// workerID is the DB worker row ID for the pipeline this handle controls.
 	workerID string
