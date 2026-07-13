@@ -7,6 +7,7 @@ package provider
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"maps"
 	"strings"
@@ -139,7 +140,7 @@ func (p Provider) BuildArgs(claudeFlags []string) []string {
 // The prompt text is delivered via stdin exactly as with BuildArgs.
 func (p Provider) BuildArgsResume(claudeFlags []string, sessionID string) ([]string, error) {
 	if sessionID == "" {
-		return nil, fmt.Errorf("provider: cannot resume with an empty session id")
+		return nil, errors.New("provider: cannot resume with an empty session id")
 	}
 	if p.Kind != Claude {
 		return nil, fmt.Errorf("provider: %s sessions cannot be resumed — only Claude reports a resumable session id", p.Kind)
