@@ -26,6 +26,60 @@ type fakeParkHandle struct {
 func (h *fakeParkHandle) PauseRequested() <-chan struct{} { return h.pause }
 func (h *fakeParkHandle) ResumeRequested() <-chan string  { return h.resume }
 
+// TestExtendDeadlineForPause exercises the pure timeout-extension math that backs
+// "pausing the deadline": time spent parked is added back to the smith-timeout
+// deadline so a pause is never charged against the smith budget.
+func TestExtendDeadlineForPause(t *testing.T) {
+	base := time.Date(2026, 7, 13, 12, 0, 0, 0, time.UTC)
+
+	tests := []struct {
+		name      string
+		deadline  time.Time
+		pausedFor time.Duration
+		want      time.Time
+	}{
+		{"advances by paused duration", base, 10 * time.Minute, base.Add(10 * time.Minute)},
+		{"sub-second precision preserved", base, 1500 * time.Millisecond, base.Add(1500 * time.Millisecond)},
+		{"zero pause is a no-op", base, 0, base},
+		{"negative pause cannot shorten the budget", base, -5 * time.Minute, base},
+		{"zero deadline (no timeout) is returned unchanged", time.Time{}, time.Hour, time.Time{}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := extendDeadlineForPause(tt.deadline, tt.pausedFor)
+			assert.True(t, got.Equal(tt.want), "extendDeadlineForPause(%v, %v) = %v, want %v",
+				tt.deadline, tt.pausedFor, got, tt.want)
+		})
+	}
+}
+
+// TestPauseClock_Accumulates verifies the pauseClock sums successive pauses and
+// projects the extended deadline idempotently from the fixed original deadline,
+// while ignoring non-positive additions (clock skew must never shorten the
+// budget).
+func TestPauseClock_Accumulates(t *testing.T) {
+	original := time.Date(2026, 7, 13, 12, 0, 0, 0, time.UTC)
+
+	var c pauseClock
+	assert.Equal(t, time.Duration(0), c.Total())
+	// A no-op extend before any pause returns the original deadline.
+	assert.True(t, c.extend(original).Equal(original))
+
+	c.add(2 * time.Minute)
+	c.add(3 * time.Minute)
+	assert.Equal(t, 5*time.Minute, c.Total())
+	// extend recomputes from the ORIGINAL deadline (not a running one), so calling
+	// it repeatedly is idempotent for a given accumulated total.
+	assert.True(t, c.extend(original).Equal(original.Add(5*time.Minute)))
+	assert.True(t, c.extend(original).Equal(original.Add(5*time.Minute)))
+
+	// Non-positive additions are ignored.
+	c.add(0)
+	c.add(-time.Hour)
+	assert.Equal(t, 5*time.Minute, c.Total())
+	assert.True(t, c.extend(original).Equal(original.Add(5*time.Minute)))
+}
+
 // TestPause_ParkAndResume exercises the pause/park/resume mechanic end-to-end: a
 // running Smith spawn is interrupted by a pause request, its captured session_id
 // and iteration are recorded in a park record, the worker transitions to paused,
@@ -145,6 +199,147 @@ func TestPause_ParkAndResume(t *testing.T) {
 	}
 	assert.Equal(t, 1, pausedCount, "exactly one bead_paused event must be recorded")
 	assert.Equal(t, 1, resumedCount, "exactly one bead_resumed event must be recorded")
+}
+
+// TestPause_SmithTimeoutSuspendedWhileParked verifies the core clock-correctness
+// guarantee: when the pipeline owns the smith timeout (SmithTimeout > 0), a pause
+// that outlasts the entire smith budget must NOT expire the timeout. On resume,
+// the deadline is extended by the time spent parked, so the resumed spawn sees a
+// live (non-cancelled) context and the pipeline completes successfully.
+func TestPause_SmithTimeoutSuspendedWhileParked(t *testing.T) {
+	db := newTestDB(t)
+	params, _, _ := baseParams(t, db)
+	params.WorkerID = "test-worker"
+
+	// A deliberately tiny smith budget: the pause below outlasts it several times
+	// over, so without deadline extension the resumed context would be expired.
+	params.SmithTimeout = 80 * time.Millisecond
+
+	runningResult := &smith.Result{ExitCode: 0, SessionID: "sess-1", ResultSubtype: "success"}
+	params.SmithRunner = func(_ context.Context, _, _, _ string, _ provider.Provider, _ []string) (*smith.Process, error) {
+		return smith.NewRunningProcessForTest(runningResult), nil
+	}
+
+	ph := &fakeParkHandle{
+		pause:  make(chan struct{}, 1),
+		resume: make(chan string, 1),
+	}
+	ph.pause <- struct{}{}
+	params.ParkHandle = ph
+	params.SmithInterrupter = func(proc *smith.Process) { proc.Interrupt(0) }
+
+	// Capture the context error observed by the resume spawn. If the smith timeout
+	// had leaked through the pause, this would be context.DeadlineExceeded.
+	var mu sync.Mutex
+	var resumeCtxErr error
+	params.SmithResumeRunner = func(ctx context.Context, _, _, _ string, _ provider.Provider, _ string, _ []string) (*smith.Process, error) {
+		mu.Lock()
+		resumeCtxErr = ctx.Err()
+		mu.Unlock()
+		return smith.NewProcessForTest(&smith.Result{ExitCode: 0, SessionID: "sess-2", ResultSubtype: "success"}), nil
+	}
+	params.EmptyDiffChecker = func(_, _ string) bool { return false }
+	params.WardenReviewer = func(_ context.Context, _, _, _, _, _ string, _ *state.DB, _ string, _ ...provider.Provider) (*warden.ReviewResult, error) {
+		return &warden.ReviewResult{Verdict: warden.VerdictApprove, Summary: "LGTM"}, nil
+	}
+
+	done := make(chan *Outcome, 1)
+	go func() { done <- Run(context.Background(), params) }()
+
+	require.Eventually(t, func() bool {
+		w, err := db.GetWorker("test-worker")
+		return err == nil && w.Status == state.WorkerPaused
+	}, 2*time.Second, 5*time.Millisecond, "pipeline should park the worker")
+
+	// Stay parked well beyond the smith budget. If the deadline were not
+	// suspended, the pipeline context would expire during this sleep.
+	time.Sleep(240 * time.Millisecond)
+
+	// The parked pipeline must NOT have returned despite the elapsed budget.
+	select {
+	case <-done:
+		t.Fatal("pipeline exited while parked — smith timeout leaked through the pause")
+	default:
+	}
+
+	ph.resume <- ""
+
+	var outcome *Outcome
+	select {
+	case outcome = <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("pipeline did not resume within the deadline")
+	}
+
+	require.NoError(t, outcome.Error, "the resumed pipeline must not fail on an expired context")
+	assert.True(t, outcome.Success, "pipeline should succeed after a pause longer than the smith budget")
+
+	mu.Lock()
+	defer mu.Unlock()
+	require.NoError(t, resumeCtxErr, "the resumed spawn must see a live context; the smith timeout must not fire while paused")
+}
+
+// TestPause_ShutdownWhileParkedUnblocksAndStaysPaused verifies that when the
+// dedicated shutdown context fires while the goroutine is parked, the parked
+// pipeline unblocks promptly (so the daemon drain does not hang) and leaves the
+// worker paused rather than failing it. This matters because the park wait no
+// longer rides the smith-timeout context, so the base context alone would block
+// indefinitely on shutdown.
+func TestPause_ShutdownWhileParkedUnblocksAndStaysPaused(t *testing.T) {
+	db := newTestDB(t)
+	params, _, _ := baseParams(t, db)
+	params.WorkerID = "test-worker"
+
+	// Own the timeout so the base context carries no deadline — only the shutdown
+	// context can unblock the park.
+	params.SmithTimeout = time.Hour
+
+	runningResult := &smith.Result{ExitCode: 0, SessionID: "sess-1", ResultSubtype: "success"}
+	params.SmithRunner = func(_ context.Context, _, _, _ string, _ provider.Provider, _ []string) (*smith.Process, error) {
+		return smith.NewRunningProcessForTest(runningResult), nil
+	}
+
+	ph := &fakeParkHandle{
+		pause:  make(chan struct{}, 1),
+		resume: make(chan string, 1),
+	}
+	ph.pause <- struct{}{}
+	params.ParkHandle = ph
+	params.SmithInterrupter = func(proc *smith.Process) { proc.Interrupt(0) }
+
+	var resumeCalls int32
+	params.SmithResumeRunner = func(_ context.Context, _, _, _ string, _ provider.Provider, _ string, _ []string) (*smith.Process, error) {
+		atomic.AddInt32(&resumeCalls, 1)
+		return smith.NewProcessForTest(&smith.Result{ExitCode: 0}), nil
+	}
+
+	shutdownCtx, shutdownCancel := context.WithCancel(context.Background())
+	params.ShutdownCtx = shutdownCtx
+
+	done := make(chan *Outcome, 1)
+	// Run under a background base context that is NEVER cancelled, proving the
+	// shutdown context is what unblocks the park.
+	go func() { done <- Run(context.Background(), params) }()
+
+	require.Eventually(t, func() bool {
+		w, err := db.GetWorker("test-worker")
+		return err == nil && w.Status == state.WorkerPaused
+	}, 2*time.Second, 5*time.Millisecond, "pipeline should park the worker")
+
+	// Signal shutdown while parked.
+	shutdownCancel()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("parked pipeline did not unblock on shutdown — drain would hang")
+	}
+
+	assert.EqualValues(t, 0, atomic.LoadInt32(&resumeCalls), "a shutdown-interrupted park must not respawn")
+
+	w, err := db.GetWorker("test-worker")
+	require.NoError(t, err)
+	assert.Equal(t, state.WorkerPaused, w.Status, "a shutdown while parked must leave the worker paused for resume after restart")
 }
 
 // TestPause_ResumeWithExplicitMessage verifies that a resume message supplied by

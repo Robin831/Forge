@@ -6005,3 +6005,39 @@ func TestCheckStaleWorkers_StallAndRecoverRoundTrip(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, state.WorkerReviewing, w.Status, "worker should return to its prior phase after recovery")
 }
+
+// TestCheckStaleWorkers_SkipsPaused verifies the stale-worker detector never
+// flags a worker parked by an operator pause, even when its log file has been
+// silent far longer than the stale interval. A parked pipeline holds its worktree
+// and awaits a resume, so the watchdog must leave it untouched.
+func TestCheckStaleWorkers_SkipsPaused(t *testing.T) {
+	tmpDir := t.TempDir()
+	db, err := state.Open(filepath.Join(tmpDir, "state.db"))
+	require.NoError(t, err)
+	defer db.Close()
+
+	d := &Daemon{
+		db:     db,
+		logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+	d.cfg.Store(&config.Config{})
+
+	const interval = 5 * time.Minute
+
+	// A paused worker whose log has been silent for 20 minutes.
+	logFile := filepath.Join(tmpDir, "paused-smith.log")
+	require.NoError(t, os.WriteFile(logFile, []byte("log"), 0o644))
+	old := time.Now().Add(-20 * time.Minute)
+	require.NoError(t, os.Chtimes(logFile, old, old))
+	require.NoError(t, db.InsertWorker(&state.Worker{
+		ID: "w-paused", BeadID: "BD-1", Anvil: "anvil-1",
+		Status: state.WorkerPaused, Phase: "smith",
+		StartedAt: time.Now().Add(-25 * time.Minute), LogPath: logFile,
+	}))
+
+	d.checkStaleWorkers(interval)
+
+	w, err := db.GetWorker("w-paused")
+	require.NoError(t, err)
+	assert.Equal(t, state.WorkerPaused, w.Status, "a paused worker must never be flagged stalled by the watchdog")
+}

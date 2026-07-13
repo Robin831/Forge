@@ -2508,6 +2508,14 @@ func (d *Daemon) checkStaleWorkers(interval time.Duration) {
 		return
 	}
 	for _, w := range stalled {
+		// Defensive skip: a paused (parked) worker legitimately stops producing
+		// log output while an operator pause holds it, so it must never be flagged
+		// stale. StalledWorkers already excludes 'paused' via its status allowlist;
+		// this guard ensures the invariant holds even if that query is later
+		// broadened.
+		if w.Status == state.WorkerPaused {
+			continue
+		}
 		d.logger.Warn("marking worker as stalled — no log activity",
 			"worker", w.ID, "bead", w.BeadID, "anvil", w.Anvil,
 			"phase", w.Phase, "stale_interval", interval)
@@ -3281,7 +3289,13 @@ normalPipeline:
 	if smithTimeout <= 0 {
 		smithTimeout = 30 * time.Minute
 	}
-	pipelineCtx, cancel := context.WithTimeout(context.Background(), smithTimeout)
+	// Pass a cancellable (deadline-free) context and let the pipeline own the
+	// smith-timeout deadline via SmithTimeout. This is required for pause/park/
+	// resume: a parked bead must be able to suspend the smith timeout, which is
+	// impossible if the deadline is baked into this ctx (a child context can only
+	// shorten a parent's deadline, never extend it). The pipeline re-derives its
+	// timeout from this cancellable base so interrupt/shutdown still propagate.
+	pipelineCtx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	// Wire the control handle's interrupt to the pipeline context cancel so the
@@ -3308,6 +3322,18 @@ normalPipeline:
 		BaseBranch:      bead.EpicBranch,
 		WorkerID:        claimWorkerID,
 		MaxIterations:   cfg.Settings.MaxPipelineIterations,
+
+		// The pipeline owns its smith-timeout deadline (see pipelineCtx above) so
+		// pause/park/resume can suspend it while a bead is parked.
+		SmithTimeout: smithTimeout,
+
+		// Let a parked pipeline unblock on daemon shutdown. pipelineCtx is
+		// deliberately decoupled from shutdown (so post-smith work completes), and
+		// the park wait no longer rides the smith timeout, so without this a parked
+		// goroutine would block the shutdown drain (wg.Wait) indefinitely. runCtx
+		// is cancelled on shutdown; a parked worker then stays 'paused' for resume
+		// after restart rather than being force-failed.
+		ShutdownCtx: d.runCtx,
 
 		// Steer mode A: feed the control handle's steer mailbox into the
 		// pipeline so a steer message can interrupt a running Smith spawn and

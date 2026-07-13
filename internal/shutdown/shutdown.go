@@ -246,6 +246,16 @@ func (m *Manager) CleanupOrphans() (cleaned int) {
 			workers = refreshed
 		}
 
+		// Union in paused (parked) workers: a bead parked by an operator pause
+		// still holds its worktree and will respawn a running smith on resume, so
+		// its worktree must NOT be treated as abandoned. ActiveWorkers excludes
+		// paused workers, so they are fetched and appended explicitly here.
+		if paused, err := m.db.PausedWorkers(); err != nil {
+			m.logger.Error("failed to query paused workers for worktree cleanup", "error", err)
+		} else if len(paused) > 0 {
+			workers = append(workers, paused...)
+		}
+
 		ctx := context.Background()
 		for name, anvilPath := range m.anvils {
 			wts, err := m.worktrees.List(anvilPath)

@@ -1378,6 +1378,99 @@ func TestDB_StalledWorkers_ExcludesLongRunningPhases(t *testing.T) {
 	}
 }
 
+// TestDB_StalledWorkers_ExcludesPaused verifies that a worker parked by an
+// operator pause (status 'paused') is never flagged stale, even when its log file
+// is far older than the stale threshold. A parked pipeline legitimately stops
+// producing log output while it awaits a resume, so the watchdog must skip it.
+func TestDB_StalledWorkers_ExcludesPaused(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "forge-state-test-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+	db, err := Open(filepath.Join(tmpDir, "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	// A stale (20-min-old) log file for a parked worker in the smith phase — the
+	// exact combination that would be flagged if the worker were running.
+	logFile := filepath.Join(tmpDir, "paused-smith.log")
+	if err := os.WriteFile(logFile, []byte("log"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().Add(-20 * time.Minute)
+	if err := os.Chtimes(logFile, old, old); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := db.InsertWorker(&Worker{
+		ID: "w-paused", BeadID: "BD-1", Anvil: "anvil-1",
+		Status: WorkerPaused, Phase: "smith",
+		StartedAt: time.Now().Add(-25 * time.Minute),
+		LogPath:   logFile,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	stalled, err := db.StalledWorkers(5 * time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stalled) != 0 {
+		t.Fatalf("expected 0 stalled workers (paused must be excluded), got %d: %+v", len(stalled), stalled)
+	}
+}
+
+// TestDB_PausedWorkers verifies PausedWorkers returns exactly the paused workers
+// (for worktree-retention unions) and nothing in other statuses.
+func TestDB_PausedWorkers(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "forge-state-test-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+	db, err := Open(filepath.Join(tmpDir, "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	if err := db.InsertWorker(&Worker{
+		ID: "w-paused", BeadID: "BD-1", Anvil: "anvil-1", Branch: "forge/BD-1",
+		Status: WorkerPaused, Phase: "smith", StartedAt: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.InsertWorker(&Worker{
+		ID: "w-running", BeadID: "BD-2", Anvil: "anvil-1", Branch: "forge/BD-2",
+		Status: WorkerRunning, Phase: "smith", StartedAt: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.InsertWorker(&Worker{
+		ID: "w-done", BeadID: "BD-3", Anvil: "anvil-1", Branch: "forge/BD-3",
+		Status: WorkerDone, Phase: "smith", StartedAt: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	paused, err := db.PausedWorkers()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(paused) != 1 {
+		t.Fatalf("expected 1 paused worker, got %d: %+v", len(paused), paused)
+	}
+	if paused[0].ID != "w-paused" {
+		t.Errorf("expected w-paused, got %s", paused[0].ID)
+	}
+	if paused[0].Branch != "forge/BD-1" {
+		t.Errorf("expected branch forge/BD-1 to be returned for worktree matching, got %q", paused[0].Branch)
+	}
+}
+
 func TestDB_StalledWorkers_LifecycleWithPerWorkerTimeout(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "forge-state-test-*")
 	if err != nil {
