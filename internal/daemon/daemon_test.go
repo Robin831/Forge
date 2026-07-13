@@ -652,6 +652,64 @@ exit 0
 	assert.Equal(t, 1, countEvents(state.EventDispatchResumed), "re-resuming must not log again")
 }
 
+// TestDispatchPause_PersistAndRestore verifies that a manual dispatch pause is
+// persisted to state.db and restored on daemon startup, and that resume clears
+// both the in-memory atomic and the persisted flag.
+func TestDispatchPause_PersistAndRestore(t *testing.T) {
+	db, err := state.Open(filepath.Join(t.TempDir(), "state.db"))
+	require.NoError(t, err)
+	defer db.Close()
+
+	newDaemon := func() *Daemon {
+		d := &Daemon{
+			db:     db,
+			logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		}
+		d.cfg.Store(&config.Config{})
+		d.runCtx = context.Background()
+		// Pre-set pollRunning so the async pollAndDispatch goroutine spawned
+		// by resume_dispatch no-ops immediately (the CompareAndSwap guard
+		// returns false), avoiding races with test teardown.
+		d.pollRunning.Store(true)
+		return d
+	}
+
+	// Pause via IPC persists the flag and a timestamp.
+	d := newDaemon()
+	resp := d.handleIPC(ipc.Command{Type: "pause_dispatch"})
+	require.Equal(t, "ok", resp.Type)
+
+	paused, ok, err := db.GetSetting(state.SettingDispatchPaused)
+	require.NoError(t, err)
+	require.True(t, ok, "dispatch_paused should be persisted")
+	assert.Equal(t, "1", paused)
+	at, ok, err := db.GetSetting(state.SettingDispatchPausedAt)
+	require.NoError(t, err)
+	require.True(t, ok, "dispatch_paused_at should be persisted")
+	assert.NotEmpty(t, at, "paused-at timestamp should be recorded")
+
+	// Simulate a restart: a fresh daemon over the same db restores the pause.
+	d2 := newDaemon()
+	assert.False(t, d2.dispatchPaused.Load(), "fresh daemon starts unpaused before restore")
+	d2.restoreDispatchPause()
+	assert.True(t, d2.dispatchPaused.Load(), "pause should be restored from state.db on startup")
+	since, sok := d2.pausedSince.Load().(time.Time)
+	assert.True(t, sok && !since.IsZero(), "pausedSince should be restored")
+
+	// Resume clears both the atomic and the persisted flag.
+	resp = d2.handleIPC(ipc.Command{Type: "resume_dispatch"})
+	require.Equal(t, "ok", resp.Type)
+	assert.False(t, d2.dispatchPaused.Load(), "resume clears the atomic")
+	paused, _, err = db.GetSetting(state.SettingDispatchPaused)
+	require.NoError(t, err)
+	assert.Equal(t, "0", paused, "resume clears the persisted flag")
+
+	// A subsequent restart must NOT restore a pause.
+	d3 := newDaemon()
+	d3.restoreDispatchPause()
+	assert.False(t, d3.dispatchPaused.Load(), "resumed state must not restore a pause")
+}
+
 func TestHandleIPC_RetryBead(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "forge-test-*")
 	require.NoError(t, err)

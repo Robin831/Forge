@@ -39,6 +39,7 @@ export default function DashboardPage() {
   const crucibleCount = crucibles.data?.crucibles?.length ?? 0
   const daemonHealthy = status.data?.running
   const dispatchPaused = status.data?.dispatch_paused ?? false
+  const pausedSince = status.data?.paused_since
 
   return (
     <div className="flex min-h-full w-full flex-col gap-6 p-4 sm:p-6">
@@ -47,13 +48,13 @@ export default function DashboardPage() {
       <div className="flex flex-wrap items-center justify-between gap-3">
         {dispatchPaused ? (
           <p className="text-sm text-amber-200/90">
-            Auto-dispatch is <strong>paused</strong>. Running workers continue; no new beads
-            are dispatched. Resume to start dispatching again.
+            Auto-dispatch is <strong>paused</strong>{pausedSince ? <>{' '}since {Number.isNaN(Date.parse(pausedSince)) ? pausedSince : new Date(pausedSince).toLocaleString()}</> : null}. Running
+            workers continue; no new beads are dispatched. Resume to start dispatching again.
           </p>
         ) : (
           <span aria-hidden />
         )}
-        <DispatchToggle paused={dispatchPaused} />
+        <DispatchToggle paused={dispatchPaused} pausedSince={pausedSince} />
       </div>
 
       <section

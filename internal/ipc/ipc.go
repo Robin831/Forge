@@ -92,8 +92,13 @@ type StatusPayload struct {
 	// DispatchPaused reports that auto-dispatch is manually paused via the
 	// pause_dispatch IPC command (forge pause / Hearth toggle). Running workers
 	// keep going; only new dispatch is suspended. Manual run_bead dispatch
-	// remains allowed. The flag is in-memory only and resets on daemon restart.
+	// remains allowed. The flag is persisted in state.db so it survives daemon
+	// restarts.
 	DispatchPaused bool `json:"dispatch_paused,omitempty"`
+	// PausedSince reports when the manual dispatch pause began. It is only set
+	// when DispatchPaused is true (not for the cost-limit pause). Nil/omitted
+	// when dispatch is not manually paused or the start time is unknown.
+	PausedSince *time.Time `json:"paused_since,omitempty"`
 	// CopilotPremiumRequests is the weighted count of Copilot premium requests used today.
 	CopilotPremiumRequests float64 `json:"copilot_premium_requests,omitempty"`
 	// CopilotRequestLimit is the configured daily limit (0 = no limit).

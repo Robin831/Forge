@@ -502,6 +502,11 @@ CREATE TABLE IF NOT EXISTS assay_runs (
 );
 
 CREATE INDEX IF NOT EXISTS idx_assay_runs_anvil_pr ON assay_runs(anvil, pr_number);
+
+CREATE TABLE IF NOT EXISTS daemon_settings (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL DEFAULT ''
+);
 `
 
 // dbTimeLayout is the canonical, fixed-width layout used for timestamps
@@ -517,6 +522,44 @@ func boolToInt(b bool) int {
 	}
 	return 0
 }
+
+// GetSetting returns the value stored for the given daemon_settings key. The
+// second return value reports whether the key was present; a missing key is
+// not an error.
+func (db *DB) GetSetting(key string) (string, bool, error) {
+	var value string
+	err := db.conn.QueryRow(`SELECT value FROM daemon_settings WHERE key = ?`, key).Scan(&value)
+	if err == sql.ErrNoRows {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, fmt.Errorf("reading setting %q: %w", key, err)
+	}
+	return value, true, nil
+}
+
+// SetSetting upserts a value for the given daemon_settings key.
+func (db *DB) SetSetting(key, value string) error {
+	_, err := db.conn.Exec(
+		`INSERT INTO daemon_settings (key, value) VALUES (?, ?)
+		 ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+		key, value,
+	)
+	if err != nil {
+		return fmt.Errorf("writing setting %q: %w", key, err)
+	}
+	return nil
+}
+
+// Setting keys persisted in the daemon_settings table.
+const (
+	// SettingDispatchPaused stores the manual dispatch-pause flag ("1"/"0")
+	// so a pause survives daemon restarts.
+	SettingDispatchPaused = "dispatch_paused"
+	// SettingDispatchPausedAt stores the RFC3339 timestamp of when dispatch
+	// was manually paused.
+	SettingDispatchPausedAt = "dispatch_paused_at"
+)
 
 // parseTime is a helper to robustly parse timestamps that may come from
 // different layouts. It prefers the fixed-width dbTimeLayout, then falls

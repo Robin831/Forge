@@ -260,13 +260,25 @@ type Daemon struct {
 	// to avoid spamming the event log every poll cycle.
 	costLimitLoggedDate atomic.Value // stores string (YYYY-MM-DD)
 
+	// pauseMu serializes pause/resume/restore transitions so the in-memory
+	// atomics and persisted daemon_settings stay consistent under concurrent
+	// IPC commands.
+	pauseMu sync.Mutex
+
 	// dispatchPaused is a manual daemon-wide pause switch. When true,
 	// pollAndDispatch still polls (so the Hearth queue stays current) but
 	// returns before claiming/dispatching any new beads — currently running
 	// workers are left untouched and finish normally. Manual `forge queue run`
 	// dispatch is still allowed (mirrors the cost-limit pause behavior). The
-	// flag is in-memory only and resets to false on daemon restart by design.
+	// flag is persisted in state.db (daemon_settings) so a manual pause
+	// survives daemon restarts — it is restored on startup before the first
+	// pollAndDispatch. The cost-limit pause remains in-memory only.
 	dispatchPaused atomic.Bool
+
+	// pausedSince records when the current manual dispatch pause began. It is
+	// stored as a time.Time (zero when not manually paused) and surfaced in
+	// StatusPayload.PausedSince so UIs can show "paused since <time>".
+	pausedSince atomic.Value
 
 	// Per-anvil VCS providers for PR operations (GitHub, GitLab, etc.).
 	vcsProviders   map[string]vcs.Provider
@@ -423,6 +435,7 @@ func New(cfg *config.Config, configPath string) (*Daemon, error) {
 		queueTimestamps:       make(map[string]queueTimestamp),
 	}
 	d.lifecycleCond = sync.NewCond(&sync.Mutex{})
+	d.pausedSince.Store(time.Time{})
 	d.notifier.Store(notifier)
 	d.dispatcher.Store(dispatcher)
 	// Wire up the crucible-active check so orphan recovery skips parent beads
@@ -985,6 +998,13 @@ func (d *Daemon) Run(ctx context.Context) error {
 	ctx, d.cancel = context.WithCancel(ctx)
 	d.runCtx = ctx
 
+	// Restore a manual dispatch pause persisted from a previous run so a
+	// pause set before a restart (e.g. a systemd restart) is not silently
+	// undone. Must run before starting IPC/web handlers so all commands
+	// observe the restored state immediately. The cost-limit pause is
+	// intentionally not persisted (recomputed from daily costs).
+	d.restoreDispatchPause()
+
 	// Start IPC server
 	d.ipc = ipc.NewServer()
 	d.ipc.OnCommand(d.handleIPC)
@@ -1362,6 +1382,42 @@ func assaySummaryLine(findings []assay.Finding) string {
 		parts = append(parts, fmt.Sprintf("%d pre-existing", pre))
 	}
 	return "Assay (AI review): " + strings.Join(parts, ", ")
+}
+
+// restoreDispatchPause reads the persisted manual dispatch-pause flag from
+// state.db and, if it was set, restores the in-memory atomic and pausedSince
+// so a pause survives daemon restarts. It logs an event mirroring
+// EventDispatchPaused semantics. The cost-limit pause is not persisted.
+func (d *Daemon) restoreDispatchPause() {
+	d.pauseMu.Lock()
+	defer d.pauseMu.Unlock()
+
+	paused, ok, err := d.db.GetSetting(state.SettingDispatchPaused)
+	if err != nil {
+		d.logger.Error("failed to read persisted dispatch pause", "error", err)
+		return
+	}
+	if !ok || paused != "1" {
+		return
+	}
+	d.dispatchPaused.Store(true)
+	at, ok, err := d.db.GetSetting(state.SettingDispatchPausedAt)
+	if err != nil {
+		d.logger.Warn("failed to read dispatch pause timestamp", "error", err)
+		d.pausedSince.Store(time.Time{})
+	} else if ok && at != "" {
+		if t, perr := time.Parse(time.RFC3339, at); perr == nil {
+			d.pausedSince.Store(t)
+		} else {
+			d.pausedSince.Store(time.Time{})
+		}
+	} else {
+		d.pausedSince.Store(time.Time{})
+	}
+	if err := d.db.LogEvent(state.EventDispatchPaused, "Dispatch pause restored from previous run", "", ""); err != nil {
+		d.logger.Warn("failed to log dispatch-pause-restored event", "error", err)
+	}
+	d.logger.Info("dispatch pause restored from previous run")
 }
 
 // runAssayReview performs one Assay review of the PR's current head: it fetches
@@ -4476,6 +4532,13 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 			AnvilLastPoll:          anvilLastPoll,
 			MaxTotalSmiths:         d.cfg.Load().Settings.MaxTotalSmiths,
 		}
+		// Surface when the manual dispatch pause began (not the cost-limit pause).
+		if payload.DispatchPaused {
+			if since, ok := d.pausedSince.Load().(time.Time); ok && !since.IsZero() {
+				s := since
+				payload.PausedSince = &s
+			}
+		}
 		data, _ := json.Marshal(payload)
 		return ipc.Response{Type: "status", Payload: data}
 
@@ -4639,25 +4702,64 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 		return ipc.Response{Type: "ok", Payload: data}
 
 	case "pause_dispatch":
+		d.pauseMu.Lock()
 		// Idempotent: pausing while already paused is a no-op success.
-		already := d.dispatchPaused.Swap(true)
-		if !already {
-			_ = d.db.LogEvent(state.EventDispatchPaused, "Dispatch manually paused — running workers continue; no new beads dispatched", "", "")
-			d.logger.Info("dispatch paused (manual)")
+		if d.dispatchPaused.Load() {
+			d.pauseMu.Unlock()
+			data, _ := json.Marshal(map[string]string{"message": "dispatch paused"})
+			return ipc.Response{Type: "ok", Payload: data}
 		}
+		now := time.Now()
+		// Flip in-memory flag first so concurrent poll cycles see the pause
+		// immediately, then persist. Revert if persistence fails.
+		d.dispatchPaused.Store(true)
+		d.pausedSince.Store(now)
+		if err := d.db.SetSetting(state.SettingDispatchPaused, "1"); err != nil {
+			d.dispatchPaused.Store(false)
+			d.pausedSince.Store(time.Time{})
+			d.pauseMu.Unlock()
+			d.logger.Error("failed to persist dispatch pause", "error", err)
+			msg, _ := json.Marshal(map[string]string{"message": "failed to persist dispatch pause: " + err.Error()})
+			return ipc.Response{Type: "error", Payload: msg}
+		}
+		if err := d.db.SetSetting(state.SettingDispatchPausedAt, now.Format(time.RFC3339)); err != nil {
+			d.logger.Warn("failed to persist dispatch pause timestamp", "error", err)
+		}
+		if err := d.db.LogEvent(state.EventDispatchPaused, "Dispatch manually paused — running workers continue; no new beads dispatched", "", ""); err != nil {
+			d.logger.Warn("failed to log dispatch pause event", "error", err)
+		}
+		d.logger.Info("dispatch paused (manual)")
+		d.pauseMu.Unlock()
 		data, _ := json.Marshal(map[string]string{"message": "dispatch paused"})
 		return ipc.Response{Type: "ok", Payload: data}
 
 	case "resume_dispatch":
+		d.pauseMu.Lock()
 		// Idempotent: resuming while not paused is a no-op success.
-		was := d.dispatchPaused.Swap(false)
-		if was {
-			_ = d.db.LogEvent(state.EventDispatchResumed, "Dispatch manually resumed", "", "")
-			d.logger.Info("dispatch resumed (manual)")
-			// Kick a poll so resuming takes effect immediately rather than
-			// waiting for the next ticker.
-			go d.pollAndDispatch(d.runCtx, false)
+		if !d.dispatchPaused.Load() {
+			d.pauseMu.Unlock()
+			data, _ := json.Marshal(map[string]string{"message": "dispatch resumed"})
+			return ipc.Response{Type: "ok", Payload: data}
 		}
+		if err := d.db.SetSetting(state.SettingDispatchPaused, "0"); err != nil {
+			d.pauseMu.Unlock()
+			d.logger.Error("failed to persist dispatch resume", "error", err)
+			msg, _ := json.Marshal(map[string]string{"message": "failed to persist dispatch resume: " + err.Error()})
+			return ipc.Response{Type: "error", Payload: msg}
+		}
+		if err := d.db.SetSetting(state.SettingDispatchPausedAt, ""); err != nil {
+			d.logger.Warn("failed to clear dispatch pause timestamp", "error", err)
+		}
+		d.dispatchPaused.Store(false)
+		d.pausedSince.Store(time.Time{})
+		if err := d.db.LogEvent(state.EventDispatchResumed, "Dispatch manually resumed", "", ""); err != nil {
+			d.logger.Warn("failed to log dispatch resume event", "error", err)
+		}
+		d.logger.Info("dispatch resumed (manual)")
+		d.pauseMu.Unlock()
+		// Kick a poll so resuming takes effect immediately rather than
+		// waiting for the next ticker.
+		go d.pollAndDispatch(d.runCtx, false)
 		data, _ := json.Marshal(map[string]string{"message": "dispatch resumed"})
 		return ipc.Response{Type: "ok", Payload: data}
 
