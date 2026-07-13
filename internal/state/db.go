@@ -2157,6 +2157,10 @@ const (
 	// for human attention rather than retried/failed-over (Forge-d5ns).
 	EventAuthFailed                      EventType = "auth_failed"
 	EventCostLimitHit                    EventType = "cost_limit_hit"
+	// EventCopilotLimitHit fires when the copilot daily request cap is reached but
+	// copilot is the only configured provider, so the daemon proceeds with copilot
+	// anyway rather than handing the pipeline zero providers (Forge-d5ns).
+	EventCopilotLimitHit                 EventType = "copilot_limit_hit"
 	EventDispatchPaused                  EventType = "dispatch_paused"
 	EventDispatchResumed                 EventType = "dispatch_resumed"
 	EventSchematicSubBead                EventType = "schematic_sub_bead"

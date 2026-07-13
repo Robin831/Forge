@@ -7961,9 +7961,10 @@ func (d *Daemon) resolveGoRaceDetection(anvilCfg config.AnvilConfig) bool {
 // Empty-list guard: if filtering would remove every provider (a copilot-only
 // list over the limit), the original list is returned unchanged rather than
 // handing the caller zero providers — which would silently fall back to the
-// built-in defaults. An explicit warning + auth-failed-style event is emitted so
-// the situation is visible instead of surprising. The soft daily cap is
-// deliberately overshot in this edge case because stalling all work is worse.
+// built-in defaults. An explicit warning is logged and a copilot_limit_hit event
+// is recorded so the situation is visible instead of surprising. The soft daily
+// cap is deliberately overshot in this edge case because stalling all work is
+// worse.
 func (d *Daemon) filterCopilotIfLimited(providers []provider.Provider) []provider.Provider {
 	limit := d.cfg.Load().Settings.CopilotDailyRequestLimit
 	if limit <= 0 {
@@ -7990,8 +7991,12 @@ func (d *Daemon) filterCopilotIfLimited(providers []provider.Provider) []provide
 	}
 	if len(filtered) == 0 {
 		// Copilot was the only provider. Do NOT hand back zero providers.
+		msg := fmt.Sprintf("copilot daily request limit reached (%.1f/%d) but copilot is the only configured provider; proceeding with copilot despite the limit", used, limit)
 		d.logger.Error("copilot daily request limit reached but copilot is the only configured provider; proceeding with copilot despite the limit",
 			"used", fmt.Sprintf("%.1f", used), "limit", limit)
+		if err := d.db.LogEvent(state.EventCopilotLimitHit, msg, "", ""); err != nil {
+			d.logger.Error("failed to log copilot_limit_hit event", "error", err)
+		}
 		return providers
 	}
 	d.logger.Info("copilot daily request limit reached, skipping copilot provider",

@@ -72,6 +72,17 @@ func TestFilterCopilotIfLimited(t *testing.T) {
 		// Never hand back zero providers — the original list is returned.
 		require.Len(t, out, 1)
 		assert.Equal(t, provider.Copilot, out[0].Kind)
+		// A copilot_limit_hit event is recorded so the overshoot is visible.
+		events, err := db.RecentEvents(10)
+		require.NoError(t, err)
+		var found bool
+		for _, e := range events {
+			if e.Type == state.EventCopilotLimitHit {
+				found = true
+				break
+			}
+		}
+		assert.True(t, found, "expected a copilot_limit_hit event to be recorded")
 	})
 
 	t.Run("DB error fails closed: copilot filtered", func(t *testing.T) {
