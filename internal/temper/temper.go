@@ -522,7 +522,7 @@ func stepStatus(s StepResult) string {
 }
 
 // writeTemperLog persists the full, untruncated output of every temper step to
-// <worktreePath>/.forge-logs/temper-<unixtime>.log. The pipeline's
+// <worktreePath>/.forge-logs/temper-<ts>.log. The pipeline's
 // preserveWorktreeLogs copies this file — alongside the stage-named Smith logs
 // — to ~/.forge/logs/<beadID>/, so failed-test forensics survive worktree
 // cleanup. Unlike the 1000-char ingot OutputSummary, this log contains the
@@ -562,7 +562,13 @@ func writeTemperLog(worktreePath string, result *Result) {
 		}
 	}
 
-	if err := os.WriteFile(logPath, []byte(b.String()), 0o644); err != nil {
+	f, err := os.OpenFile(logPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
+	if err != nil {
+		log.Printf("[temper] failed to create temper log %s: %v", logPath, err)
+		return
+	}
+	defer f.Close()
+	if _, err := f.WriteString(b.String()); err != nil {
 		log.Printf("[temper] failed to write temper log %s: %v", logPath, err)
 	}
 }
