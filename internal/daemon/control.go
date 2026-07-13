@@ -127,7 +127,7 @@ func (d *Daemon) lookupControlHandle(beadID string) (*controlHandle, bool) {
 	}
 	h, ok := v.(*controlHandle)
 	if !ok {
-		d.controlHandles.Delete(beadID)
+		d.controlHandles.CompareAndDelete(beadID, v)
 		return nil, false
 	}
 	return h, true
