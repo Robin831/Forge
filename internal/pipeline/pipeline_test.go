@@ -93,7 +93,9 @@ func baseParams(t *testing.T, db *state.DB) (Params, *string, *sync.Mutex) {
 			releasedBeadID = beadID
 			return nil
 		},
-		Providers: []provider.Provider{{Kind: provider.Claude}},
+		// Stub the steer note append so tests never shell out to the bd CLI.
+		SteerNoteAppender: func(_, _, _ string) error { return nil },
+		Providers:         []provider.Provider{{Kind: provider.Claude}},
 	}
 	return p, &releasedBeadID, &mu
 }
