@@ -18,9 +18,10 @@ type fakeHandle struct {
 	cleared        []clearCall
 	resets         []resetCall
 
-	retryRecords map[string]*state.RetryRecord
-	workers      map[string]*state.Worker
-	workerStatus []workerStatusCall
+	retryRecords  map[string]*state.RetryRecord
+	workers       map[string]*state.Worker
+	pausedWorkers map[string]*state.Worker
+	workerStatus  []workerStatusCall
 
 	events []state.Event
 
@@ -51,9 +52,10 @@ type workerStatusCall struct {
 
 func newFakeHandle() *fakeHandle {
 	return &fakeHandle{
-		localForgeID: "forge-a",
-		retryRecords: map[string]*state.RetryRecord{},
-		workers:      map[string]*state.Worker{},
+		localForgeID:  "forge-a",
+		retryRecords:  map[string]*state.RetryRecord{},
+		workers:       map[string]*state.Worker{},
+		pausedWorkers: map[string]*state.Worker{},
 	}
 }
 
@@ -84,6 +86,10 @@ func (f *fakeHandle) ResetRetry(beadID, anvil string) error {
 
 func (f *fakeHandle) ActiveWorkerByBeadAndAnvil(beadID, anvil string) (*state.Worker, error) {
 	return f.workers[beadID+"/"+anvil], nil
+}
+
+func (f *fakeHandle) PausedWorkerByBeadAndAnvil(beadID, anvil string) (*state.Worker, error) {
+	return f.pausedWorkers[beadID+"/"+anvil], nil
 }
 
 func (f *fakeHandle) UpdateWorkerStatus(workerID string, status state.WorkerStatus) error {
@@ -380,6 +386,38 @@ func TestStop(t *testing.T) {
 		}
 		if len(h.workerStatus) != 0 {
 			t.Fatalf("expected no worker status updates, got %+v", h.workerStatus)
+		}
+	})
+
+	t.Run("discards paused worker when no active worker", func(t *testing.T) {
+		h := newFakeHandle()
+		// No active worker, but a paused worker (e.g. survived a daemon restart).
+		h.pausedWorkers["BD-1/munin"] = &state.Worker{ID: "w-paused", BeadID: "BD-1", Anvil: "munin", Status: state.WorkerPaused}
+		workerID, err := Stop(context.Background(), h, Params{BeadID: "BD-1", AnvilName: "munin", Note: "abandon"})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if workerID != "w-paused" {
+			t.Fatalf("expected paused worker to be terminated, got %q", workerID)
+		}
+		if len(h.workerStatus) != 1 || h.workerStatus[0].WorkerID != "w-paused" || h.workerStatus[0].Status != state.WorkerFailed {
+			t.Fatalf("expected paused worker w-paused marked failed, got %+v", h.workerStatus)
+		}
+	})
+
+	t.Run("prefers active worker over paused worker", func(t *testing.T) {
+		h := newFakeHandle()
+		h.workers["BD-1/munin"] = &state.Worker{ID: "w-active", BeadID: "BD-1", Anvil: "munin"}
+		h.pausedWorkers["BD-1/munin"] = &state.Worker{ID: "w-paused", BeadID: "BD-1", Anvil: "munin"}
+		workerID, err := Stop(context.Background(), h, Params{BeadID: "BD-1", AnvilName: "munin", Note: "x"})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if workerID != "w-active" {
+			t.Fatalf("expected active worker to take precedence, got %q", workerID)
+		}
+		if len(h.workerStatus) != 1 || h.workerStatus[0].WorkerID != "w-active" {
+			t.Fatalf("expected only the active worker to be terminated, got %+v", h.workerStatus)
 		}
 	})
 

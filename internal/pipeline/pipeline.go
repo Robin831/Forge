@@ -517,6 +517,19 @@ type Params struct {
 	// the timeout remains extendable.
 	SmithTimeout time.Duration
 
+	// ResumeSession, when non-nil, re-enters a previously paused bead after a
+	// daemon restart: instead of building a fresh Smith prompt and spawning a new
+	// session, the pipeline's FIRST iteration resumes the recorded Claude session
+	// (SessionID) via the SAME steer respawn path used by the live pause/resume
+	// mechanic (`claude --resume <SessionID>` with Message as the prompt). The
+	// retained worktree is reused as-is (WorktreeManager reuse with
+	// PreserveExisting). This is how daemon-restart recovery honours a Needs
+	// Attention "resume" action when the parked pipeline goroutine did not survive
+	// the restart. When SessionID is empty (e.g. a provider that never reported
+	// one) the Message is folded into a fresh Smith prompt instead. Nil runs the
+	// pipeline normally from the top.
+	ResumeSession *ResumeSession
+
 	// SmithInterrupter overrides how a running Smith spawn is gracefully
 	// stopped during steering. Production calls smith.Process.Interrupt; tests
 	// inject a stub to observe interruption without real signals.
@@ -793,6 +806,9 @@ func Run(ctx context.Context, p Params) *Outcome {
 				BaseBranch:              p.BaseBranch,
 				ResetBranch:             p.ResetBranch,
 				SkipNodeModulesJunction: hasDepsUpdateLabel(p.Bead.Labels),
+				// Restart-resume: reuse the retained worktree exactly as it was
+				// when the bead was paused, so `claude --resume` continues in place.
+				PreserveExisting: p.ResumeSession != nil,
 			})
 		}
 	}
@@ -908,7 +924,21 @@ func Run(ctx context.Context, p Params) *Outcome {
 		return outcome
 	}
 	outcome.Branch = wt.Branch
+
+	// retainWorktreeOnExit, when set, suppresses the deferred worktree teardown.
+	// It is armed only when the pipeline exits with the worker left in the paused
+	// status (a pause that could not be resumed before shutdown/interrupt): the
+	// retained worktree must survive so a later resume — including a cold resume
+	// after a daemon restart — can continue in place. Every normal exit leaves it
+	// false and cleans up as before. If the operator instead discards the paused
+	// bead, its worker row transitions out of 'paused' and ordinary orphan/worktree
+	// cleanup reclaims the retained worktree.
+	retainWorktreeOnExit := false
 	defer func() {
+		if retainWorktreeOnExit {
+			log.Printf("[pipeline:%s] Retaining worktree for paused bead (awaiting resume)", workerID)
+			return
+		}
 		log.Printf("[pipeline:%s] Cleaning up worktree", workerID)
 		oldLogDir := filepath.Join(wt.Path, ".forge-logs")
 		dstDir, err := preserveWorktreeLogs(wt.Path, p.Bead.ID)
@@ -1241,6 +1271,34 @@ func Run(ctx context.Context, p Params) *Outcome {
 	var resumeProvider provider.Provider
 	var resumeParkStart time.Time
 
+	// Restart-resume seed (see Params.ResumeSession). When the daemon re-enters a
+	// bead that was paused before a restart, arm the resume respawn for the FIRST
+	// iteration so it flows through the exact same steer resume path as a live
+	// resume. When no session_id was captured, fold the resume message into the
+	// fresh prompt instead (mirrors the empty-session branch of a live resume).
+	if p.ResumeSession != nil {
+		rmsg := strings.TrimSpace(p.ResumeSession.Message)
+		if rmsg == "" {
+			rmsg = DefaultResumeMessage
+		}
+		if p.ResumeSession.SessionID != "" {
+			pendingResume = true
+			resumeSessionID = p.ResumeSession.SessionID
+			resumeProvider = p.ResumeSession.Provider
+			resumeMessage = rmsg
+			log.Printf("[pipeline:%s] Restart-resume: arming respawn of session %s in retained worktree", workerID, resumeSessionID)
+			_ = p.DB.LogEvent(state.EventBeadResumed,
+				fmt.Sprintf("Resumed after daemon restart (session %s)", resumeSessionID),
+				p.Bead.ID, p.AnvilName)
+		} else if !p.SkipSmith {
+			currentPrompt = appendSteerToPrompt(currentPrompt, rmsg)
+			log.Printf("[pipeline:%s] Restart-resume: no session_id captured — folded resume message into fresh prompt", workerID)
+			_ = p.DB.LogEvent(state.EventBeadResumed,
+				"Resumed after daemon restart (no session; folded into fresh prompt)",
+				p.Bead.ID, p.AnvilName)
+		}
+	}
+
 	// lastSessionID is the session_id captured from the most recently completed
 	// Smith spawn (fresh or resumed). Steer mode B uses it to resume that
 	// session when a steer message is consumed between spawns.
@@ -1522,6 +1580,12 @@ func Run(ctx context.Context, p Params) *Outcome {
 					parkErr = context.Canceled
 				}
 				log.Printf("[pipeline:%s] Parked pipeline cancelled before resume: %v", workerID, parkErr)
+				// Retain the worktree: the worker is left paused and its retained
+				// worktree must survive so a resume (including a cold resume after a
+				// daemon restart) can continue in place. This treats a parked-paused
+				// pipeline like a drained one on shutdown — state is persisted, not
+				// torn down.
+				retainWorktreeOnExit = true
 				outcome.Error = parkErr
 				outcome.Duration = time.Since(start)
 				return outcome

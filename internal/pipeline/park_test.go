@@ -11,6 +11,7 @@ import (
 	"github.com/Robin831/Forge/internal/smith"
 	"github.com/Robin831/Forge/internal/state"
 	"github.com/Robin831/Forge/internal/warden"
+	"github.com/Robin831/Forge/internal/worktree"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -313,6 +314,13 @@ func TestPause_ShutdownWhileParkedUnblocksAndStaysPaused(t *testing.T) {
 		return smith.NewProcessForTest(&smith.Result{ExitCode: 0}), nil
 	}
 
+	// Count worktree removals: a shutdown while parked must RETAIN the worktree so
+	// a cold resume after restart can continue in place.
+	var worktreeRemovals int32
+	params.WorktreeRemover = func(_ context.Context, _ string, _ *worktree.Worktree) {
+		atomic.AddInt32(&worktreeRemovals, 1)
+	}
+
 	shutdownCtx, shutdownCancel := context.WithCancel(context.Background())
 	params.ShutdownCtx = shutdownCtx
 
@@ -336,6 +344,7 @@ func TestPause_ShutdownWhileParkedUnblocksAndStaysPaused(t *testing.T) {
 	}
 
 	assert.EqualValues(t, 0, atomic.LoadInt32(&resumeCalls), "a shutdown-interrupted park must not respawn")
+	assert.EqualValues(t, 0, atomic.LoadInt32(&worktreeRemovals), "a shutdown while parked must retain the worktree for a later resume")
 
 	w, err := db.GetWorker("test-worker")
 	require.NoError(t, err)
@@ -542,4 +551,105 @@ func TestPause_CancelWhileParkedDoesNotFail(t *testing.T) {
 	w, err := db.GetWorker("test-worker")
 	require.NoError(t, err)
 	assert.Equal(t, state.WorkerPaused, w.Status, "a cancelled park must leave the worker paused, not failed")
+}
+
+// TestResumeSession_RestartResumeRespawnsSession verifies the daemon-restart cold
+// resume seam: when Params.ResumeSession carries a recorded session_id, the
+// pipeline's FIRST iteration resumes that session via the steer respawn path
+// (SmithResumeRunner) — reusing the recorded session and message — instead of
+// spawning a fresh Smith, then continues through Temper → Warden to success.
+func TestResumeSession_RestartResumeRespawnsSession(t *testing.T) {
+	db := newTestDB(t)
+	params, _, _ := baseParams(t, db)
+	params.WorkerID = "test-worker"
+
+	// A fresh Smith spawn must NOT happen on a restart resume with a session.
+	var freshSpawns int32
+	params.SmithRunner = func(_ context.Context, _, _, _ string, _ provider.Provider, _ []string) (*smith.Process, error) {
+		atomic.AddInt32(&freshSpawns, 1)
+		return smith.NewProcessForTest(&smith.Result{ExitCode: 0, SessionID: "should-not-run", ResultSubtype: "success"}), nil
+	}
+
+	var mu sync.Mutex
+	var gotSessionID, gotResumeMsg string
+	var resumeCalls int32
+	params.SmithResumeRunner = func(_ context.Context, _, resumeMsg, _ string, _ provider.Provider, sessionID string, _ []string) (*smith.Process, error) {
+		atomic.AddInt32(&resumeCalls, 1)
+		mu.Lock()
+		gotSessionID = sessionID
+		gotResumeMsg = resumeMsg
+		mu.Unlock()
+		return smith.NewProcessForTest(&smith.Result{ExitCode: 0, SessionID: "sess-resumed", ResultSubtype: "success"}), nil
+	}
+
+	params.EmptyDiffChecker = func(_, _ string) bool { return false }
+	params.WardenReviewer = func(_ context.Context, _, _, _, _, _ string, _ *state.DB, _ string, _ ...provider.Provider) (*warden.ReviewResult, error) {
+		return &warden.ReviewResult{Verdict: warden.VerdictApprove, Summary: "LGTM"}, nil
+	}
+
+	params.ResumeSession = &ResumeSession{
+		SessionID: "sess-parked",
+		Provider:  provider.Provider{Kind: provider.Claude},
+		Message:   "Pick up where you left off.",
+	}
+
+	outcome := Run(context.Background(), params)
+
+	require.NoError(t, outcome.Error)
+	assert.True(t, outcome.Success, "restart-resumed pipeline should succeed")
+	assert.EqualValues(t, 1, atomic.LoadInt32(&resumeCalls), "the recorded session must be respawned exactly once")
+	assert.EqualValues(t, 0, atomic.LoadInt32(&freshSpawns), "a restart resume with a session must not spawn a fresh Smith")
+	assert.Equal(t, 1, outcome.Iterations, "the resume respawn is the first iteration")
+
+	mu.Lock()
+	defer mu.Unlock()
+	assert.Equal(t, "sess-parked", gotSessionID, "the resume must reuse the recorded session_id")
+	assert.Equal(t, "Pick up where you left off.", gotResumeMsg, "the resume must deliver the supplied message")
+
+	// A bead_resumed event documents the restart resume.
+	events, err := db.RecentEvents(50)
+	require.NoError(t, err)
+	var resumed int
+	for _, e := range events {
+		if e.Type == state.EventBeadResumed {
+			resumed++
+		}
+	}
+	assert.GreaterOrEqual(t, resumed, 1, "a bead_resumed event must be recorded for the restart resume")
+}
+
+// TestResumeSession_NoSessionFoldsIntoFreshPrompt verifies that when
+// Params.ResumeSession carries no session_id (e.g. a provider that never
+// reported one), the resume message is folded into a fresh Smith prompt and a
+// normal spawn runs — the resume respawn path is NOT used.
+func TestResumeSession_NoSessionFoldsIntoFreshPrompt(t *testing.T) {
+	db := newTestDB(t)
+	params, _, _ := baseParams(t, db)
+	params.WorkerID = "test-worker"
+
+	var freshSpawns int32
+	params.SmithRunner = func(_ context.Context, _, prompt, _ string, _ provider.Provider, _ []string) (*smith.Process, error) {
+		atomic.AddInt32(&freshSpawns, 1)
+		return smith.NewProcessForTest(&smith.Result{ExitCode: 0, ResultSubtype: "success"}), nil
+	}
+
+	var resumeCalls int32
+	params.SmithResumeRunner = func(_ context.Context, _, _, _ string, _ provider.Provider, _ string, _ []string) (*smith.Process, error) {
+		atomic.AddInt32(&resumeCalls, 1)
+		return smith.NewProcessForTest(&smith.Result{ExitCode: 0, ResultSubtype: "success"}), nil
+	}
+
+	params.EmptyDiffChecker = func(_, _ string) bool { return false }
+	params.WardenReviewer = func(_ context.Context, _, _, _, _, _ string, _ *state.DB, _ string, _ ...provider.Provider) (*warden.ReviewResult, error) {
+		return &warden.ReviewResult{Verdict: warden.VerdictApprove, Summary: "LGTM"}, nil
+	}
+
+	params.ResumeSession = &ResumeSession{Message: "Continue please."}
+
+	outcome := Run(context.Background(), params)
+
+	require.NoError(t, outcome.Error)
+	assert.True(t, outcome.Success)
+	assert.EqualValues(t, 0, atomic.LoadInt32(&resumeCalls), "with no session_id the resume respawn path must not run")
+	assert.EqualValues(t, 1, atomic.LoadInt32(&freshSpawns), "a fresh Smith spawn must run when there is no session to resume")
 }

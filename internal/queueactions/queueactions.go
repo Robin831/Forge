@@ -50,6 +50,11 @@ type QueueHandle interface {
 	ResetRetry(beadID, anvil string) error
 
 	ActiveWorkerByBeadAndAnvil(beadID, anvil string) (*state.Worker, error)
+	// PausedWorkerByBeadAndAnvil returns the worker parked by an operator pause
+	// for a bead, or (nil, nil) when none is paused. Stop uses it so discarding a
+	// paused bead (including one whose parked goroutine did not survive a daemon
+	// restart) terminates the retained worker row and releases its worktree.
+	PausedWorkerByBeadAndAnvil(beadID, anvil string) (*state.Worker, error)
 	UpdateWorkerStatus(workerID string, status state.WorkerStatus) error
 
 	LogEvent(typ state.EventType, message, beadID, anvil string) error
@@ -184,6 +189,18 @@ func Stop(ctx context.Context, q QueueHandle, p Params) (string, error) {
 		}
 		_ = q.UpdateWorkerStatus(w.ID, state.WorkerFailed)
 		terminatedWorkerID = w.ID
+	} else if pw, err := q.PausedWorkerByBeadAndAnvil(p.BeadID, p.AnvilName); err == nil && pw != nil {
+		// No active worker, but a paused (parked) worker exists — the operator is
+		// discarding a paused bead. Transition it out of 'paused' so it is no
+		// longer surfaced in Needs Attention or retained by worktree cleanup. Its
+		// parked Claude spawn (if any) was already gracefully interrupted at pause
+		// time, so there is normally no live PID; signal defensively when one is
+		// recorded, in case the worker survived from before a restart.
+		if pw.PID > 0 {
+			signalWorker(pw.PID)
+		}
+		_ = q.UpdateWorkerStatus(pw.ID, state.WorkerFailed)
+		terminatedWorkerID = pw.ID
 	}
 
 	if err := q.SetClarificationNeeded(p.BeadID, p.AnvilName, true, reason); err != nil {

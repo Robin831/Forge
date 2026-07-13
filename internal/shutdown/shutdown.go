@@ -383,6 +383,21 @@ func (m *Manager) RecoverOrphanedBeads() (recovered int) {
 				continue
 			}
 
+			// Skip beads parked by an operator pause. A paused worker row and its
+			// worktree survive a daemon restart even though the parked pipeline
+			// goroutine does not; the bead is intentionally waiting for the operator
+			// to resume or discard it (surfaced in Needs Attention). ActiveWorkers /
+			// ActiveWorkerByBeadAndAnvil exclude the paused status, so without this
+			// explicit guard a long-paused bead would look orphaned and be reset to
+			// open, destroying the retained resume state.
+			if pausedWorker, err := m.db.PausedWorkerByBead(beadID, anvilName); err != nil {
+				m.logger.Warn("failed to query paused worker for bead; skipping to avoid resetting a parked bead", "bead", beadID, "anvil", anvilName, "err", err)
+				continue
+			} else if pausedWorker != nil {
+				m.logger.Debug("skipping bead parked by operator pause", "bead", beadID, "anvil", anvilName)
+				continue
+			}
+
 			// Check if there's an active worker for this bead in this anvil.
 			// Using the anvil-scoped query prevents a worker in a different anvil
 			// (with the same bead ID) from masking an orphan here.
@@ -513,11 +528,34 @@ func (m *Manager) ResetBead(beadID, anvilPath string) error {
 	return m.resetBead(beadID, anvilPath)
 }
 
-// CleanupWorktrees removes all worktrees across all anvils (for full shutdown).
+// CleanupWorktrees removes worktrees across all anvils (for full shutdown).
+//
+// Worktrees belonging to paused (parked) workers are RETAINED: a bead parked by
+// an operator pause is treated like a drained pipeline on shutdown — its state
+// (worker row + worktree) is persisted and the daemon exits, so the bead can be
+// resumed or discarded after restart. Removing its worktree here would strip the
+// in-progress work the resume relies on. ActiveWorkers excludes paused workers,
+// so PausedWorkers is queried explicitly to build the retention set.
 func (m *Manager) CleanupWorktrees() {
 	if m.worktrees == nil {
 		return
 	}
+
+	// Build the set of worktree directory names to retain (one per paused
+	// worker). A worktree dir is named after the bead branch minus the forge/
+	// prefix (see the matching logic in CleanupOrphans).
+	retain := make(map[string]struct{})
+	if paused, err := m.db.PausedWorkers(); err != nil {
+		m.logger.Error("failed to query paused workers for shutdown worktree cleanup; not retaining any", "error", err)
+	} else {
+		for _, w := range paused {
+			if w.Branch == "" {
+				continue
+			}
+			retain[strings.TrimPrefix(w.Branch, "forge/")] = struct{}{}
+		}
+	}
+
 	ctx := context.Background()
 	for _, anvilPath := range m.anvils {
 		wts, err := m.worktrees.List(anvilPath)
@@ -525,6 +563,10 @@ func (m *Manager) CleanupWorktrees() {
 			continue
 		}
 		for _, wtPath := range wts {
+			if _, keep := retain[filepath.Base(wtPath)]; keep {
+				m.logger.Info("retaining paused worker worktree across shutdown", "path", wtPath, "anvil", anvilPath)
+				continue
+			}
 			m.logger.Debug("removing worktree", "path", wtPath, "anvil", anvilPath)
 			beadID := filepath.Base(wtPath)
 			_ = m.worktrees.Remove(ctx, anvilPath, &worktree.Worktree{

@@ -44,6 +44,28 @@ type ParkRecord struct {
 	Provider provider.Provider
 }
 
+// ResumeSession seeds a pipeline to re-enter a bead that was paused before a
+// daemon restart. Unlike ParkRecord (which the running pipeline builds when a
+// live pause fires), a ResumeSession is reconstructed by the daemon from the
+// persisted paused worker row (session_id + model) and passed into Params so the
+// pipeline resumes the recorded Claude session on its first iteration, reusing
+// the retained worktree, rather than starting fresh. It reuses the same steer
+// respawn machinery as an in-process resume.
+type ResumeSession struct {
+	// SessionID is the persisted Claude session_id to resume via
+	// `claude --resume <SessionID>`. Empty means no session was captured (e.g. a
+	// non-Claude provider); the pipeline then folds Message into a fresh prompt.
+	SessionID string
+
+	// Provider is the AI provider that owns SessionID. A provider session is
+	// provider-bound, so the resume must respawn with this exact provider.
+	Provider provider.Provider
+
+	// Message is the resume prompt delivered to the resumed session. Empty is
+	// substituted with DefaultResumeMessage.
+	Message string
+}
+
 // ParkHandle is the registry-handle contract between the daemon's control
 // registry and the pipeline goroutine for the pause/park/resume mechanic. It is
 // the authoritative contract owned by this package: the daemon's per-bead control

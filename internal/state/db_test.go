@@ -1471,6 +1471,128 @@ func TestDB_PausedWorkers(t *testing.T) {
 	}
 }
 
+func TestDB_PausedWorkerByBead(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "forge-state-test-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+	db, err := Open(filepath.Join(tmpDir, "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	if err := db.InsertWorker(&Worker{
+		ID: "w-paused", BeadID: "BD-1", Anvil: "anvil-1", Branch: "forge/BD-1",
+		Status: WorkerPaused, Phase: "smith", StartedAt: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.UpdateWorkerSession("w-paused", "sess-123", "claude-opus-4-8"); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.InsertWorker(&Worker{
+		ID: "w-running", BeadID: "BD-2", Anvil: "anvil-1", Branch: "forge/BD-2",
+		Status: WorkerRunning, Phase: "smith", StartedAt: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Scoped lookup matches the paused worker and carries its session_id.
+	got, err := db.PausedWorkerByBead("BD-1", "anvil-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got == nil || got.ID != "w-paused" {
+		t.Fatalf("expected w-paused, got %+v", got)
+	}
+	if got.SessionID != "sess-123" || got.Model != "claude-opus-4-8" {
+		t.Errorf("expected session/model to round-trip, got session=%q model=%q", got.SessionID, got.Model)
+	}
+
+	// A running worker is not returned by the paused lookup.
+	if got, err := db.PausedWorkerByBead("BD-2", "anvil-1"); err != nil {
+		t.Fatal(err)
+	} else if got != nil {
+		t.Errorf("expected nil for running bead, got %+v", got)
+	}
+
+	// Wrong anvil does not match.
+	if got, err := db.PausedWorkerByBead("BD-1", "other-anvil"); err != nil {
+		t.Fatal(err)
+	} else if got != nil {
+		t.Errorf("expected nil for wrong anvil, got %+v", got)
+	}
+
+	// Bead-only lookup finds the paused worker across anvils.
+	byID, err := db.PausedWorkerByBeadID("BD-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if byID == nil || byID.ID != "w-paused" || byID.Anvil != "anvil-1" {
+		t.Fatalf("expected w-paused on anvil-1, got %+v", byID)
+	}
+	if none, err := db.PausedWorkerByBeadID("BD-2"); err != nil {
+		t.Fatal(err)
+	} else if none != nil {
+		t.Errorf("expected nil for running bead, got %+v", none)
+	}
+}
+
+func TestDB_NeedsAttentionBeads_SurfacesPaused(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "forge-state-test-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+	db, err := Open(filepath.Join(tmpDir, "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	if err := db.InsertWorker(&Worker{
+		ID: "w-paused", BeadID: "BD-PAUSE", Anvil: "anvil-1", Branch: "forge/BD-PAUSE",
+		Status: WorkerPaused, Phase: "smith", Title: "Paused bead title", StartedAt: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// A running worker must NOT surface in Needs Attention.
+	if err := db.InsertWorker(&Worker{
+		ID: "w-running", BeadID: "BD-RUN", Anvil: "anvil-1", Branch: "forge/BD-RUN",
+		Status: WorkerRunning, Phase: "smith", StartedAt: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	beads, err := db.NeedsAttentionBeads(DefaultMaxCIFixAttempts, DefaultMaxReviewFixAttempts, DefaultMaxRebaseAttempts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var found *NeedsAttentionBead
+	for i := range beads {
+		if beads[i].BeadID == "BD-PAUSE" {
+			found = &beads[i]
+		}
+		if beads[i].BeadID == "BD-RUN" {
+			t.Errorf("running bead should not surface in Needs Attention: %+v", beads[i])
+		}
+	}
+	if found == nil {
+		t.Fatalf("expected paused bead BD-PAUSE in Needs Attention, got %+v", beads)
+	}
+	if found.Title != "Paused bead title" {
+		t.Errorf("expected worker title to enrich the paused entry, got %q", found.Title)
+	}
+	if found.Reason == "" {
+		t.Errorf("expected a non-empty reason for the paused entry")
+	}
+	if found.NeedsHuman || found.ClarificationNeeded {
+		t.Errorf("paused entry should carry no needs_human/clarification flags, got %+v", found)
+	}
+}
+
 func TestDB_StalledWorkers_LifecycleWithPerWorkerTimeout(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "forge-state-test-*")
 	if err != nil {

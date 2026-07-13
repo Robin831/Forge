@@ -63,6 +63,16 @@ type CreateOptions struct {
 	// must write to a local node_modules to avoid corrupting the main
 	// checkout's dependencies.
 	SkipNodeModulesJunction bool
+	// PreserveExisting, when true and the target worktree already exists as a
+	// valid git worktree, reuses it AS-IS: the normal `git checkout --force HEAD`
+	// + `git clean -fd` reset is skipped so uncommitted and untracked work is
+	// preserved. Used by daemon-restart recovery to resume a bead that was
+	// parked by an operator pause — the retained worktree must survive exactly as
+	// it was when the pause fired so `claude --resume` continues in place. Has no
+	// effect when the worktree does not yet exist (a fresh worktree is created
+	// normally). Mutually exclusive with ResetBranch, which is ignored when this
+	// is set.
+	PreserveExisting bool
 }
 
 // Manager handles creating and tearing down worktrees.
@@ -137,6 +147,18 @@ func (m *Manager) CreateWithOptions(ctx context.Context, anvilPath, beadID strin
 			// destroy content there. On Windows, git clean -fd traverses
 			// junctions as regular directories and deletes the target's files.
 			unlinkReparsePoints(worktreePath)
+
+			// PreserveExisting: reuse the retained worktree exactly as-is (no
+			// reset/checkout/clean) so a paused bead's in-progress work survives
+			// into the resume. Only re-link node_modules and return.
+			if opts.PreserveExisting {
+				if !opts.LocalHead && !opts.SkipNodeModulesJunction {
+					if err := linkNodeModules(anvilPath, worktreePath); err != nil {
+						fmt.Fprintf(os.Stderr, "Warning: failed to link node_modules: %v\n", err)
+					}
+				}
+				return &Worktree{Path: worktreePath, Branch: targetBranch}, nil
+			}
 
 			if opts.ResetBranch {
 				// Hard-reset the branch back to the base ref, discarding all

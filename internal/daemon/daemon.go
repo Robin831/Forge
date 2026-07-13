@@ -1009,6 +1009,15 @@ func (d *Daemon) Run(ctx context.Context) error {
 		d.logger.Info("startup bead recovery done", "recovered", recovered)
 	}
 
+	// Surface beads that were paused before this restart. Their worker rows and
+	// worktrees survived, but the parked pipeline goroutines did not, so they
+	// cannot be resumed via the live control handle. Log them and record a
+	// recovery event; NeedsAttentionBeads already surfaces paused workers with
+	// resume/discard actions, and resume_bead cold-resumes them in place.
+	if surfaced := d.recoverPausedWorkers(); surfaced > 0 {
+		d.logger.Info("startup paused-worker recovery done", "surfaced", surfaced)
+	}
+
 	// Set up signal handling and run context BEFORE starting IPC server,
 	// so IPC handlers always see a valid, race-free runCtx.
 	ctx, stop := signal.NotifyContext(ctx, syscall.SIGINT, syscall.SIGTERM)
@@ -3016,7 +3025,7 @@ func (d *Daemon) pollAndDispatch(ctx context.Context, fullPoll bool) {
 		thisCycleAnvil[bead.Anvil]++
 		thisCycleTotal++
 		d.wg.Add(1)
-		go d.dispatchBead(ctx, bead, anvilCfg, claimWorkerID, ctrl)
+		go d.dispatchBead(ctx, bead, anvilCfg, claimWorkerID, ctrl, nil)
 	}
 
 	// Optionally log a summary of this poll cycle's dispatch activity.
@@ -3030,7 +3039,12 @@ func (d *Daemon) pollAndDispatch(ctx context.Context, fullPoll bool) {
 // it is passed into the pipeline so the running row overwrites the pending one.
 // ctrl is the control handle created with an immutable workerID and registered
 // by the caller after a successful claim, just before launching this goroutine.
-func (d *Daemon) dispatchBead(ctx context.Context, bead poller.Bead, anvilCfg config.AnvilConfig, claimWorkerID string, ctrl *controlHandle) {
+// resume, when non-nil, makes this a restart-resume dispatch: the epic/crucible
+// and stranded-remote-branch pre-checks are skipped, the retained worktree is
+// reused as-is (no branch reset), and the pipeline is seeded to resume the
+// recorded Claude session on its first iteration. Pass nil for a normal fresh
+// dispatch.
+func (d *Daemon) dispatchBead(ctx context.Context, bead poller.Bead, anvilCfg config.AnvilConfig, claimWorkerID string, ctrl *controlHandle, resume *pipeline.ResumeSession) {
 	defer d.wg.Done()
 	defer func() {
 		// Use releaseBeadSlotIfOwner so that if stop_bead/handleQueueStop
@@ -3059,6 +3073,14 @@ func (d *Daemon) dispatchBead(ctx context.Context, bead poller.Bead, anvilCfg co
 	// to the normal pipeline (e.g. running a child bead standalone).
 	if bead.ForceIndependent {
 		d.logger.Info("force-independent dispatch, skipping epic/crucible", "bead", bead.ID)
+		goto normalPipeline
+	}
+
+	// Restart-resume dispatches always take the normal pipeline: a paused bead is
+	// mid-flow in a normal Smith→Temper→Warden loop, never an epic/crucible parent,
+	// and its worktree already exists.
+	if resume != nil {
+		d.logger.Info("restart-resume dispatch, skipping epic/crucible", "bead", bead.ID)
 		goto normalPipeline
 	}
 
@@ -3270,7 +3292,10 @@ normalPipeline:
 	// one side's work. Catch the stranded state HERE so the dispatch never
 	// burns Smith time on it. A merged stale branch is cleaned up
 	// transparently and dispatch proceeds normally.
-	if !d.preDispatchRemoteBranchCheck(ctx, bead, anvilCfg.Path) {
+	// Skip the stranded-remote-branch check on a restart-resume: the bead's
+	// forge/<id> branch legitimately exists (its worktree is being reused) and is
+	// not a stranded parallel implementation.
+	if resume == nil && !d.preDispatchRemoteBranchCheck(ctx, bead, anvilCfg.Path) {
 		// The pending worker row inserted at claim time must be terminated so
 		// Hearth does not show a permanent pending worker. The pipeline never
 		// ran, so we mark it failed here rather than leaving it in limbo.
@@ -3362,12 +3387,20 @@ normalPipeline:
 		pipelineParams.SchematicProviders = d.filterCopilotIfLimited(provider.FromConfig(schematicSpecs))
 	}
 
+	// Restart-resume: seed the pipeline to resume the recorded session in the
+	// retained worktree. This must run before the ResetBranch retry logic below
+	// so a resume never discards the paused work.
+	pipelineParams.ResumeSession = resume
+
 	// If this bead has had previous dispatch failures, reset the worktree
 	// branch to the base ref so the retry starts from a clean state. This
-	// prevents inheriting junk commits from a failed pipeline run.
-	if retry, err := d.db.GetRetry(bead.ID, bead.Anvil); err == nil && retry != nil && retry.DispatchFailures > 0 {
-		pipelineParams.ResetBranch = true
-		d.logger.Info("resetting worktree branch for retry", "bead", bead.ID, "failures", retry.DispatchFailures)
+	// prevents inheriting junk commits from a failed pipeline run. Skipped on a
+	// restart-resume, which must preserve the retained worktree as-is.
+	if resume == nil {
+		if retry, err := d.db.GetRetry(bead.ID, bead.Anvil); err == nil && retry != nil && retry.DispatchFailures > 0 {
+			pipelineParams.ResetBranch = true
+			d.logger.Info("resetting worktree branch for retry", "bead", bead.ID, "failures", retry.DispatchFailures)
+		}
 	}
 	if d.cfg.Load().Settings.SchematicEnabled {
 		wordThreshold := d.cfg.Load().Settings.SchematicWordThreshold
@@ -5156,7 +5189,7 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 		d.registerControlHandle(targetBead.ID, ctrl)
 
 		d.wg.Add(1)
-		go d.dispatchBead(context.Background(), *targetBead, anvilCfg, claimWorkerID, ctrl)
+		go d.dispatchBead(context.Background(), *targetBead, anvilCfg, claimWorkerID, ctrl, nil)
 
 		data, _ := json.Marshal(map[string]string{"message": "dispatched"})
 		return ipc.Response{Type: "ok", Payload: data}
@@ -6581,15 +6614,23 @@ func (d *Daemon) handlePauseBead(cmd ipc.Command) ipc.Response {
 }
 
 // handleResumeBead implements the "resume_bead" IPC verb: it requests that a
-// paused bead's pipeline resume. Validation follows the shared paused-status
-// state machine (state.CanTransitionPause): the bead must have an active
-// registered control handle whose worker row is in the paused status. The resume
-// message is optional and defaults to DefaultResumeMessage when the caller omits
-// it (or supplies only whitespace). On success the resume request — carrying the
-// message — is dispatched into the parked pipeline goroutine via the control
-// handle, which respawns `claude --resume <session>` with the message and
-// continues the pipeline. Error paths: bead not found (no active pipeline /
-// missing worker row) and illegal transition (worker not paused).
+// paused bead's pipeline resume. The resume message is optional and defaults to
+// DefaultResumeMessage when the caller omits it (or supplies only whitespace).
+//
+// Two paths are supported:
+//   - WARM resume: a live pipeline goroutine is still parked (its control handle
+//     is registered). Validation follows the shared paused-status state machine
+//     (state.CanTransitionPause) — the worker row must be paused — and the resume
+//     request is dispatched into the parked goroutine via the handle, which
+//     respawns `claude --resume <session>` with the message and continues.
+//   - COLD resume (daemon restart): no control handle exists because the parked
+//     goroutine did not survive the restart, but the paused worker row and its
+//     worktree did. handleResumeBead falls back to coldResumePausedWorker, which
+//     re-dispatches the bead into a fresh pipeline seeded to resume the persisted
+//     session in the retained worktree.
+//
+// Error paths: bead not found (no live pipeline AND no paused worker row) and
+// illegal transition (a live worker that is not paused).
 func (d *Daemon) handleResumeBead(cmd ipc.Command) ipc.Response {
 	var rp ipc.ResumeBeadPayload
 	if err := json.Unmarshal(cmd.Payload, &rp); err != nil {
@@ -6606,7 +6647,12 @@ func (d *Daemon) handleResumeBead(cmd ipc.Command) ipc.Response {
 
 	ctrl, ok := d.lookupControlHandle(beadID)
 	if !ok {
-		return steerErrorResponse(fmt.Sprintf("bead %s not found; resuming requires an active paused pipeline", beadID))
+		// No live pipeline goroutine is parked for this bead. This is the
+		// daemon-restart case: the paused worker row and worktree survived the
+		// restart but the parked goroutine did not. Fall back to a COLD resume,
+		// which re-dispatches the bead into a fresh pipeline seeded to resume the
+		// persisted Claude session in the retained worktree.
+		return d.coldResumePausedWorker(beadID, message)
 	}
 
 	w, err := d.db.GetWorker(ctrl.workerID)
@@ -6626,6 +6672,104 @@ func (d *Daemon) handleResumeBead(cmd ipc.Command) ipc.Response {
 		BeadID:  beadID,
 		Status:  string(state.WorkerRunning),
 		Message: fmt.Sprintf("resume requested for bead %s", beadID),
+	})
+	return ipc.Response{Type: "ok", Payload: data}
+}
+
+// recoverPausedWorkers surfaces beads that were paused before a daemon restart.
+// Their worker rows (status 'paused') and worktrees survive a restart, but the
+// parked pipeline goroutines do not, so they can no longer be resumed via a live
+// control handle. NeedsAttentionBeads already lists paused workers with
+// resume/discard actions and orphan recovery now skips them, so this function's
+// job is observability: it logs each surviving paused worker and records a
+// bead_recovered event so the restart-while-paused transition is auditable.
+// Returns the number of paused workers surfaced.
+func (d *Daemon) recoverPausedWorkers() int {
+	paused, err := d.db.PausedWorkers()
+	if err != nil {
+		d.logger.Error("failed to query paused workers on startup", "error", err)
+		return 0
+	}
+	for _, w := range paused {
+		d.logger.Info("paused bead survived daemon restart — awaiting resume or discard",
+			"bead", w.BeadID, "anvil", w.Anvil, "worker", w.ID, "session", w.SessionID)
+		_ = d.db.LogEvent(state.EventBeadRecovered,
+			fmt.Sprintf("Paused bead %s survived daemon restart; resume or discard from Needs Attention", w.BeadID),
+			w.BeadID, w.Anvil)
+	}
+	return len(paused)
+}
+
+// coldResumePausedWorker resumes a bead whose parked pipeline goroutine did not
+// survive a daemon restart. It reconstructs the resume state from the persisted
+// paused worker row (session_id + model + anvil), re-registers a control handle
+// reusing the existing worker ID, and re-dispatches the bead into a fresh
+// pipeline seeded (via pipeline.ResumeSession) to resume the recorded Claude
+// session in the RETAINED worktree. The bead is already in_progress in bd (a
+// paused bead is never released), so no re-claim is performed.
+//
+// This is the cold sibling of the warm resume path: a warm resume signals a live
+// parked goroutine through its control handle; a cold resume rebuilds that
+// goroutine. Both ultimately respawn `claude --resume <session>` via the same
+// pipeline machinery.
+func (d *Daemon) coldResumePausedWorker(beadID, message string) ipc.Response {
+	w, err := d.db.PausedWorkerByBeadID(beadID)
+	if err != nil {
+		return steerErrorResponse(fmt.Sprintf("failed to look up paused worker for bead %s: %v", beadID, err))
+	}
+	if w == nil {
+		return steerErrorResponse(fmt.Sprintf("bead %s not found; resuming requires a running or paused pipeline", beadID))
+	}
+
+	anvilCfg, ok := d.cfg.Load().Anvils[w.Anvil]
+	if !ok || anvilCfg.Path == "" {
+		return steerErrorResponse(fmt.Sprintf("anvil %q for paused bead %s not found or has no path", w.Anvil, beadID))
+	}
+
+	// Reserve the in-flight slot so a concurrent poll/run_bead cannot double
+	// dispatch this bead while we set up the resume goroutine.
+	if _, inFlight := d.activeBeads.LoadOrStore(beadID, true); inFlight {
+		return steerErrorResponse(fmt.Sprintf("bead %s is already in flight", beadID))
+	}
+
+	// Reconstruct the bead from bd so the pipeline has the full context it needs
+	// for any post-resume iterations (Warden feedback → fresh Smith prompt).
+	fetchCtx, cancel := context.WithTimeout(d.runCtx, executil.DefaultBdTimeout)
+	defer cancel()
+	bead, err := crucible.FetchBead(fetchCtx, beadID, anvilCfg.Path)
+	if err != nil {
+		d.releaseBeadSlot(beadID)
+		return steerErrorResponse(fmt.Sprintf("failed to fetch bead %s for resume: %v", beadID, err))
+	}
+	bead.Anvil = w.Anvil
+
+	// A captured session_id means a Claude session (only Claude reports one), so
+	// the resume must respawn with Claude and the recorded model. When empty, the
+	// pipeline folds the resume message into a fresh prompt instead.
+	resume := &pipeline.ResumeSession{
+		SessionID: w.SessionID,
+		Provider:  provider.Provider{Kind: provider.Claude, Model: w.Model},
+		Message:   message,
+	}
+
+	// Re-register a control handle reusing the existing worker ID so the resumed
+	// pipeline can be paused/steered again.
+	ctrl := newControlHandle(w.ID)
+	d.registerControlHandle(beadID, ctrl)
+
+	_ = d.db.LogEvent(state.EventBeadResumed,
+		fmt.Sprintf("Cold resume of paused bead %s after daemon restart (session %s)", beadID, w.SessionID),
+		beadID, w.Anvil)
+	d.logger.Info("cold-resuming paused bead after restart",
+		"bead", beadID, "anvil", w.Anvil, "worker", w.ID, "session", w.SessionID)
+
+	d.wg.Add(1)
+	go d.dispatchBead(context.Background(), bead, anvilCfg, w.ID, ctrl, resume)
+
+	data, _ := json.Marshal(ipc.ResumeBeadResponse{
+		BeadID:  beadID,
+		Status:  string(state.WorkerRunning),
+		Message: fmt.Sprintf("resuming paused bead %s after restart", beadID),
 	})
 	return ipc.Response{Type: "ok", Payload: data}
 }
