@@ -4689,8 +4689,8 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 		if err := d.db.LogEvent(state.EventDispatchPaused, "Dispatch manually paused — running workers continue; no new beads dispatched", "", ""); err != nil {
 			d.logger.Warn("failed to log dispatch pause event", "error", err)
 		}
-		d.pauseMu.Unlock()
 		d.logger.Info("dispatch paused (manual)")
+		d.pauseMu.Unlock()
 		data, _ := json.Marshal(map[string]string{"message": "dispatch paused"})
 		return ipc.Response{Type: "ok", Payload: data}
 
@@ -4716,8 +4716,8 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 		if err := d.db.LogEvent(state.EventDispatchResumed, "Dispatch manually resumed", "", ""); err != nil {
 			d.logger.Warn("failed to log dispatch resume event", "error", err)
 		}
-		d.pauseMu.Unlock()
 		d.logger.Info("dispatch resumed (manual)")
+		d.pauseMu.Unlock()
 		// Kick a poll so resuming takes effect immediately rather than
 		// waiting for the next ticker.
 		go d.pollAndDispatch(d.runCtx, false)
