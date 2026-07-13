@@ -597,7 +597,46 @@ const (
 	WorkerFailed     WorkerStatus = "failed"
 	WorkerTimeout    WorkerStatus = "timeout"
 	WorkerStalled    WorkerStatus = "stalled"
+	WorkerPaused     WorkerStatus = "paused"
+	WorkerKilled     WorkerStatus = "killed"
 )
+
+// pausedTransitions is the authoritative state-machine table for transitions
+// into and out of the paused status. It is the single source of truth shared by
+// sibling concerns (IPC handlers, the pipeline goroutine) so they never encode
+// the allowed moves independently.
+//
+// Only the following transitions are permitted:
+//   - running -> paused (a live Smith is suspended)
+//   - paused  -> running (a suspended Smith resumes)
+//   - paused  -> killed  (a suspended Smith is terminated)
+//
+// Every other transition into or out of paused is rejected. Transitions that do
+// not involve the paused status at all are outside this table's scope and are
+// not governed here.
+var pausedTransitions = map[WorkerStatus]map[WorkerStatus]bool{
+	WorkerRunning: {
+		WorkerPaused: true,
+	},
+	WorkerPaused: {
+		WorkerRunning: true,
+		WorkerKilled:  true,
+	},
+}
+
+// CanTransitionPause reports whether a worker may move directly from the given
+// status to the target status, according to the paused-status state machine.
+//
+// It governs only transitions that involve the paused status (as either the
+// source or the destination). Transitions where neither side is paused are not
+// this helper's concern and always return false — callers validating unrelated
+// status changes should not route them through here.
+func CanTransitionPause(from, to WorkerStatus) bool {
+	if from != WorkerPaused && to != WorkerPaused {
+		return false
+	}
+	return pausedTransitions[from][to]
+}
 
 // backgroundPhases is the SQL IN-list literal for worker phases that are
 // excluded from stale detection and dispatch capacity queries. This covers two
