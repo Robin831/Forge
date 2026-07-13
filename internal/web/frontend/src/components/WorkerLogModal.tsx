@@ -1,10 +1,16 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Check, Loader2, ScrollText, Terminal, X } from 'lucide-react'
+import { Loader2, ScrollText, Terminal, X } from 'lucide-react'
+import ReactMarkdown from 'react-markdown'
 import type { LogLine, LogTailResponse, WorkerInfo } from '../api'
 import { ApiError, apiGet } from '../api'
 import { useAuth } from '../auth'
 import { useEventSource } from '../hooks/useEventSource'
-import { parseLogLine, type LogEntry } from '../lib/logParse'
+import {
+  parseTranscript,
+  type SummaryEntry,
+  type ToolEntry,
+  type TranscriptEntry,
+} from '../lib/logParse'
 
 interface WorkerLogModalProps {
   worker: WorkerInfo | null
@@ -12,11 +18,13 @@ interface WorkerLogModalProps {
 }
 
 const TAIL_LINES = 500
+const RESULT_PREVIEW_LINES = 3
 
-// WorkerLogModal renders a worker's log file. Active workers stream live via
-// /api/worker/{id}/stream; completed workers fall back to a one-shot tail
-// fetch from /api/worker/{id}/log?tail=N. Either way the entries are parsed
-// into structured rows so tool_use blocks render distinctly from plain text.
+// WorkerLogModal renders a worker's log as a Claude Code CLI-style transcript.
+// Active workers stream live via /api/worker/{id}/stream; completed workers
+// fall back to a one-shot tail fetch from /api/worker/{id}/log?tail=N. Lines
+// are parsed into a transcript model (paired tool calls/results, markdown
+// assistant text, classified system noise) and rendered with a glyph gutter.
 export default function WorkerLogModal({ worker, onClose }: WorkerLogModalProps) {
   const { logout } = useAuth()
   const isLive = !!worker && (worker.status === 'pending' || worker.status === 'running')
@@ -24,6 +32,7 @@ export default function WorkerLogModal({ worker, onClose }: WorkerLogModalProps)
   const [tailLines, setTailLines] = useState<string[] | null>(null)
   const [tailError, setTailError] = useState<string | null>(null)
   const [tailLoading, setTailLoading] = useState(false)
+  const [verbose, setVerbose] = useState(false)
 
   // Live tail: open the SSE only for active workers. The hook pauses by
   // setting url=null when the modal is closed.
@@ -65,25 +74,22 @@ export default function WorkerLogModal({ worker, onClose }: WorkerLogModalProps)
     }
   }, [worker, isLive, logout, live.clear])
 
-  const rawLines: { text: string; key: string }[] = useMemo(() => {
+  const rawLines: string[] = useMemo(() => {
     if (!worker) return []
-    if (isLive) {
-      return live.items.map((l, i) => ({ text: l.line, key: `live-${i}` }))
-    }
-    if (!tailLines) return []
-    return tailLines.map((line, i) => ({ text: line, key: `tail-${i}` }))
+    if (isLive) return live.items.map((l) => l.line)
+    return tailLines ?? []
   }, [worker, isLive, live.items, tailLines])
 
-  const entries = useMemo(() => {
-    const out: { id: string; entry: LogEntry }[] = []
-    for (const r of rawLines) {
-      const parsed = parseLogLine(r.text)
-      parsed.forEach((entry, idx) => {
-        out.push({ id: `${r.key}-${idx}`, entry })
-      })
-    }
-    return out
-  }, [rawLines])
+  const entries = useMemo(() => parseTranscript(rawLines), [rawLines])
+
+  const visible = useMemo(
+    () =>
+      entries
+        .map((e, i) => ({ entry: e, originalIndex: i }))
+        .filter(({ entry }) => verbose || entry.kind !== 'hidden'),
+    [entries, verbose],
+  )
+  const hiddenCount = useMemo(() => entries.filter((e) => e.kind === 'hidden').length, [entries])
 
   // Auto-scroll to bottom unless the user has scrolled up.
   const scrollRef = useRef<HTMLDivElement | null>(null)
@@ -94,7 +100,7 @@ export default function WorkerLogModal({ worker, onClose }: WorkerLogModalProps)
     if (stickToBottomRef.current) {
       el.scrollTop = el.scrollHeight
     }
-  }, [entries])
+  }, [visible])
 
   function onScroll(e: React.UIEvent<HTMLDivElement>) {
     const el = e.currentTarget
@@ -162,6 +168,17 @@ export default function WorkerLogModal({ worker, onClose }: WorkerLogModalProps)
               )}
             </p>
           </div>
+          <label className="flex items-center gap-1.5 text-xs text-slate-400 select-none">
+            <input
+              type="checkbox"
+              checked={verbose}
+              onChange={(e) => setVerbose(e.target.checked)}
+              className="accent-amber-400"
+            />
+            <span>
+              verbose{hiddenCount > 0 && !verbose ? ` (${hiddenCount})` : ''}
+            </span>
+          </label>
           <button
             type="button"
             onClick={onClose}
@@ -185,7 +202,7 @@ export default function WorkerLogModal({ worker, onClose }: WorkerLogModalProps)
           role="log"
           aria-live="polite"
         >
-          {entries.length === 0 ? (
+          {visible.length === 0 ? (
             <div className="flex h-40 items-center justify-center gap-2 text-slate-500">
               {tailLoading ||
               liveStatus === 'connecting' ||
@@ -206,13 +223,11 @@ export default function WorkerLogModal({ worker, onClose }: WorkerLogModalProps)
               )}
             </div>
           ) : (
-            <ul className="divide-y divide-slate-900/60">
-              {entries.map((row) => (
-                <li key={row.id}>
-                  <LogEntryRow entry={row.entry} />
-                </li>
+            <div className="flex flex-col gap-3 px-4 py-3">
+              {visible.map(({ entry, originalIndex }) => (
+                <TranscriptRow key={`${worker.id}-${originalIndex}`} entry={entry} />
               ))}
-            </ul>
+            </div>
           )}
         </div>
       </div>
@@ -220,64 +235,291 @@ export default function WorkerLogModal({ worker, onClose }: WorkerLogModalProps)
   )
 }
 
-function LogEntryRow({ entry }: { entry: LogEntry }) {
-  if (entry.kind === 'tool_use') {
-    return (
-      <div className="flex flex-col gap-1 px-4 py-2">
-        <div className="flex items-center gap-2">
-          <span className="rounded bg-purple-500/20 px-1.5 py-0.5 font-mono text-[11px] font-semibold uppercase tracking-wide text-purple-300">
-            {entry.name}
+function TranscriptRow({ entry }: { entry: TranscriptEntry }) {
+  switch (entry.kind) {
+    case 'tool':
+      return <ToolRow entry={entry} />
+    case 'assistant':
+      return (
+        <div className="flex gap-2">
+          <span className="select-none text-emerald-400" aria-hidden>
+            ⏺
+          </span>
+          <MarkdownBlock text={entry.text} />
+        </div>
+      )
+    case 'thinking':
+      return <ThinkingRow text={entry.text} />
+    case 'meta':
+      return (
+        <div className="flex gap-2 text-slate-500">
+          <span className="select-none" aria-hidden>
+            ·
+          </span>
+          <span className="italic">{entry.text}</span>
+        </div>
+      )
+    case 'summary':
+      return <SummaryRow entry={entry} />
+    case 'hidden':
+      return (
+        <div className="flex gap-2 text-slate-600">
+          <span className="select-none" aria-hidden>
+            ·
+          </span>
+          <div className="min-w-0">
+            <span className="uppercase tracking-wide">{entry.label}</span>
+            {entry.content && (
+              <pre className="mt-0.5 whitespace-pre-wrap break-all text-slate-600">
+                {entry.content}
+              </pre>
+            )}
+          </div>
+        </div>
+      )
+    case 'raw':
+      return (
+        <div className="flex gap-2">
+          <span className="select-none text-slate-600" aria-hidden>
+            ⎿
+          </span>
+          <div className="min-w-0 flex-1">
+            {entry.name && (
+              <span
+                className={`mr-2 text-[11px] uppercase tracking-wide ${
+                  entry.status === 'error' ? 'text-red-400' : 'text-slate-500'
+                }`}
+              >
+                {entry.name}
+              </span>
+            )}
+            <pre
+              className={`inline whitespace-pre-wrap break-all leading-relaxed ${
+                entry.status === 'error' ? 'text-red-300' : 'text-slate-300'
+              }`}
+            >
+              {entry.content}
+            </pre>
+          </div>
+        </div>
+      )
+  }
+}
+
+function ToolRow({ entry }: { entry: ToolEntry }) {
+  const [expanded, setExpanded] = useState(!!entry.isError)
+
+  // Sync expanded state when a streaming tool_result arrives with an error
+  // after the row has already mounted in its collapsed (non-error) state.
+  useEffect(() => {
+    if (entry.isError) setExpanded(true)
+  }, [entry.isError])
+
+  const { preview, totalLines } = useMemo(() => {
+    if (!entry.result) return { preview: '', totalLines: 0 }
+    let lineCount = 1
+    let previewEnd = -1
+    for (let i = 0; i < entry.result.length; i++) {
+      if (entry.result[i] === '\n') {
+        lineCount++
+        if (lineCount === RESULT_PREVIEW_LINES + 1) {
+          previewEnd = i
+        }
+      }
+    }
+    return {
+      preview: previewEnd === -1 ? entry.result : entry.result.slice(0, previewEnd),
+      totalLines: lineCount,
+    }
+  }, [entry.result])
+  const truncated = totalLines > RESULT_PREVIEW_LINES
+  const hiddenLines = totalLines - RESULT_PREVIEW_LINES
+  const hasExpandable = truncated || entry.input != null
+
+  return (
+    <div className="flex flex-col gap-1">
+      <div className="flex gap-2">
+        <span
+          className={`select-none ${entry.isError ? 'text-red-400' : 'text-emerald-400'}`}
+          aria-hidden
+        >
+          ⏺
+        </span>
+        <div className="min-w-0 flex-1">
+          <span className="text-slate-200">
+            <span className="font-semibold text-sky-300">{entry.name}</span>
+            {entry.headline && <span className="text-slate-400">({entry.headline})</span>}
           </span>
         </div>
-        {entry.content && (
-          <pre className="whitespace-pre-wrap break-all leading-relaxed text-slate-300">
-            {entry.content}
-          </pre>
-        )}
       </div>
-    )
-  }
-  if (entry.kind === 'tool_result') {
-    return (
-      <div className="flex flex-col gap-1 px-4 py-2">
-        <div className="flex items-center gap-2 text-[11px] text-slate-400">
-          <span className="font-mono uppercase tracking-wide">tool result</span>
-          {entry.status === 'success' && <Check size={12} className="text-emerald-400" />}
-          {entry.status === 'error' && <X size={12} className="text-red-400" />}
+
+      {entry.todos ? (
+        <div className="ml-6 flex flex-col gap-0.5">
+          {entry.todos.map((t, i) => (
+            <div key={i} className="flex gap-1.5 text-slate-300">
+              <span className="select-none text-slate-500" aria-hidden>
+                {t.status === 'completed' ? '☒' : '☐'}
+              </span>
+              <span className={t.status === 'completed' ? 'text-slate-500 line-through' : ''}>
+                {t.content}
+              </span>
+            </div>
+          ))}
         </div>
-        {entry.content && (
-          <pre
-            className={`whitespace-pre-wrap break-all leading-relaxed ${
-              entry.status === 'error' ? 'text-red-300' : 'text-slate-400'
-            }`}
+      ) : (
+        (entry.result || hasExpandable) && (
+          <div className="ml-6 flex gap-2">
+            <span
+              className={`select-none ${entry.isError ? 'text-red-500' : 'text-slate-600'}`}
+              aria-hidden
+            >
+              ⎿
+            </span>
+            <div className="min-w-0 flex-1">
+              {entry.result != null && (
+                <pre
+                  className={`whitespace-pre-wrap break-all leading-relaxed ${
+                    entry.isError ? 'text-red-300' : 'text-slate-400'
+                  }`}
+                >
+                  {expanded ? entry.result : preview}
+                </pre>
+              )}
+              {hasExpandable && (
+                <button
+                  type="button"
+                  onClick={() => setExpanded((v) => !v)}
+                  className="mt-0.5 text-[11px] text-slate-500 underline decoration-dotted hover:text-slate-300"
+                >
+                  {expanded
+                    ? 'show less'
+                    : truncated
+                      ? `+${hiddenLines} line${hiddenLines === 1 ? '' : 's'}`
+                      : 'show input'}
+                </button>
+              )}
+              {expanded && entry.input != null && (
+                <pre className="mt-1 whitespace-pre-wrap break-all rounded bg-slate-900/60 p-2 leading-relaxed text-slate-500">
+                  {safeStringify(entry.input)}
+                </pre>
+              )}
+            </div>
+          </div>
+        )
+      )}
+    </div>
+  )
+}
+
+function ThinkingRow({ text }: { text: string }) {
+  const [expanded, setExpanded] = useState(false)
+  const lines = text.split('\n')
+  const firstLine = lines[0] ?? ''
+  const multiline = lines.length > 1 || firstLine.length > 120
+
+  return (
+    <div className="flex gap-2 text-slate-500">
+      <span className="select-none" aria-hidden>
+        ✻
+      </span>
+      <div className="min-w-0 flex-1 italic">
+        <span className="whitespace-pre-wrap break-words">
+          {expanded ? text : firstLine}
+        </span>
+        {multiline && (
+          <button
+            type="button"
+            onClick={() => setExpanded((v) => !v)}
+            className="ml-2 not-italic text-[11px] text-slate-500 underline decoration-dotted hover:text-slate-300"
           >
-            {entry.content}
-          </pre>
+            {expanded ? 'show less' : 'show more'}
+          </button>
         )}
       </div>
-    )
-  }
-  if (entry.kind === 'thinking') {
-    return (
-      <div className="flex flex-col gap-1 px-4 py-2">
-        <span className="text-[11px] italic text-slate-500">thinking</span>
-        <p className="whitespace-pre-wrap break-words italic leading-relaxed text-slate-500">
-          {entry.content}
-        </p>
-      </div>
-    )
-  }
-  if (entry.kind === 'system') {
-    return (
-      <div className="px-4 py-1 text-[11px] text-slate-500">
-        <span className="font-mono uppercase tracking-wide text-slate-500">{entry.name}</span>
-      </div>
-    )
-  }
-  // text or raw
-  return (
-    <pre className="whitespace-pre-wrap break-words px-4 py-2 leading-relaxed text-slate-200">
-      {entry.content}
-    </pre>
+    </div>
   )
+}
+
+function SummaryRow({ entry }: { entry: SummaryEntry }) {
+  const parts: string[] = []
+  if (entry.durationMs != null) parts.push(formatDuration(entry.durationMs))
+  if (entry.numTurns != null) parts.push(`${entry.numTurns} turn${entry.numTurns === 1 ? '' : 's'}`)
+  if (entry.totalCostUsd != null) parts.push(`$${entry.totalCostUsd.toFixed(4)}`)
+  const tokParts: string[] = []
+  if (entry.inputTokens != null) tokParts.push(`${entry.inputTokens} in`)
+  if (entry.outputTokens != null) tokParts.push(`${entry.outputTokens} out`)
+  if (tokParts.length) parts.push(`${tokParts.join(' / ')} tok`)
+  return (
+    <div className="mt-1 flex gap-2 border-t border-slate-800 pt-3 text-slate-400">
+      <span className="select-none text-amber-400" aria-hidden>
+        ✓
+      </span>
+      <span>{parts.length ? parts.join(' · ') : 'done'}</span>
+    </div>
+  )
+}
+
+// MarkdownBlock renders assistant prose as markdown. react-markdown does not
+// render raw HTML by default (no rehype-raw plugin) and we never use
+// dangerouslySetInnerHTML, so embedded HTML is escaped as text.
+function MarkdownBlock({ text }: { text: string }) {
+  return (
+    <div className="min-w-0 flex-1 space-y-2 whitespace-normal leading-relaxed break-words text-slate-200">
+      <ReactMarkdown
+        components={{
+          p: ({ children }) => <p className="whitespace-pre-wrap">{children}</p>,
+          a: ({ children, href }) => (
+            <a
+              href={href}
+              target="_blank"
+              rel="noreferrer noopener"
+              className="text-sky-400 underline"
+            >
+              {children}
+            </a>
+          ),
+          ul: ({ children }) => <ul className="list-disc space-y-0.5 pl-5">{children}</ul>,
+          ol: ({ children }) => <ol className="list-decimal space-y-0.5 pl-5">{children}</ol>,
+          h1: ({ children }) => <h1 className="text-sm font-bold text-slate-100">{children}</h1>,
+          h2: ({ children }) => <h2 className="text-sm font-bold text-slate-100">{children}</h2>,
+          h3: ({ children }) => <h3 className="font-bold text-slate-100">{children}</h3>,
+          code: ({ children }) => (
+            <code className="rounded bg-slate-800 px-1 py-0.5 text-amber-200">{children}</code>
+          ),
+          img: () => null,
+          pre: ({ children }) => (
+            <pre className="overflow-x-auto rounded bg-slate-900/80 p-2 text-slate-200 [&>code]:bg-transparent [&>code]:p-0 [&>code]:text-inherit">
+              {children}
+            </pre>
+          ),
+          blockquote: ({ children }) => (
+            <blockquote className="border-l-2 border-slate-700 pl-3 text-slate-400">
+              {children}
+            </blockquote>
+          ),
+        }}
+      >
+        {text}
+      </ReactMarkdown>
+    </div>
+  )
+}
+
+function formatDuration(ms: number): string {
+  if (ms < 1000) return `${Math.round(ms)}ms`
+  const seconds = ms / 1000
+  if (seconds < 60) return `${seconds.toFixed(1)}s`
+  const totalSec = Math.round(seconds)
+  const minutes = Math.floor(totalSec / 60)
+  const rem = totalSec % 60
+  return `${minutes}m ${rem}s`
+}
+
+function safeStringify(input: unknown): string {
+  if (typeof input === 'string') return input
+  try {
+    return JSON.stringify(input, null, 2)
+  } catch {
+    return String(input)
+  }
 }
