@@ -31,7 +31,7 @@ import (
 
 // Command is a message sent from a client to the daemon.
 type Command struct {
-	Type    string          `json:"type"`    // "status", "kill_worker", "refresh", "queue", "run_bead", "create_pr", "set_clarification", "clear_clarification", "assay_rerun", "pause_dispatch", "resume_dispatch", "steer_bead"
+	Type    string          `json:"type"`    // "status", "kill_worker", "refresh", "queue", "run_bead", "create_pr", "set_clarification", "clear_clarification", "assay_rerun", "pause_dispatch", "resume_dispatch", "steer_bead", "pause_bead", "resume_bead"
 	Payload json.RawMessage `json:"payload"` // Type-specific data
 	// ReadTimeout is an optional client-side timeout for reading the response.
 	// Zero uses DefaultReadTimeout. Long-running commands that go through bd or
@@ -272,6 +272,50 @@ type QueueActionPayload struct {
 type SteerBeadPayload struct {
 	BeadID  string `json:"bead_id"`
 	Message string `json:"message"`
+}
+
+// PauseBeadPayload is the payload for a "pause_bead" command. It requests that a
+// bead's in-flight pipeline park its currently running Claude spawn: the daemon
+// validates the bead has an active pipeline whose worker is in the running state
+// (the only state a pause is permitted from, per the paused-status transition
+// table) and dispatches the pause request into the pipeline goroutine via the
+// control handle. The spawn is gracefully interrupted and the goroutine parks
+// awaiting a resume_bead; no failure is recorded. The daemon rejects the command
+// when the bead has no active pipeline (not found) or its worker is not running
+// (illegal transition).
+type PauseBeadPayload struct {
+	BeadID string `json:"bead_id"`
+}
+
+// ResumeBeadPayload is the payload for a "resume_bead" command. It requests that
+// a paused bead's pipeline resume: the daemon validates the bead has an active
+// pipeline whose worker is in the paused state and dispatches the resume request
+// into the pipeline goroutine, which respawns `claude --resume <session>` with
+// Message as the new prompt. Message is optional; when empty (or whitespace) the
+// daemon substitutes the default "Continue with the task." prompt. The daemon
+// rejects the command when the bead has no active pipeline (not found) or its
+// worker is not paused (illegal transition).
+type ResumeBeadPayload struct {
+	BeadID  string `json:"bead_id"`
+	Message string `json:"message,omitempty"`
+}
+
+// PauseBeadResponse is the response payload for a successful "pause_bead"
+// command. Status is the worker status the bead is transitioning to ("paused");
+// Message is a human-readable confirmation.
+type PauseBeadResponse struct {
+	BeadID  string `json:"bead_id"`
+	Status  string `json:"status"`
+	Message string `json:"message,omitempty"`
+}
+
+// ResumeBeadResponse is the response payload for a successful "resume_bead"
+// command. Status is the worker status the bead is transitioning to ("running");
+// Message is a human-readable confirmation.
+type ResumeBeadResponse struct {
+	BeadID  string `json:"bead_id"`
+	Status  string `json:"status"`
+	Message string `json:"message,omitempty"`
 }
 
 // ResolveOrphanPayload is the payload for a "resolve_orphan" command.
