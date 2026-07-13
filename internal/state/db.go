@@ -729,6 +729,10 @@ func (db *DB) RepointWorkerLogPaths(beadID, oldLogDir, newDir string) (int, erro
 			continue
 		}
 		base := portableBase(logPath)
+		if base == "" || base == "." || base == ".." {
+			log.Printf("[state] RepointWorkerLogPaths: skipping worker %s with invalid basename from log_path %q", id, logPath)
+			continue
+		}
 		if owner, ok := claimed[base]; ok {
 			log.Printf("[state] RepointWorkerLogPaths: basename collision for %q (workers %s and %s); keeping %s", base, owner, id, owner)
 			continue
@@ -792,7 +796,11 @@ func (db *DB) BackfillDanglingWorkerLogPaths(logsRoot string) (int, error) {
 		} else if !os.IsNotExist(statErr) {
 			continue // permission or other transient error — do not clobber.
 		}
-		candidate := filepath.Join(logsRoot, forge.SanitizeBeadID(beadID), portableBase(logPath))
+		base := portableBase(logPath)
+		if base == "" || base == "." || base == ".." {
+			continue
+		}
+		candidate := filepath.Join(logsRoot, forge.SanitizeBeadID(beadID), base)
 		if _, err := os.Lstat(candidate); err != nil {
 			continue // no preserved copy to point at.
 		}
