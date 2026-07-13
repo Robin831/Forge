@@ -4,16 +4,24 @@ import {
   ChevronDown,
   ChevronRight,
   Maximize2,
+  Pause,
+  Play,
   Skull,
   Terminal,
 } from 'lucide-react'
-import { actions, type LogLine, type WorkerInfo } from '../api'
+import {
+  actions,
+  steerDisabledReason,
+  type LogLine,
+  type WorkerInfo,
+} from '../api'
 import { useAction } from '../hooks/useAction'
 import { useEventSource } from '../hooks/useEventSource'
 import { useUIState } from '../hooks/useUIState'
 import { parseTranscript, type TranscriptEntry } from '../lib/logParse'
 import ConfirmModal from './ConfirmModal'
 import LogViewer from './LogViewer'
+import SteerComposer from './SteerComposer'
 
 interface WorkerPanelProps {
   worker: WorkerInfo
@@ -104,6 +112,7 @@ export default function WorkerPanel({
 }: WorkerPanelProps) {
   const { run, busy } = useAction()
   const [confirmKill, setConfirmKill] = useState(false)
+  const [confirmPause, setConfirmPause] = useState(false)
   const [now, setNow] = useState(() => Date.now())
   // Collapse persists to localStorage keyed by worker id so it survives a
   // refresh; panels default to expanded so live output is visible out of the
@@ -157,15 +166,43 @@ export default function WorkerPanel({
     if (ok) setConfirmKill(false)
   }
 
+  const handlePause = async () => {
+    const ok = await run(() => actions.pause(worker.bead_id), {
+      successMessage: `Pause requested for ${worker.bead_id}`,
+      onSuccess: onKilled,
+    })
+    if (ok) setConfirmPause(false)
+  }
+
+  const handleResume = () =>
+    run(() => actions.resume(worker.bead_id), {
+      successMessage: `Resume requested for ${worker.bead_id}`,
+      onSuccess: onKilled,
+    })
+
   const canKill = worker.status === 'pending' || worker.status === 'running'
+  // Pause/resume gate on the daemon's paused-status transition table: only a
+  // running worker may be paused, only a paused worker resumed.
+  const isPaused = worker.status === 'paused'
+  const canPause = worker.status === 'running'
+  const canResume = isPaused
   const liveStatus = live.status
 
   return (
     <div
       data-testid={`worker-panel-${worker.id}`}
-      className="flex flex-col overflow-hidden rounded-xl border border-slate-800 bg-slate-900/60"
+      data-paused={isPaused ? 'true' : undefined}
+      className={`flex flex-col overflow-hidden rounded-xl border ${
+        isPaused
+          ? 'border-amber-500/50 bg-amber-950/10'
+          : 'border-slate-800 bg-slate-900/60'
+      }`}
     >
-      <header className="flex items-center gap-2 border-b border-slate-800 px-3 py-2">
+      <header
+        className={`flex items-center gap-2 border-b px-3 py-2 ${
+          isPaused ? 'border-amber-500/30' : 'border-slate-800'
+        }`}
+      >
         <button
           type="button"
           onClick={() => setCollapsed((v) => !v)}
@@ -224,6 +261,32 @@ export default function WorkerPanel({
             <Maximize2 size={14} />
           </button>
         )}
+        {canPause && (
+          <button
+            type="button"
+            onClick={() => setConfirmPause(true)}
+            disabled={busy}
+            data-testid={`worker-panel-pause-${worker.id}`}
+            className="rounded-md border border-amber-500/40 bg-amber-500/10 p-1.5 text-amber-300 transition-colors hover:bg-amber-500/20 focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-300 disabled:opacity-50"
+            aria-label={`Pause worker ${worker.bead_id}`}
+            title="Pause worker"
+          >
+            <Pause size={14} />
+          </button>
+        )}
+        {canResume && (
+          <button
+            type="button"
+            onClick={handleResume}
+            disabled={busy}
+            data-testid={`worker-panel-resume-${worker.id}`}
+            className="rounded-md border border-emerald-500/40 bg-emerald-500/10 p-1.5 text-emerald-300 transition-colors hover:bg-emerald-500/20 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-300 disabled:opacity-50"
+            aria-label={`Resume worker ${worker.bead_id}`}
+            title="Resume worker"
+          >
+            <Play size={14} />
+          </button>
+        )}
         {canKill && (
           <button
             type="button"
@@ -262,22 +325,32 @@ export default function WorkerPanel({
           {isActive ? (
             <LogViewer
               rawLines={rawLines}
-              liveWaiting={liveStatus === 'open' && rawLines.length === 0}
+              liveWaiting={!isPaused && liveStatus === 'open' && rawLines.length === 0}
               statusText={
-                <span className="inline-flex items-center gap-1.5">
-                  <Terminal size={12} className="text-emerald-400" aria-hidden />
-                  {liveStatus === 'open'
-                    ? 'live'
-                    : liveStatus === 'connecting'
-                      ? 'connecting…'
-                      : liveStatus === 'error'
-                        ? 'reconnecting…'
-                        : 'closed'}
-                </span>
+                isPaused ? (
+                  <span
+                    className="inline-flex items-center gap-1.5 text-amber-300"
+                    data-testid={`worker-panel-frozen-${worker.id}`}
+                  >
+                    <Pause size={12} aria-hidden />
+                    paused — stream frozen
+                  </span>
+                ) : (
+                  <span className="inline-flex items-center gap-1.5">
+                    <Terminal size={12} className="text-emerald-400" aria-hidden />
+                    {liveStatus === 'open'
+                      ? 'live'
+                      : liveStatus === 'connecting'
+                        ? 'connecting…'
+                        : liveStatus === 'error'
+                          ? 'reconnecting…'
+                          : 'closed'}
+                  </span>
+                )
               }
               keyPrefix={worker.id}
               heightClass="max-h-96"
-              jumpToBottom
+              jumpToBottom={!isPaused}
             />
           ) : (
             <p className="px-4 py-6 text-center text-xs text-slate-500">
@@ -285,6 +358,19 @@ export default function WorkerPanel({
             </p>
           )}
         </div>
+      )}
+
+      {/* Inline steer composer: reuses the shared SteerComposer (also mounted in
+          the WorkerLogModal) so the dashboard grid can course-correct a live
+          Smith without opening the full-screen view. steerDisabledReason mirrors
+          the daemon's steer validation, so a paused / non-Claude worker renders a
+          disabled input with an explanatory tooltip rather than a dead button. */}
+      {!collapsed && isActive && (
+        <SteerComposer
+          beadID={worker.bead_id}
+          disabledReason={steerDisabledReason(worker)}
+          compact
+        />
       )}
 
       <ConfirmModal
@@ -296,6 +382,17 @@ export default function WorkerPanel({
         busy={busy}
         onConfirm={handleKill}
         onCancel={() => setConfirmKill(false)}
+      />
+
+      <ConfirmModal
+        open={confirmPause}
+        title="Pause worker?"
+        message={`This interrupts the Claude process for ${worker.bead_id} (${worker.anvil}) and parks the pipeline. The transcript stays visible and you can resume it later.`}
+        confirmLabel="Pause worker"
+        tone="primary"
+        busy={busy}
+        onConfirm={handlePause}
+        onCancel={() => setConfirmPause(false)}
       />
     </div>
   )

@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from 'react'
+import { useState, type FormEvent, type KeyboardEvent } from 'react'
 import { Send } from 'lucide-react'
 import { actions } from '../api'
 import { useAction } from '../hooks/useAction'
@@ -37,6 +37,19 @@ export default function SteerComposer({ beadID, disabledReason, compact }: Steer
     if (ok) setMessage('')
   }
 
+  // Esc clears any draft and blurs the input. stopPropagation keeps the key
+  // from bubbling to the WorkerLogModal's window-level Escape listener (which
+  // would otherwise close the modal out from under the operator mid-edit) — we
+  // deliberately scope the shortcut to the composer rather than hijacking the
+  // global one.
+  const handleKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Escape') {
+      e.stopPropagation()
+      setMessage('')
+      e.currentTarget.blur()
+    }
+  }
+
   const canSubmit = message.trim().length > 0 && !busy && !disabled
 
   return (
@@ -64,6 +77,7 @@ export default function SteerComposer({ beadID, disabledReason, compact }: Steer
           type="text"
           value={message}
           onChange={(e) => setMessage(e.target.value)}
+          onKeyDown={handleKeyDown}
           placeholder={disabled ? 'Steering unavailable' : 'Send a course-correction to the worker…'}
           disabled={disabled || busy}
           className="min-w-0 flex-1 rounded-md border border-slate-700 bg-slate-900 px-2.5 py-1.5 text-sm text-slate-200 placeholder:text-slate-500 focus:border-amber-400/40 focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-300 disabled:opacity-60"
