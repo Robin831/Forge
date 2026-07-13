@@ -133,6 +133,14 @@ type Daemon struct {
 
 	// Dispatch state
 	activeBeads sync.Map // beadID -> true, currently in-flight
+	// controlHandles is the in-memory registry of active pipeline control
+	// handles keyed by beadID (beadID string -> *controlHandle). It runs
+	// alongside activeBeads: a handle is registered when a bead enters
+	// dispatchBead and deregistered in the same defer that removes it from
+	// activeBeads, so the two maps stay lifecycle-symmetric. The IPC/API layer
+	// uses lookupControlHandle to push steer messages and trigger interrupts on
+	// a running pipeline. See control.go.
+	controlHandles sync.Map
 	// pendingActions parks lifecycle actions that arrived while a bead was in
 	// flight, to dispatch once it frees. Value is map[lifecycle.Action]ActionRequest
 	// (one slot PER ACTION TYPE, latest-wins within a type) so a CI-fix and a
@@ -2914,6 +2922,16 @@ func (d *Daemon) dispatchBead(ctx context.Context, bead poller.Bead, anvilCfg co
 	}()
 	defer d.activeBeads.Delete(bead.ID)
 
+	// Register the control handle for this bead's pipeline so the IPC/API layer
+	// can steer/interrupt the in-flight spawn. Deregister in the same defer
+	// window as activeBeads.Delete so handle lifetime is symmetric with the
+	// active-dispatch lifetime. The interrupt is wired later, once the pipeline
+	// context exists (see normalPipeline). This registration also covers the
+	// manual run_bead path, which dispatches through dispatchBead.
+	ctrl := newControlHandle(claimWorkerID)
+	d.registerControlHandle(bead.ID, ctrl)
+	defer d.deregisterControlHandle(bead.ID)
+
 	d.logger.Info("dispatching bead", "bead", bead.ID, "anvil", bead.Anvil, "title", bead.Title)
 
 	// Re-verify the anvil is on main/master immediately before spawning any
@@ -3163,6 +3181,13 @@ normalPipeline:
 	}
 	pipelineCtx, cancel := context.WithTimeout(context.Background(), smithTimeout)
 	defer cancel()
+
+	// Wire the control handle's interrupt to the pipeline context cancel so the
+	// IPC/API layer can stop the currently running spawn. Clear it once the
+	// pipeline returns so a late interrupt is a no-op rather than cancelling a
+	// reused context. The handle is deregistered shortly after by the defer above.
+	ctrl.setInterrupt(cancel)
+	defer ctrl.setInterrupt(nil)
 
 	// Build pipeline params, optionally enabling Schematic pre-worker.
 	// Resolve per-stage providers via stage_providers → smith_providers → providers fallback.
