@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Robin831/Forge/internal/cost"
@@ -180,6 +181,8 @@ type SpawnOptions struct {
 // timestamp (milliseconds since epoch). An empty prefix defaults to "smith" so
 // callers that do not supply a stage keep the historical smith-*.log naming.
 // The prefix is sanitised to a safe basename to prevent path traversal.
+var logSeq atomic.Int64
+
 func logFileName(prefix string, ts int64) string {
 	if prefix == "" {
 		prefix = "smith"
@@ -189,7 +192,8 @@ func logFileName(prefix string, ts int64) string {
 	if prefix == "." || prefix == ".." || prefix == "/" || prefix == string(filepath.Separator) {
 		prefix = "smith"
 	}
-	return fmt.Sprintf("%s-%d.log", prefix, ts)
+	seq := logSeq.Add(1)
+	return fmt.Sprintf("%s-%d-%d.log", prefix, ts, seq)
 }
 
 // SpawnWithProvider starts an AI coding agent process for the given provider.

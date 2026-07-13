@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/Robin831/Forge/internal/config"
@@ -529,13 +530,16 @@ func stepStatus(s StepResult) string {
 // complete combined stdout/stderr of each step. Writing is best-effort: any
 // error is logged and otherwise ignored so a log-persistence failure never
 // affects the verification outcome.
+var temperLogSeq atomic.Int64
+
 func writeTemperLog(worktreePath string, result *Result) {
 	logDir := filepath.Join(worktreePath, ".forge-logs")
 	if err := os.MkdirAll(logDir, 0o755); err != nil {
 		log.Printf("[temper] failed to create log dir %s: %v", logDir, err)
 		return
 	}
-	logPath := filepath.Join(logDir, fmt.Sprintf("temper-%d.log", time.Now().UnixMilli()))
+	seq := temperLogSeq.Add(1)
+	logPath := filepath.Join(logDir, fmt.Sprintf("temper-%d-%d.log", time.Now().UnixMilli(), seq))
 
 	f, err := os.OpenFile(logPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
 	if err != nil {
