@@ -186,7 +186,7 @@ func logFileName(prefix string, ts int64) string {
 	}
 	prefix = strings.ReplaceAll(prefix, "\\", "/")
 	prefix = filepath.Base(prefix)
-	if prefix == "." || prefix == ".." {
+	if prefix == "." || prefix == ".." || prefix == "/" || prefix == string(filepath.Separator) {
 		prefix = "smith"
 	}
 	return fmt.Sprintf("%s-%d.log", prefix, ts)

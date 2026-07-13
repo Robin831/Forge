@@ -22,6 +22,9 @@ func TestLogFileName(t *testing.T) {
 	assert.Equal(t, "bar-2.log", logFileName("a/b/bar", 2))
 	assert.Equal(t, "smith-3.log", logFileName("../..", 3))
 	assert.Equal(t, "smith-4.log", logFileName(".", 4))
+	// Bare path separators must not escape the log directory.
+	assert.Equal(t, "smith-5.log", logFileName("/", 5))
+	assert.Equal(t, "smith-6.log", logFileName("///", 6))
 }
 
 // newTestLogFile creates a temp log file for readStreamJSON calls.
