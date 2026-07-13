@@ -962,6 +962,12 @@ func Run(ctx context.Context, p Params) *Outcome {
 			_ = p.DB.UpdateWorkerLogPath(workerID, process.LogPath)
 			smithResult = process.Wait()
 
+			// Persist the captured session_id and model for this spawn. The
+			// model comes from the stream (Claude reports it in-band) and falls
+			// back to the provider selection. The loop only continues on rate
+			// limit, so the final iteration recorded here is the kept spawn.
+			_ = p.DB.UpdateWorkerSession(workerID, smithResult.SessionID, smith.SessionModel(smithResult, pv))
+
 			// A process that produces a genuine success result event
 			// (subtype:"success" with is_error:false) AND exits 0 completed
 			// successfully. The Claude CLI handles internal retries for rate

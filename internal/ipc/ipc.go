@@ -420,6 +420,8 @@ type WorkerInfo struct {
 	CompletedAt string `json:"completed_at,omitempty"`
 	LogPath     string `json:"log_path,omitempty"`
 	PRNumber    int    `json:"pr_number,omitempty"`
+	SessionID   string `json:"session_id,omitempty"`
+	Model       string `json:"model,omitempty"`
 }
 
 // WorkerKindFromPhase returns the coarse worker-class label used by the

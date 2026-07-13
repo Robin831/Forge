@@ -60,6 +60,14 @@ type Result struct {
 	// GeminiStats holds the raw stats block from a Gemini result event.
 	// Nil for non-Gemini providers or when no stats were emitted.
 	GeminiStats *StreamStats
+	// SessionID is the provider session identifier captured from the stream
+	// (Claude emits it on the initial system init event and again on result).
+	// Empty for providers that do not emit one (gemini/copilot/codex).
+	SessionID string
+	// Model is the model reported by the provider in its stream output
+	// (Claude emits it on the initial system init event). Empty when the
+	// provider does not report a model in-band.
+	Model string
 }
 
 // Process represents a running or completed Smith (Claude Code) process.
@@ -86,6 +94,11 @@ type StreamEvent struct {
 	Content string          `json:"content,omitempty"`
 	// Role is present on Gemini delta message events (role: "assistant" or "user").
 	Role string `json:"role,omitempty"`
+	// SessionID is emitted by Claude on the initial system init event and again
+	// on the result event. Non-Claude providers do not emit it.
+	SessionID string `json:"session_id,omitempty"`
+	// Model is emitted by Claude on the initial system init event.
+	Model string `json:"model,omitempty"`
 	// Fields present when type == "result":
 	Result       string       `json:"result,omitempty"`
 	IsError      bool         `json:"is_error,omitempty"`
@@ -156,6 +169,16 @@ func (u *StreamUsage) effectiveOutputTokens() int {
 		return u.OutputTokens
 	}
 	return u.CompletionTokens
+}
+
+// SessionModel returns the model to record for a spawn: the model reported
+// in-band by the provider stream when present (Claude reports it on the system
+// init event), otherwise the provider's configured model.
+func SessionModel(r *Result, pv provider.Provider) string {
+	if r != nil && r.Model != "" {
+		return r.Model
+	}
+	return pv.Model
 }
 
 // Spawn starts a Claude Code process in the given worktree directory.
@@ -448,6 +471,18 @@ func readStreamJSON(r io.Reader, buf *strings.Builder, logFile *os.File, result 
 			// Extract content for summary
 			if event.Content != "" {
 				lastContent = event.Content
+			}
+
+			// Capture the session_id and model from the first event that
+			// carries them. Claude emits both on the initial system init event
+			// and repeats session_id on the result event; recording the first
+			// non-empty value is sufficient. Non-Claude providers never emit
+			// these fields, so the values stay empty without any branching.
+			if result.SessionID == "" && event.SessionID != "" {
+				result.SessionID = event.SessionID
+			}
+			if result.Model == "" && event.Model != "" {
+				result.Model = event.Model
 			}
 
 			// Accumulate assistant message text (fallback when result event

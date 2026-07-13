@@ -172,6 +172,15 @@ func (w *Worker) Run(ctx context.Context, extraFlags []string) (*smith.Result, e
 	log.Printf("[%s] Waiting for Smith (PID %d)", w.ID, process.PID)
 	result = process.Wait()
 
+	// Persist the captured session_id and model (Claude only; empty otherwise).
+	// Fall back to the --model flag from extraFlags when the stream didn't
+	// report a model in-band.
+	model := result.Model
+	if model == "" {
+		model = modelFromFlags(extraFlags)
+	}
+	_ = w.db.UpdateWorkerSession(w.ID, result.SessionID, model)
+
 	// Step 5: Determine outcome
 	if result.ExitCode == 0 {
 		w.transition(state.WorkerDone)
@@ -275,6 +284,17 @@ func DispatchTotalActiveCount(db *state.DB) (int, error) {
 		return 0, err
 	}
 	return len(workers), nil
+}
+
+// modelFromFlags extracts the --model value from a flag slice, returning ""
+// if not present.
+func modelFromFlags(flags []string) string {
+	for i, f := range flags {
+		if f == "--model" && i+1 < len(flags) {
+			return flags[i+1]
+		}
+	}
+	return ""
 }
 
 // CanSpawnGlobal checks if a new worker can be spawned globally,

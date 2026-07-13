@@ -141,6 +141,11 @@ func (db *DB) migrate() error {
 		// term (current head reviewed by Assay, or Assay disabled). Default 1 so
 		// assay-disabled and not-yet-polled PRs stay ready-eligible, like ci_passing.
 		{"prs", "assay_up_to_date", `ALTER TABLE prs ADD COLUMN assay_up_to_date INTEGER NOT NULL DEFAULT 1`},
+		// session_id / model record the Claude session identifier and the model
+		// actually used for each worker spawn (prerequisite for session-resume
+		// features and transcript indexing). Empty for non-Claude providers.
+		{"workers", "session_id", `ALTER TABLE workers ADD COLUMN session_id TEXT NOT NULL DEFAULT ''`},
+		{"workers", "model", `ALTER TABLE workers ADD COLUMN model TEXT NOT NULL DEFAULT ''`},
 	}
 	for _, m := range migrations {
 		exists, err := db.columnExists(m.table, m.column)
@@ -208,7 +213,9 @@ CREATE TABLE IF NOT EXISTS workers (
     started_at  TEXT NOT NULL,
     completed_at TEXT,
     log_path    TEXT NOT NULL DEFAULT '',
-    prev_status TEXT NOT NULL DEFAULT ''
+    prev_status TEXT NOT NULL DEFAULT '',
+    session_id  TEXT NOT NULL DEFAULT '',
+    model       TEXT NOT NULL DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS prs (
@@ -590,6 +597,11 @@ type Worker struct {
 	// stale detection even though they are excluded from the global background-phase
 	// check. Stored as seconds in the DB.
 	StaleTimeout time.Duration
+	// SessionID is the provider session identifier captured from the smith
+	// stream (Claude only; empty for other providers).
+	SessionID string
+	// Model is the model actually used for this worker spawn.
+	Model string
 }
 
 // InsertWorker adds a new worker record.
@@ -669,9 +681,17 @@ func (db *DB) UpdateWorkerTitle(id string, title string) error {
 	return err
 }
 
+// UpdateWorkerSession records the provider session_id and model captured from
+// a smith spawn. Both may be empty (e.g. non-Claude providers do not emit a
+// session_id); callers may still record whichever value is available.
+func (db *DB) UpdateWorkerSession(id, sessionID, model string) error {
+	_, err := db.conn.Exec(`UPDATE workers SET session_id = ?, model = ? WHERE id = ?`, sessionID, model, id)
+	return err
+}
+
 // ActiveWorkers returns all workers with non-terminal status (including stalled).
 func (db *DB) ActiveWorkers() ([]Worker, error) {
-	return db.queryWorkers(`SELECT id, bead_id, anvil, branch, pid, status, phase, title, pr_number, started_at, completed_at, log_path
+	return db.queryWorkers(`SELECT id, bead_id, anvil, branch, pid, status, phase, title, pr_number, started_at, completed_at, log_path, session_id, model
 		FROM workers WHERE status IN ('pending', 'running', 'reviewing', 'monitoring', 'stalled')
 		ORDER BY started_at`)
 }
@@ -692,7 +712,7 @@ func (db *DB) StalledWorkers(staleThreshold time.Duration) ([]Worker, error) {
 	if staleThreshold <= 0 {
 		return nil, nil
 	}
-	workers, err := db.queryWorkers(`SELECT id, bead_id, anvil, branch, pid, status, phase, title, pr_number, started_at, completed_at, log_path
+	workers, err := db.queryWorkers(`SELECT id, bead_id, anvil, branch, pid, status, phase, title, pr_number, started_at, completed_at, log_path, session_id, model
 		FROM workers WHERE status IN ('pending', 'running', 'reviewing', 'monitoring')
 		  AND phase NOT IN (` + backgroundPhases + `)
 		ORDER BY started_at`)
@@ -824,7 +844,7 @@ func (db *DB) RecoveredStalledWorkers(staleThreshold time.Duration) ([]Worker, e
 	// Global-threshold pass: stalled pipeline workers (non-background phases) are
 	// recovered against the global staleThreshold, matching how StalledWorkers
 	// stalled them.
-	workers, err := db.queryWorkers(`SELECT id, bead_id, anvil, branch, pid, status, phase, title, pr_number, started_at, completed_at, log_path
+	workers, err := db.queryWorkers(`SELECT id, bead_id, anvil, branch, pid, status, phase, title, pr_number, started_at, completed_at, log_path, session_id, model
 		FROM workers WHERE status = 'stalled'
 		  AND phase NOT IN (` + backgroundPhases + `)
 		ORDER BY started_at`)
@@ -916,7 +936,7 @@ func (db *DB) UnstallWorker(id string) error {
 // Stalled workers are included so they continue to count against capacity and
 // prevent the daemon from over-subscribing while stalled processes are still running.
 func (db *DB) ActiveDispatchWorkers() ([]Worker, error) {
-	return db.queryWorkers(`SELECT id, bead_id, anvil, branch, pid, status, phase, title, pr_number, started_at, completed_at, log_path
+	return db.queryWorkers(`SELECT id, bead_id, anvil, branch, pid, status, phase, title, pr_number, started_at, completed_at, log_path, session_id, model
 		FROM workers WHERE status IN ('pending', 'running', 'reviewing', 'monitoring', 'stalled')
 		  AND phase NOT IN (` + backgroundPhases + `)
 		ORDER BY started_at`)
@@ -926,7 +946,7 @@ func (db *DB) ActiveDispatchWorkers() ([]Worker, error) {
 // excluding all phases in backgroundPhases.
 // Stalled workers are included so they continue to count against per-anvil capacity.
 func (db *DB) ActiveDispatchWorkersByAnvil(anvil string) ([]Worker, error) {
-	return db.queryWorkers(`SELECT id, bead_id, anvil, branch, pid, status, phase, title, pr_number, started_at, completed_at, log_path
+	return db.queryWorkers(`SELECT id, bead_id, anvil, branch, pid, status, phase, title, pr_number, started_at, completed_at, log_path, session_id, model
 		FROM workers WHERE anvil = ?
 		  AND status IN ('pending', 'running', 'reviewing', 'monitoring', 'stalled')
 		  AND phase NOT IN (`+backgroundPhases+`)
@@ -936,7 +956,7 @@ func (db *DB) ActiveDispatchWorkersByAnvil(anvil string) ([]Worker, error) {
 // GetWorker returns the worker record for the given worker ID, regardless of status.
 // Returns an error if no worker with that ID exists.
 func (db *DB) GetWorker(id string) (*Worker, error) {
-	workers, err := db.queryWorkers(`SELECT id, bead_id, anvil, branch, pid, status, phase, title, pr_number, started_at, completed_at, log_path
+	workers, err := db.queryWorkers(`SELECT id, bead_id, anvil, branch, pid, status, phase, title, pr_number, started_at, completed_at, log_path, session_id, model
 		FROM workers WHERE id = ? LIMIT 1`, id)
 	if err != nil {
 		return nil, err
@@ -949,7 +969,7 @@ func (db *DB) GetWorker(id string) (*Worker, error) {
 
 // ActiveWorkerByBead returns the non-terminal worker for a given bead ID.
 func (db *DB) ActiveWorkerByBead(beadID string) (*Worker, error) {
-	workers, err := db.queryWorkers(`SELECT id, bead_id, anvil, branch, pid, status, phase, title, pr_number, started_at, completed_at, log_path
+	workers, err := db.queryWorkers(`SELECT id, bead_id, anvil, branch, pid, status, phase, title, pr_number, started_at, completed_at, log_path, session_id, model
 		FROM workers WHERE bead_id = ? AND status IN ('pending', 'running', 'reviewing', 'monitoring', 'stalled')
 		LIMIT 1`, beadID)
 	if err != nil {
@@ -965,7 +985,7 @@ func (db *DB) ActiveWorkerByBead(beadID string) (*Worker, error) {
 // scoped to a specific anvil. Use this instead of ActiveWorkerByBead when
 // iterating per-anvil to avoid false positives when two anvils share bead IDs.
 func (db *DB) ActiveWorkerByBeadAndAnvil(beadID, anvil string) (*Worker, error) {
-	workers, err := db.queryWorkers(`SELECT id, bead_id, anvil, branch, pid, status, phase, title, pr_number, started_at, completed_at, log_path
+	workers, err := db.queryWorkers(`SELECT id, bead_id, anvil, branch, pid, status, phase, title, pr_number, started_at, completed_at, log_path, session_id, model
 		FROM workers WHERE bead_id = ? AND anvil = ? AND status IN ('pending', 'running', 'reviewing', 'monitoring', 'stalled')
 		LIMIT 1`, beadID, anvil)
 	if err != nil {
@@ -1005,7 +1025,7 @@ func (db *DB) CompleteWorkersByBead(beadID string) error {
 
 // WorkersByAnvil returns all workers for a given anvil.
 func (db *DB) WorkersByAnvil(anvil string) ([]Worker, error) {
-	return db.queryWorkers(`SELECT id, bead_id, anvil, branch, pid, status, phase, title, pr_number, started_at, completed_at, log_path
+	return db.queryWorkers(`SELECT id, bead_id, anvil, branch, pid, status, phase, title, pr_number, started_at, completed_at, log_path, session_id, model
 		FROM workers WHERE anvil = ?
 		ORDER BY started_at DESC`, anvil)
 }
@@ -1050,7 +1070,7 @@ func (db *DB) OrphanedMonitoringBellowsWorkers() ([]OrphanedWorkerInfo, error) {
 // CompletedWorkers returns workers in terminal states (done, failed, timeout),
 // ordered by most recently completed first. Limit 0 means no limit.
 func (db *DB) CompletedWorkers(limit int) ([]Worker, error) {
-	query := `SELECT id, bead_id, anvil, branch, pid, status, phase, title, pr_number, started_at, completed_at, log_path
+	query := `SELECT id, bead_id, anvil, branch, pid, status, phase, title, pr_number, started_at, completed_at, log_path, session_id, model
 		FROM workers WHERE status IN ('done', 'failed', 'timeout')
 		ORDER BY completed_at DESC`
 	if limit > 0 {
@@ -1062,7 +1082,7 @@ func (db *DB) CompletedWorkers(limit int) ([]Worker, error) {
 // WorkersByBead returns workers for a specific bead, optionally filtered by
 // anvil, ordered most recent first. Limit 0 means no limit.
 func (db *DB) WorkersByBead(beadID, anvil string, limit int) ([]Worker, error) {
-	query := `SELECT id, bead_id, anvil, branch, pid, status, phase, title, pr_number, started_at, completed_at, log_path
+	query := `SELECT id, bead_id, anvil, branch, pid, status, phase, title, pr_number, started_at, completed_at, log_path, session_id, model
 		FROM workers WHERE bead_id = ?`
 	args := []any{beadID}
 	if anvil != "" {
@@ -1078,7 +1098,7 @@ func (db *DB) WorkersByBead(beadID, anvil string, limit int) ([]Worker, error) {
 
 // AllWorkers returns all workers ordered by most recent first.
 func (db *DB) AllWorkers(limit int) ([]Worker, error) {
-	query := `SELECT id, bead_id, anvil, branch, pid, status, phase, title, pr_number, started_at, completed_at, log_path
+	query := `SELECT id, bead_id, anvil, branch, pid, status, phase, title, pr_number, started_at, completed_at, log_path, session_id, model
 		FROM workers ORDER BY started_at DESC`
 	if limit > 0 {
 		query += fmt.Sprintf(" LIMIT %d", limit)
@@ -1100,7 +1120,8 @@ func (db *DB) queryWorkers(query string, args ...any) ([]Worker, error) {
 		var startedAt string
 		var completedAt sql.NullString
 		if err := rows.Scan(&w.ID, &w.BeadID, &w.Anvil, &w.Branch, &w.PID,
-			&status, &w.Phase, &w.Title, &w.PRNumber, &startedAt, &completedAt, &w.LogPath); err != nil {
+			&status, &w.Phase, &w.Title, &w.PRNumber, &startedAt, &completedAt, &w.LogPath,
+			&w.SessionID, &w.Model); err != nil {
 			return nil, err
 		}
 		w.Status = WorkerStatus(status)

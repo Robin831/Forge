@@ -154,6 +154,12 @@ export default function WorkerLogModal({ worker, onClose }: WorkerLogModalProps)
               </span>
               <span aria-hidden>·</span>
               <span>{subtitle}</span>
+              {worker.model && (
+                <>
+                  <span aria-hidden>·</span>
+                  <span className="font-mono text-slate-400">{worker.model}</span>
+                </>
+              )}
             </p>
           </div>
           <button

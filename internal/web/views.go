@@ -116,6 +116,8 @@ type historyWorker struct {
 	DurationSec float64 `json:"duration_sec,omitempty"`
 	LogPath     string  `json:"log_path,omitempty"`
 	PRNumber    int     `json:"pr_number,omitempty"`
+	SessionID   string  `json:"session_id,omitempty"`
+	Model       string  `json:"model,omitempty"`
 }
 
 // handleHistoryWorkers returns recent completed workers. ?limit= controls
@@ -155,6 +157,8 @@ func (s *Server) handleHistoryWorkers(w http.ResponseWriter, r *http.Request) {
 			StartedAt: ww.StartedAt.Format(time.RFC3339),
 			LogPath:   ww.LogPath,
 			PRNumber:  ww.PRNumber,
+			SessionID: ww.SessionID,
+			Model:     ww.Model,
 		}
 		if ww.CompletedAt != nil {
 			hw.CompletedAt = ww.CompletedAt.Format(time.RFC3339)
@@ -326,6 +330,8 @@ type beadDetailWorker struct {
 	DurationSec float64 `json:"duration_sec,omitempty"`
 	LogPath     string  `json:"log_path,omitempty"`
 	PRNumber    int     `json:"pr_number,omitempty"`
+	SessionID   string  `json:"session_id,omitempty"`
+	Model       string  `json:"model,omitempty"`
 }
 
 // beadDetailComment is one comment from `bd comments <id> --json`. The bd CLI
@@ -776,6 +782,8 @@ func (s *Server) handleBeadDetail(w http.ResponseWriter, r *http.Request) {
 				StartedAt: ww.StartedAt.Format(time.RFC3339),
 				LogPath:   ww.LogPath,
 				PRNumber:  ww.PRNumber,
+				SessionID: ww.SessionID,
+				Model:     ww.Model,
 			}
 			if ww.CompletedAt != nil {
 				row.CompletedAt = ww.CompletedAt.Format(time.RFC3339)
