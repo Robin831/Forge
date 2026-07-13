@@ -80,6 +80,66 @@ func waitSmithWithSteer(proc *smith.Process, steerCh <-chan string, interrupt fu
 	}
 }
 
+// drainSteer performs a single non-blocking receive from the steer mailbox. It
+// returns the message and true when one was waiting, or ("", false) when the
+// channel is nil, currently empty, or closed and empty. A closed channel with
+// buffered messages still delivers them with ok==true — false is only returned
+// once the channel is both closed and drained. Used for steer mode B, where a
+// message enqueued while Temper/Warden ran is consumed BETWEEN spawns (as
+// opposed to waitSmithWithSteer, which drains the same channel DURING a spawn).
+func drainSteer(ch <-chan string) (string, bool) {
+	if ch == nil {
+		return "", false
+	}
+	select {
+	case msg, ok := <-ch:
+		if !ok {
+			return "", false
+		}
+		msg = strings.TrimSpace(msg)
+		if msg == "" {
+			return "", false
+		}
+		return msg, true
+	default:
+		return "", false
+	}
+}
+
+// mergeSteerWithFeedback combines an operator steer message (mode B) with the
+// pending Warden/Temper feedback that would otherwise have driven the next
+// Smith iteration. The steer message leads and is marked as taking precedence —
+// the operator's intent is the authoritative instruction — while the automated
+// feedback follows as additional context to address unless superseded. Either
+// side being empty collapses to the other so no empty scaffolding is sent.
+func mergeSteerWithFeedback(feedback, steer string) string {
+	steer = strings.TrimSpace(steer)
+	feedback = strings.TrimSpace(feedback)
+	switch {
+	case steer == "" && feedback == "":
+		return ""
+	case feedback == "":
+		return steer
+	case steer == "":
+		return feedback
+	}
+	return fmt.Sprintf(
+		"Operator steering message (address this first, it takes precedence):\n%s\n\n"+
+			"The automated verification also requested the following changes; incorporate them as well unless the steering above supersedes them:\n%s",
+		steer, feedback)
+}
+
+// appendSteerToPrompt folds an operator steer message (mode B) into a fresh
+// Smith prompt when there is no session to resume. The steer text is appended
+// under a clear header so it is honoured alongside the built prompt.
+func appendSteerToPrompt(prompt, steer string) string {
+	steer = strings.TrimSpace(steer)
+	if steer == "" {
+		return prompt
+	}
+	return prompt + "\n\n---\nOperator steering message (address this first, it takes precedence):\n" + steer
+}
+
 // Outcome represents the final result of the pipeline.
 type Outcome struct {
 	// Success is true if the bead was implemented and approved.
@@ -1017,15 +1077,29 @@ func Run(ctx context.Context, p Params) *Outcome {
 	// is wrong, which we treat as a pathological loop and escalate.
 	recheckUseCount := 0
 
-	// Steer mode A resume state. When pendingResume is set, the next iteration
-	// resumes the interrupted Claude session (resumeSessionID) with the steering
-	// message (resumeMessage) as the new prompt, using resumeProvider, instead
-	// of running the normal Smith prompt. Set when a steer message interrupts a
-	// running spawn.
+	// Steer resume state. When pendingResume is set, the next iteration resumes
+	// a Claude session (resumeSessionID) with the steering message
+	// (resumeMessage) as the new prompt, using resumeProvider, instead of
+	// running the normal Smith prompt. It is armed by two paths:
+	//   - Steer mode A: a steer message interrupts a RUNNING spawn (resumeMessage
+	//     is the raw steer text, resumeSessionID is the interrupted session).
+	//   - Steer mode B: a steer message enqueued while Temper/Warden ran is
+	//     consumed BETWEEN spawns at the top of the next iteration (resumeMessage
+	//     merges the steer text with the pending Warden/Temper feedback,
+	//     resumeSessionID is the last completed session).
 	var pendingResume bool
 	var resumeSessionID string
 	var resumeMessage string
 	var resumeProvider provider.Provider
+
+	// lastSessionID is the session_id captured from the most recently completed
+	// Smith spawn (fresh or resumed). Steer mode B uses it to resume that
+	// session when a steer message is consumed between spawns.
+	// lastSessionProvider is the provider that produced lastSessionID, so mode B
+	// resumes with the correct provider even if activeProviderIdx has since
+	// advanced to a different fallback.
+	var lastSessionID string
+	var lastSessionProvider provider.Provider
 
 	// Feedback loop
 	for iteration := 1; iteration <= maxIter; iteration++ {
@@ -1076,12 +1150,67 @@ func Run(ctx context.Context, p Params) *Outcome {
 		// steerMsgThisIter is set when a steer message interrupted this
 		// iteration's spawn (steer mode A). Handled after the spawn completes.
 		var steerMsgThisIter string
+		// spawnProvider is the provider that ran this iteration's Smith spawn
+		// (resume or fresh). Captured alongside lastSessionID so mode B resumes
+		// with the correct provider.
+		var spawnProvider provider.Provider
+
+		// Steer mode B: a steer message may have been enqueued while Temper/
+		// Warden ran on a prior iteration, when no spawn was active to
+		// interrupt. Consume it HERE — before this iteration's spawn — so it is
+		// delivered as part of the (resumed) session rather than immediately
+		// interrupting a freshly launched spawn via waitSmithWithSteer.
+		//
+		// This is race-safe relative to mode A: the pipeline goroutine is the
+		// sole consumer of steerCh, so a queued message is handled either here
+		// (between spawns) or by waitSmithWithSteer (during a spawn), never both.
+		// If a spawn starts between an operator's enqueue and this drain, the
+		// message simply stays in the mailbox and is picked up by
+		// waitSmithWithSteer as mode A instead — it is never lost or
+		// double-consumed. We skip the drain when a resume is already armed
+		// (mode A just fired) so the two paths cannot stack in one iteration.
+		//
+		// The iteration > 1 guard is what makes this window unambiguous: a
+		// between-spawns message can only exist AFTER a prior spawn+Temper+Warden
+		// cycle, so no legitimate mode B message can be present before the first
+		// spawn. Skipping the drain on iteration 1 also preserves mode A for a
+		// steer message enqueued to interrupt the very first spawn (there is no
+		// prior session to resume it against yet).
+		if iteration > 1 && !pendingResume {
+			if steerMsg, ok := drainSteer(steerCh); ok {
+				_ = p.DB.LogEvent(state.EventSmithSteered,
+					fmt.Sprintf("Steer enqueued between spawns (iteration %d): %s", iteration, truncateOutput(steerMsg, 200)),
+					p.Bead.ID, p.AnvilName)
+				if lastSessionID != "" {
+					// Resume the last completed session with the steer text merged
+					// into the pending Warden/Temper feedback that would otherwise
+					// have driven this iteration's fresh prompt. Use lastSessionProvider
+					// (the provider that produced lastSessionID) rather than the current
+					// activeProviderIdx, which may have advanced to a different fallback.
+					pendingResume = true
+					resumeSessionID = lastSessionID
+					resumeProvider = lastSessionProvider
+					resumeMessage = mergeSteerWithFeedback(beadCtx.PriorFeedback, steerMsg)
+					log.Printf("[pipeline:%s] Steer mode B: resuming session %s with queued steer message (iteration %d)", workerID, resumeSessionID, iteration)
+				} else {
+					// No session to resume (e.g. iteration 1, or a non-Claude
+					// provider that never reported a session_id). Fold the steer
+					// text into the fresh prompt so it is still honoured.
+					currentPrompt = appendSteerToPrompt(currentPrompt, steerMsg)
+					log.Printf("[pipeline:%s] Steer mode B: no session to resume, folded queued steer message into fresh prompt (iteration %d)", workerID, iteration)
+				}
+			}
+		}
 
 		if pendingResume {
-			// Steer mode A: resume the interrupted Claude session with the
-			// steering message as the new prompt. A resume is session-bound to a
-			// single provider, so there is no rate-limit fallback here.
+			// Resume a Claude session with the steering message as the new
+			// prompt. Armed by mode A (interrupt of a running spawn — resumeMessage
+			// is the raw steer text) or mode B (message consumed between spawns —
+			// resumeMessage merges the steer text with pending feedback). A resume
+			// is session-bound to a single provider, so there is no rate-limit
+			// fallback here.
 			pv := resumeProvider
+			spawnProvider = pv
 			log.Printf("[pipeline:%s] Resuming session %s with steer message (iteration %d, provider: %s)", workerID, resumeSessionID, iteration, pv.Label())
 			_ = p.DB.LogEvent(state.EventSmithStarted, fmt.Sprintf("Steer resume of session %s (iteration %d)", resumeSessionID, iteration), p.Bead.ID, p.AnvilName)
 
@@ -1162,17 +1291,28 @@ func Run(ctx context.Context, p Params) *Outcome {
 				// owner for the resume and stop trying other providers.
 				if steerMsgThisIter != "" {
 					activeProviderIdx = pi
+					spawnProvider = pv
 					resumeProvider = pv
 					break
 				}
 
 				if !smithResult.RateLimited {
 					activeProviderIdx = pi // remember for the next iteration
+					spawnProvider = pv
 					break
 				}
 			}
 		}
 		outcome.SmithResult = smithResult
+
+		// Remember the session_id of this spawn so a steer message consumed
+		// between spawns (mode B) can resume it on a later iteration. Guard on
+		// non-empty so a spawn that reported no session (e.g. a non-Claude
+		// provider) does not clobber a session captured earlier.
+		if smithResult != nil && smithResult.SessionID != "" {
+			lastSessionID = smithResult.SessionID
+			lastSessionProvider = spawnProvider
+		}
 
 		// Steer mode A: a steer message interrupted this spawn. Preserve the
 		// captured session_id and, if iterations remain, resume the session
