@@ -88,6 +88,7 @@ func (s *Server) routes() http.Handler {
 		r.Post("/bead/{bead_id}/label/remove", s.handleBeadLabelRemove)
 		r.Post("/bead/{bead_id}/note", s.handleBeadNote)
 		r.Post("/bead/{bead_id}/comment", s.handleBeadAddComment)
+		r.Post("/bead/{bead_id}/steer", s.handleBeadSteer)
 
 		// Per-PR actions on the /prs tab. Each route resolves the PR row
 		// from state.db and dispatches an in-process IPC command. External

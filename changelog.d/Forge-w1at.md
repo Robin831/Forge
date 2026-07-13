@@ -1,0 +1,2 @@
+category: Added
+- **Steer a running bead across IPC, Web, and CLI** - Deliver a human steering message to a bead's in-flight pipeline: a running Smith spawn is interrupted and its Claude session resumed with the message (mode A), or the message is queued for the next spawn (mode B). Exposed as the `steer_bead` IPC verb, `POST /api/bead/{bead_id}/steer`, and `forge queue steer <id> -m "<message>"`. All three surfaces return actionable errors when the bead has no active pipeline, the message is empty, or the session is not a Claude session. (Forge-w1at)

@@ -30,6 +30,8 @@ func init() {
 	_ = queueClearCmd.MarkFlagRequired("anvil")
 	queueCreatePRCmd.Flags().StringP("anvil", "a", "", "Anvil name (required)")
 	_ = queueCreatePRCmd.MarkFlagRequired("anvil")
+	queueSteerCmd.Flags().StringP("message", "m", "", "Steering message to deliver to the running Smith (required)")
+	_ = queueSteerCmd.MarkFlagRequired("message")
 	queueCmd.AddCommand(queueRunCmd)
 	queueCmd.AddCommand(queueClarifyCmd)
 	queueCmd.AddCommand(queueUnclarifyCmd)
@@ -37,6 +39,7 @@ func init() {
 	queueCmd.AddCommand(queueStopCmd)
 	queueCmd.AddCommand(queueClearCmd)
 	queueCmd.AddCommand(queueCreatePRCmd)
+	queueCmd.AddCommand(queueSteerCmd)
 	rootCmd.AddCommand(queueCmd)
 }
 
@@ -393,6 +396,70 @@ On failure the gh error is surfaced and the bead stays in needs-attention.`,
 			return fmt.Errorf("failed to unmarshal daemon response: %w", err)
 		}
 		fmt.Printf("Created PR for bead %s: %s\n", beadID, result["message"])
+		return nil
+	},
+}
+
+var queueSteerCmd = &cobra.Command{
+	Use:   "steer <id>",
+	Short: "Send a steering message to a bead's running Smith worker",
+	Long: `Deliver a human steering message to a bead's in-flight pipeline.
+
+If a Smith spawn is currently running, it is interrupted and its Claude session
+is resumed with your message as the new prompt (steer mode A). If no spawn is
+active right now, the message is queued and picked up before the next spawn
+(steer mode B).
+
+Steering requires an active pipeline running a Claude session — the daemon
+returns a clear error when the bead has no active worker or is running a
+non-Claude provider.`,
+	Args:    cobra.ExactArgs(1),
+	Example: "  forge queue steer BD-42 -m \"also update the README\"",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		beadID := args[0]
+		message, _ := cmd.Flags().GetString("message")
+
+		client, err := ipc.NewClient()
+		if err != nil {
+			return fmt.Errorf("connecting to daemon: %w (is 'forge up' running?)", err)
+		}
+		defer client.Close()
+
+		payload, _ := json.Marshal(ipc.SteerBeadPayload{
+			BeadID:  beadID,
+			Message: message,
+		})
+
+		resp, err := client.Send(ipc.Command{
+			Type:    "steer_bead",
+			Payload: payload,
+		})
+		if err != nil {
+			return fmt.Errorf("sending command: %w", err)
+		}
+
+		if resp.Type == "error" {
+			var msg map[string]string
+			var errMsg string
+			if err := json.Unmarshal(resp.Payload, &msg); err == nil && msg["message"] != "" {
+				errMsg = msg["message"]
+			} else if len(resp.Payload) > 0 {
+				errMsg = string(resp.Payload)
+			} else {
+				errMsg = "unknown error from daemon"
+			}
+			return fmt.Errorf("daemon error: %s", errMsg)
+		}
+
+		var result map[string]string
+		if err := json.Unmarshal(resp.Payload, &result); err != nil {
+			return fmt.Errorf("failed to unmarshal daemon response: %w", err)
+		}
+		if result["message"] != "" {
+			fmt.Println(result["message"])
+		} else {
+			fmt.Printf("Steer message delivered to bead %s\n", beadID)
+		}
 		return nil
 	},
 }
