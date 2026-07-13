@@ -264,3 +264,43 @@ func TestBackfillDanglingWorkerLogPaths(t *testing.T) {
 		t.Errorf("expected 0 repairs on second run, got %d", n2)
 	}
 }
+
+func TestBackfillDanglingWorkerLogPaths_SanitizesBeadID(t *testing.T) {
+	db := newRepointTestDB(t)
+	logsRoot := t.TempDir()
+
+	// Bead ID with a slash — preserveWorktreeLogs sanitizes "/" → "_",
+	// so the on-disk directory is "org_repo" not "org/repo".
+	beadID := "org/repo"
+	sanitizedID := "org_repo"
+
+	dangling := filepath.Join("/anvil", ".workers", "x", ".forge-logs", "300.log")
+	preserved := filepath.Join(logsRoot, sanitizedID, "300.log")
+	if err := os.MkdirAll(filepath.Dir(preserved), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(preserved, []byte("data"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.InsertWorker(&Worker{
+		ID:        "w-slash",
+		BeadID:    beadID,
+		Anvil:     "anvil",
+		Status:    WorkerDone,
+		LogPath:   dangling,
+		StartedAt: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	n, err := db.BackfillDanglingWorkerLogPaths(logsRoot)
+	if err != nil {
+		t.Fatalf("BackfillDanglingWorkerLogPaths: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("expected 1 repair, got %d", n)
+	}
+	if got := getLogPath(t, db, "w-slash"); got != preserved {
+		t.Errorf("w-slash log_path = %q, want %q", got, preserved)
+	}
+}

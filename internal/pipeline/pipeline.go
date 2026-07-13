@@ -28,6 +28,7 @@ import (
 	"github.com/Robin831/Forge/internal/depcheck"
 	"github.com/Robin831/Forge/internal/cost"
 	"github.com/Robin831/Forge/internal/executil"
+	"github.com/Robin831/Forge/internal/forge"
 	"github.com/Robin831/Forge/internal/ingot"
 	"github.com/Robin831/Forge/internal/notify"
 	"github.com/Robin831/Forge/internal/poller"
@@ -2002,11 +2003,7 @@ func preserveWorktreeLogs(worktreePath, beadID string) (string, error) {
 		return "", nil
 	}
 
-	// Sanitize beadID so it is safe to embed in a file path: replace path
-	// separators and strip ".." segments to prevent traversal outside ~/.forge/logs/.
-	safeID := strings.ReplaceAll(beadID, "/", "_")
-	safeID = strings.ReplaceAll(safeID, `\`, "_")
-	safeID = strings.ReplaceAll(safeID, "..", "__")
+	safeID := forge.SanitizeBeadID(beadID)
 
 	home, err := os.UserHomeDir()
 	if err != nil {

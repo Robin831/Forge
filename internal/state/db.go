@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Robin831/Forge/internal/forge"
 	"github.com/Robin831/Forge/internal/provider"
 	_ "modernc.org/sqlite" // Pure-Go SQLite driver
 )
@@ -780,7 +781,7 @@ func (db *DB) BackfillDanglingWorkerLogPaths(logsRoot string) (int, error) {
 		} else if !os.IsNotExist(statErr) {
 			continue // permission or other transient error — do not clobber.
 		}
-		candidate := filepath.Join(logsRoot, beadID, filepath.Base(logPath))
+		candidate := filepath.Join(logsRoot, forge.SanitizeBeadID(beadID), filepath.Base(logPath))
 		if _, err := os.Lstat(candidate); err != nil {
 			continue // no preserved copy to point at.
 		}
