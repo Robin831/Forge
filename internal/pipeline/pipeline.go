@@ -535,6 +535,15 @@ type Params struct {
 	// inject a stub to observe interruption without real signals.
 	SmithInterrupter func(proc *smith.Process)
 
+	// SpawnLive, when non-nil, is called with true just before the pipeline
+	// begins waiting on a running Smith spawn (the window in which a steer
+	// message interrupts that spawn — mode A) and false once that wait returns
+	// (between spawns / Temper / Warden — mode B). The daemon wires it to the
+	// bead's control handle so the IPC/API layer can label an incoming steer as
+	// mode A vs mode B from live-spawn state rather than from any pipeline-wide
+	// cancel. Nil disables the signal (tests / callers without a control handle).
+	SpawnLive func(live bool)
+
 	// SmithResumeRunner overrides the steer-mode resume spawn. Production routes
 	// through smith.SpawnWithOptions with the provider --resume flag and a
 	// steer-<ts>.log prefix; tests inject a stub. sessionID is the captured
@@ -859,6 +868,16 @@ func Run(ctx context.Context, p Params) *Outcome {
 	interruptSpawn := p.SmithInterrupter
 	if interruptSpawn == nil {
 		interruptSpawn = func(proc *smith.Process) { proc.Interrupt(steerGrace) }
+	}
+	// waitSmith wraps waitSmithWithSteer with the SpawnLive signal so the control
+	// handle knows a spawn is interruptible (mode A) only for the duration of the
+	// wait. Outside this window (Temper/Warden/between spawns) a steer is mode B.
+	waitSmith := func(proc *smith.Process) (*smith.Result, string, bool) {
+		if p.SpawnLive != nil {
+			p.SpawnLive(true)
+			defer p.SpawnLive(false)
+		}
+		return waitSmithWithSteer(proc, steerCh, pauseCh, interruptSpawn)
 	}
 	spawnResume := p.SmithResumeRunner
 	if spawnResume == nil {
@@ -1447,7 +1466,7 @@ func Run(ctx context.Context, p Params) *Outcome {
 			}
 			_ = p.DB.UpdateWorkerPID(workerID, process.PID)
 			_ = p.DB.UpdateWorkerLogPath(workerID, process.LogPath)
-			smithResult, steerMsgThisIter, pausedThisIter = waitSmithWithSteer(process, steerCh, pauseCh, interruptSpawn)
+			smithResult, steerMsgThisIter, pausedThisIter = waitSmith(process)
 
 			_ = p.DB.UpdateWorkerSession(workerID, smithResult.SessionID, smith.SessionModel(smithResult, pv))
 			if smithResult.ResultSubtype == "success" && !smithResult.IsError && smithResult.ExitCode == 0 {
@@ -1483,7 +1502,7 @@ func Run(ctx context.Context, p Params) *Outcome {
 				}
 				_ = p.DB.UpdateWorkerPID(workerID, process.PID)
 				_ = p.DB.UpdateWorkerLogPath(workerID, process.LogPath)
-				smithResult, steerMsgThisIter, pausedThisIter = waitSmithWithSteer(process, steerCh, pauseCh, interruptSpawn)
+				smithResult, steerMsgThisIter, pausedThisIter = waitSmith(process)
 
 				// Persist the captured session_id and model for this spawn. The
 				// model comes from the stream (Claude reports it in-band) and falls

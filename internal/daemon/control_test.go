@@ -1,12 +1,11 @@
 package daemon
 
 import (
-	"sync/atomic"
 	"testing"
 )
 
 // TestControlHandleLifecycle exercises the full register → lookup → steer →
-// interrupt → deregister cycle that the IPC/API steering features build on.
+// live-spawn → deregister cycle that the IPC/API steering features build on.
 func TestControlHandleLifecycle(t *testing.T) {
 	d := &Daemon{}
 	const bead = "Forge-qchh"
@@ -18,14 +17,8 @@ func TestControlHandleLifecycle(t *testing.T) {
 	if d.pushSteer(bead, "early") {
 		t.Fatal("pushSteer should fail when no handle is registered")
 	}
-	if d.triggerInterrupt(bead) {
-		t.Fatal("triggerInterrupt should fail when no handle is registered")
-	}
 
-	// Register a handle with an interrupt that flips a sentinel.
-	var interrupted atomic.Bool
 	h := newControlHandle("worker-1")
-	h.setInterrupt(func() { interrupted.Store(true) })
 	d.registerControlHandle(bead, h)
 
 	got, ok := d.lookupControlHandle(bead)
@@ -37,6 +30,11 @@ func TestControlHandleLifecycle(t *testing.T) {
 	}
 	if got.workerID != "worker-1" {
 		t.Fatalf("workerID = %q, want %q", got.workerID, "worker-1")
+	}
+
+	// A fresh handle has no live spawn (mode B).
+	if got.hasLiveSpawn() {
+		t.Fatal("expected no live spawn on a fresh handle")
 	}
 
 	// Push a steer message and read it back off the mailbox.
@@ -52,12 +50,14 @@ func TestControlHandleLifecycle(t *testing.T) {
 		t.Fatal("expected a steer message in the mailbox")
 	}
 
-	// Trigger the interrupt and verify the sentinel flipped.
-	if !d.triggerInterrupt(bead) {
-		t.Fatal("triggerInterrupt should succeed for a registered handle with an interrupt")
+	// Marking a spawn live flips the mode-A indicator; clearing restores mode B.
+	got.setLiveSpawn(true)
+	if !got.hasLiveSpawn() {
+		t.Fatal("expected a live spawn after setLiveSpawn(true)")
 	}
-	if !interrupted.Load() {
-		t.Fatal("interrupt func was not invoked")
+	got.setLiveSpawn(false)
+	if got.hasLiveSpawn() {
+		t.Fatal("expected no live spawn after setLiveSpawn(false)")
 	}
 
 	// Deregister and confirm lookup once again reports absence.
@@ -145,22 +145,22 @@ func TestReleaseBeadSlotIfOwner(t *testing.T) {
 	}
 }
 
-// TestControlHandleInterruptCleared verifies that clearing the interrupt (as the
-// pipeline does when it returns) makes fireInterrupt a no-op returning false.
-func TestControlHandleInterruptCleared(t *testing.T) {
+// TestControlHandleLiveSpawn verifies the live-spawn indicator that
+// handleSteerBead uses to label a steer mode A (live spawn) vs mode B (queued).
+// A fresh handle reports no live spawn; the flag tracks setLiveSpawn.
+func TestControlHandleLiveSpawn(t *testing.T) {
 	h := newControlHandle("worker-3")
-	if h.fireInterrupt() {
-		t.Fatal("fireInterrupt should return false when no interrupt is wired")
+	if h.hasLiveSpawn() {
+		t.Fatal("a fresh handle must report no live spawn (mode B)")
 	}
 
-	var called atomic.Bool
-	h.setInterrupt(func() { called.Store(true) })
-	h.setInterrupt(nil) // pipeline returned; interrupt cleared
-
-	if h.fireInterrupt() {
-		t.Fatal("fireInterrupt should return false after the interrupt is cleared")
+	h.setLiveSpawn(true)
+	if !h.hasLiveSpawn() {
+		t.Fatal("hasLiveSpawn should report true while a spawn is live (mode A)")
 	}
-	if called.Load() {
-		t.Fatal("cleared interrupt func must not be invoked")
+
+	h.setLiveSpawn(false) // pipeline left the spawn wait window
+	if h.hasLiveSpawn() {
+		t.Fatal("hasLiveSpawn should report false once the spawn wait returns")
 	}
 }
