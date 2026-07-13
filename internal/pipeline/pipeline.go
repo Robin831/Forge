@@ -63,10 +63,19 @@ func waitSmithWithSteer(proc *smith.Process, steerCh <-chan string, interrupt fu
 	select {
 	case <-proc.Done():
 		return proc.Wait(), ""
-	case msg := <-steerCh:
+	case msg, ok := <-steerCh:
+		if !ok {
+			// Channel was closed; treat as no steer.
+			return proc.Wait(), ""
+		}
+		// Prefer normal completion if the process already finished — both
+		// channels may be ready simultaneously and Go picks randomly.
+		select {
+		case <-proc.Done():
+			return proc.Wait(), ""
+		default:
+		}
 		interrupt(proc)
-		// Reap the interrupted spawn. The stream reader has captured the
-		// session_id, so the returned result carries it for the resume.
 		return proc.Wait(), msg
 	}
 }
