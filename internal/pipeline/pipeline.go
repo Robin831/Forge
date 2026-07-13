@@ -62,6 +62,16 @@ const defaultSteerGrace = 5 * time.Second
 // completes on its own (or neither channel is wired) it returns the result with
 // an empty message and paused=false.
 //
+// Race safety: the outer select may fire on steerCh/pauseCh at the very instant
+// the spawn also completes (both cases ready → Go picks at random). When that
+// happens the channel value has ALREADY been consumed, so it must never be
+// silently discarded in favour of "prefer completion" — that is exactly how a
+// pause or steer used to be lost while the operator was told it succeeded.
+// Instead, once a value is received it is always propagated: the process is
+// interrupted only when it is still running (a finished spawn has nothing to
+// stop, and a finished session is precisely the mode-B resume case), and the
+// received steer/pause is returned regardless.
+//
 // A pause and a steer are mutually exclusive per spawn: exactly one of them (or
 // normal completion) drives the single select, so the pipeline never has to
 // reconcile both for the same spawn.
@@ -73,33 +83,33 @@ func waitSmithWithSteer(proc *smith.Process, steerCh <-chan string, pauseCh <-ch
 	// unwired steerCh or pauseCh simply drops out of the select naturally.
 	select {
 	case <-proc.Done():
+		// The spawn finished before any signal was received. Nothing was
+		// consumed from steerCh/pauseCh, so a message that is still queued stays
+		// in the mailbox for the between-spawns (mode B) drain — never lost.
 		return proc.Wait(), "", false
 	case msg, ok := <-steerCh:
 		if !ok {
 			// Channel was closed; treat as no steer.
 			return proc.Wait(), "", false
 		}
-		// Prefer normal completion if the process already finished — both
-		// channels may be ready simultaneously and Go picks randomly.
-		select {
-		case <-proc.Done():
-			return proc.Wait(), "", false
-		default:
+		// The steer has been consumed and MUST be acted on even if the spawn is
+		// completing at the same instant. Interrupt only while the process is
+		// still running; a finished session is resumed as the mode-B case.
+		if proc.IsRunning() {
+			interrupt(proc)
 		}
-		interrupt(proc)
 		return proc.Wait(), msg, false
 	case _, ok := <-pauseCh:
 		if !ok {
 			// Channel was closed; treat as no pause.
 			return proc.Wait(), "", false
 		}
-		// Prefer normal completion if the process already finished.
-		select {
-		case <-proc.Done():
-			return proc.Wait(), "", false
-		default:
+		// The pause has been consumed and MUST park the worker even if the spawn
+		// finished simultaneously — otherwise the bead would silently complete
+		// despite an acknowledged pause. Interrupt only while still running.
+		if proc.IsRunning() {
+			interrupt(proc)
 		}
-		interrupt(proc)
 		return proc.Wait(), "", true
 	}
 }
@@ -127,6 +137,34 @@ func drainSteer(ch <-chan string) (string, bool) {
 		return msg, true
 	default:
 		return "", false
+	}
+}
+
+// drainPause performs a single non-blocking receive from the pause signal used
+// by the pause/park/resume mechanic. It returns true when a pause was waiting
+// (consuming it), or false when the channel is nil, currently empty, or closed.
+// It is the between-spawns counterpart to waitSmithWithSteer's pause branch:
+// waitSmithWithSteer only observes a pause DURING a spawn, so a pause enqueued
+// while Temper/Warden ran (when no spawn is live to interrupt) would otherwise
+// never be seen. It is drained at three points: at the loop top (park before the
+// next spawn), immediately before a bead completes on Warden approval (park
+// instead of completing), and — as a terminal safety net — in Run's deferred
+// exit handler, which surfaces a still-pending pause in the event log when the
+// pipeline finishes on a non-approval path (failure/escalation) with no further
+// turn to honour it. Together these guarantee an acknowledged pause is either
+// honoured (the pipeline parks) or explicitly surfaced, never silently dropped.
+// The pipeline goroutine is the sole consumer of the pause signal, so this drain
+// never races waitSmithWithSteer for the same token.
+func drainPause(ch <-chan struct{}) bool {
+	if ch == nil {
+		return false
+	}
+	select {
+	case _, ok := <-ch:
+		// A closed channel yields ok==false; that is not a pause request.
+		return ok
+	default:
+		return false
 	}
 }
 
@@ -865,6 +903,36 @@ func Run(ctx context.Context, p Params) *Outcome {
 	if parkHandle != nil {
 		pauseCh = parkHandle.PauseRequested()
 	}
+
+	// Terminal safety net: a pause or steer acknowledged to the operator with
+	// success must NEVER be silently dropped. The in-spawn (waitSmithWithSteer),
+	// loop-top, and Warden-approval drains honour a pending signal by parking or
+	// re-iterating. But a signal can also be enqueued while Temper/Warden run on
+	// an iteration that then reaches a TERMINAL non-approval path — a Temper
+	// failure, exhausted iterations, a Smith/spawn error, or an escalation to a
+	// human. On those paths there is no further spawn or loop turn to carry the
+	// signal, and the worker exits failed/needs-human rather than paused, so the
+	// pause/steer cannot take effect. Rather than discard it, drain and surface
+	// it in the event log on the way out: the operator is told explicitly that
+	// the signal could not be applied (and to re-dispatch), never left believing
+	// a silent success. This runs on EVERY return; on the paths that already
+	// consumed the signal (park, loop-top, Warden approval) the channels are
+	// empty here, so it is a no-op.
+	defer func() {
+		if drainPause(pauseCh) {
+			log.Printf("[pipeline:%s] Pause acknowledged but pipeline terminated before it could take effect — surfacing", workerID)
+			_ = p.DB.LogEvent(state.EventBeadPaused,
+				"Pause could not take effect: the pipeline had already terminated (no further Smith turn to interrupt). Re-dispatch the bead to apply it.",
+				p.Bead.ID, p.AnvilName)
+		}
+		if steerMsg, ok := drainSteer(steerCh); ok {
+			log.Printf("[pipeline:%s] Steer acknowledged but pipeline terminated before it could take effect — surfacing", workerID)
+			_ = p.DB.LogEvent(state.EventBeadSteered,
+				fmt.Sprintf("Steer could not take effect: the pipeline had already terminated (no further Smith turn). Re-dispatch the bead to apply it. Message: %q", steerMsg),
+				p.Bead.ID, p.AnvilName)
+		}
+	}()
+
 	interruptSpawn := p.SmithInterrupter
 	if interruptSpawn == nil {
 		interruptSpawn = func(proc *smith.Process) { proc.Interrupt(steerGrace) }
@@ -1327,10 +1395,153 @@ func Run(ctx context.Context, p Params) *Outcome {
 	var lastSessionID string
 	var lastSessionProvider provider.Provider
 
+	// parkPipeline centralises the pause/park/resume bookkeeping so every path
+	// that observes a pause — an in-spawn pause from waitSmithWithSteer AND a
+	// between-spawns pause drained around Temper/Warden — parks identically and
+	// can never silently drop the pause. It records a ParkRecord for the given
+	// session/iteration, transitions the worker to paused, and blocks on the
+	// resume signal. It returns cancelled=true when the park was cancelled by
+	// context/shutdown (the caller must return outcome with the worker left
+	// paused); cancelled=false means a resume arrived and the caller should
+	// continue the loop — a captured session_id has been armed as pendingResume,
+	// or, when none was captured, the resume message was folded into currentPrompt.
+	parkPipeline := func(sessionID string, prov provider.Provider, iteration int) (cancelled bool) {
+		resumeParkStart = time.Now()
+		park := ParkRecord{
+			SessionID: sessionID,
+			Iteration: iteration,
+			Provider:  prov,
+		}
+		log.Printf("[pipeline:%s] Pause requested during iteration %d (session=%q) — parking", workerID, iteration, park.SessionID)
+
+		// Transition running -> paused.
+		_ = p.DB.UpdateWorkerStatus(workerID, state.WorkerPaused)
+		_ = p.DB.LogEvent(state.EventBeadPaused,
+			fmt.Sprintf("Paused at iteration %d (session %s)", iteration, park.SessionID),
+			p.Bead.ID, p.AnvilName)
+
+		// Park the goroutine on the resume signal without exiting the loop.
+		// Block on baseCtx, NOT the smith-timeout ctx: a parked pipeline must
+		// survive an arbitrarily long pause, so only cancellation/interrupt
+		// (shutdown) may unblock the wait — never the smith timeout.
+		pauseStart := time.Now()
+		resumeMsg, ok := parkUntilResume(baseCtx, p.ShutdownCtx, parkHandle)
+		if !ok {
+			// The base context was cancelled (IPC interrupt), the daemon began
+			// shutting down, or the handle went away while parked. Leave the
+			// worker paused and exit WITHOUT marking it failed; the parked spawn
+			// was already interrupted cleanly and the worker can resume after a
+			// restart. Surface a non-nil error so the caller does not mistake a
+			// still-parked outcome for success (baseCtx.Err() is nil when it was
+			// the shutdown context, not baseCtx, that fired).
+			parkErr := baseCtx.Err()
+			if parkErr == nil {
+				parkErr = context.Canceled
+			}
+			log.Printf("[pipeline:%s] Parked pipeline cancelled before resume: %v", workerID, parkErr)
+			// Retain the worktree: the worker is left paused and its retained
+			// worktree must survive so a resume (including a cold resume after a
+			// daemon restart) can continue in place.
+			retainWorktreeOnExit = true
+			outcome.Error = parkErr
+			outcome.Duration = time.Since(start)
+			return true
+		}
+
+		// Set a temporary generous deadline so hooks and overhead code between
+		// here and the next spawn do not see an expired context. The real
+		// extension (accounting for ALL overhead between the park event and the
+		// spawn) happens right before spawnResume/spawnSmith.
+		if p.SmithTimeout > 0 {
+			parkedFor := time.Since(pauseStart)
+			log.Printf("[pipeline:%s] Resumed after %s parked; deadline will be extended before next spawn (total paused so far %s)",
+				workerID, parkedFor.Round(time.Second), (pauses.Total() + parkedFor).Round(time.Second))
+			ctx = timeout.set(time.Now().Add(p.SmithTimeout))
+		}
+
+		// Resume: transition paused -> running and continue.
+		_ = p.DB.UpdateWorkerStatus(workerID, state.WorkerRunning)
+		_ = p.DB.LogEvent(state.EventBeadResumed,
+			fmt.Sprintf("Resumed at iteration %d (session %s)", iteration, park.SessionID),
+			p.Bead.ID, p.AnvilName)
+
+		// Ensure the human-requested resume always gets an iteration to run, even
+		// if the pause fired on the final allowed iteration. A pause is a
+		// deliberate operator action, not an automated loop, so it must not be
+		// silently dropped by the max-iteration bound.
+		if iteration >= maxIter {
+			maxIter = iteration + 1
+		}
+
+		if park.SessionID == "" {
+			// No session to resume (e.g. a non-Claude provider that reported no
+			// session_id, or a pause taken before any spawn produced one). Fold
+			// the resume message into a fresh prompt so it is still honoured.
+			currentPrompt = appendSteerToPrompt(currentPrompt, resumeMsg)
+			log.Printf("[pipeline:%s] Resume with no session_id — folded resume message into fresh prompt", workerID)
+			return false
+		}
+
+		// Arm the resume respawn of the parked session for the next iteration,
+		// reusing the steer resume path (`claude --resume`).
+		pendingResume = true
+		resumeSessionID = park.SessionID
+		resumeProvider = park.Provider
+		resumeMessage = resumeMsg
+		return false
+	}
+
+	// applyModeBSteer arms a steer message consumed BETWEEN spawns (mode B): at
+	// the loop top, or immediately before a bead completes on Warden approval. It
+	// records the steer, then either resumes the last completed session with the
+	// steer text (merged with any pending Warden/Temper feedback) or folds it into
+	// a fresh prompt when there is no session to resume. Shared by both call sites
+	// so a between-spawns steer near completion is applied on the next iteration
+	// rather than silently discarded.
+	applyModeBSteer := func(steerMsg string, iteration int) {
+		p.recordSteer(workerID, iteration, "mode B, between spawns", steerMsg)
+		if lastSessionID != "" {
+			pendingResume = true
+			resumeSessionID = lastSessionID
+			resumeProvider = lastSessionProvider
+			resumeMessage = mergeSteerWithFeedback(beadCtx.PriorFeedback, steerMsg)
+			log.Printf("[pipeline:%s] Steer mode B: resuming session %s with queued steer message (iteration %d)", workerID, resumeSessionID, iteration)
+		} else {
+			currentPrompt = appendSteerToPrompt(currentPrompt, steerMsg)
+			log.Printf("[pipeline:%s] Steer mode B: no session to resume, folded queued steer message into fresh prompt (iteration %d)", workerID, iteration)
+		}
+	}
+
 	// Feedback loop
 	for iteration := 1; iteration <= maxIter; iteration++ {
 		outcome.Iterations = iteration
 		log.Printf("[pipeline:%s] Iteration %d/%d", workerID, iteration, maxIter)
+
+		// Between-spawns pause (loop top): an operator may have paused while
+		// Temper/Warden ran on the PRIOR iteration — a window with no live spawn
+		// for waitSmithWithSteer to interrupt. Consume it HERE, before this
+		// iteration's spawn, so an acknowledged pause parks the pipeline instead
+		// of being carried silently past. parkPipeline blocks until a resume
+		// arrives (or the park is cancelled by shutdown, in which case the worker
+		// is left paused and we return). We pass the last completed session so the
+		// resume continues it in place; on resume parkPipeline has armed
+		// pendingResume (or folded the message into the prompt), so we fall
+		// through into the spawn rather than continuing/skipping the iteration.
+		//
+		// The iteration > 1 && !pendingResume guard mirrors the mode-B steer
+		// drain below: a between-spawns pause can only exist AFTER a prior
+		// spawn+Temper+Warden cycle, so on iteration 1 a pending pause is instead
+		// left for waitSmithWithSteer to observe as an in-spawn park of the very
+		// first spawn (never consumed early here). Skipping when a resume is
+		// already armed keeps this from clobbering a steer/park resume that is
+		// about to run; such a pause is picked up by the next spawn's
+		// waitSmithWithSteer instead, so it is never lost.
+		if iteration > 1 && !pendingResume && drainPause(pauseCh) {
+			log.Printf("[pipeline:%s] Pause pending at loop top (iteration %d) — parking before spawn", workerID, iteration)
+			if parkPipeline(lastSessionID, lastSessionProvider, iteration) {
+				return outcome
+			}
+		}
 
 		// Capture HEAD before smith runs so we can detect new commits afterward
 		// and compute the diff for the next iteration's prompt context.
@@ -1408,25 +1619,7 @@ func Run(ctx context.Context, p Params) *Outcome {
 		// prior session to resume it against yet).
 		if iteration > 1 && !pendingResume {
 			if steerMsg, ok := drainSteer(steerCh); ok {
-				p.recordSteer(workerID, iteration, "mode B, between spawns", steerMsg)
-				if lastSessionID != "" {
-					// Resume the last completed session with the steer text merged
-					// into the pending Warden/Temper feedback that would otherwise
-					// have driven this iteration's fresh prompt. Use lastSessionProvider
-					// (the provider that produced lastSessionID) rather than the current
-					// activeProviderIdx, which may have advanced to a different fallback.
-					pendingResume = true
-					resumeSessionID = lastSessionID
-					resumeProvider = lastSessionProvider
-					resumeMessage = mergeSteerWithFeedback(beadCtx.PriorFeedback, steerMsg)
-					log.Printf("[pipeline:%s] Steer mode B: resuming session %s with queued steer message (iteration %d)", workerID, resumeSessionID, iteration)
-				} else {
-					// No session to resume (e.g. iteration 1, or a non-Claude
-					// provider that never reported a session_id). Fold the steer
-					// text into the fresh prompt so it is still honoured.
-					currentPrompt = appendSteerToPrompt(currentPrompt, steerMsg)
-					log.Printf("[pipeline:%s] Steer mode B: no session to resume, folded queued steer message into fresh prompt (iteration %d)", workerID, iteration)
-				}
+				applyModeBSteer(steerMsg, iteration)
 			}
 		}
 
@@ -1566,90 +1759,9 @@ func Run(ctx context.Context, p Params) *Outcome {
 		// incomplete, and before steer mode A because the two are mutually
 		// exclusive for a single spawn.
 		if pausedThisIter {
-			resumeParkStart = time.Now()
-			park := ParkRecord{
-				SessionID: smithResult.SessionID,
-				Iteration: iteration,
-				Provider:  spawnProvider,
-			}
-			log.Printf("[pipeline:%s] Pause requested during iteration %d (session=%q) — parking", workerID, iteration, park.SessionID)
-
-			// Transition running -> paused (sub-task 1's paused status constant).
-			_ = p.DB.UpdateWorkerStatus(workerID, state.WorkerPaused)
-			_ = p.DB.LogEvent(state.EventBeadPaused,
-				fmt.Sprintf("Paused at iteration %d (session %s)", iteration, park.SessionID),
-				p.Bead.ID, p.AnvilName)
-
-			// Park the goroutine on the resume signal without exiting the loop.
-			// Block on baseCtx, NOT the smith-timeout ctx: a parked pipeline must
-			// survive an arbitrarily long pause, so only cancellation/interrupt
-			// (shutdown) may unblock the wait — never the smith timeout.
-			pauseStart := time.Now()
-			resumeMsg, ok := parkUntilResume(baseCtx, p.ShutdownCtx, parkHandle)
-			if !ok {
-				// The base context was cancelled (IPC interrupt), the daemon began
-				// shutting down, or the handle went away while parked. Leave the
-				// worker paused and exit WITHOUT marking it failed; the parked spawn
-				// was already interrupted cleanly and the worker can resume after a
-				// restart. Surface a non-nil error so the caller does not mistake a
-				// still-parked outcome for success (baseCtx.Err() is nil when it was
-				// the shutdown context, not baseCtx, that fired).
-				parkErr := baseCtx.Err()
-				if parkErr == nil {
-					parkErr = context.Canceled
-				}
-				log.Printf("[pipeline:%s] Parked pipeline cancelled before resume: %v", workerID, parkErr)
-				// Retain the worktree: the worker is left paused and its retained
-				// worktree must survive so a resume (including a cold resume after a
-				// daemon restart) can continue in place. This treats a parked-paused
-				// pipeline like a drained one on shutdown — state is persisted, not
-				// torn down.
-				retainWorktreeOnExit = true
-				outcome.Error = parkErr
-				outcome.Duration = time.Since(start)
+			if parkPipeline(smithResult.SessionID, spawnProvider, iteration) {
 				return outcome
 			}
-
-			// Set a temporary generous deadline so hooks and overhead code
-			// between here and the next spawn do not see an expired context.
-			// The real extension (accounting for ALL overhead between the park
-			// event and the spawn) happens right before spawnResume/spawnSmith.
-			if p.SmithTimeout > 0 {
-				parkedFor := time.Since(pauseStart)
-				log.Printf("[pipeline:%s] Resumed after %s parked; deadline will be extended before next spawn (total paused so far %s)",
-					workerID, parkedFor.Round(time.Second), (pauses.Total() + parkedFor).Round(time.Second))
-				ctx = timeout.set(time.Now().Add(p.SmithTimeout))
-			}
-
-			// Resume: transition paused -> running and continue.
-			_ = p.DB.UpdateWorkerStatus(workerID, state.WorkerRunning)
-			_ = p.DB.LogEvent(state.EventBeadResumed,
-				fmt.Sprintf("Resumed at iteration %d (session %s)", iteration, park.SessionID),
-				p.Bead.ID, p.AnvilName)
-
-			// Ensure the human-requested resume always gets an iteration to run,
-			// even if the pause fired on the final allowed iteration. A pause is a
-			// deliberate operator action, not an automated loop, so it must not be
-			// silently dropped by the max-iteration bound.
-			if iteration >= maxIter {
-				maxIter = iteration + 1
-			}
-
-			if park.SessionID == "" {
-				// No session to resume (e.g. a non-Claude provider that reported
-				// no session_id). Fold the resume message into a fresh prompt so
-				// it is still honoured, and continue the loop.
-				currentPrompt = appendSteerToPrompt(currentPrompt, resumeMsg)
-				log.Printf("[pipeline:%s] Resume with no session_id — folded resume message into fresh prompt", workerID)
-				continue
-			}
-
-			// Arm the resume respawn of the parked session for the next
-			// iteration, reusing the steer resume path (`claude --resume`).
-			pendingResume = true
-			resumeSessionID = park.SessionID
-			resumeProvider = park.Provider
-			resumeMessage = resumeMsg
 			continue
 		}
 
@@ -2236,6 +2348,32 @@ func Run(ctx context.Context, p Params) *Outcome {
 
 		switch reviewResult.Verdict {
 		case warden.VerdictApprove:
+			// A pause or steer may have been enqueued while Temper/Warden ran on
+			// this iteration — a window with no live spawn for waitSmithWithSteer
+			// to interrupt. If one is pending it must be honoured here rather than
+			// silently dropped by a bead that is about to complete: the operator
+			// was told the pause/steer succeeded. A pending pause parks the
+			// pipeline (it resumes for another turn); a pending steer re-enters the
+			// loop with the correction applied. Both are drained before any
+			// completion state is written.
+			if drainPause(pauseCh) {
+				log.Printf("[pipeline:%s] Pause pending at Warden approval (iteration %d) — parking instead of completing", workerID, iteration)
+				if parkPipeline(lastSessionID, lastSessionProvider, iteration) {
+					return outcome
+				}
+				continue
+			}
+			if steerMsg, ok := drainSteer(steerCh); ok {
+				log.Printf("[pipeline:%s] Steer pending at Warden approval (iteration %d) — applying instead of completing", workerID, iteration)
+				// A steer is a deliberate operator action, so give it a turn even
+				// if approval landed on the final allowed iteration.
+				if iteration >= maxIter {
+					maxIter = iteration + 1
+				}
+				applyModeBSteer(steerMsg, iteration)
+				continue
+			}
+
 			log.Printf("[pipeline:%s] Warden approved", workerID)
 			outcome.Verdict = warden.VerdictApprove
 			outcome.Success = true
