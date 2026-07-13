@@ -67,6 +67,19 @@ type activeLogDir struct {
 	workerID string
 }
 
+const maxWorkersPerBeadScan = 200
+
+// beadLogFileFromEntry builds a beadLogFile from a directory entry and its
+// FileInfo. Callers set Live/WorkerID on the returned value when appropriate.
+func beadLogFileFromEntry(name string, info os.FileInfo) beadLogFile {
+	return beadLogFile{
+		Filename:  name,
+		Stage:     stageFromFilename(name),
+		SizeBytes: info.Size(),
+		MTime:     info.ModTime().UTC().Format(time.RFC3339),
+	}
+}
+
 // isTerminalWorkerStatus reports whether a worker has finished and its worktree
 // (and live .forge-logs dir) may already be gone.
 func isTerminalWorkerStatus(s state.WorkerStatus) bool {
@@ -82,7 +95,7 @@ func isTerminalWorkerStatus(s state.WorkerStatus) bool {
 // currently-active workers, filtered to the allowlisted roots. Bellows
 // pseudo-workers (no log path) and terminal workers are skipped.
 func (s *Server) activeWorkerLogDirs(beadID string, allow logDirAllowlist) []activeLogDir {
-	workers, err := s.db.WorkersByBead(beadID, "", 200)
+	workers, err := s.db.WorkersByBead(beadID, "", maxWorkersPerBeadScan)
 	if err != nil {
 		return nil
 	}
@@ -144,12 +157,7 @@ func (s *Server) handleBeadLogs(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 			name := e.Name()
-			f := beadLogFile{
-				Filename:  name,
-				Stage:     stageFromFilename(name),
-				SizeBytes: info.Size(),
-				MTime:     info.ModTime().UTC().Format(time.RFC3339),
-			}
+			f := beadLogFileFromEntry(name, info)
 			if name == ad.liveBase {
 				f.Live = true
 				f.WorkerID = ad.workerID
@@ -172,12 +180,7 @@ func (s *Server) handleBeadLogs(w http.ResponseWriter, r *http.Request) {
 			if ierr != nil {
 				continue
 			}
-			byName[name] = beadLogFile{
-				Filename:  name,
-				Stage:     stageFromFilename(name),
-				SizeBytes: info.Size(),
-				MTime:     info.ModTime().UTC().Format(time.RFC3339),
-			}
+			byName[name] = beadLogFileFromEntry(name, info)
 		}
 	}
 

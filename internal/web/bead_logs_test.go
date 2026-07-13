@@ -130,6 +130,151 @@ func TestBeadLogs_LiveWorkerFile(t *testing.T) {
 	}
 }
 
+// TestBeadLogs_LiveOverridesPreserved verifies that when both a live worktree
+// file and a preserved copy share the same filename, the live entry wins (with
+// Live=true and WorkerID set).
+func TestBeadLogs_LiveOverridesPreserved(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	srv := newServerWithDefaults(t, nil)
+
+	beadID := "Forge-dup1"
+	sharedName := "smith-5000-1.log"
+
+	// Write a preserved copy first.
+	writePreservedLog(t, beadID, sharedName, "preserved content\n", time.Now().Add(-time.Minute))
+
+	// Simulate a live worker with the same filename.
+	wtLogDir := filepath.Join(home, ".workers", "anvil-"+beadID, ".forge-logs")
+	if err := os.MkdirAll(wtLogDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	livePath := filepath.Join(wtLogDir, sharedName)
+	if err := os.WriteFile(livePath, []byte("live content\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	if err := srv.db.InsertWorker(&state.Worker{
+		ID:        "anvil-" + beadID + "-1",
+		BeadID:    beadID,
+		Anvil:     "anvil",
+		Status:    state.WorkerRunning,
+		StartedAt: time.Now().UTC(),
+		LogPath:   livePath,
+	}); err != nil {
+		t.Fatalf("InsertWorker: %v", err)
+	}
+
+	rec := authedGet(t, srv, "/api/bead/"+beadID+"/logs")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	var resp beadLogsResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(resp.Files) != 1 {
+		t.Fatalf("expected 1 deduplicated file, got %d: %+v", len(resp.Files), resp.Files)
+	}
+	f := resp.Files[0]
+	if f.Filename != sharedName {
+		t.Errorf("filename = %q, want %q", f.Filename, sharedName)
+	}
+	if !f.Live {
+		t.Errorf("expected Live=true for deduplicated file")
+	}
+	if f.WorkerID != "anvil-"+beadID+"-1" {
+		t.Errorf("WorkerID = %q, want %q", f.WorkerID, "anvil-"+beadID+"-1")
+	}
+}
+
+// TestBeadLogs_OutOfRootWorkerDirSkipped verifies that a worker whose LogPath
+// resolves outside every allowlisted root contributes no files to the response.
+func TestBeadLogs_OutOfRootWorkerDirSkipped(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	srv := newServerWithDefaults(t, nil)
+
+	beadID := "Forge-oor1"
+
+	// Create a log file outside ~/.forge and outside ~/.workers/.
+	outsideDir := t.TempDir()
+	logPath := filepath.Join(outsideDir, "smith-7000-1.log")
+	if err := os.WriteFile(logPath, []byte("should not appear\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	if err := srv.db.InsertWorker(&state.Worker{
+		ID:        "anvil-" + beadID + "-1",
+		BeadID:    beadID,
+		Anvil:     "anvil",
+		Status:    state.WorkerRunning,
+		StartedAt: time.Now().UTC(),
+		LogPath:   logPath,
+	}); err != nil {
+		t.Fatalf("InsertWorker: %v", err)
+	}
+
+	rec := authedGet(t, srv, "/api/bead/"+beadID+"/logs")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	var resp beadLogsResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(resp.Files) != 0 {
+		t.Fatalf("expected 0 files for out-of-root worker, got %d: %+v", len(resp.Files), resp.Files)
+	}
+}
+
+// TestBeadLogs_TerminalWorkerExcluded verifies that a terminal (done) worker's
+// log file is not flagged as live, even if the file still exists on disk.
+func TestBeadLogs_TerminalWorkerExcluded(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	srv := newServerWithDefaults(t, nil)
+
+	beadID := "Forge-term"
+
+	// Create a log file in a .workers dir that would be allowlisted.
+	wtLogDir := filepath.Join(home, ".workers", "anvil-"+beadID, ".forge-logs")
+	if err := os.MkdirAll(wtLogDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	logPath := filepath.Join(wtLogDir, "smith-8000-1.log")
+	if err := os.WriteFile(logPath, []byte("done worker log\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	// Insert a terminal (done) worker pointing to this file.
+	if err := srv.db.InsertWorker(&state.Worker{
+		ID:        "anvil-" + beadID + "-1",
+		BeadID:    beadID,
+		Anvil:     "anvil",
+		Status:    state.WorkerDone,
+		StartedAt: time.Now().UTC(),
+		LogPath:   logPath,
+	}); err != nil {
+		t.Fatalf("InsertWorker: %v", err)
+	}
+
+	rec := authedGet(t, srv, "/api/bead/"+beadID+"/logs")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	var resp beadLogsResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	for _, f := range resp.Files {
+		if f.Live {
+			t.Errorf("terminal worker file %q should not be live", f.Filename)
+		}
+		if f.WorkerID != "" {
+			t.Errorf("terminal worker file %q has WorkerID=%q, want empty", f.Filename, f.WorkerID)
+		}
+	}
+}
+
 func TestBeadLogFile_TailContent(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	srv := newServerWithDefaults(t, nil)
