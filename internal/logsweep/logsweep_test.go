@@ -15,11 +15,14 @@ import (
 // fakeDB is a lightweight workerLister double.
 type fakeDB struct {
 	workers []state.Worker
+	paused  []state.Worker
 	nulled  []string
 	events  []state.EventType
 }
 
 func (f *fakeDB) ActiveWorkers() ([]state.Worker, error) { return f.workers, nil }
+
+func (f *fakeDB) PausedWorkers() ([]state.Worker, error) { return f.paused, nil }
 
 func (f *fakeDB) NullWorkerLogPathsUnder(dir string) (int, error) {
 	f.nulled = append(f.nulled, dir)
@@ -161,6 +164,37 @@ func TestRunOnce_SanitizedBeadIDProtectsActiveWorker(t *testing.T) {
 	}
 	if len(db.nulled) != 0 {
 		t.Errorf("expected no dirs removed, got nulled=%v", db.nulled)
+	}
+}
+
+func TestRunOnce_PausedWorkerProtectsPreservedLogs(t *testing.T) {
+	logsRoot := t.TempDir()
+
+	// A bead parked by an operator pause: its preserved transcript history is
+	// older than retention, but the operator intends to resume it, so the dir
+	// must NOT be swept.
+	pausedDir := makeBeadDir(t, logsRoot, "paused-bead", 40*24*time.Hour)
+	// An equally old dir with no active or paused worker: it IS swept.
+	orphanDir := makeBeadDir(t, logsRoot, "orphan-bead", 40*24*time.Hour)
+
+	db := &fakeDB{
+		paused: []state.Worker{{BeadID: "paused-bead", Status: "paused"}},
+	}
+
+	m := New(db, discardLogger(), logsRoot, 24*time.Hour, func() int { return 30 })
+	m.runOnce(context.Background())
+
+	// paused-bead is old but parked by a pause: kept regardless of age.
+	if _, err := os.Stat(pausedDir); err != nil {
+		t.Errorf("expected paused-bead dir to remain (paused worker), got err=%v", err)
+	}
+	// orphan-bead has neither an active nor paused worker: removed.
+	if _, err := os.Stat(orphanDir); !os.IsNotExist(err) {
+		t.Errorf("expected orphan-bead dir to be removed, stat err=%v", err)
+	}
+	// Exactly the removed dir should have had its log paths nulled.
+	if len(db.nulled) != 1 || db.nulled[0] != orphanDir {
+		t.Errorf("expected NullWorkerLogPathsUnder called once for %q, got %v", orphanDir, db.nulled)
 	}
 }
 
