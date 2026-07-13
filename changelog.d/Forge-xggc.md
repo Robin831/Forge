@@ -1,0 +1,2 @@
+category: Added
+- **Per-bead transcript view** - Open any bead in the web GUI to read every pipeline stage's log (schematic/smith/warden/temper/fix loops), rendered with the same parsed formatting (tool calls, thinking, text) as the live worker modal. New `GET /api/bead/{id}/logs` and `GET /api/bead/{id}/logs/{filename}` endpoints list and tail preserved and live stage logs; History rows deep-link to the Logs section; live worker files stream via the existing SSE endpoint. (Forge-xggc)

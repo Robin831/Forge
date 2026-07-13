@@ -323,6 +323,37 @@ export function fetchBeadDeps(
   )
 }
 
+// BeadLogFile is one stage log file from GET /api/bead/{id}/logs. `stage` is
+// parsed from the filename prefix (smith/warden/temper/…, or "other"). `live`
+// is true for the file an active worker is currently writing; `worker_id` is
+// set only in that case so the client can stream /api/worker/{id}/stream.
+export interface BeadLogFile {
+  filename: string
+  stage: string
+  size_bytes: number
+  mtime: string
+  live: boolean
+  worker_id?: string
+}
+
+export interface BeadLogsResponse {
+  bead_id: string
+  files: BeadLogFile[]
+}
+
+// beadLogs wraps the per-bead transcript endpoints: list the preserved + live
+// stage log files for a bead, and tail one file. Live files should be streamed
+// via /api/worker/{worker_id}/stream instead of tailed.
+export const beadLogs = {
+  list: (beadID: string, signal?: AbortSignal) =>
+    apiGet<BeadLogsResponse>(`/api/bead/${encodeURIComponent(beadID)}/logs`, signal),
+  tail: (beadID: string, filename: string, tail = 500, signal?: AbortSignal) =>
+    apiGet<LogTailResponse>(
+      `/api/bead/${encodeURIComponent(beadID)}/logs/${encodeURIComponent(filename)}?tail=${tail}`,
+      signal,
+    ),
+}
+
 export interface PRItem {
   id?: number
   number: number

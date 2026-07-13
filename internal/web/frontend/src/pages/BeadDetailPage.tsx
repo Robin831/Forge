@@ -8,6 +8,7 @@ import {
   MessageSquare,
   Network,
   Plus,
+  ScrollText,
   StickyNote,
   X,
   XCircle,
@@ -26,6 +27,7 @@ import {
 } from '../api'
 import AppHeader from '../components/AppHeader'
 import BeadDepModal from '../components/BeadDepModal'
+import BeadLogsSection from '../components/BeadLogsSection'
 import ConfirmModal from '../components/ConfirmModal'
 import DepsGraphView from '../components/DepsGraphView'
 import Pane, { EmptyState } from '../components/Pane'
@@ -113,6 +115,16 @@ export default function BeadDetailPage() {
   >(null)
   const [depBrief, setDepBrief] = useState<BeadBrief | null>(null)
   const [graphOpen, setGraphOpen] = useState(false)
+
+  // Deep link from History / Workers: `?tab=logs` (or `?logs=1`) scrolls the
+  // Logs section into view on mount so a completed worker link lands there.
+  const logsRef = useRef<HTMLDivElement | null>(null)
+  const wantLogs = searchParams.get('tab') === 'logs' || searchParams.get('logs') === '1'
+  useEffect(() => {
+    if (wantLogs && logsRef.current) {
+      logsRef.current.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    }
+  }, [wantLogs])
 
   // mergedComments concatenates the server-side list with optimistic local
   // additions, dropping any local entry whose id has already appeared on the
@@ -521,6 +533,15 @@ export default function BeadDetailPage() {
           </ul>
         </Pane>
       )}
+
+      <div ref={logsRef}>
+        <CollapsibleSection
+          title="Logs"
+          icon={<ScrollText size={16} className="text-amber-400" aria-hidden />}
+        >
+          <BeadLogsSection beadID={beadID} />
+        </CollapsibleSection>
+      </div>
 
       <Pane
         title="Workers for this bead"

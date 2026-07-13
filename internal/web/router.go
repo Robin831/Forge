@@ -64,6 +64,11 @@ func (s *Server) routes() http.Handler {
 		r.Get("/prs/{id}/findings/stream", s.handlePRFindingsStream)
 		r.Get("/bead/{bead_id}", s.handleBeadDetail)
 		r.Get("/bead/{bead_id}/deps", s.handleBeadDeps)
+		// Per-bead transcript view (Forge-xggc). List preserved + live stage
+		// log files for a bead, and tail one file. The live case reuses the
+		// existing /api/worker/{id}/stream SSE endpoint.
+		r.Get("/bead/{bead_id}/logs", s.handleBeadLogs)
+		r.Get("/bead/{bead_id}/logs/{filename}", s.handleBeadLogFile)
 
 		// Daemon-wide dispatch control (Hearth 2.0). Pause/resume the
 		// auto-dispatch of new workers without touching running ones.
