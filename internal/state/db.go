@@ -1253,9 +1253,13 @@ func (db *DB) UnstallWorker(id string) error {
 // are excluded so they don't consume dispatch capacity slots.
 // Stalled workers are included so they continue to count against capacity and
 // prevent the daemon from over-subscribing while stalled processes are still running.
+// Paused workers are included too: a parked pipeline still holds its worktree and
+// will respawn a running smith on resume, so it must keep occupying its dispatch
+// slot — excluding it would let the daemon dispatch a replacement and then
+// over-subscribe max_total_smiths once the paused worker resumes.
 func (db *DB) ActiveDispatchWorkers() ([]Worker, error) {
 	return db.queryWorkers(`SELECT id, bead_id, anvil, branch, pid, status, phase, title, pr_number, started_at, completed_at, log_path, session_id, model
-		FROM workers WHERE status IN ('pending', 'running', 'reviewing', 'monitoring', 'stalled')
+		FROM workers WHERE status IN ('pending', 'running', 'reviewing', 'monitoring', 'stalled', 'paused')
 		  AND phase NOT IN (` + backgroundPhases + `)
 		ORDER BY started_at`)
 }
@@ -1263,10 +1267,12 @@ func (db *DB) ActiveDispatchWorkers() ([]Worker, error) {
 // ActiveDispatchWorkersByAnvil returns active dispatch workers for a given anvil,
 // excluding all phases in backgroundPhases.
 // Stalled workers are included so they continue to count against per-anvil capacity.
+// Paused workers are included too, for the same reason as ActiveDispatchWorkers:
+// a parked pipeline still holds its slot and resumes into a running smith.
 func (db *DB) ActiveDispatchWorkersByAnvil(anvil string) ([]Worker, error) {
 	return db.queryWorkers(`SELECT id, bead_id, anvil, branch, pid, status, phase, title, pr_number, started_at, completed_at, log_path, session_id, model
 		FROM workers WHERE anvil = ?
-		  AND status IN ('pending', 'running', 'reviewing', 'monitoring', 'stalled')
+		  AND status IN ('pending', 'running', 'reviewing', 'monitoring', 'stalled', 'paused')
 		  AND phase NOT IN (`+backgroundPhases+`)
 		ORDER BY started_at`, anvil)
 }
@@ -2032,6 +2038,8 @@ const (
 	EventSmithFailed          EventType = "smith_failed"
 	EventSmithRecheck         EventType = "smith_recheck"
 	EventBeadSteered          EventType = "bead_steered"
+	EventBeadPaused           EventType = "bead_paused"
+	EventBeadResumed          EventType = "bead_resumed"
 	EventWardenStarted        EventType = "warden_started"
 	EventWardenPass           EventType = "warden_pass"
 	EventWardenReject         EventType = "warden_reject"

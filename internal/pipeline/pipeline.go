@@ -52,32 +52,55 @@ const MaxIterations = 5
 const defaultSteerGrace = 5 * time.Second
 
 // waitSmithWithSteer waits for a running Smith spawn to complete while watching
-// the steer mailbox. If a steer message arrives before the spawn finishes, the
-// spawn is gracefully interrupted (via interrupt) and its result is reaped with
-// Wait() — preserving the session_id captured from the stream so far — and the
-// steering message is returned. When the spawn completes on its own (or no
-// steer channel is wired) it returns the result with an empty message.
-func waitSmithWithSteer(proc *smith.Process, steerCh <-chan string, interrupt func(*smith.Process)) (*smith.Result, string) {
-	if steerCh == nil {
-		return proc.Wait(), ""
+// the steer mailbox and the pause signal. If a steer message arrives before the
+// spawn finishes, the spawn is gracefully interrupted (via interrupt) and its
+// result is reaped with Wait() — preserving the session_id captured from the
+// stream so far — and the steering message is returned (paused=false). If a pause
+// is signalled instead, the spawn is gracefully interrupted the same way (the
+// SAME steer interrupt path, so no failure is marked) and paused=true is returned
+// with an empty message so the caller can park the pipeline. When the spawn
+// completes on its own (or neither channel is wired) it returns the result with
+// an empty message and paused=false.
+//
+// A pause and a steer are mutually exclusive per spawn: exactly one of them (or
+// normal completion) drives the single select, so the pipeline never has to
+// reconcile both for the same spawn.
+func waitSmithWithSteer(proc *smith.Process, steerCh <-chan string, pauseCh <-chan struct{}, interrupt func(*smith.Process)) (result *smith.Result, steer string, paused bool) {
+	if steerCh == nil && pauseCh == nil {
+		return proc.Wait(), "", false
 	}
+	// A nil channel case in a select blocks forever (is never chosen), so an
+	// unwired steerCh or pauseCh simply drops out of the select naturally.
 	select {
 	case <-proc.Done():
-		return proc.Wait(), ""
+		return proc.Wait(), "", false
 	case msg, ok := <-steerCh:
 		if !ok {
 			// Channel was closed; treat as no steer.
-			return proc.Wait(), ""
+			return proc.Wait(), "", false
 		}
 		// Prefer normal completion if the process already finished — both
 		// channels may be ready simultaneously and Go picks randomly.
 		select {
 		case <-proc.Done():
-			return proc.Wait(), ""
+			return proc.Wait(), "", false
 		default:
 		}
 		interrupt(proc)
-		return proc.Wait(), msg
+		return proc.Wait(), msg, false
+	case _, ok := <-pauseCh:
+		if !ok {
+			// Channel was closed; treat as no pause.
+			return proc.Wait(), "", false
+		}
+		// Prefer normal completion if the process already finished.
+		select {
+		case <-proc.Done():
+			return proc.Wait(), "", false
+		default:
+		}
+		interrupt(proc)
+		return proc.Wait(), "", true
 	}
 }
 
@@ -460,6 +483,18 @@ type Params struct {
 	// used.
 	SteerGrace time.Duration
 
+	// ParkHandle, when non-nil, wires the pause/park/resume mechanic into the
+	// pipeline goroutine. A pause request (PauseRequested) gracefully interrupts
+	// the running Smith spawn via the SAME steer interrupt path — no failure is
+	// marked — records a ParkRecord (session_id + iteration state), transitions
+	// the worker to paused, and blocks the goroutine on ResumeRequested without
+	// exiting the pipeline loop. On resume the recorded session is respawned via
+	// the steer resume path (`claude --resume <session>` with the resume
+	// message, defaulting to DefaultResumeMessage) and the loop continues from
+	// where it parked. Nil disables the mechanic. Set by the daemon from the
+	// bead's control handle (see internal/daemon/control.go).
+	ParkHandle ParkHandle
+
 	// SmithInterrupter overrides how a running Smith spawn is gracefully
 	// stopped during steering. Production calls smith.Process.Interrupt; tests
 	// inject a stub to observe interruption without real signals.
@@ -753,6 +788,16 @@ func Run(ctx context.Context, p Params) *Outcome {
 	steerGrace := p.SteerGrace
 	if steerGrace <= 0 {
 		steerGrace = defaultSteerGrace
+	}
+	// Pause/park/resume (see ParkHandle). pauseCh is watched alongside the steer
+	// mailbox while a Smith spawn runs; a pause gracefully interrupts the spawn
+	// (reusing interruptSpawn, so no failure is marked) and the pipeline then
+	// parks on the handle's resume signal. A nil handle leaves both nil and the
+	// mechanic disabled.
+	parkHandle := p.ParkHandle
+	var pauseCh <-chan struct{}
+	if parkHandle != nil {
+		pauseCh = parkHandle.PauseRequested()
 	}
 	interruptSpawn := p.SmithInterrupter
 	if interruptSpawn == nil {
@@ -1212,6 +1257,10 @@ func Run(ctx context.Context, p Params) *Outcome {
 		// steerMsgThisIter is set when a steer message interrupted this
 		// iteration's spawn (steer mode A). Handled after the spawn completes.
 		var steerMsgThisIter string
+		// pausedThisIter is set when a pause request interrupted this iteration's
+		// spawn. Handled after the spawn completes: the pipeline records a park
+		// record, marks the worker paused, and blocks until resume.
+		var pausedThisIter bool
 		// spawnProvider is the provider that ran this iteration's Smith spawn
 		// (resume or fresh). Captured alongside lastSessionID so mode B resumes
 		// with the correct provider.
@@ -1285,7 +1334,7 @@ func Run(ctx context.Context, p Params) *Outcome {
 			}
 			_ = p.DB.UpdateWorkerPID(workerID, process.PID)
 			_ = p.DB.UpdateWorkerLogPath(workerID, process.LogPath)
-			smithResult, steerMsgThisIter = waitSmithWithSteer(process, steerCh, interruptSpawn)
+			smithResult, steerMsgThisIter, pausedThisIter = waitSmithWithSteer(process, steerCh, pauseCh, interruptSpawn)
 
 			_ = p.DB.UpdateWorkerSession(workerID, smithResult.SessionID, smith.SessionModel(smithResult, pv))
 			if smithResult.ResultSubtype == "success" && !smithResult.IsError && smithResult.ExitCode == 0 {
@@ -1321,7 +1370,7 @@ func Run(ctx context.Context, p Params) *Outcome {
 				}
 				_ = p.DB.UpdateWorkerPID(workerID, process.PID)
 				_ = p.DB.UpdateWorkerLogPath(workerID, process.LogPath)
-				smithResult, steerMsgThisIter = waitSmithWithSteer(process, steerCh, interruptSpawn)
+				smithResult, steerMsgThisIter, pausedThisIter = waitSmithWithSteer(process, steerCh, pauseCh, interruptSpawn)
 
 				// Persist the captured session_id and model for this spawn. The
 				// model comes from the stream (Claude reports it in-band) and falls
@@ -1347,9 +1396,9 @@ func Run(ctx context.Context, p Params) *Outcome {
 
 				recordSpawnAccounting(pv, smithResult)
 
-				// A steer interrupt is not a rate limit — record the session
-				// owner for the resume and stop trying other providers.
-				if steerMsgThisIter != "" {
+				// A steer interrupt or a pause is not a rate limit — record the
+				// session owner for the resume and stop trying other providers.
+				if steerMsgThisIter != "" || pausedThisIter {
 					activeProviderIdx = pi
 					spawnProvider = pv
 					resumeProvider = pv
@@ -1372,6 +1421,75 @@ func Run(ctx context.Context, p Params) *Outcome {
 		if smithResult != nil && smithResult.SessionID != "" {
 			lastSessionID = smithResult.SessionID
 			lastSessionProvider = spawnProvider
+		}
+
+		// Pause/park/resume: an operator paused this bead. The running spawn was
+		// already gracefully interrupted by waitSmithWithSteer via the SAME steer
+		// interrupt path, so it is NOT marked failed. Record a park record with
+		// the interrupted session and the current loop iteration, transition the
+		// worker to paused, and block until a resume arrives; then arm a resume
+		// respawn of the parked session (reusing the steer resume machinery) and
+		// continue the loop from where it parked. This is checked before the
+		// rate-limit / exit-code verdicts because a paused spawn is expected to be
+		// incomplete, and before steer mode A because the two are mutually
+		// exclusive for a single spawn.
+		if pausedThisIter {
+			park := ParkRecord{
+				SessionID: smithResult.SessionID,
+				Iteration: iteration,
+				Provider:  spawnProvider,
+			}
+			log.Printf("[pipeline:%s] Pause requested during iteration %d (session=%q) — parking", workerID, iteration, park.SessionID)
+
+			// Transition running -> paused (sub-task 1's paused status constant).
+			_ = p.DB.UpdateWorkerStatus(workerID, state.WorkerPaused)
+			_ = p.DB.LogEvent(state.EventBeadPaused,
+				fmt.Sprintf("Paused at iteration %d (session %s)", iteration, park.SessionID),
+				p.Bead.ID, p.AnvilName)
+
+			// Park the goroutine on the resume signal without exiting the loop.
+			resumeMsg, ok := parkUntilResume(ctx, parkHandle)
+			if !ok {
+				// The context was cancelled (or the handle went away) while
+				// parked — e.g. daemon shutdown. Leave the worker paused and
+				// exit WITHOUT marking it failed; the parked spawn was already
+				// interrupted cleanly.
+				log.Printf("[pipeline:%s] Parked pipeline cancelled before resume", workerID)
+				outcome.Error = ctx.Err()
+				outcome.Duration = time.Since(start)
+				return outcome
+			}
+
+			// Resume: transition paused -> running and continue.
+			_ = p.DB.UpdateWorkerStatus(workerID, state.WorkerRunning)
+			_ = p.DB.LogEvent(state.EventBeadResumed,
+				fmt.Sprintf("Resumed at iteration %d (session %s)", iteration, park.SessionID),
+				p.Bead.ID, p.AnvilName)
+
+			// Ensure the human-requested resume always gets an iteration to run,
+			// even if the pause fired on the final allowed iteration. A pause is a
+			// deliberate operator action, not an automated loop, so it must not be
+			// silently dropped by the max-iteration bound.
+			if iteration >= maxIter {
+				maxIter = iteration + 1
+			}
+
+			if park.SessionID == "" {
+				// No session to resume (e.g. a non-Claude provider that reported
+				// no session_id). Fold the resume message into a fresh prompt so
+				// it is still honoured, and continue the loop.
+				currentPrompt = appendSteerToPrompt(currentPrompt, resumeMsg)
+				log.Printf("[pipeline:%s] Resume with no session_id — folded resume message into fresh prompt", workerID)
+				continue
+			}
+
+			// Arm the resume respawn of the parked session for the next
+			// iteration, reusing the steer resume path (`claude --resume`).
+			pendingResume = true
+			resumeSessionID = park.SessionID
+			resumeProvider = park.Provider
+			resumeMessage = resumeMsg
+			continue
 		}
 
 		// Steer mode A: a steer message interrupted this spawn. Preserve the

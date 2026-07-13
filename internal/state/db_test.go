@@ -4030,3 +4030,56 @@ func TestDB_ActiveDispatchWorkers_CountsSchematic(t *testing.T) {
 		t.Errorf("expected w-schematic in per-anvil dispatch count, got %s", byAnvil[0].ID)
 	}
 }
+
+// TestDB_ActiveDispatchWorkers_CountsPaused is a regression test for the bug
+// where a pipeline worker parked by an operator pause (status 'paused') dropped
+// out of the dispatch capacity count. A parked worker still holds its worktree
+// and respawns a running smith on resume, so it must keep occupying its dispatch
+// slot; excluding it would let the daemon dispatch a replacement and then
+// over-subscribe max_total_smiths once the paused worker resumes.
+func TestDB_ActiveDispatchWorkers_CountsPaused(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "forge-state-test-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+	db, err := Open(filepath.Join(tmpDir, "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	// A pipeline worker in the smith phase that an operator has paused/parked.
+	if err := db.InsertWorker(&Worker{
+		ID: "w-paused", BeadID: "BD-1", Anvil: "anvil-1",
+		Status: WorkerPaused, Phase: "smith",
+		StartedAt: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Global dispatch count must include the paused worker so its slot is held.
+	dispatch, err := db.ActiveDispatchWorkers()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(dispatch) != 1 {
+		t.Fatalf("expected 1 dispatch worker (paused), got %d: %+v", len(dispatch), dispatch)
+	}
+	if dispatch[0].ID != "w-paused" {
+		t.Errorf("expected w-paused to count against dispatch cap, got %s", dispatch[0].ID)
+	}
+
+	// Per-anvil dispatch count must also include the paused worker so a second
+	// dispatch is blocked while it is parked awaiting resume.
+	byAnvil, err := db.ActiveDispatchWorkersByAnvil("anvil-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(byAnvil) != 1 {
+		t.Fatalf("expected 1 per-anvil dispatch worker (paused), got %d: %+v", len(byAnvil), byAnvil)
+	}
+	if byAnvil[0].ID != "w-paused" {
+		t.Errorf("expected w-paused in per-anvil dispatch count, got %s", byAnvil[0].ID)
+	}
+}

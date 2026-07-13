@@ -3314,6 +3314,11 @@ normalPipeline:
 		// resume its session with the steering text (see internal/daemon/control.go).
 		SteerCh: ctrl.steer,
 
+		// Pause/park/resume: the control handle also carries the pause and resume
+		// signals. A pause_bead request parks the running spawn; a resume_bead
+		// request respawns `claude --resume <session>` (see control.go).
+		ParkHandle: ctrl,
+
 		WardenModelOverride:         cfg.Settings.WardenModelOverride,
 		SchematicModelOverride:      cfg.Settings.SchematicModelOverride,
 		CopilotSkipWardenSmallDiffs: cfg.Settings.CopilotSkipWardenSmallDiffs,
