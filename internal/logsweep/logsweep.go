@@ -18,6 +18,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/Robin831/Forge/internal/forge"
@@ -129,9 +130,12 @@ func (m *Monitor) runOnce(ctx context.Context) {
 			continue
 		}
 		dirName := e.Name()
+		if !looksLikeBeadDir(dirName) {
+			continue
+		}
 		dir := filepath.Join(m.logsRoot, dirName)
 
-		newest, bytes, err := dirNewestAndSize(dir)
+		newest, size, err := dirNewestAndSize(dir)
 		if err != nil {
 			m.logger.Warn("log sweep: could not stat bead-log dir", "dir", dir, "error", err)
 			continue
@@ -152,7 +156,7 @@ func (m *Monitor) runOnce(ctx context.Context) {
 			m.logger.Info("log sweep: cleared dangling worker log paths", "dir", dir, "rows", nulled)
 		}
 		result.DirsRemoved++
-		result.BytesFreed += bytes
+		result.BytesFreed += size
 	}
 
 	if result.DirsRemoved > 0 {
@@ -201,12 +205,20 @@ func ShouldSweep(newest time.Time, retentionDays int, hasRunningWorker bool, now
 	return newest.Before(cutoff)
 }
 
-// dirNewestAndSize walks dir (one level, recursively via WalkDir) and returns
-// the most recent file modification time and the total size of all regular
-// files. An empty directory yields a zero time and zero size, which — being far
-// in the past — makes it eligible for removal.
+// dirNewestAndSize walks dir recursively and returns the most recent
+// modification time and the total size of all regular files. The directory's
+// own mtime is included so that newly-created preservation directories use
+// the preservation time as the retention baseline, even when the files inside
+// retain their original (older) modification times. An empty directory yields
+// the directory's own mtime.
 func dirNewestAndSize(dir string) (time.Time, int64, error) {
 	var newest time.Time
+	// Seed with the directory mtime so the retention window starts from
+	// when the directory was created/populated, not from when the log
+	// files inside were originally written.
+	if info, err := os.Stat(dir); err == nil {
+		newest = info.ModTime()
+	}
 	var total int64
 	err := filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
@@ -233,6 +245,21 @@ func dirNewestAndSize(dir string) (time.Time, int64, error) {
 		return time.Time{}, 0, err
 	}
 	return newest, total, nil
+}
+
+// looksLikeBeadDir returns true if name resembles a sanitized bead ID (e.g.
+// "Forge-abc1", "org_repo-xyz"). This prevents the sweep from deleting
+// unrelated subdirectories that another subsystem might place under logsRoot.
+func looksLikeBeadDir(name string) bool {
+	if !strings.Contains(name, "-") {
+		return false
+	}
+	for _, c := range name {
+		if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' || c == '_') {
+			return false
+		}
+	}
+	return true
 }
 
 // formatSummary renders the one-line summary stored on the sweep event.

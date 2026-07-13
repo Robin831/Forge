@@ -472,10 +472,13 @@ type SettingsConfig struct {
 	// of VulncheckInterval. Default: true.
 	VulncheckEnabled *bool `mapstructure:"vulncheck_enabled" yaml:"vulncheck_enabled,omitempty"`
 	// LogRetentionDays is how many days a preserved bead-log directory under
-	// ~/.forge/logs/<beadID>/ is kept after its newest file. The daily retention
+	// ~/.forge/logs/<beadID>/ is kept after its newest file. The retention
 	// sweep removes older directories (unless the bead has a running worker).
 	// 0 disables the sweep entirely. Default: 30.
 	LogRetentionDays int `mapstructure:"log_retention_days" yaml:"log_retention_days"`
+	// LogSweepInterval is how often the preserved bead-log retention sweep
+	// runs. Hot-reloadable. Default: 24h (daily).
+	LogSweepInterval time.Duration `mapstructure:"log_sweep_interval" yaml:"log_sweep_interval,omitempty"`
 	// GoRaceDetection enables the Go race detector (-race flag) as a
 	// separate temper step globally. Per-anvil settings override this.
 	// Default: false.
@@ -796,6 +799,7 @@ func (s SettingsConfig) MarshalYAML() (interface{}, error) {
 		VulncheckTimeout          string              `yaml:"vulncheck_timeout,omitempty"`
 		VulncheckEnabled          *bool               `yaml:"vulncheck_enabled,omitempty"`
 		LogRetentionDays          int                 `yaml:"log_retention_days"`
+		LogSweepInterval          string              `yaml:"log_sweep_interval,omitempty"`
 		GoRaceDetection           bool                `yaml:"go_race_detection"`
 		AutoLearnRules            bool                `yaml:"auto_learn_rules"`
 		CopilotDailyRequestLimit  int                 `yaml:"copilot_daily_request_limit,omitempty"`
@@ -915,6 +919,9 @@ func (s SettingsConfig) MarshalYAML() (interface{}, error) {
 	}
 	if s.VulncheckTimeout > 0 {
 		sh.VulncheckTimeout = durationString(s.VulncheckTimeout)
+	}
+	if s.LogSweepInterval > 0 {
+		sh.LogSweepInterval = durationString(s.LogSweepInterval)
 	}
 	// Always emit SmelterInterval so an intentional 0 (disable scheduled runs)
 	// is persisted and not silently dropped back to the 8h default on next load.
@@ -1288,6 +1295,7 @@ func Defaults() Config {
 			VulncheckInterval:    24 * time.Hour,
 			VulncheckTimeout:     10 * time.Minute,
 			LogRetentionDays:     30,
+			LogSweepInterval:     24 * time.Hour,
 			SmelterInterval:      8 * time.Hour,
 			QuestgiverInterval:   24 * time.Hour,
 			AdventurerTimeout:    5 * time.Minute,
@@ -1372,6 +1380,7 @@ func Load(configFile string) (*Config, error) {
 	v.SetDefault("settings.vulncheck_timeout", "10m")
 	v.SetDefault("settings.vulncheck_enabled", true)
 	v.SetDefault("settings.log_retention_days", 30)
+	v.SetDefault("settings.log_sweep_interval", "24h")
 	v.SetDefault("settings.smelter_enabled", true)
 	v.SetDefault("settings.smelter_interval", "8h")
 	v.SetDefault("settings.questgiver_interval", "24h")
@@ -1502,6 +1511,13 @@ func Load(configFile string) (*Config, error) {
 			return nil, fmt.Errorf("invalid vulncheck_interval %q: %w", raw, err)
 		}
 		cfg.Settings.VulncheckInterval = d
+	}
+	if raw := v.GetString("settings.log_sweep_interval"); raw != "" {
+		d, err := time.ParseDuration(raw)
+		if err != nil {
+			return nil, fmt.Errorf("invalid log_sweep_interval %q: %w", raw, err)
+		}
+		cfg.Settings.LogSweepInterval = d
 	}
 	if raw := v.GetString("settings.vulncheck_timeout"); raw != "" {
 		d, err := time.ParseDuration(raw)

@@ -183,6 +183,92 @@ func TestRepointWorkerLogPaths_Collision(t *testing.T) {
 	}
 }
 
+func TestNullWorkerLogPathsUnder_BoundaryMatching(t *testing.T) {
+	db := newRepointTestDB(t)
+
+	bdDir := filepath.Join("/home/user", ".forge", "logs", "BD-1")
+	bdExtraDir := filepath.Join("/home/user", ".forge", "logs", "BD-1-extra")
+	bdOtherDir := filepath.Join("/home/user", ".forge", "logs", "BD-2")
+
+	// Worker under BD-1 — should be nulled.
+	if err := db.InsertWorker(&Worker{
+		ID:        "w-bd1",
+		BeadID:    "BD-1",
+		Anvil:     "anvil",
+		Status:    WorkerDone,
+		LogPath:   filepath.Join(bdDir, "smith.log"),
+		StartedAt: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// Worker under BD-1-extra (sibling prefix) — must NOT be nulled.
+	if err := db.InsertWorker(&Worker{
+		ID:        "w-bd1extra",
+		BeadID:    "BD-1-extra",
+		Anvil:     "anvil",
+		Status:    WorkerDone,
+		LogPath:   filepath.Join(bdExtraDir, "smith.log"),
+		StartedAt: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// Worker under BD-2 — must NOT be nulled.
+	if err := db.InsertWorker(&Worker{
+		ID:        "w-bd2",
+		BeadID:    "BD-2",
+		Anvil:     "anvil",
+		Status:    WorkerDone,
+		LogPath:   filepath.Join(bdOtherDir, "smith.log"),
+		StartedAt: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// Worker with empty log_path — must NOT be affected.
+	if err := db.InsertWorker(&Worker{
+		ID:        "w-empty",
+		BeadID:    "BD-1",
+		Anvil:     "anvil",
+		Status:    WorkerDone,
+		LogPath:   "",
+		StartedAt: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	n, err := db.NullWorkerLogPathsUnder(bdDir)
+	if err != nil {
+		t.Fatalf("NullWorkerLogPathsUnder: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("expected 1 row nulled, got %d", n)
+	}
+
+	// BD-1 worker should now have empty log_path.
+	if got := getLogPath(t, db, "w-bd1"); got != "" {
+		t.Errorf("w-bd1 log_path = %q, want empty", got)
+	}
+	// BD-1-extra must be untouched.
+	if got := getLogPath(t, db, "w-bd1extra"); got != filepath.Join(bdExtraDir, "smith.log") {
+		t.Errorf("w-bd1extra log_path = %q, want %q", got, filepath.Join(bdExtraDir, "smith.log"))
+	}
+	// BD-2 must be untouched.
+	if got := getLogPath(t, db, "w-bd2"); got != filepath.Join(bdOtherDir, "smith.log") {
+		t.Errorf("w-bd2 log_path = %q, want %q", got, filepath.Join(bdOtherDir, "smith.log"))
+	}
+}
+
+func TestNullWorkerLogPathsUnder_EmptyDir(t *testing.T) {
+	db := newRepointTestDB(t)
+
+	n, err := db.NullWorkerLogPathsUnder("")
+	if err != nil {
+		t.Fatalf("NullWorkerLogPathsUnder(empty): %v", err)
+	}
+	if n != 0 {
+		t.Fatalf("expected 0 for empty dir, got %d", n)
+	}
+}
+
 func TestBackfillDanglingWorkerLogPaths(t *testing.T) {
 	db := newRepointTestDB(t)
 

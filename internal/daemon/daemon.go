@@ -1220,11 +1220,15 @@ func (d *Daemon) Run(ctx context.Context) error {
 	// Start preserved bead-log retention sweep. retentionDays is read fresh each
 	// pass so config hot-reload takes effect; 0 disables the sweep. This is
 	// independent of daemon.log rotation and never touches that live handle.
+	logSweepInterval := d.config().Settings.LogSweepInterval
+	if logSweepInterval <= 0 {
+		logSweepInterval = DefaultLogSweepInterval
+	}
 	logSweep := logsweep.New(
 		d.db,
 		d.logger,
 		filepath.Join(d.forgeDir, LogDir),
-		DefaultLogSweepInterval,
+		logSweepInterval,
 		func() int { return d.config().Settings.LogRetentionDays },
 	)
 	go logSweep.RunScheduled(ctx)
