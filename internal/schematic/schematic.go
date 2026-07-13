@@ -60,6 +60,34 @@ const (
 // re-dispatch and returns ActionAlreadyDecomposed so no smith is spawned.
 const LabelDecomposed = "forge-decomposed"
 
+// SchematicChildLabelPrefix is prepended to a parent bead ID to form the marker
+// label attached to every sub-bead created by a schematic decomposition
+// (e.g. "schematic:Forge-abc1"). It lets a later re-decomposition reliably
+// detect children created by a previous — possibly partial — pass and reuse
+// them instead of creating a duplicate set alongside the orphans.
+const SchematicChildLabelPrefix = "schematic:"
+
+// schematicChildLabel returns the marker label attached to sub-beads created
+// when decomposing the given parent.
+func schematicChildLabel(parentID string) string {
+	return SchematicChildLabelPrefix + parentID
+}
+
+// Event kinds surfaced via Config.OnEvent. These make otherwise-silent
+// schematic outcomes visible in the activity feed. The values match the
+// state.EventType constants the pipeline logs them under.
+const (
+	// EventKindDecomposeFailed is emitted when decomposition fails partway
+	// through creating sub-beads (a mid-loop create/parse/dep failure). Some
+	// sub-beads may already exist; they are reused on the next re-decomposition
+	// rather than duplicated.
+	EventKindDecomposeFailed = "schematic_decompose_failed"
+
+	// EventKindParseFailed is emitted when the AI verdict could not be parsed
+	// and the schematic skipped rather than acting on unstructured output.
+	EventKindParseFailed = "schematic_parse_failed"
+)
+
 // SubBead holds the ID and title of a created sub-bead.
 type SubBead struct {
 	ID    string `json:"id"`
@@ -130,6 +158,20 @@ type Config struct {
 	// survives the temp-dir cleanup. Typically set to the worktree's
 	// .forge-logs directory by the pipeline.
 	LogDir string
+	// OnEvent, when set, surfaces notable schematic sub-events to the caller so
+	// they can be recorded in the activity feed. It is used for partial
+	// decomposition failures and verdict-parse skips, which would otherwise be
+	// invisible. The kind is one of the EventKind* constants; message is a
+	// human-readable description. Must be nil-safe (callers may leave it unset).
+	OnEvent func(kind, message string)
+}
+
+// emitEvent invokes the OnEvent callback if one is configured. It is a no-op
+// otherwise so callers can emit unconditionally.
+func (c Config) emitEvent(kind, message string) {
+	if c.OnEvent != nil {
+		c.OnEvent(kind, message)
+	}
 }
 
 // DefaultConfig returns sensible defaults for Schematic.
@@ -296,10 +338,13 @@ func Run(ctx context.Context, cfg Config, bead poller.Bead, anvilPath string, pv
 	}
 	verdict, err := parseVerdict(output)
 	if err != nil {
-		// On parse failure, skip rather than block the pipeline
+		// On parse failure, skip rather than block the pipeline. Emit an event
+		// so the skip is visible in the activity feed instead of being silent.
 		result.Action = ActionSkip
 		result.Reason = fmt.Sprintf("Could not parse schematic output — skipping: %v", err)
 		result.Error = err
+		cfg.emitEvent(EventKindParseFailed,
+			fmt.Sprintf("Schematic verdict parse failed for %s — skipping: %v", bead.ID, err))
 		return result
 	}
 
@@ -317,12 +362,18 @@ func Run(ctx context.Context, cfg Config, bead poller.Bead, anvilPath string, pv
 		if err != nil {
 			// Failed to create sub-beads — escalate to ActionClarify (not ActionSkip) so the
 			// pipeline releases the bead for human attention rather than silently continuing.
-			// Partial sub-beads are preserved so operators can identify and clean up orphans.
+			// The partial sub-beads carry the schematic:<parent> marker label, so a later
+			// re-decomposition reuses them instead of creating duplicates (see createSubBeads).
 			log.Printf("[schematic:%s] Failed to create sub-beads: %v (partial: %v)", bead.ID, err, subs)
 			result.Action = ActionClarify
 			result.SubBeads = subs // preserve partial sub-beads for caller visibility
 			result.Reason = fmt.Sprintf("Automatic decomposition failed, bead requires manual review: %v", err)
 			result.Error = err
+			// Emit an event so the partial failure is visible in the activity
+			// feed rather than only surfacing as a generic clarification.
+			cfg.emitEvent(EventKindDecomposeFailed,
+				fmt.Sprintf("Partial decomposition of %s failed after creating %d sub-bead(s): %v",
+					bead.ID, len(subs), err))
 		} else {
 			result.SubBeads = subs
 		}
@@ -456,6 +507,24 @@ func isTransientDepErr(err error, output []byte) bool {
 	return false
 }
 
+// depEdgeAlreadyExists reports whether bd's output indicates the dependency
+// edge already exists. This happens during idempotent re-decomposition when a
+// reused child's sequential link was created by an earlier pass. Matching is
+// case-insensitive and broad to tolerate bd wording variations.
+func depEdgeAlreadyExists(out []byte) bool {
+	lower := strings.ToLower(string(out))
+	for _, marker := range []string{
+		"already exists",
+		"already depends",
+		"duplicate dependency",
+	} {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	return false
+}
+
 // addSequentialDepWithRetry invokes `bd dep add child prev` with short
 // exponential-backoff retries on transient Dolt/MySQL connectivity failures.
 // Each attempt applies the existing tolerance for bd's quirk of exiting 1
@@ -481,6 +550,15 @@ func addSequentialDepWithRetry(ctx context.Context, anvilPath, parentID, childID
 		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 && depCtxErr == nil &&
 			strings.Contains(string(out), "Added dependency") {
 			log.Printf("[schematic:%s] bd dep add exited non-zero but dependency was added (%s -> %s), ignoring exit code: %v",
+				parentID, childID, prevID, err)
+			return out, attempt, nil
+		}
+
+		// Idempotent re-decomposition reuses children from a prior pass, so the
+		// sequential dependency may already exist. bd reports this as a failure,
+		// but for our purposes the desired edge is present — treat it as success.
+		if depCtxErr == nil && depEdgeAlreadyExists(out) {
+			log.Printf("[schematic:%s] Sequential dependency %s -> %s already exists, treating as success: %v",
 				parentID, childID, prevID, err)
 			return out, attempt, nil
 		}
@@ -517,10 +595,26 @@ func addSequentialDepWithRetry(ctx context.Context, anvilPath, parentID, childID
 // specified. If adding a sequential dependency fails the function returns an
 // error immediately (with the partial list of already-created sub-beads) so
 // the caller can escalate to ActionClarify and prevent out-of-order dispatch.
+//
+// Creation is idempotent: every sub-bead is tagged with a schematic:<parent-id>
+// marker label, and before creating anything the function queries bd for
+// children that already carry that marker (created by a previous, possibly
+// partial, decomposition pass). A task whose title matches an existing marked
+// child reuses that child's ID instead of creating a duplicate. This guarantees
+// that after a mid-loop failure and a subsequent re-decomposition, bd ends up
+// with exactly one coherent set of children — no orphans, no duplicates.
 func createSubBeads(ctx context.Context, parent poller.Bead, tasks []subTaskVerdict, anvilPath string, run bdRunner) ([]SubBead, error) {
 	if len(tasks) == 0 {
 		return nil, fmt.Errorf("no sub-tasks to create")
 	}
+
+	marker := schematicChildLabel(parent.ID)
+
+	// Idempotency: detect children left behind by a previous decomposition pass
+	// so they are reused rather than duplicated. Best-effort — on any query
+	// failure we proceed with an empty set (worst case matches the old behavior
+	// of always creating fresh).
+	existingByTitle := findExistingChildren(ctx, anvilPath, marker, run)
 
 	resetParent := func() {
 		rCtx, rCancel := context.WithTimeout(context.Background(), executil.DefaultBdTimeout)
@@ -532,6 +626,20 @@ func createSubBeads(ctx context.Context, parent poller.Bead, tasks []subTaskVerd
 
 	var subBeads []SubBead
 	for _, task := range tasks {
+		// Idempotent reuse: if a marker-labeled child with this title already
+		// exists (from a prior partial pass), reuse it instead of creating a
+		// duplicate. The sequential-dependency wiring below runs the same way
+		// for reused children.
+		if id, ok := existingByTitle[task.Title]; ok && id != "" {
+			log.Printf("[schematic:%s] Reusing existing sub-bead %s for task %q (idempotent re-decomposition)", parent.ID, id, task.Title)
+			subBeads = append(subBeads, SubBead{ID: id, Title: task.Title})
+			if err := chainSequentialDep(ctx, anvilPath, parent, subBeads, run); err != nil {
+				resetParent()
+				return subBeads, err
+			}
+			continue
+		}
+
 		// Build the description: use the AI-generated description if available,
 		// otherwise fall back to a generic placeholder.
 		desc := task.Description
@@ -540,7 +648,8 @@ func createSubBeads(ctx context.Context, parent poller.Bead, tasks []subTaskVerd
 		}
 
 		// Create sub-bead with blocks dependency so the parent is blocked
-		// until all sub-beads are closed.
+		// until all sub-beads are closed. The marker label lets a later
+		// re-decomposition detect and reuse this child instead of duplicating.
 		createCtx, cancel := context.WithTimeout(ctx, executil.DefaultBdTimeout)
 		out, err := run(createCtx, anvilPath,
 			"create",
@@ -549,6 +658,7 @@ func createSubBeads(ctx context.Context, parent poller.Bead, tasks []subTaskVerd
 			"--type=task",
 			fmt.Sprintf("--priority=%d", parent.Priority),
 			"--deps", "blocks:"+parent.ID,
+			"--labels", marker,
 			"--json",
 		)
 		cancel()
@@ -577,25 +687,19 @@ func createSubBeads(ctx context.Context, parent poller.Bead, tasks []subTaskVerd
 
 		subBeads = append(subBeads, SubBead{ID: created.ID, Title: task.Title})
 
-		// Chain sequential dependency: child N+1 depends on child N.
-		// The schematic prompt asks the AI to order sub-tasks logically,
-		// so we enforce that ordering via bd dep add.
-		// A failure here is fatal: without the sequencing link a later child
-		// could be dispatched before an earlier one completes, reintroducing
-		// the original ordering problem. Return the partial list so the caller
-		// can surface the issue to operators via ActionClarify.
-		if len(subBeads) >= 2 {
-			prev := subBeads[len(subBeads)-2]
-			depOut, attempts, depErr := addSequentialDepWithRetry(ctx, anvilPath, parent.ID, created.ID, prev.ID, run)
-			if depErr != nil {
-				log.Printf("[schematic:%s] Sequential dependency chaining failed %s -> %s after %d attempt(s): %v: %s",
-					parent.ID, created.ID, prev.ID, attempts, depErr, depOut)
-				resetParent()
-				return subBeads, fmt.Errorf("sequential dependency chaining failed %s -> %s after %d attempt(s): %w: %s",
-					created.ID, prev.ID, attempts, depErr, depOut)
-			}
+		if err := chainSequentialDep(ctx, anvilPath, parent, subBeads, run); err != nil {
+			resetParent()
+			return subBeads, err
 		}
 	}
+
+	// All tasks were created or reused successfully. Close any leftover
+	// marker-labeled children from a previous pass that were NOT reused this
+	// time — this happens when a re-decomposition produces different task
+	// titles, which would otherwise leave the old children as orphans alongside
+	// the new set. Closing them guarantees exactly one coherent set of children.
+	// Best-effort: failures are logged, not fatal.
+	closeSupersededChildren(ctx, parent, subBeads, existingByTitle, anvilPath, run)
 
 	// Transfer chain relationships from the parent to the first/last sub-bead.
 	// This preserves the dependency chain through decomposition so that:
@@ -672,6 +776,103 @@ func createSubBeads(ctx context.Context, parent poller.Bead, tasks []subTaskVerd
 	}
 
 	return subBeads, nil
+}
+
+// chainSequentialDep wires the most recently appended sub-bead to depend on the
+// one before it (child N+1 depends on child N) so the poller dispatches them in
+// order. It is a no-op for the first sub-bead. A failure is fatal: without the
+// sequencing link a later child could be dispatched before an earlier one
+// completes, reintroducing the original ordering problem, so the error is
+// returned for the caller to surface via ActionClarify. When the dependency
+// already exists (idempotent re-decomposition reusing prior children), bd
+// treats the add as a success and no error is returned.
+func chainSequentialDep(ctx context.Context, anvilPath string, parent poller.Bead, subBeads []SubBead, run bdRunner) error {
+	if len(subBeads) < 2 {
+		return nil
+	}
+	child := subBeads[len(subBeads)-1]
+	prev := subBeads[len(subBeads)-2]
+	depOut, attempts, depErr := addSequentialDepWithRetry(ctx, anvilPath, parent.ID, child.ID, prev.ID, run)
+	if depErr != nil {
+		log.Printf("[schematic:%s] Sequential dependency chaining failed %s -> %s after %d attempt(s): %v: %s",
+			parent.ID, child.ID, prev.ID, attempts, depErr, depOut)
+		return fmt.Errorf("sequential dependency chaining failed %s -> %s after %d attempt(s): %w: %s",
+			child.ID, prev.ID, attempts, depErr, depOut)
+	}
+	return nil
+}
+
+// closeSupersededChildren closes marker-labeled children discovered from a
+// prior decomposition pass that are not part of the current sub-bead set. These
+// are orphans left when a re-decomposition produced different titles than the
+// pass that created them; closing them keeps exactly one coherent set of
+// children. It is best-effort — failures are logged and do not abort.
+func closeSupersededChildren(ctx context.Context, parent poller.Bead, subBeads []SubBead, existingByTitle map[string]string, anvilPath string, run bdRunner) {
+	if len(existingByTitle) == 0 {
+		return
+	}
+	used := make(map[string]struct{}, len(subBeads))
+	for _, sb := range subBeads {
+		used[sb.ID] = struct{}{}
+	}
+	reason := "schematic-rollback: orphaned sub-bead from a superseded decomposition of " + parent.ID
+	for _, id := range existingByTitle {
+		if _, ok := used[id]; ok {
+			continue
+		}
+		coCtx, coCancel := context.WithTimeout(ctx, executil.DefaultBdTimeout)
+		out, err := run(coCtx, anvilPath, "close", id, "--force", "--reason", reason)
+		coCancel()
+		if err != nil {
+			log.Printf("[schematic:%s] Warning: failed to close superseded sub-bead %s: %v: %s", parent.ID, id, err, out)
+		} else {
+			log.Printf("[schematic:%s] Closed superseded sub-bead %s from a prior decomposition", parent.ID, id)
+		}
+	}
+}
+
+// findExistingChildren queries bd for sub-beads carrying the given schematic
+// marker label and returns a map from bead title to bead ID for the ones still
+// open (not closed). It is used to make decomposition idempotent: a task whose
+// title matches an existing marked child reuses that child instead of creating
+// a duplicate. It is best-effort — on any query or parse failure it returns an
+// empty map so decomposition proceeds by creating a fresh set.
+func findExistingChildren(ctx context.Context, anvilPath, marker string, run bdRunner) map[string]string {
+	result := map[string]string{}
+
+	listCtx, cancel := context.WithTimeout(ctx, executil.DefaultBdTimeout)
+	out, err := run(listCtx, anvilPath, "list", "--label", marker, "--json")
+	cancel()
+	if err != nil {
+		log.Printf("[schematic] Warning: could not query existing sub-beads for label %q: %v", marker, err)
+		return result
+	}
+
+	var items []struct {
+		ID     string `json:"id"`
+		Title  string `json:"title"`
+		Status string `json:"status"`
+	}
+	if derr := executil.DecodeJSON(out, &items); derr != nil {
+		log.Printf("[schematic] Warning: could not parse existing sub-beads for label %q: %v", marker, derr)
+		return result
+	}
+
+	for _, it := range items {
+		if it.ID == "" || it.Title == "" {
+			continue
+		}
+		// Skip children a prior pass already completed — reusing a closed bead
+		// would leave the decomposition incomplete.
+		if strings.EqualFold(it.Status, "closed") || strings.EqualFold(it.Status, "done") {
+			continue
+		}
+		// First occurrence wins; ignore later duplicates of the same title.
+		if _, seen := result[it.Title]; !seen {
+			result[it.Title] = it.ID
+		}
+	}
+	return result
 }
 
 // parseDepsFromShow extracts upstream (dependencies) and downstream (dependents)
