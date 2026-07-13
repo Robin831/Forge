@@ -1,0 +1,2 @@
+category: Fixed
+- **daily_cost_limit accounts for in-flight spend** - The cost gate now projects the estimated spend of currently active workers (recorded spend + a per-worker reservation) and is re-checked before each dispatch, so N concurrent workers can no longer overshoot the limit by roughly N × per-bead cost. Adds a `per_worker_cost_estimate` setting (floor for the estimate; defaults to a rolling average of recorded per-bead cost) and surfaces the in-flight reserve in `forge status`. (Forge-s3w7)

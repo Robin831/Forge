@@ -58,6 +58,7 @@ settings:
   max_lifecycle_workers: 2          # Concurrent quench/burnish/rebase/assay fix workers
   merge_strategy: squash
   daily_cost_limit: 50.00
+  per_worker_cost_estimate: 2.00    # In-flight spend reserved per active worker for the cost gate
   copilot_daily_request_limit: 300  # 300 for Pro, 1500 for Pro+
   bellows_interval: 2m
   stale_interval: 5m
@@ -476,7 +477,8 @@ anvils:
 | `schematic_enabled` | bool | `false` | | Enable Schematic pre-worker globally for complex beads. |
 | `schematic_word_threshold` | int | `100` | | Minimum word count in bead description to trigger Schematic analysis. |
 | `bellows_interval` | duration | `2m` | `30s` | How often Bellows polls GitHub for PR status changes. |
-| `daily_cost_limit` | float | `0` (no limit) | | Maximum estimated USD spend per calendar day. When exceeded, auto-dispatch pauses until the next day. |
+| `daily_cost_limit` | float | `0` (no limit) | | Maximum estimated USD spend per calendar day. Auto-dispatch pauses once the **projected** total — recorded spend plus the estimated in-flight spend of currently active workers — reaches the limit, and the gate is re-checked before **each** dispatch. This accounting prevents N concurrent workers from overshooting the limit by roughly N × per-bead cost. See `per_worker_cost_estimate`. |
+| `per_worker_cost_estimate` | float | `2.00` | `0` (use default) | Floor (USD) used to estimate a single active worker's in-flight (not-yet-recorded) spend when projecting against `daily_cost_limit`. The daemon maintains a rolling average of recorded per-bead cost and uses `max(rolling average, this floor)`, so the reservation is never zero before any cost data exists. Only relevant when `daily_cost_limit > 0`. Lifecycle/bellows fix workers (quench/burnish/rebase/assay) also reserve this estimate so their spend counts against the gate; those workers are themselves **not** blocked by the gate (they fix already-open PRs), but their in-flight spend causes the gate to back off new Smith dispatch. `0` or unset falls back to the default of `2.00`. |
 | `copilot_daily_request_limit` | int | `0` (no limit) | | Maximum weighted Copilot premium requests per calendar day (e.g. 300 for Pro, 1500 for Pro+). When the limit is reached or exceeded, the Copilot provider is skipped in the fallback chain. Displayed as a progress indicator in the Hearth Usage panel. |
 | `max_ci_fix_attempts` | int | `5` | `1` | Maximum CI fix cycles per PR before marking as exhausted. |
 | `max_review_fix_attempts` | int | `5` | `1` | Maximum review fix cycles per PR before marking as exhausted. |
@@ -748,6 +750,7 @@ Environment variables with the `FORGE_` prefix override YAML values. Nested keys
 | `FORGE_SETTINGS_SCHEMATIC_WORD_THRESHOLD` | `settings.schematic_word_threshold` |
 | `FORGE_SETTINGS_BELLOWS_INTERVAL` | `settings.bellows_interval` |
 | `FORGE_SETTINGS_DAILY_COST_LIMIT` | `settings.daily_cost_limit` |
+| `FORGE_SETTINGS_PER_WORKER_COST_ESTIMATE` | `settings.per_worker_cost_estimate` |
 | `FORGE_SETTINGS_COPILOT_DAILY_REQUEST_LIMIT` | `settings.copilot_daily_request_limit` |
 | `FORGE_SETTINGS_MAX_CI_FIX_ATTEMPTS` | `settings.max_ci_fix_attempts` |
 | `FORGE_SETTINGS_MAX_REVIEW_FIX_ATTEMPTS` | `settings.max_review_fix_attempts` |
@@ -801,6 +804,7 @@ The config is validated at load time. Errors are reported as a list:
 - `smith_timeout` must be >= 1m
 - `bellows_interval` must be >= 30s
 - `daily_cost_limit` must be a non-negative finite number
+- `per_worker_cost_estimate` must be a non-negative finite number (omit or set to 0 to use the default)
 - `stale_interval` must be >= 30s when enabled, or 0 to disable
 - `smelter_interval` must be >= 1h when enabled, or 0 to disable
 - `questgiver_interval` must be > 0 when questgiver is enabled, or 0 to disable
