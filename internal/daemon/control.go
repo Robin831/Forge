@@ -61,14 +61,17 @@ func (h *controlHandle) setInterrupt(fn func()) {
 
 // fireInterrupt invokes the wired interrupt func, if any. It returns true when
 // an interrupt was actually triggered, false when none is currently wired.
+// The interrupt is invoked while holding the lock so that a concurrent
+// setInterrupt(nil) cannot clear the interrupt between our read and invocation.
 func (h *controlHandle) fireInterrupt() bool {
 	h.mu.Lock()
 	fn := h.interrupt
-	h.mu.Unlock()
 	if fn == nil {
+		h.mu.Unlock()
 		return false
 	}
 	fn()
+	h.mu.Unlock()
 	return true
 }
 
@@ -96,15 +99,22 @@ func (d *Daemon) deregisterControlHandle(beadID string) {
 }
 
 // releaseBeadSlot removes both the activeBeads reservation and the control
-// handle for a bead. The two deletes are separate operations, not a single
-// atomic update, but ordering is intentional: deregisterControlHandle first,
-// then activeBeads.Delete, so a new dispatch cannot acquire the bead slot and
-// register a new handle that would then be deleted by this goroutine.
-// Idempotent — safe to call even if no handle was registered (sync.Map.Delete
-// is a no-op for absent keys).
+// handle for a bead unconditionally. Use this only in pre-dispatch error paths
+// where no goroutine owns the slot yet. For goroutine cleanup or IPC stop
+// handlers where a re-dispatch race is possible, use releaseBeadSlotIfOwner.
 func (d *Daemon) releaseBeadSlot(beadID string) {
 	d.deregisterControlHandle(beadID)
 	d.activeBeads.Delete(beadID)
+}
+
+// releaseBeadSlotIfOwner removes the control handle and activeBeads reservation
+// only if the currently stored handle is expectedCtrl. This prevents a finishing
+// goroutine's deferred cleanup from deleting a handle registered by a new
+// dispatch after re-dispatch.
+func (d *Daemon) releaseBeadSlotIfOwner(beadID string, expectedCtrl *controlHandle) {
+	if d.controlHandles.CompareAndDelete(beadID, expectedCtrl) {
+		d.activeBeads.Delete(beadID)
+	}
 }
 
 // lookupControlHandle returns the control handle for a bead, if one is
@@ -115,7 +125,12 @@ func (d *Daemon) lookupControlHandle(beadID string) (*controlHandle, bool) {
 	if !ok {
 		return nil, false
 	}
-	return v.(*controlHandle), true
+	h, ok := v.(*controlHandle)
+	if !ok {
+		d.controlHandles.Delete(beadID)
+		return nil, false
+	}
+	return h, true
 }
 
 // pushSteer is a convenience that looks up the handle for beadID and pushes a

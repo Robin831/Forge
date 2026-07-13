@@ -2923,11 +2923,10 @@ func (d *Daemon) pollAndDispatch(ctx context.Context, fullPoll bool) {
 func (d *Daemon) dispatchBead(ctx context.Context, bead poller.Bead, anvilCfg config.AnvilConfig, claimWorkerID string, ctrl *controlHandle) {
 	defer d.wg.Done()
 	defer func() {
-		// releaseBeadSlot removes the control handle first, then activeBeads,
-		// so a new dispatch cannot register a handle that this cleanup deletes.
-		// drainPendingAction fires last so any parked lifecycle action sees
-		// the bead as free.
-		d.releaseBeadSlot(bead.ID)
+		// Use releaseBeadSlotIfOwner so that if stop_bead/handleQueueStop
+		// already released our slot and a new dispatch registered a different
+		// handle, this cleanup is a no-op instead of deleting the new handle.
+		d.releaseBeadSlotIfOwner(bead.ID, ctrl)
 		if ctx.Err() == nil {
 			d.drainPendingAction(ctx, bead.ID)
 		}
@@ -5215,7 +5214,13 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 			d.logger.Info("killed worker for stopped bead", "worker", terminatedWorkerID, "bead", sp.BeadID, "anvil", sp.Anvil)
 		}
 
-		d.releaseBeadSlot(sp.BeadID)
+		// Use releaseBeadSlotIfOwner to avoid deleting a handle registered by
+		// a new dispatch if re-dispatch races with the old goroutine's cleanup.
+		if ctrl, ok := d.lookupControlHandle(sp.BeadID); ok {
+			d.releaseBeadSlotIfOwner(sp.BeadID, ctrl)
+		} else {
+			d.releaseBeadSlot(sp.BeadID)
+		}
 
 		reqID, _ := d.reqTracker.Track()
 		beadID := sp.BeadID
@@ -6401,7 +6406,11 @@ func (d *Daemon) handleQueueStop(cmd ipc.Command) ipc.Response {
 		d.logger.Info("killed worker for stopped bead via queue_stop",
 			"worker", terminatedWorkerID, "bead", qp.BeadID, "anvil", qp.AnvilName)
 	}
-	d.releaseBeadSlot(qp.BeadID)
+	if ctrl, ok := d.lookupControlHandle(qp.BeadID); ok {
+		d.releaseBeadSlotIfOwner(qp.BeadID, ctrl)
+	} else {
+		d.releaseBeadSlot(qp.BeadID)
+	}
 	data, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("bead %s stopped", qp.BeadID)})
 	return ipc.Response{Type: "ok", Payload: data}
 }

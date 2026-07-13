@@ -108,6 +108,43 @@ func TestReleaseBeadSlot(t *testing.T) {
 	}
 }
 
+// TestReleaseBeadSlotIfOwner verifies that releaseBeadSlotIfOwner only removes
+// the slot when the stored handle matches, preventing a finishing goroutine from
+// deleting a handle registered by a new dispatch.
+func TestReleaseBeadSlotIfOwner(t *testing.T) {
+	d := &Daemon{}
+	const bead = "Forge-owner"
+
+	h1 := newControlHandle("worker-old")
+	d.activeBeads.Store(bead, true)
+	d.registerControlHandle(bead, h1)
+
+	// Simulate stop_bead releasing and a new dispatch registering h2.
+	d.releaseBeadSlot(bead)
+	h2 := newControlHandle("worker-new")
+	d.activeBeads.Store(bead, true)
+	d.registerControlHandle(bead, h2)
+
+	// Old goroutine's deferred cleanup: must NOT remove h2.
+	d.releaseBeadSlotIfOwner(bead, h1)
+
+	if _, ok := d.lookupControlHandle(bead); !ok {
+		t.Fatal("new handle should survive old goroutine's conditional cleanup")
+	}
+	if _, ok := d.activeBeads.Load(bead); !ok {
+		t.Fatal("activeBeads slot should survive old goroutine's conditional cleanup")
+	}
+
+	// Owner cleanup should work when the handle matches.
+	d.releaseBeadSlotIfOwner(bead, h2)
+	if _, ok := d.lookupControlHandle(bead); ok {
+		t.Fatal("handle should be removed when owner matches")
+	}
+	if _, ok := d.activeBeads.Load(bead); ok {
+		t.Fatal("activeBeads should be removed when owner matches")
+	}
+}
+
 // TestControlHandleInterruptCleared verifies that clearing the interrupt (as the
 // pipeline does when it returns) makes fireInterrupt a no-op returning false.
 func TestControlHandleInterruptCleared(t *testing.T) {
