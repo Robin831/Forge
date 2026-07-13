@@ -7,8 +7,6 @@ package provider
 
 import (
 	"context"
-	"errors"
-	"fmt"
 	"maps"
 	"strings"
 	"time"
@@ -123,46 +121,18 @@ func (p Provider) BuildArgs(claudeFlags []string) []string {
 	case OpenAI:
 		return p.openaiArgs(claudeFlags)
 	default:
-		return p.claudeArgs(claudeFlags, "")
+		return p.claudeArgs(claudeFlags)
 	}
 }
 
-// BuildArgsResume returns the full argument list for a one-shot non-interactive
-// run that resumes a prior provider session, injecting --resume <sessionID>
-// before the -p flag.
-//
-// Only Claude reports a session_id in its stream output (see
-// smith.Result.SessionID), so only Claude sessions can be resumed. For any
-// other provider — or an empty sessionID — a clear error is returned so callers
-// can surface the problem or fall back to a fresh spawn rather than silently
-// starting a new, unrelated session.
-//
-// The prompt text is delivered via stdin exactly as with BuildArgs.
-func (p Provider) BuildArgsResume(claudeFlags []string, sessionID string) ([]string, error) {
-	if sessionID == "" {
-		return nil, errors.New("provider: cannot resume with an empty session id")
-	}
-	if p.Kind != Claude {
-		return nil, fmt.Errorf("provider: %s sessions cannot be resumed — only Claude reports a resumable session id", p.Kind)
-	}
-	return p.claudeArgs(claudeFlags, sessionID), nil
-}
-
-func (p Provider) claudeArgs(extra []string, resumeSessionID string) []string {
+func (p Provider) claudeArgs(extra []string) []string {
 	// -p - tells Claude to read the prompt from stdin.
 	base := []string{
 		"--dangerously-skip-permissions",
-	}
-	// Resume a prior session by injecting --resume <id> before the -p flag so
-	// Claude continues the existing conversation instead of starting fresh.
-	if resumeSessionID != "" {
-		base = append(base, "--resume", resumeSessionID)
-	}
-	base = append(base,
 		"-p", "-",
 		"--output-format", "stream-json",
 		"--verbose",
-	)
+	}
 	// Honour explicit model override from claude_flags; if none, use p.Model.
 	model := p.Model
 	var filtered []string
