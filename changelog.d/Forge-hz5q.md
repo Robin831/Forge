@@ -1,0 +1,2 @@
+category: Added
+- **Steer a running Smith spawn** - A steer message can now gracefully interrupt an in-flight Smith spawn (SIGINT to the process group with a grace period, without failing the worker), preserve the captured Claude session_id, and resume the session in the same worktree via the provider `--resume` flag with the steering text as the new prompt. The respawn counts as a pipeline iteration and respects `max_pipeline_iterations`; resume output is logged to `steer-<ts>.log`. (Forge-hz5q)

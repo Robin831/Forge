@@ -3207,6 +3207,11 @@ normalPipeline:
 		WorkerID:        claimWorkerID,
 		MaxIterations:   cfg.Settings.MaxPipelineIterations,
 
+		// Steer mode A: feed the control handle's steer mailbox into the
+		// pipeline so a steer message can interrupt a running Smith spawn and
+		// resume its session with the steering text (see internal/daemon/control.go).
+		SteerCh: ctrl.steer,
+
 		WardenModelOverride:         cfg.Settings.WardenModelOverride,
 		SchematicModelOverride:      cfg.Settings.SchematicModelOverride,
 		CopilotSkipWardenSmallDiffs: cfg.Settings.CopilotSkipWardenSmallDiffs,

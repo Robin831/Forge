@@ -510,3 +510,14 @@ func TestIsRateLimitError(t *testing.T) {
 		})
 	}
 }
+
+func TestResumeFlag(t *testing.T) {
+	// Claude supports session resumption.
+	assert.Equal(t, []string{"--resume", "sess-abc"}, Provider{Kind: Claude}.ResumeFlag("sess-abc"))
+	// An empty session id yields no flag.
+	assert.Nil(t, Provider{Kind: Claude}.ResumeFlag(""))
+	// Providers that do not report a session_id cannot be resumed.
+	assert.Nil(t, Provider{Kind: Gemini}.ResumeFlag("sess-abc"))
+	assert.Nil(t, Provider{Kind: Copilot}.ResumeFlag("sess-abc"))
+	assert.Nil(t, Provider{Kind: OpenAI}.ResumeFlag("sess-abc"))
+}

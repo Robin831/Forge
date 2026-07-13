@@ -45,6 +45,32 @@ import (
 // value is provided via Params.MaxIterations or the config.
 const MaxIterations = 5
 
+// defaultSteerGrace is how long an interrupted Smith spawn is given to exit
+// cleanly after SIGINT before it is force-killed during steering (steer mode A).
+// It mirrors the daemon's killWorkerProcess grace period.
+const defaultSteerGrace = 5 * time.Second
+
+// waitSmithWithSteer waits for a running Smith spawn to complete while watching
+// the steer mailbox. If a steer message arrives before the spawn finishes, the
+// spawn is gracefully interrupted (via interrupt) and its result is reaped with
+// Wait() — preserving the session_id captured from the stream so far — and the
+// steering message is returned. When the spawn completes on its own (or no
+// steer channel is wired) it returns the result with an empty message.
+func waitSmithWithSteer(proc *smith.Process, steerCh <-chan string, interrupt func(*smith.Process)) (*smith.Result, string) {
+	if steerCh == nil {
+		return proc.Wait(), ""
+	}
+	select {
+	case <-proc.Done():
+		return proc.Wait(), ""
+	case msg := <-steerCh:
+		interrupt(proc)
+		// Reap the interrupted spawn. The stream reader has captured the
+		// session_id, so the returned result carries it for the resume.
+		return proc.Wait(), msg
+	}
+}
+
 // Outcome represents the final result of the pipeline.
 type Outcome struct {
 	// Success is true if the bead was implemented and approved.
@@ -348,6 +374,32 @@ type Params struct {
 	// force smith to continue the pipeline after smith has already completed
 	// separately.
 	SkipSmith bool
+
+	// SteerCh, when non-nil, is drained while a Smith spawn is running (steer
+	// mode A). A message on it gracefully interrupts the running spawn (SIGINT
+	// to the process group + grace period, WITHOUT marking the worker failed),
+	// preserves the captured session_id, and resumes the session in the same
+	// worktree via the provider --resume flag with the steering message
+	// delivered as the new stdin prompt. Each resume counts as one pipeline
+	// iteration and is bounded by MaxIterations. Set by the daemon from the
+	// bead's control-handle steer mailbox.
+	SteerCh <-chan string
+
+	// SteerGrace overrides the grace period given to an interrupted spawn to
+	// exit cleanly before it is force-killed. When zero, defaultSteerGrace is
+	// used.
+	SteerGrace time.Duration
+
+	// SmithInterrupter overrides how a running Smith spawn is gracefully
+	// stopped during steering. Production calls smith.Process.Interrupt; tests
+	// inject a stub to observe interruption without real signals.
+	SmithInterrupter func(proc *smith.Process)
+
+	// SmithResumeRunner overrides the steer-mode resume spawn. Production routes
+	// through smith.SpawnWithOptions with the provider --resume flag and a
+	// steer-<ts>.log prefix; tests inject a stub. sessionID is the captured
+	// session to resume and steerMsg is delivered as the new stdin prompt.
+	SmithResumeRunner func(ctx context.Context, wtPath, steerMsg, logDir string, pv provider.Provider, sessionID string, extraFlags []string) (*smith.Process, error)
 }
 
 // wardenProviders returns the provider list for the Warden stage. When
@@ -573,6 +625,67 @@ func Run(ctx context.Context, p Params) *Outcome {
 	checkEmptyDiff := p.EmptyDiffChecker
 	if checkEmptyDiff == nil {
 		checkEmptyDiff = hasEmptyDiff
+	}
+	// Steer mode A (interrupt & resume a running spawn). steerCh is drained
+	// while a Smith spawn runs; interruptSpawn stops it gracefully; spawnResume
+	// resumes the captured session with the steering message.
+	steerCh := p.SteerCh
+	steerGrace := p.SteerGrace
+	if steerGrace <= 0 {
+		steerGrace = defaultSteerGrace
+	}
+	interruptSpawn := p.SmithInterrupter
+	if interruptSpawn == nil {
+		interruptSpawn = func(proc *smith.Process) { proc.Interrupt(steerGrace) }
+	}
+	spawnResume := p.SmithResumeRunner
+	if spawnResume == nil {
+		spawnResume = func(ctx context.Context, wtPath, steerMsg, logDir string, pv provider.Provider, sessionID string, extraFlags []string) (*smith.Process, error) {
+			return smith.SpawnWithOptions(ctx, wtPath, steerMsg, logDir, pv, extraFlags, smith.SpawnOptions{
+				LogPrefix:       "steer",
+				ResumeSessionID: sessionID,
+			})
+		}
+	}
+
+	// recordSpawnAccounting persists provider quota plus token/cost usage for a
+	// completed (non-rate-limited) Smith spawn. Shared by the normal
+	// provider-fallback loop and the steer-mode resume path.
+	recordSpawnAccounting := func(pv provider.Provider, smithResult *smith.Result) {
+		if smithResult.Quota != nil {
+			if err := p.DB.UpsertProviderQuota(string(pv.Kind), smithResult.Quota); err != nil {
+				log.Printf("[pipeline:%s] Failed to update provider %s quota in DB: %v", workerID, pv.Label(), err)
+			} else {
+				resetStr := "n/a"
+				if smithResult.Quota.RequestsReset != nil {
+					resetStr = time.Until(*smithResult.Quota.RequestsReset).Round(time.Minute).String()
+				}
+				log.Printf("[pipeline:%s] Provider %s quota updated: %d/%d requests, %d/%d tokens remaining (reset in %s)",
+					workerID, pv.Label(),
+					smithResult.Quota.RequestsRemaining, smithResult.Quota.RequestsLimit,
+					smithResult.Quota.TokensRemaining, smithResult.Quota.TokensLimit, resetStr)
+			}
+		}
+
+		// Record Copilot premium request if this was a copilot invocation
+		// that completed (not rate limited).
+		if pv.Kind == provider.Copilot && !smithResult.RateLimited {
+			multiplier := cost.CopilotPremiumMultiplier(pv.Model)
+			if multiplier > 0 {
+				if err := p.DB.AddCopilotRequest(cost.Today(), multiplier); err != nil {
+					log.Printf("[pipeline:%s] Failed to record copilot premium request: %v", workerID, err)
+				}
+			}
+		}
+
+		// Record per-provider and aggregate daily costs for non-rate-limited completions.
+		if !smithResult.RateLimited && (smithResult.TokensIn > 0 || smithResult.TokensOut > 0 || smithResult.CostUSD > 0) {
+			today := cost.Today()
+			pvName := string(pv.Kind)
+			_ = p.DB.AddDailyCost(today, smithResult.TokensIn, smithResult.TokensOut, 0, 0, smithResult.CostUSD)
+			_ = p.DB.AddProviderDailyCost(today, pvName, smithResult.TokensIn, smithResult.TokensOut, 0, 0, smithResult.CostUSD)
+			_ = p.DB.AddBeadCost(p.Bead.ID, p.AnvilName, smithResult.TokensIn, smithResult.TokensOut, 0, 0, smithResult.CostUSD)
+		}
 	}
 
 	// Step 1: Create worktree
@@ -895,6 +1008,16 @@ func Run(ctx context.Context, p Params) *Outcome {
 	// is wrong, which we treat as a pathological loop and escalate.
 	recheckUseCount := 0
 
+	// Steer mode A resume state. When pendingResume is set, the next iteration
+	// resumes the interrupted Claude session (resumeSessionID) with the steering
+	// message (resumeMessage) as the new prompt, using resumeProvider, instead
+	// of running the normal Smith prompt. Set when a steer message interrupts a
+	// running spawn.
+	var pendingResume bool
+	var resumeSessionID string
+	var resumeMessage string
+	var resumeProvider provider.Provider
+
 	// Feedback loop
 	for iteration := 1; iteration <= maxIter; iteration++ {
 		outcome.Iterations = iteration
@@ -934,26 +1057,28 @@ func Run(ctx context.Context, p Params) *Outcome {
 			return outcome
 		}
 
-		// Run Smith (with provider fallback on rate limit)
-		log.Printf("[pipeline:%s] Running Smith (provider: %s)", workerID, providers[activeProviderIdx].Label())
 		_ = p.DB.UpdateWorkerPhase(workerID, "smith")
 		if p.DB != nil {
 			logIngotErr(workerID, "smith", ingot.UpdateIngotStatus(p.DB.Conn(), p.Bead.ID, p.AnvilName, ingot.StatusSmith))
 		}
-		_ = p.DB.LogEvent(state.EventSmithStarted, fmt.Sprintf("Iteration %d (provider: %s)", iteration, providers[activeProviderIdx].Label()), p.Bead.ID, p.AnvilName)
 
 		logDir := wt.Path + "/.forge-logs"
-		for pi := activeProviderIdx; pi < len(providers); pi++ {
-			pv := providers[pi]
-			if pi > activeProviderIdx {
-				log.Printf("[pipeline:%s] Provider %s rate limited, retrying with %s", workerID, providers[pi-1].Label(), pv.Label())
-				_ = p.DB.LogEvent(state.EventSmithStarted,
-					fmt.Sprintf("Rate limit fallback to provider %s (iteration %d)", pv.Label(), iteration),
-					p.Bead.ID, p.AnvilName)
-			}
-			process, err := spawnSmith(ctx, wt.Path, currentPrompt, logDir, pv, p.ExtraFlags)
+
+		// steerMsgThisIter is set when a steer message interrupted this
+		// iteration's spawn (steer mode A). Handled after the spawn completes.
+		var steerMsgThisIter string
+
+		if pendingResume {
+			// Steer mode A: resume the interrupted Claude session with the
+			// steering message as the new prompt. A resume is session-bound to a
+			// single provider, so there is no rate-limit fallback here.
+			pv := resumeProvider
+			log.Printf("[pipeline:%s] Resuming session %s with steer message (iteration %d, provider: %s)", workerID, resumeSessionID, iteration, pv.Label())
+			_ = p.DB.LogEvent(state.EventSmithStarted, fmt.Sprintf("Steer resume of session %s (iteration %d)", resumeSessionID, iteration), p.Bead.ID, p.AnvilName)
+
+			process, err := spawnResume(ctx, wt.Path, resumeMessage, logDir, pv, resumeSessionID, p.ExtraFlags)
 			if err != nil {
-				outcome.Error = fmt.Errorf("spawning smith (%s): %w", pv.Label(), err)
+				outcome.Error = fmt.Errorf("resuming smith session %s (%s): %w", resumeSessionID, pv.Label(), err)
 				_ = p.DB.UpdateWorkerStatus(workerID, state.WorkerFailed)
 				_ = p.DB.LogEvent(state.EventSmithFailed, err.Error(), p.Bead.ID, p.AnvilName)
 				markIngotFailed()
@@ -962,71 +1087,130 @@ func Run(ctx context.Context, p Params) *Outcome {
 			}
 			_ = p.DB.UpdateWorkerPID(workerID, process.PID)
 			_ = p.DB.UpdateWorkerLogPath(workerID, process.LogPath)
-			smithResult = process.Wait()
+			smithResult, steerMsgThisIter = waitSmithWithSteer(process, steerCh, interruptSpawn)
 
-			// Persist the captured session_id and model for this spawn. The
-			// model comes from the stream (Claude reports it in-band) and falls
-			// back to the provider selection. The loop only continues on rate
-			// limit, so the final iteration recorded here is the kept spawn.
 			_ = p.DB.UpdateWorkerSession(workerID, smithResult.SessionID, smith.SessionModel(smithResult, pv))
-
-			// A process that produces a genuine success result event
-			// (subtype:"success" with is_error:false) AND exits 0 completed
-			// successfully. The Claude CLI handles internal retries for rate
-			// limits and resumes automatically. Any rate_limit_event we saw was
-			// either a warning or a transient block that resolved.
-			// IMPORTANT: subtype:"success" + is_error:true is a hard rate-limit
-			// rejection — Claude returns this when it couldn't start the session.
-			// Do NOT clear RateLimited in that case; fall back to another provider.
-			// IMPORTANT: ExitCode == 0 alone is NOT enough. The Claude CLI exits
-			// 0 when killed mid-tool ("Request interrupted by user") with
-			// subtype:"error_during_execution". Treating that as success would
-			// let an empty diff slip through to Warden, which hard-rejects.
 			if smithResult.ResultSubtype == "success" && !smithResult.IsError && smithResult.ExitCode == 0 {
 				smithResult.RateLimited = false
 			}
+			recordSpawnAccounting(pv, smithResult)
 
-			if smithResult.Quota != nil {
-				if err := p.DB.UpsertProviderQuota(string(pv.Kind), smithResult.Quota); err != nil {
-					log.Printf("[pipeline:%s] Failed to update provider %s quota in DB: %v", workerID, pv.Label(), err)
-				} else {
-					resetStr := "n/a"
-					if smithResult.Quota.RequestsReset != nil {
-						resetStr = time.Until(*smithResult.Quota.RequestsReset).Round(time.Minute).String()
-					}
-					log.Printf("[pipeline:%s] Provider %s quota updated: %d/%d requests, %d/%d tokens remaining (reset in %s)",
-						workerID, pv.Label(),
-						smithResult.Quota.RequestsRemaining, smithResult.Quota.RequestsLimit,
-						smithResult.Quota.TokensRemaining, smithResult.Quota.TokensLimit, resetStr)
+			// The resume for this iteration is consumed. Keep resumeProvider so
+			// a chained steer (interrupt of the resumed spawn) resumes the same
+			// session owner again.
+			pendingResume = false
+		} else {
+			// Run Smith (with provider fallback on rate limit)
+			log.Printf("[pipeline:%s] Running Smith (provider: %s)", workerID, providers[activeProviderIdx].Label())
+			_ = p.DB.LogEvent(state.EventSmithStarted, fmt.Sprintf("Iteration %d (provider: %s)", iteration, providers[activeProviderIdx].Label()), p.Bead.ID, p.AnvilName)
+
+			for pi := activeProviderIdx; pi < len(providers); pi++ {
+				pv := providers[pi]
+				if pi > activeProviderIdx {
+					log.Printf("[pipeline:%s] Provider %s rate limited, retrying with %s", workerID, providers[pi-1].Label(), pv.Label())
+					_ = p.DB.LogEvent(state.EventSmithStarted,
+						fmt.Sprintf("Rate limit fallback to provider %s (iteration %d)", pv.Label(), iteration),
+						p.Bead.ID, p.AnvilName)
 				}
-			}
-
-			// Record Copilot premium request if this was a copilot invocation
-			// that completed (not rate limited).
-			if pv.Kind == provider.Copilot && !smithResult.RateLimited {
-				multiplier := cost.CopilotPremiumMultiplier(pv.Model)
-				if multiplier > 0 {
-					if err := p.DB.AddCopilotRequest(cost.Today(), multiplier); err != nil {
-						log.Printf("[pipeline:%s] Failed to record copilot premium request: %v", workerID, err)
-					}
+				process, err := spawnSmith(ctx, wt.Path, currentPrompt, logDir, pv, p.ExtraFlags)
+				if err != nil {
+					outcome.Error = fmt.Errorf("spawning smith (%s): %w", pv.Label(), err)
+					_ = p.DB.UpdateWorkerStatus(workerID, state.WorkerFailed)
+					_ = p.DB.LogEvent(state.EventSmithFailed, err.Error(), p.Bead.ID, p.AnvilName)
+					markIngotFailed()
+					outcome.Duration = time.Since(start)
+					return outcome
 				}
-			}
+				_ = p.DB.UpdateWorkerPID(workerID, process.PID)
+				_ = p.DB.UpdateWorkerLogPath(workerID, process.LogPath)
+				smithResult, steerMsgThisIter = waitSmithWithSteer(process, steerCh, interruptSpawn)
 
-			// Record per-provider and aggregate daily costs for non-rate-limited completions.
-			if !smithResult.RateLimited && (smithResult.TokensIn > 0 || smithResult.TokensOut > 0 || smithResult.CostUSD > 0) {
-				today := cost.Today()
-				pvName := string(pv.Kind)
-				_ = p.DB.AddDailyCost(today, smithResult.TokensIn, smithResult.TokensOut, 0, 0, smithResult.CostUSD)
-				_ = p.DB.AddProviderDailyCost(today, pvName, smithResult.TokensIn, smithResult.TokensOut, 0, 0, smithResult.CostUSD)
-				_ = p.DB.AddBeadCost(p.Bead.ID, p.AnvilName, smithResult.TokensIn, smithResult.TokensOut, 0, 0, smithResult.CostUSD)
-			}
+				// Persist the captured session_id and model for this spawn. The
+				// model comes from the stream (Claude reports it in-band) and falls
+				// back to the provider selection. The loop only continues on rate
+				// limit, so the final iteration recorded here is the kept spawn.
+				_ = p.DB.UpdateWorkerSession(workerID, smithResult.SessionID, smith.SessionModel(smithResult, pv))
 
-			if !smithResult.RateLimited {
-				activeProviderIdx = pi // remember for the next iteration
-				break
+				// A process that produces a genuine success result event
+				// (subtype:"success" with is_error:false) AND exits 0 completed
+				// successfully. The Claude CLI handles internal retries for rate
+				// limits and resumes automatically. Any rate_limit_event we saw was
+				// either a warning or a transient block that resolved.
+				// IMPORTANT: subtype:"success" + is_error:true is a hard rate-limit
+				// rejection — Claude returns this when it couldn't start the session.
+				// Do NOT clear RateLimited in that case; fall back to another provider.
+				// IMPORTANT: ExitCode == 0 alone is NOT enough. The Claude CLI exits
+				// 0 when killed mid-tool ("Request interrupted by user") with
+				// subtype:"error_during_execution". Treating that as success would
+				// let an empty diff slip through to Warden, which hard-rejects.
+				if smithResult.ResultSubtype == "success" && !smithResult.IsError && smithResult.ExitCode == 0 {
+					smithResult.RateLimited = false
+				}
+
+				recordSpawnAccounting(pv, smithResult)
+
+				// A steer interrupt is not a rate limit — record the session
+				// owner for the resume and stop trying other providers.
+				if steerMsgThisIter != "" {
+					activeProviderIdx = pi
+					resumeProvider = pv
+					break
+				}
+
+				if !smithResult.RateLimited {
+					activeProviderIdx = pi // remember for the next iteration
+					break
+				}
 			}
 		}
 		outcome.SmithResult = smithResult
+
+		// Steer mode A: a steer message interrupted this spawn. Preserve the
+		// captured session_id and, if iterations remain, resume the session
+		// with the steering message as the new prompt (counts as one pipeline
+		// iteration). This is checked before the rate-limit / exit-code
+		// verdicts because an interrupted spawn is expected to be incomplete.
+		if steerMsgThisIter != "" {
+			log.Printf("[pipeline:%s] Steer interrupt during iteration %d (session=%q)", workerID, iteration, smithResult.SessionID)
+			_ = p.DB.LogEvent(state.EventSmithSteered,
+				fmt.Sprintf("Steer interrupt (iteration %d): %s", iteration, truncateOutput(steerMsgThisIter, 200)),
+				p.Bead.ID, p.AnvilName)
+
+			if smithResult.SessionID == "" {
+				// Without a session_id we cannot resume (only Claude reports one).
+				log.Printf("[pipeline:%s] Steer requested but no session_id captured — cannot resume", workerID)
+				_ = p.DB.LogEvent(state.EventSmithFailed,
+					"Steer requested but provider did not report a session_id; cannot resume",
+					p.Bead.ID, p.AnvilName)
+				outcome.NeedsHuman = true
+				outcome.Error = fmt.Errorf("steer requested but no session_id available to resume")
+				_ = p.DB.UpdateWorkerStatus(workerID, state.WorkerDone)
+				markIngotFailed()
+				outcome.Duration = time.Since(start)
+				return outcome
+			}
+
+			if iteration >= maxIter {
+				// No iterations left to respawn — stop and escalate per the
+				// existing max-iteration behavior.
+				log.Printf("[pipeline:%s] Steer interrupt at max iterations (%d) — not respawning", workerID, maxIter)
+				_ = p.DB.LogEvent(state.EventSmithFailed,
+					fmt.Sprintf("Steer interrupt reached max_pipeline_iterations (%d) — not respawning", maxIter),
+					p.Bead.ID, p.AnvilName)
+				outcome.NeedsHuman = true
+				outcome.Error = fmt.Errorf("steer interrupt reached max_pipeline_iterations (%d)", maxIter)
+				_ = p.DB.UpdateWorkerStatus(workerID, state.WorkerDone)
+				markIngotFailed()
+				outcome.Duration = time.Since(start)
+				return outcome
+			}
+
+			// Arm the resume for the next iteration.
+			pendingResume = true
+			resumeSessionID = smithResult.SessionID
+			resumeMessage = steerMsgThisIter
+			continue
+		}
 
 		if smithResult.RateLimited {
 			log.Printf("[pipeline:%s] All providers rate limited — releasing bead %s back to open", workerID, p.Bead.ID)
