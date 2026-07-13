@@ -59,6 +59,8 @@ function workerToInfo(beadID: string, anvil: string, w: BeadDetailWorker): Worke
     completed_at: w.completed_at,
     log_path: w.log_path,
     pr_number: w.pr_number,
+    session_id: w.session_id,
+    model: w.model,
   }
 }
 

@@ -165,6 +165,8 @@ export interface HistoryWorker {
   duration_sec?: number
   log_path?: string
   pr_number?: number
+  session_id?: string
+  model?: string
 }
 
 export interface HistoryWorkersResponse {
@@ -255,6 +257,8 @@ export interface BeadDetailWorker {
   duration_sec?: number
   log_path?: string
   pr_number?: number
+  session_id?: string
+  model?: string
 }
 
 // BeadDetailComment is one entry from the `comments` array on the bead detail
