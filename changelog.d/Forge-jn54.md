@@ -1,0 +1,2 @@
+category: Fixed
+- **Steer/pause UI now matches daemon acceptance** - The web dashboard enables steering for running, pending, reviewing (Warden mode-B queue), and paused workers, matching what the daemon actually accepts. A paused worker's message is delivered as a resume-with-message via the resume endpoint, and its tooltip truthfully reads "your message will apply on resume" instead of the misleading "no active pipeline". The pause control now warns when a pause requested during a Temper check takes effect at the next Smith turn. (Forge-jn54)

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Pause, Play, Terminal, X } from 'lucide-react'
 import type { LogLine, LogTailResponse, WorkerInfo } from '../api'
-import { actions, ApiError, apiGet, steerDisabledReason } from '../api'
+import { actions, ApiError, apiGet, steerDisabledReason, steerIsResumeDelivery } from '../api'
 import { useAuth } from '../auth'
 import { useAction } from '../hooks/useAction'
 import { useEventSource } from '../hooks/useEventSource'
@@ -27,6 +27,16 @@ export default function WorkerLogModal({ worker, onClose }: WorkerLogModalProps)
   // running worker may be paused, and only a paused worker may be resumed.
   const canPause = worker?.status === 'running'
   const canResume = worker?.status === 'paused'
+  // Steering is offered across the whole daemon acceptance matrix — the live
+  // stream (pending/running) plus the reviewing Warden (mode-B queue) and a
+  // paused worker (resume-with-message). The composer itself stays disabled for
+  // a non-Claude session via steerDisabledReason.
+  const canSteer =
+    !!worker &&
+    (worker.status === 'pending' ||
+      worker.status === 'running' ||
+      worker.status === 'reviewing' ||
+      worker.status === 'paused')
 
   const [tailLines, setTailLines] = useState<string[] | null>(null)
   const [tailError, setTailError] = useState<string | null>(null)
@@ -205,10 +215,17 @@ export default function WorkerLogModal({ worker, onClose }: WorkerLogModalProps)
           </div>
         )}
 
-        {isLive && (
+        {/* Steer composer mirrors the daemon steer acceptance matrix, not the
+            live-stream gate: besides live (pending/running) workers it also
+            covers a reviewing Warden (mode-B queue) and a paused worker (whose
+            message is delivered as a resume-with-message). A non-Claude worker in
+            one of these statuses still renders the composer, disabled, so its
+            explanatory tooltip is visible. */}
+        {canSteer && (
           <SteerComposer
             beadID={worker.bead_id}
             disabledReason={steerDisabledReason(worker)}
+            paused={steerIsResumeDelivery(worker)}
             compact
           />
         )}
