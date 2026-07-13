@@ -46,6 +46,11 @@ type Result struct {
 	TokensOut int
 	// RateLimited is true when the provider refused the request due to quota.
 	RateLimited bool
+	// AuthFailed is true when the provider rejected the credentials (invalid API
+	// key, unauthorized, expired token). Distinct from RateLimited: an auth
+	// failure must be escalated for human attention rather than retried/failed
+	// over, since a bad credential fails identically on every attempt.
+	AuthFailed bool
 	// IsError is true when the result event had is_error:true (session aborted,
 	// e.g. hard rate-limit rejection). A success subtype with is_error:true
 	// means Claude returned the rate-limit message as the "result" text, and we
@@ -386,10 +391,16 @@ func SpawnWithOptions(ctx context.Context, worktreePath, promptText, logDir stri
 			}
 		}
 
-		// Detect rate limit — OR with any flag already set by readStreamJSON
-		// (e.g. from a rate_limit_event seen mid-stream) so we never lose it.
-		result.RateLimited = result.RateLimited || provider.IsRateLimitError(
-			result.ExitCode, result.ErrorOutput, result.ResultSubtype)
+		// Classify the failure — OR rate-limit with any flag already set by
+		// readStreamJSON (e.g. from a rate_limit_event seen mid-stream) so we never
+		// lose it. Auth failures are tracked separately so the pipeline can escalate
+		// them instead of retrying/failing over forever (Forge-d5ns).
+		switch provider.ClassifyProviderError(result.ExitCode, result.ErrorOutput, result.ResultSubtype) {
+		case provider.FailureAuth:
+			result.AuthFailed = true
+		case provider.FailureRateLimit:
+			result.RateLimited = true
+		}
 		// A genuine success (subtype "success", is_error false) means the AI
 		// completed the task. Claude may exit 2 (its rate-limit code) even after
 		// recovering internally — don't fall back in that case.
@@ -398,6 +409,7 @@ func SpawnWithOptions(ctx context.Context, worktreePath, promptText, logDir stri
 		// rejected before any work was done — that is NOT a successful session.
 		if result.ResultSubtype == "success" && !result.IsError {
 			result.RateLimited = false
+			result.AuthFailed = false
 		}
 
 		p.mu.Lock()
@@ -617,9 +629,16 @@ func readStreamJSON(r io.Reader, buf *strings.Builder, logFile *os.File, result 
 					result.FullOutput = event.Result
 				}
 				// is_error:true means the session was hard-aborted (e.g. rate-limit
-				// rejection). Flag it if the result text confirms the cause.
-				if event.IsError && provider.IsRateLimitError(0, event.Result, event.Subtype) {
-					result.RateLimited = true
+				// rejection or auth failure). Classify the result text to flag the
+				// cause — auth failures are reported in the result event text, not
+				// stderr, when the provider streams JSON (Forge-d5ns).
+				if event.IsError {
+					switch provider.ClassifyProviderError(0, event.Result, event.Subtype) {
+					case provider.FailureAuth:
+						result.AuthFailed = true
+					case provider.FailureRateLimit:
+						result.RateLimited = true
+					}
 				}
 
 				// Gemini emits stats instead of usage/total_cost_usd.

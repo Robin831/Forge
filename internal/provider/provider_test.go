@@ -488,7 +488,9 @@ func TestIsRateLimitError(t *testing.T) {
 		resultSubtype string
 		want          bool
 	}{
-		{"exit code 2 is rate limit", 2, "", "", true},
+		// Exit code 2 alone is NOT a rate limit — Claude also exits 2 on auth
+		// failures, so bare exit 2 must not trigger rate-limit fallback (Forge-d5ns).
+		{"exit code 2 alone is not rate limit", 2, "", "", false},
 		{"exit code 1 is not rate limit", 1, "", "", false},
 		{"exit code 0 is not rate limit", 0, "", "", false},
 		{"subtype rate_limit", 0, "", "error_rate_limit_exceeded", true},
@@ -498,8 +500,12 @@ func TestIsRateLimitError(t *testing.T) {
 		{"stderr quota exceeded", 0, "quota exceeded", "", true},
 		{"stderr usage limit", 0, "Usage Limit reached", "", true},
 		{"stderr plan limit", 0, "plan limit reached", "", true},
-		{"stderr capacity", 0, "capacity", "", true},
-		{"stderr overloaded", 0, "overloaded", "", true},
+		{"stderr 429", 0, "HTTP 429", "", true},
+		// Weak phrases only count alongside exit code 2.
+		{"stderr capacity without exit 2 is not rate limit", 0, "at capacity", "", false},
+		{"stderr capacity with exit 2 is rate limit", 2, "at capacity", "", true},
+		{"stderr overloaded without exit 2 is not rate limit", 0, "server overloaded", "", false},
+		{"stderr overloaded with exit 2 is rate limit", 2, "server overloaded", "", true},
 		{"stderr unrelated", 0, "some other error", "", false},
 		{"empty all", 0, "", "", false},
 	}
@@ -509,6 +515,52 @@ func TestIsRateLimitError(t *testing.T) {
 			assert.Equal(t, tt.want, got)
 		})
 	}
+}
+
+func TestClassifyProviderError(t *testing.T) {
+	tests := []struct {
+		name          string
+		exitCode      int
+		stderr        string
+		resultSubtype string
+		want          FailureClass
+	}{
+		// Auth classification.
+		{"exit 2 + invalid api key stderr → auth", 2, "Error: Invalid API key provided", "", FailureAuth},
+		{"unauthorized stderr → auth", 1, "401 Unauthorized", "", FailureAuth},
+		{"authentication_error subtype → auth", 0, "", "authentication_error", FailureAuth},
+		{"expired token → auth", 2, "OAuth token has expired, please run /login", "", FailureAuth},
+		{"credentials invalid → auth", 1, "Your credentials are invalid", "", FailureAuth},
+
+		// Rate-limit classification.
+		{"exit 2 + rate stderr → rate limit", 2, "You have hit your rate limit", "", FailureRateLimit},
+		{"exit 2 + quota stderr → rate limit", 2, "quota exceeded for today", "", FailureRateLimit},
+		{"rate_limit subtype → rate limit", 0, "", "error_rate_limit_exceeded", FailureRateLimit},
+
+		// Auth takes precedence over rate-limit when both appear.
+		{"auth + rate stderr → auth precedence", 2, "429 too many requests; invalid api key", "", FailureAuth},
+
+		// Exit 2 with neutral stderr is neither (the key bug fix).
+		{"exit 2 + neutral stderr → other", 2, "panic: nil pointer dereference", "", FailureOther},
+		{"exit 2 + empty stderr → other", 2, "", "", FailureOther},
+		{"generic failure → other", 1, "some other error", "", FailureOther},
+		{"empty → other", 0, "", "", FailureOther},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, ClassifyProviderError(tt.exitCode, tt.stderr, tt.resultSubtype))
+		})
+	}
+}
+
+func TestIsAuthError(t *testing.T) {
+	assert.True(t, IsAuthError(2, "invalid api key", ""))
+	assert.True(t, IsAuthError(1, "401 Unauthorized", ""))
+	// Bare exit 2 is not auth.
+	assert.False(t, IsAuthError(2, "", ""))
+	// A rate limit is not auth.
+	assert.False(t, IsAuthError(0, "you have run out", ""))
+	assert.False(t, IsAuthError(1, "some other error", ""))
 }
 
 func TestResumeFlag(t *testing.T) {

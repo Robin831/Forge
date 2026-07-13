@@ -273,6 +273,14 @@ type Daemon struct {
 	// to avoid spamming the event log every poll cycle.
 	costLimitLoggedDate atomic.Value // stores string (YYYY-MM-DD)
 
+	// authEscalationMu guards authEscalated, which dedupes provider auth-failure
+	// escalations to one loud event/notification per provider per day. Every bead
+	// that hits the bad credential is still marked needs_human (each needs
+	// attention), but the daemon-level "check your API key" alert fires once per
+	// provider per day rather than on every affected bead (Forge-d5ns).
+	authEscalationMu sync.Mutex
+	authEscalated    map[string]bool // key: "YYYY-MM-DD|provider-label"
+
 	// In-flight cost reservation for the daily_cost_limit gate. Recorded daily
 	// cost only reflects COMPLETED spend, so without this the gate is blind to
 	// the spend of workers that are already running: with N concurrent workers
@@ -469,6 +477,7 @@ func New(cfg *config.Config, configPath string) (*Daemon, error) {
 		crucibleTickerResetCh: make(chan struct{}, 1),
 		lastPollMap:           make(map[string]anvilPollSnapshot),
 		queueTimestamps:       make(map[string]queueTimestamp),
+		authEscalated:         make(map[string]bool),
 	}
 	d.lifecycleCond = sync.NewCond(&sync.Mutex{})
 	d.pausedSince.Store(time.Time{})
@@ -3609,6 +3618,41 @@ normalPipeline:
 				bead.ID, bead.Anvil)
 			select {
 			case <-time.After(backoff):
+			case <-ctx.Done():
+			}
+			return
+		}
+		if outcome.AuthFailed {
+			// A provider rejected the credentials. Escalate for human attention
+			// immediately — retrying a bad key loops forever (Forge-d5ns). Mark
+			// the bead needs_human so it surfaces in the Needs Attention panel and
+			// is not re-dispatched. The daemon-level "check your API key" alert is
+			// deduped to once per provider per day so many affected beads do not
+			// spam the event log / notifications.
+			reason := fmt.Sprintf("Provider %s: authentication failed — check API key/credentials", outcome.AuthProvider)
+			if err := d.db.MarkNeedsHuman(bead.ID, bead.Anvil, reason); err != nil {
+				d.logger.Error("failed to mark bead as needs_human", "bead", bead.ID, "error", err)
+			}
+			d.recordDispatchFailure(bead.ID, bead.Anvil, reason, true)
+			if d.firstAuthFailureToday(outcome.AuthProvider) {
+				d.logger.Error("provider authentication failed — check API key/credentials",
+					"provider", outcome.AuthProvider, "bead", bead.ID, "anvil", bead.Anvil)
+				_ = d.db.LogEvent(state.EventAuthFailed, reason, bead.ID, bead.Anvil)
+				if disp := d.dispatcher.Load(); disp != nil {
+					go func(beadID, anvil, msg string) {
+						notifCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+						defer cancel()
+						disp.Dispatch(notifCtx, notify.EventBeadFailed, beadID, anvil, msg)
+					}(bead.ID, bead.Anvil, reason)
+				}
+			}
+			holdOff := d.cfg.Load().Settings.PollInterval
+			if holdOff <= 0 {
+				holdOff = DefaultPollInterval
+			}
+			d.logger.Warn("provider authentication failed — bead needs human attention", "bead", bead.ID, "provider", outcome.AuthProvider)
+			select {
+			case <-time.After(holdOff):
 			case <-ctx.Done():
 			}
 			return
@@ -7907,6 +7951,20 @@ func (d *Daemon) resolveGoRaceDetection(anvilCfg config.AnvilConfig) bool {
 // filterCopilotIfLimited removes copilot providers from the list when the
 // daily copilot premium request limit has been reached. If the limit is 0
 // (unlimited) or not yet reached, the list is returned unchanged.
+//
+// Fail policy: on a DB error reading the current usage this gate fails CLOSED —
+// it assumes the limit is reached and filters copilot out — mirroring the
+// daily-cost gate (costGateAllows), which also fails closed on a DB error. A
+// gate that failed open here would silently ignore the configured limit
+// whenever the DB hiccuped (Forge-d5ns).
+//
+// Empty-list guard: if filtering would remove every provider (a copilot-only
+// list over the limit), the original list is returned unchanged rather than
+// handing the caller zero providers — which would silently fall back to the
+// built-in defaults. An explicit warning is logged and a copilot_limit_hit event
+// is recorded so the situation is visible instead of surprising. The soft daily
+// cap is deliberately overshot in this edge case because stalling all work is
+// worse.
 func (d *Daemon) filterCopilotIfLimited(providers []provider.Provider) []provider.Provider {
 	limit := d.cfg.Load().Settings.CopilotDailyRequestLimit
 	if limit <= 0 {
@@ -7914,10 +7972,10 @@ func (d *Daemon) filterCopilotIfLimited(providers []provider.Provider) []provide
 	}
 	used, err := d.db.GetTodayCopilotRequests()
 	if err != nil {
-		d.logger.Error("checking copilot premium requests", "error", err)
-		return providers
-	}
-	if used < float64(limit) {
+		// Fail closed: treat the limit as reached so a DB error cannot silently
+		// disable the configured cap. Fall through to the filter below.
+		d.logger.Warn("checking copilot premium requests failed; failing closed and filtering copilot for safety", "error", err)
+	} else if used < float64(limit) {
 		return providers
 	}
 	// Filter out copilot providers.
@@ -7927,11 +7985,42 @@ func (d *Daemon) filterCopilotIfLimited(providers []provider.Provider) []provide
 			filtered = append(filtered, pv)
 		}
 	}
-	if len(filtered) < len(providers) {
-		d.logger.Info("copilot daily request limit reached, skipping copilot provider",
-			"used", fmt.Sprintf("%.1f", used), "limit", limit)
+	if len(filtered) == len(providers) {
+		// Nothing was copilot — no change.
+		return providers
 	}
+	if len(filtered) == 0 {
+		// Copilot was the only provider. Do NOT hand back zero providers.
+		msg := fmt.Sprintf("copilot daily request limit reached (%.1f/%d) but copilot is the only configured provider; proceeding with copilot despite the limit", used, limit)
+		d.logger.Error("copilot daily request limit reached but copilot is the only configured provider; proceeding with copilot despite the limit",
+			"used", fmt.Sprintf("%.1f", used), "limit", limit)
+		if err := d.db.LogEvent(state.EventCopilotLimitHit, msg, "", ""); err != nil {
+			d.logger.Error("failed to log copilot_limit_hit event", "error", err)
+		}
+		return providers
+	}
+	d.logger.Info("copilot daily request limit reached, skipping copilot provider",
+		"used", fmt.Sprintf("%.1f", used), "limit", limit)
 	return filtered
+}
+
+// firstAuthFailureToday reports whether this is the first observed
+// authentication failure for the given provider today. It records the
+// (date, provider) pair so subsequent calls the same day return false, letting
+// the caller emit the loud "check your API key" alert once per provider per day
+// instead of on every affected bead (Forge-d5ns).
+func (d *Daemon) firstAuthFailureToday(providerLabel string) bool {
+	key := time.Now().Format("2006-01-02") + "|" + providerLabel
+	d.authEscalationMu.Lock()
+	defer d.authEscalationMu.Unlock()
+	if d.authEscalated == nil {
+		d.authEscalated = make(map[string]bool)
+	}
+	if d.authEscalated[key] {
+		return false
+	}
+	d.authEscalated[key] = true
+	return true
 }
 
 // shouldDispatch determines if a bead should be automatically dispatched based on anvil configuration.

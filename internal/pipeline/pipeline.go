@@ -227,6 +227,13 @@ type Outcome struct {
 	// RateLimited is true when all providers were rate limited and the bead
 	// has been released back to open so the poller can retry later.
 	RateLimited bool
+	// AuthFailed is true when a provider rejected the credentials. The bead is
+	// NOT released for retry (a bad credential fails identically every time);
+	// the daemon escalates it for human attention instead (Forge-d5ns).
+	AuthFailed bool
+	// AuthProvider is the label of the provider that failed authentication.
+	// Populated only when AuthFailed is true.
+	AuthProvider string
 	// NeedsHuman is true when the pipeline has released the bead back to open
 	// because it requires human attention (e.g., Smith produced no diff). The
 	// current bd call only sets --status=open and does not add a separate
@@ -1746,6 +1753,16 @@ func Run(ctx context.Context, p Params) *Outcome {
 					break
 				}
 
+				// An auth failure is a bad/missing credential — it will fail
+				// identically no matter how many providers we rotate through, so
+				// stop immediately and let the escalation path below surface it
+				// (Forge-d5ns). Do NOT continue the rate-limit fallback loop.
+				if smithResult.AuthFailed {
+					activeProviderIdx = pi
+					spawnProvider = pv
+					break
+				}
+
 				if !smithResult.RateLimited {
 					activeProviderIdx = pi // remember for the next iteration
 					spawnProvider = pv
@@ -1824,6 +1841,25 @@ func Run(ctx context.Context, p Params) *Outcome {
 			resumeSessionID = smithResult.SessionID
 			resumeMessage = steerMsgThisIter
 			continue
+		}
+
+		if smithResult.AuthFailed {
+			// A provider rejected the credentials. Retrying or rotating providers
+			// is pointless — a bad/missing key fails identically every time and
+			// would otherwise loop forever (Forge-d5ns). Escalate for human
+			// attention instead of releasing the bead back to open.
+			failedProvider := spawnProvider.Label()
+			log.Printf("[pipeline:%s] Provider %s authentication failed — escalating bead %s for human attention", workerID, failedProvider, p.Bead.ID)
+			msg := fmt.Sprintf("Provider %s: authentication failed — check API key/credentials", failedProvider)
+			_ = p.DB.LogEvent(state.EventSmithFailed, msg, p.Bead.ID, p.AnvilName)
+			outcome.AuthFailed = true
+			outcome.AuthProvider = failedProvider
+			outcome.NeedsHuman = true
+			outcome.Error = fmt.Errorf("provider %s authentication failed: %s", failedProvider, smithResult.ErrorOutput)
+			_ = p.DB.UpdateWorkerStatus(workerID, state.WorkerFailed)
+			markIngotFailed()
+			outcome.Duration = time.Since(start)
+			return outcome
 		}
 
 		if smithResult.RateLimited {

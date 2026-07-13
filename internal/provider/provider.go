@@ -416,54 +416,146 @@ func FromConfig(specs []string) []Provider {
 	return out
 }
 
-// IsRateLimitError inspects exit code, stderr text, and the stream-json subtype
-// to decide whether a Smith failure was caused by the provider's rate limit.
-//
-// This function is intentionally broad — it is better to fall back to the next
-// provider unnecessarily than to hard-fail on a transient limit.
-func IsRateLimitError(exitCode int, stderr, resultSubtype string) bool {
-	// Claude emits a non-zero exit code on rate limit; check subtype first.
-	if strings.Contains(strings.ToLower(resultSubtype), "rate_limit") ||
-		strings.Contains(strings.ToLower(resultSubtype), "overloaded") {
-		return true
-	}
+// FailureClass categorizes a provider subprocess failure so the pipeline can
+// react appropriately: a rate limit warrants fallback/retry, an auth failure
+// must be surfaced to a human (retrying a bad credential loops forever), and
+// anything else is a generic failure.
+type FailureClass int
 
-	// Common stderr patterns across providers.
+const (
+	// FailureOther is any failure that is neither a rate limit nor an auth
+	// problem (generic error, crash, timeout, etc.).
+	FailureOther FailureClass = iota
+	// FailureRateLimit means the provider refused the request due to quota or
+	// capacity. The pipeline should fall back to the next provider / retry later.
+	FailureRateLimit
+	// FailureAuth means the provider rejected the credentials (invalid API key,
+	// unauthorized, expired token). The pipeline must NOT keep rotating/retrying;
+	// it should escalate for human attention.
+	FailureAuth
+)
+
+// authPhrases are stderr / result-text substrings that indicate a credential
+// or authentication problem rather than a transient limit. These take
+// precedence over rate-limit classification: a misconfigured API key must never
+// be mistaken for a rate limit, or it would be retried and failed-over forever.
+var authPhrases = []string{
+	"invalid api key",
+	"invalid_api_key",
+	"invalid x-api-key",
+	"invalid api-key",
+	"authentication_error",
+	"authentication error",
+	"authentication failed",
+	"unauthorized",
+	"not authorized",
+	"401",
+	"invalid credential",
+	"bad credential",
+	"credentials are invalid",
+	"expired token",
+	"token has expired",
+	"please run /login",
+	"please log in",
+	"oauth token",
+}
+
+// strongRateLimitPhrases are stderr / result-text substrings that unambiguously
+// indicate a rate limit or quota exhaustion. They classify as a rate limit on
+// their own, regardless of exit code.
+var strongRateLimitPhrases = []string{
+	"rate limit",
+	"ratelimit",
+	"rate_limit",
+	"usage limit",
+	"quota exceeded",
+	"quota has been exceeded",
+	"you have run out",
+	"you've hit",
+	"hit your limit",
+	"claude ai usage",
+	"usage cap",
+	"too many requests",
+	"429",
+	"plan limit",
+	"hourly limit",
+	"daily limit",
+	"monthly limit",
+	// GitHub Copilot CLI premium request quota phrases:
+	"premium request", // "You've exceeded your premium request quota"
+	"request quota",   // "Your request quota has been exceeded"
+}
+
+// weakRateLimitPhrases are broad substrings ("capacity", "overloaded") that
+// false-positive on unrelated errors. They are only trusted as a rate-limit
+// signal when the process also exited with Claude's rate-limit/auth code (2).
+var weakRateLimitPhrases = []string{
+	"overloaded",
+	"capacity",
+}
+
+// ClassifyProviderError inspects the exit code, stderr text, and the
+// stream-json result subtype and decides why a Smith failure occurred.
+//
+// Precedence is deliberate:
+//  1. Auth phrases win over everything — a bad credential is not a rate limit.
+//  2. An explicit rate-limit/overloaded stream-json subtype is a rate limit.
+//  3. Strong rate-limit phrases in stderr are a rate limit on their own.
+//  4. Weak/broad phrases (capacity, overloaded) are only trusted as a rate limit
+//     when the process also exited 2.
+//
+// Exit code 2 ALONE is intentionally NOT treated as a rate limit: Claude uses
+// exit 2 for both rate-limit AND auth failures, so classifying bare exit 2 as a
+// rate limit caused invalid credentials to be retried/failed-over forever
+// (Forge-d5ns). Without a corroborating phrase, exit 2 falls through to
+// FailureOther, which fails the bead through the normal circuit breaker instead
+// of looping.
+func ClassifyProviderError(exitCode int, stderr, resultSubtype string) FailureClass {
+	lowerSub := strings.ToLower(resultSubtype)
 	lower := strings.ToLower(stderr)
-	rateLimitPhrases := []string{
-		"rate limit",
-		"ratelimit",
-		"usage limit",
-		"quota exceeded",
-		"you have run out",
-		"you've hit",
-		"hit your limit",
-		"claude ai usage",
-		"usage cap",
-		"too many requests",
-		"overloaded",
-		"capacity",
-		"plan limit",
-		"hourly limit",
-		"daily limit",
-		"monthly limit",
-		// GitHub Copilot CLI premium request quota phrases:
-		"premium request",  // "You've exceeded your premium request quota"
-		"request quota",    // "Your request quota has been exceeded"
-	}
-	for _, phrase := range rateLimitPhrases {
-		if strings.Contains(lower, phrase) {
-			return true
+
+	// 1. Auth takes precedence over rate-limit.
+	for _, phrase := range authPhrases {
+		if strings.Contains(lower, phrase) || strings.Contains(lowerSub, phrase) {
+			return FailureAuth
 		}
 	}
 
-	// Exit code 2 is used by Claude CLI when the plan limit is hit.
-	// (Exit code 1 is a general error; 2 is specifically rate-limit / auth.)
-	if exitCode == 2 {
-		return true
+	// 2. Explicit rate-limit/overloaded stream-json subtype.
+	if strings.Contains(lowerSub, "rate_limit") || strings.Contains(lowerSub, "overloaded") {
+		return FailureRateLimit
 	}
 
-	return false
+	// 3. Strong rate-limit phrases in stderr.
+	for _, phrase := range strongRateLimitPhrases {
+		if strings.Contains(lower, phrase) {
+			return FailureRateLimit
+		}
+	}
+
+	// 4. Weak phrases only count alongside the rate-limit/auth exit code.
+	if exitCode == 2 {
+		for _, phrase := range weakRateLimitPhrases {
+			if strings.Contains(lower, phrase) {
+				return FailureRateLimit
+			}
+		}
+	}
+
+	return FailureOther
+}
+
+// IsRateLimitError reports whether a Smith failure was caused by the provider's
+// rate limit. It is a thin wrapper over ClassifyProviderError kept for callers
+// that only care about the rate-limit case.
+func IsRateLimitError(exitCode int, stderr, resultSubtype string) bool {
+	return ClassifyProviderError(exitCode, stderr, resultSubtype) == FailureRateLimit
+}
+
+// IsAuthError reports whether a Smith failure was caused by invalid or missing
+// provider credentials. Auth failures must not be retried/failed-over blindly.
+func IsAuthError(exitCode int, stderr, resultSubtype string) bool {
+	return ClassifyProviderError(exitCode, stderr, resultSubtype) == FailureAuth
 }
 
 // FetchQuota is a placeholder for future provider quota reporting via CLI.
