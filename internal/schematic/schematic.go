@@ -863,6 +863,10 @@ func RunCrucibleCheck(ctx context.Context, cfg Config, parent poller.Bead, child
 
 	smithResult := process.Wait()
 
+	if cfg.LogDir != "" {
+		copySessionLog(process.LogPath, cfg.LogDir)
+	}
+
 	result := &CrucibleCheckResult{
 		Duration: time.Since(start),
 		CostUSD:  smithResult.CostUSD,
