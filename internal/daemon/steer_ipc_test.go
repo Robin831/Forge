@@ -119,15 +119,16 @@ func TestHandleSteerBead_SuccessModeA(t *testing.T) {
 	require.NoError(t, d.db.UpdateWorkerSession("w-claude", "sess-1", "claude-opus-4-6"))
 
 	ctrl := newControlHandle("w-claude")
-	var interrupted bool
-	ctrl.setInterrupt(func() { interrupted = true })
+	// A live spawn is running: the steer must be labelled mode A. Steering must
+	// NOT cancel anything at the daemon layer — the pipeline goroutine interrupts
+	// only the current spawn — so there is no interrupt func to observe here.
+	ctrl.setLiveSpawn(true)
 	d.registerControlHandle(bead, ctrl)
 
 	payload, _ := json.Marshal(ipc.SteerBeadPayload{BeadID: bead, Message: "also update the README"})
 	resp := d.handleIPC(ipc.Command{Type: "steer_bead", Payload: payload})
 	assert.Equal(t, "ok", resp.Type)
 	assert.Contains(t, steerMsg(t, resp), "mode A")
-	assert.True(t, interrupted, "a wired interrupt must fire (mode A)")
 
 	select {
 	case msg := <-ctrl.steer:

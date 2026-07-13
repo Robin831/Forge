@@ -1,7 +1,7 @@
 package daemon
 
 import (
-	"sync"
+	"sync/atomic"
 
 	"github.com/Robin831/Forge/internal/pipeline"
 )
@@ -26,8 +26,10 @@ const DefaultResumeMessage = "Continue with the task."
 // controlHandle is the in-memory control surface for a single in-flight bead's
 // pipeline. It is the shared foundation consumed by the RUNNING-spawn and
 // BETWEEN-spawn steering features: the IPC/API layer looks up a handle by
-// beadID, pushes a steer message into the mailbox, and/or triggers the
-// interrupt to stop the currently running spawn.
+// beadID and pushes a steer message into the mailbox. The pipeline goroutine is
+// the sole consumer of the mailbox — it interrupts the currently running spawn
+// itself (gracefully, via waitSmithWithSteer) without any pipeline-wide cancel,
+// so a steer never tears down the pipeline context.
 //
 // A handle is created with an immutable workerID and registered only after the
 // pending worker row is inserted and the bead is successfully claimed — just
@@ -46,14 +48,13 @@ type controlHandle struct {
 	// it. Buffered so pushes don't block the IPC/API goroutine.
 	steer chan string
 
-	// mu guards interrupt, which is (re)wired as the pipeline enters and leaves
-	// the phase where a spawn is actually cancellable.
-	mu sync.Mutex
-
-	// interrupt, when non-nil, stops the currently running spawn (typically a
-	// context cancel func for the pipeline/smith subprocess). It is nil while no
-	// spawn is cancellable (e.g. before the pipeline context is created).
-	interrupt func()
+	// liveSpawn is true while a Smith spawn is actively running and therefore
+	// interruptible by a steer message (mode A). The pipeline goroutine flips it
+	// via setLiveSpawn around each spawn's wait window; the IPC/API layer reads
+	// it via hasLiveSpawn to label an incoming steer as mode A (interrupting a
+	// live spawn) vs mode B (queued for the next spawn). Atomic so the reader
+	// never blocks the pipeline goroutine.
+	liveSpawn atomic.Bool
 
 	// pause is a single-slot signal that a human requested the running spawn be
 	// parked. The IPC/API layer pushes into it (non-blocking, via requestPause)
@@ -82,29 +83,19 @@ func newControlHandle(workerID string) *controlHandle {
 	}
 }
 
-// setInterrupt wires (or clears, with nil) the func that stops the currently
-// running spawn. Safe to call concurrently with fireInterrupt.
-func (h *controlHandle) setInterrupt(fn func()) {
-	h.mu.Lock()
-	h.interrupt = fn
-	h.mu.Unlock()
+// setLiveSpawn records whether a Smith spawn is currently running and therefore
+// interruptible by a steer message. The pipeline goroutine calls it with true
+// just before it begins waiting on a spawn and false once that wait returns.
+// Safe to call concurrently with hasLiveSpawn.
+func (h *controlHandle) setLiveSpawn(live bool) {
+	h.liveSpawn.Store(live)
 }
 
-// fireInterrupt invokes the wired interrupt func, if any. It returns true when
-// an interrupt was actually triggered, false when none is currently wired.
-// The function pointer is read under the lock but invoked after unlocking so
-// that a panic in the interrupt does not deadlock the mutex, and concurrent
-// setInterrupt calls are not blocked during the (potentially slow) invocation.
-// Calling a stale cancel func (if setInterrupt(nil) races) is safe.
-func (h *controlHandle) fireInterrupt() bool {
-	h.mu.Lock()
-	fn := h.interrupt
-	h.mu.Unlock()
-	if fn == nil {
-		return false
-	}
-	fn()
-	return true
+// hasLiveSpawn reports whether a Smith spawn is currently running. The IPC/API
+// layer uses it to label an incoming steer as mode A (a live spawn will be
+// interrupted and resumed) vs mode B (queued for the next spawn).
+func (h *controlHandle) hasLiveSpawn() bool {
+	return h.liveSpawn.Load()
 }
 
 // pushSteer enqueues a steer message without blocking. It returns false when
@@ -213,15 +204,4 @@ func (d *Daemon) pushSteer(beadID, msg string) bool {
 		return false
 	}
 	return h.pushSteer(msg)
-}
-
-// triggerInterrupt is a convenience that looks up the handle for beadID and
-// fires its interrupt. Returns false when no handle is registered or no
-// interrupt is currently wired (no spawn is cancellable right now).
-func (d *Daemon) triggerInterrupt(beadID string) bool {
-	h, ok := d.lookupControlHandle(beadID)
-	if !ok {
-		return false
-	}
-	return h.fireInterrupt()
 }
