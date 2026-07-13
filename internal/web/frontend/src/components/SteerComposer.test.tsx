@@ -3,15 +3,16 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 
-const { steerMock } = vi.hoisted(() => ({
+const { steerMock, resumeMock } = vi.hoisted(() => ({
   steerMock: vi.fn(),
+  resumeMock: vi.fn(),
 }))
 
 vi.mock('../api', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../api')>()
   return {
     ...actual,
-    actions: { ...actual.actions, steer: steerMock },
+    actions: { ...actual.actions, steer: steerMock, resume: resumeMock },
   }
 })
 
@@ -66,9 +67,26 @@ describe('SteerComposer', () => {
   })
 
   it('keeps the input disabled so a disabled composer cannot steer', async () => {
-    render(<SteerComposer beadID="Forge-abc1" disabledReason="No active pipeline — steering requires a running Smith worker." />)
+    render(<SteerComposer beadID="Forge-abc1" disabledReason="No active pipeline — steering requires an active Smith worker." />)
     await userEvent.type(screen.getByLabelText('Steer message'), 'hello').catch(() => {})
     await userEvent.click(screen.getByRole('button', { name: /steer/i }))
     expect(steerMock).not.toHaveBeenCalled()
+  })
+
+  it('delivers a paused worker message as a resume-with-message, not a steer', async () => {
+    resumeMock.mockResolvedValue({ status: 'running' })
+    render(<SteerComposer beadID="Forge-abc1" disabledReason={null} paused />)
+
+    // A paused composer relabels its button "Resume" and explains the affordance.
+    expect(
+      screen.getByText(/paused — your message will apply on resume/i),
+    ).toBeInTheDocument()
+    const input = screen.getByLabelText('Steer message') as HTMLInputElement
+    await userEvent.type(input, '  tweak the approach  ')
+    await userEvent.click(screen.getByRole('button', { name: /resume/i }))
+
+    expect(resumeMock).toHaveBeenCalledWith('Forge-abc1', 'tweak the approach')
+    expect(steerMock).not.toHaveBeenCalled()
+    expect(input.value).toBe('')
   })
 })

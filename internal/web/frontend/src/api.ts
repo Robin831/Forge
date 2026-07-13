@@ -599,19 +599,45 @@ export interface Steerable {
   model?: string
 }
 
+// STEERABLE_STATUSES is the set of worker statuses for which the daemon accepts
+// a steer. It mirrors the daemon acceptance matrix settled in the steering
+// fixes (internal/daemon handleSteerBead): a steer is accepted whenever the bead
+// has an active pipeline control handle, which spans the whole run —
+//   - running / pending — a live or just-started Smith spawn (steer mode A:
+//     interrupt the running spawn and resume the same session), and
+//   - reviewing — the Warden (mode-B) queue: no spawn is live, so the message is
+//     queued and consumed before the next Smith spawn.
+//   - paused — the parked pipeline still holds its control handle, but a parked
+//     spawn only consumes the message on resume, so the UI delivers a paused
+//     steer as a resume-with-message via the resume endpoint (see
+//     steerIsResumeDelivery / SteerComposer), not the steer endpoint.
+const STEERABLE_STATUSES = new Set(['running', 'pending', 'reviewing', 'paused'])
+
+// steerIsResumeDelivery reports whether a steerable worker's message must be
+// delivered as a resume-with-message (via the resume endpoint) rather than a
+// plain steer. Only a paused worker qualifies: its pipeline is parked awaiting a
+// resume, so the message becomes the prompt the resumed Claude spawn continues
+// with. Callers use this to route the submission and to phrase the affordance
+// truthfully ("applies on resume") instead of implying an in-flight steer.
+export function steerIsResumeDelivery(worker: Steerable | null | undefined): boolean {
+  return worker?.status === 'paused'
+}
+
 // steerDisabledReason returns a human-readable reason why a worker cannot be
 // steered, or null when steering is allowed. It mirrors the daemon's steer
 // validation (internal/daemon workerSessionNonClaude + the active-handle check):
-// steering needs an active pipeline (a running or pending Smith) and a Claude
-// session — only Claude reports a resumable session_id. A positively non-Claude
-// session (a recorded non-claude model with no captured session_id) is rejected;
-// an as-yet-unrecorded session (both fields empty, spawn still starting) is
-// optimistically treated as steerable so a just-started Claude spawn is not
-// falsely blocked.
+// steering needs an active pipeline (a running/pending Smith, a reviewing Warden,
+// or a paused-but-parked pipeline) and a Claude session — only Claude reports a
+// resumable session_id. A positively non-Claude session (a recorded non-claude
+// model with no captured session_id) is rejected; an as-yet-unrecorded session
+// (both fields empty, spawn still starting) is optimistically treated as
+// steerable so a just-started Claude spawn is not falsely blocked. A paused
+// worker is steerable but its message is delivered on resume — see
+// steerIsResumeDelivery.
 export function steerDisabledReason(worker: Steerable | null | undefined): string | null {
-  const noPipeline = 'No active pipeline — steering requires a running Smith worker.'
+  const noPipeline = 'No active pipeline — steering requires an active Smith worker.'
   if (!worker) return noPipeline
-  if (worker.status !== 'running' && worker.status !== 'pending') return noPipeline
+  if (!STEERABLE_STATUSES.has(worker.status)) return noPipeline
   const sessionID = worker.session_id ?? ''
   const model = worker.model ?? ''
   if (sessionID === '' && model !== '' && !model.toLowerCase().includes('claude')) {

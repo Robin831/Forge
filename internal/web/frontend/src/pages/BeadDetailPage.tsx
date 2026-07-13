@@ -19,6 +19,7 @@ import {
   actions,
   ApiError,
   steerDisabledReason,
+  steerIsResumeDelivery,
   type BeadBrief,
   type BeadDetailComment,
   type BeadDetailResponse,
@@ -141,12 +142,19 @@ export default function BeadDetailPage() {
     return [...serverList, ...extras]
   }, [data?.comments, localComments])
 
-  // activeWorker is the bead's in-flight Smith (running or pending), if any.
-  // The bead is "active" — and thus a steer target — exactly when one exists.
+  // activeWorker is the bead's in-flight Smith, if any. The bead is a steer
+  // target across the whole daemon acceptance matrix: a live Smith
+  // (running/pending), a reviewing Warden (mode-B queue), or a paused-but-parked
+  // pipeline (steered via resume-with-message). The bead is "active" — and thus
+  // a steer target — exactly when one such worker exists.
   const activeWorker = useMemo<BeadDetailWorker | null>(
     () =>
       (data?.workers ?? []).find(
-        (w) => w.status === 'running' || w.status === 'pending',
+        (w) =>
+          w.status === 'running' ||
+          w.status === 'pending' ||
+          w.status === 'reviewing' ||
+          w.status === 'paused',
       ) ?? null,
     [data?.workers],
   )
@@ -311,6 +319,7 @@ export default function BeadDetailPage() {
         <SteerComposer
           beadID={beadID}
           disabledReason={steerDisabledReason(activeWorker)}
+          paused={steerIsResumeDelivery(activeWorker)}
         />
       )}
 

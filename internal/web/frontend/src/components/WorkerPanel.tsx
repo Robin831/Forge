@@ -12,6 +12,7 @@ import {
 import {
   actions,
   steerDisabledReason,
+  steerIsResumeDelivery,
   type LogLine,
   type WorkerInfo,
 } from '../api'
@@ -188,6 +189,19 @@ export default function WorkerPanel({
   const canResume = isPaused
   const liveStatus = live.status
 
+  // Between-spawns semantics (Forge-doim): a pause interrupts the live Claude
+  // spawn immediately during the Smith phase, but Temper runs build/test with no
+  // Claude spawn — the worker is still "running" yet there is nothing to
+  // interrupt, so the daemon honours the pause at the next Smith turn. Surface
+  // that so the operator isn't surprised the current check keeps running.
+  const pauseDeferred = canPause && worker.phase === 'temper'
+  const pauseTitle = pauseDeferred
+    ? 'Pause worker — pauses at the next Smith turn (a check is running now)'
+    : 'Pause worker'
+  const pauseConfirmMessage = pauseDeferred
+    ? `${worker.bead_id} is between Smith turns (a Temper check is running). The pause takes effect at the next Smith turn; the current check finishes first. The transcript stays visible and you can resume later.`
+    : `This interrupts the Claude process for ${worker.bead_id} (${worker.anvil}) and parks the pipeline. The transcript stays visible and you can resume it later.`
+
   return (
     <div
       data-testid={`worker-panel-${worker.id}`}
@@ -269,7 +283,7 @@ export default function WorkerPanel({
             data-testid={`worker-panel-pause-${worker.id}`}
             className="rounded-md border border-amber-500/40 bg-amber-500/10 p-1.5 text-amber-300 transition-colors hover:bg-amber-500/20 focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-300 disabled:opacity-50"
             aria-label={`Pause worker ${worker.bead_id}`}
-            title="Pause worker"
+            title={pauseTitle}
           >
             <Pause size={14} />
           </button>
@@ -363,12 +377,15 @@ export default function WorkerPanel({
       {/* Inline steer composer: reuses the shared SteerComposer (also mounted in
           the WorkerLogModal) so the dashboard grid can course-correct a live
           Smith without opening the full-screen view. steerDisabledReason mirrors
-          the daemon's steer validation, so a paused / non-Claude worker renders a
-          disabled input with an explanatory tooltip rather than a dead button. */}
+          the daemon's steer acceptance matrix (running/pending/reviewing/paused),
+          so a non-Claude worker renders a disabled input with an explanatory
+          tooltip rather than a dead button. A paused worker stays enabled but its
+          message is delivered as a resume-with-message (steerIsResumeDelivery). */}
       {!collapsed && isActive && (
         <SteerComposer
           beadID={worker.bead_id}
           disabledReason={steerDisabledReason(worker)}
+          paused={steerIsResumeDelivery(worker)}
           compact
         />
       )}
@@ -387,7 +404,7 @@ export default function WorkerPanel({
       <ConfirmModal
         open={confirmPause}
         title="Pause worker?"
-        message={`This interrupts the Claude process for ${worker.bead_id} (${worker.anvil}) and parks the pipeline. The transcript stays visible and you can resume it later.`}
+        message={pauseConfirmMessage}
         confirmLabel="Pause worker"
         tone="primary"
         busy={busy}

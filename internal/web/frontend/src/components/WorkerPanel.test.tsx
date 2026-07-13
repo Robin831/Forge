@@ -6,11 +6,12 @@ import { MemoryRouter } from 'react-router-dom'
 import type { WorkerInfo } from '../api'
 import { KEY_PREFIX } from '../hooks/useUIState'
 
-const { useEventSourceMock, killWorkerMock, pauseMock, resumeMock } = vi.hoisted(() => ({
+const { useEventSourceMock, killWorkerMock, pauseMock, resumeMock, steerMock } = vi.hoisted(() => ({
   useEventSourceMock: vi.fn(),
   killWorkerMock: vi.fn(),
   pauseMock: vi.fn(),
   resumeMock: vi.fn(),
+  steerMock: vi.fn(),
 }))
 
 vi.mock('../hooks/useEventSource', () => ({
@@ -24,6 +25,7 @@ vi.mock('../api', async (importOriginal) => ({
     killWorker: (id: string) => killWorkerMock(id),
     pause: (beadID: string) => pauseMock(beadID),
     resume: (beadID: string, message?: string) => resumeMock(beadID, message),
+    steer: (beadID: string, message: string) => steerMock(beadID, message),
   },
 }))
 
@@ -55,6 +57,7 @@ beforeEach(() => {
   killWorkerMock.mockResolvedValue({})
   pauseMock.mockResolvedValue({})
   resumeMock.mockResolvedValue({})
+  steerMock.mockResolvedValue({})
 })
 
 afterEach(() => {
@@ -187,9 +190,47 @@ describe('WorkerPanel steer composer', () => {
     expect(screen.getByLabelText('Steer message')).toBeEnabled()
   })
 
-  it('disables the steer composer for a paused worker (not steerable)', () => {
-    renderPanel(worker({ id: 'w1', status: 'paused' }))
+  it('mounts an enabled steer composer for a reviewing worker (Warden mode-B)', () => {
+    renderPanel(worker({ id: 'w1', status: 'reviewing', model: 'claude-opus-4-6' }))
+    expect(screen.getByLabelText('Steer message')).toBeEnabled()
+  })
+
+  it('routes a reviewing worker message through the steer endpoint', async () => {
+    const user = userEvent.setup()
+    renderPanel(worker({ id: 'w1', status: 'reviewing', model: 'claude-opus-4-6' }))
+
+    await user.type(screen.getByLabelText('Steer message'), 'tighten the tests')
+    await user.click(screen.getByRole('button', { name: /steer/i }))
+
+    expect(steerMock).toHaveBeenCalledWith('Forge-abc1', 'tighten the tests')
+    expect(resumeMock).not.toHaveBeenCalled()
+  })
+
+  it('keeps the steer composer enabled for a paused worker and explains the resume affordance', () => {
+    renderPanel(worker({ id: 'w1', status: 'paused', model: 'claude-opus-4-6' }))
+    // Paused is steerable — the message is delivered on resume, so the input
+    // stays enabled and the tooltip is truthful (not "no active pipeline").
+    expect(screen.getByLabelText('Steer message')).toBeEnabled()
+    expect(
+      screen.getByText(/paused — your message will apply on resume/i),
+    ).toBeInTheDocument()
+  })
+
+  it('delivers a paused worker message as a resume-with-message', async () => {
+    const user = userEvent.setup()
+    renderPanel(worker({ id: 'w1', status: 'paused', model: 'claude-opus-4-6' }))
+
+    await user.type(screen.getByLabelText('Steer message'), 'try a smaller diff')
+    await user.click(screen.getByRole('button', { name: /^resume$/i }))
+
+    expect(resumeMock).toHaveBeenCalledWith('Forge-abc1', 'try a smaller diff')
+    expect(steerMock).not.toHaveBeenCalled()
+  })
+
+  it('disables the steer composer for a non-Claude session', () => {
+    renderPanel(worker({ id: 'w1', status: 'running', model: 'gemini-2.5-pro' }))
     expect(screen.getByLabelText('Steer message')).toBeDisabled()
+    expect(screen.getByText(/not a claude session/i)).toBeInTheDocument()
   })
 
   it('omits the steer composer when the panel is collapsed', async () => {
@@ -199,6 +240,28 @@ describe('WorkerPanel steer composer', () => {
 
     await user.click(screen.getByTestId('worker-panel-toggle-w1'))
     expect(screen.queryByLabelText('Steer message')).not.toBeInTheDocument()
+  })
+})
+
+describe('WorkerPanel pause hint (between-spawns semantics)', () => {
+  it('warns that a pause during Temper takes effect at the next Smith turn', async () => {
+    const user = userEvent.setup()
+    renderPanel(worker({ id: 'w1', status: 'running', phase: 'temper' }))
+
+    const pauseBtn = screen.getByTestId('worker-panel-pause-w1')
+    expect(pauseBtn).toHaveAttribute('title', expect.stringMatching(/next smith turn/i))
+
+    await user.click(pauseBtn)
+    // The confirm dialog repeats the deferred-pause explanation.
+    expect(
+      await screen.findByText(/takes effect at the next smith turn/i),
+    ).toBeInTheDocument()
+  })
+
+  it('describes an immediate interrupt for a pause during the Smith phase', () => {
+    renderPanel(worker({ id: 'w1', status: 'running', phase: 'smith' }))
+    const pauseBtn = screen.getByTestId('worker-panel-pause-w1')
+    expect(pauseBtn).toHaveAttribute('title', 'Pause worker')
   })
 })
 
