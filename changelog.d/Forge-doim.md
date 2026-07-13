@@ -1,0 +1,2 @@
+category: Fixed
+- **Pause/steer signals no longer silently lost on races or between spawns** - `waitSmithWithSteer` now always acts on a consumed pause/steer even when the Smith spawn completes at the same instant (interrupting only while the process is still running), and a pause or steer that arrives between spawns while Temper/Warden run is now honoured at Warden approval — parking the pipeline (pause) or applying the correction on a further iteration (steer) — instead of being discarded while the operator was told it succeeded. (Forge-doim)
