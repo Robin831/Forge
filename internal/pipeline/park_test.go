@@ -206,6 +206,94 @@ func TestPause_ResumeWithExplicitMessage(t *testing.T) {
 	assert.Equal(t, "focus on the retry logic", gotResumeMsg, "an explicit resume message must be delivered verbatim")
 }
 
+// TestPause_ResumeWithNoSessionFoldsIntoFreshPrompt exercises the empty-session
+// resume fallback: when the spawn that a pause interrupted never reported a
+// session_id (e.g. a non-Claude provider), the park record's SessionID is empty,
+// so the resume cannot replay `claude --resume`. Instead the pipeline must fold
+// the resume message into a fresh Smith prompt and respawn from scratch. This
+// asserts that on resume the SmithResumeRunner is NOT called, a fresh SmithRunner
+// spawn IS made, and the folded prompt carries the operator's resume message.
+func TestPause_ResumeWithNoSessionFoldsIntoFreshPrompt(t *testing.T) {
+	db := newTestDB(t)
+	params, _, _ := baseParams(t, db)
+	params.WorkerID = "test-worker"
+
+	// The provider reports NO session_id (SessionID is empty), simulating a
+	// non-Claude provider. The first spawn stays "running" until the pause
+	// interrupts it; the second (fresh) spawn after resume completes successfully.
+	var mu sync.Mutex
+	var smithCalls int32
+	var secondPrompt string
+	params.SmithRunner = func(_ context.Context, _, promptText, _ string, _ provider.Provider, _ []string) (*smith.Process, error) {
+		n := atomic.AddInt32(&smithCalls, 1)
+		if n == 1 {
+			// Running spawn with no session_id; the pause interrupts it.
+			return smith.NewRunningProcessForTest(&smith.Result{ExitCode: 0, SessionID: "", ResultSubtype: "success"}), nil
+		}
+		// The resumed fresh spawn. Capture its prompt so we can assert the resume
+		// message was folded in, and return a completed successful result.
+		mu.Lock()
+		secondPrompt = promptText
+		mu.Unlock()
+		return smith.NewProcessForTest(&smith.Result{ExitCode: 0, SessionID: "", ResultSubtype: "success"}), nil
+	}
+
+	ph := &fakeParkHandle{
+		pause:  make(chan struct{}, 1),
+		resume: make(chan string, 1),
+	}
+	ph.pause <- struct{}{}
+	params.ParkHandle = ph
+	params.SmithInterrupter = func(proc *smith.Process) { proc.Interrupt(0) }
+
+	// The resume respawn machinery must NOT be used when there is no session to
+	// resume — resuming without a session_id is impossible.
+	var resumeCalls int32
+	params.SmithResumeRunner = func(_ context.Context, _, _, _ string, _ provider.Provider, _ string, _ []string) (*smith.Process, error) {
+		atomic.AddInt32(&resumeCalls, 1)
+		return smith.NewProcessForTest(&smith.Result{ExitCode: 0, SessionID: "sess-should-not-happen", ResultSubtype: "success"}), nil
+	}
+
+	params.EmptyDiffChecker = func(_, _ string) bool { return false }
+	params.WardenReviewer = func(_ context.Context, _, _, _, _, _ string, _ *state.DB, _ string, _ ...provider.Provider) (*warden.ReviewResult, error) {
+		return &warden.ReviewResult{Verdict: warden.VerdictApprove, Summary: "LGTM"}, nil
+	}
+
+	done := make(chan *Outcome, 1)
+	go func() { done <- Run(context.Background(), params) }()
+
+	require.Eventually(t, func() bool {
+		w, err := db.GetWorker("test-worker")
+		return err == nil && w.Status == state.WorkerPaused
+	}, 2*time.Second, 5*time.Millisecond, "pipeline should park the worker even with no session_id")
+
+	// Resume with an explicit message so we can assert it is folded into the
+	// fresh prompt.
+	ph.resume <- "prioritise the edge cases"
+
+	var outcome *Outcome
+	select {
+	case outcome = <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("pipeline did not resume within the deadline")
+	}
+
+	require.NoError(t, outcome.Error)
+	assert.True(t, outcome.Success, "pipeline should succeed after a no-session resume")
+	assert.EqualValues(t, 0, atomic.LoadInt32(&resumeCalls), "an empty session must NOT use the resume respawn path")
+	assert.EqualValues(t, 2, atomic.LoadInt32(&smithCalls), "a fresh Smith spawn must run for the empty-session resume")
+
+	mu.Lock()
+	defer mu.Unlock()
+	assert.Contains(t, secondPrompt, "prioritise the edge cases",
+		"the resume message must be folded into the fresh Smith prompt when there is no session to resume")
+
+	// The pause/resume path must never mark the worker failed.
+	w, err := db.GetWorker("test-worker")
+	require.NoError(t, err)
+	assert.NotEqual(t, state.WorkerFailed, w.Status, "an empty-session resume must not mark the worker failed")
+}
+
 // TestPause_CancelWhileParkedDoesNotFail verifies that if the pipeline context is
 // cancelled while the goroutine is parked (e.g. daemon shutdown), the pipeline
 // exits without marking the worker failed and leaves it in the paused status.
