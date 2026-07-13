@@ -244,7 +244,7 @@ func Run(ctx context.Context, cfg Config, bead poller.Bead, anvilPath string, pv
 
 	logDir := filepath.Join(workDir, "logs")
 	extraFlags := append([]string{"--max-turns", fmt.Sprintf("%d", cfg.MaxTurns)}, cfg.ExtraFlags...)
-	process, err := smith.SpawnWithProvider(ctx, workDir, promptText, logDir, pv, extraFlags)
+	process, err := smith.SpawnWithOptions(ctx, workDir, promptText, logDir, pv, extraFlags, smith.SpawnOptions{LogPrefix: "schematic"})
 	if err != nil {
 		return &Result{
 			Action:   ActionSkip,
@@ -840,7 +840,7 @@ func RunCrucibleCheck(ctx context.Context, cfg Config, parent poller.Bead, child
 
 	logDir := filepath.Join(workDir, "logs")
 	extraFlags := append([]string{"--max-turns", fmt.Sprintf("%d", cfg.MaxTurns)}, cfg.ExtraFlags...)
-	process, err := smith.SpawnWithProvider(ctx, workDir, promptText, logDir, pv, extraFlags)
+	process, err := smith.SpawnWithOptions(ctx, workDir, promptText, logDir, pv, extraFlags, smith.SpawnOptions{LogPrefix: "schematic"})
 	if err != nil {
 		return &CrucibleCheckResult{
 			NeedsCrucible: false,

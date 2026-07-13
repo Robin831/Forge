@@ -479,6 +479,10 @@ func Run(ctx context.Context, worktreePath string, cfg Config, db *state.DB, bea
 	result.Passed = result.FailedStep == ""
 	result.Summary = buildSummary(result)
 
+	// Persist the full, untruncated output of every step to the worktree log
+	// directory so it survives worktree cleanup for post-mortem debugging.
+	writeTemperLog(worktreePath, result)
+
 	if db != nil {
 		if result.Passed {
 			optWarn := 0
@@ -500,6 +504,67 @@ func Run(ctx context.Context, worktreePath string, cfg Config, db *state.DB, bea
 	}
 
 	return result
+}
+
+// stepStatus returns the short status label ("PASS", "FAIL", "WARN", "SKIP")
+// for a step, matching the classification used in buildSummary.
+func stepStatus(s StepResult) string {
+	switch {
+	case s.Skipped:
+		return "SKIP"
+	case s.Passed:
+		return "PASS"
+	case s.Optional:
+		return "WARN"
+	default:
+		return "FAIL"
+	}
+}
+
+// writeTemperLog persists the full, untruncated output of every temper step to
+// <worktreePath>/.forge-logs/temper-<unixtime>.log. The pipeline's
+// preserveWorktreeLogs copies this file — alongside the stage-named Smith logs
+// — to ~/.forge/logs/<beadID>/, so failed-test forensics survive worktree
+// cleanup. Unlike the 1000-char ingot OutputSummary, this log contains the
+// complete combined stdout/stderr of each step. Writing is best-effort: any
+// error is logged and otherwise ignored so a log-persistence failure never
+// affects the verification outcome.
+func writeTemperLog(worktreePath string, result *Result) {
+	logDir := filepath.Join(worktreePath, ".forge-logs")
+	if err := os.MkdirAll(logDir, 0o755); err != nil {
+		log.Printf("[temper] failed to create log dir %s: %v", logDir, err)
+		return
+	}
+	logPath := filepath.Join(logDir, fmt.Sprintf("temper-%d.log", time.Now().Unix()))
+
+	var b strings.Builder
+	fmt.Fprintf(&b, "Temper verification — %d step(s), total %.1fs\n", len(result.Steps), result.Duration.Seconds())
+	if result.Passed {
+		b.WriteString("Overall: PASS\n")
+	} else {
+		fmt.Fprintf(&b, "Overall: FAIL (first failing step: %s)\n", result.FailedStep)
+	}
+	for i, s := range result.Steps {
+		fmt.Fprintf(&b, "\n=== [%d] %s — %s ===\n", i+1, s.Name, stepStatus(s))
+		fmt.Fprintf(&b, "Command:  %s\n", s.Command)
+		fmt.Fprintf(&b, "Exit:     %d\n", s.ExitCode)
+		fmt.Fprintf(&b, "Duration: %.1fs\n", s.Duration.Seconds())
+		if s.Optional {
+			b.WriteString("Optional: true\n")
+		}
+		if s.Skipped {
+			b.WriteString("Skipped:  true\n")
+		}
+		b.WriteString("Output:\n")
+		b.WriteString(s.Output)
+		if !strings.HasSuffix(s.Output, "\n") {
+			b.WriteString("\n")
+		}
+	}
+
+	if err := os.WriteFile(logPath, []byte(b.String()), 0o644); err != nil {
+		log.Printf("[temper] failed to write temper log %s: %v", logPath, err)
+	}
 }
 
 // runStep executes a single verification step.

@@ -799,7 +799,11 @@ func runVerifyWithTimeout(ctx context.Context, prNumber int, beadID, anvilName, 
 var hookRunFn = hooks.RunHook
 
 // smithSpawnFn is the function used to spawn Smith. Package-level variable for test stubbing.
-var smithSpawnFn = smith.SpawnWithProvider
+// It routes through SpawnWithOptions so burnish's session logs are named
+// burnish-<unixtime>.log rather than the default smith- prefix.
+var smithSpawnFn = func(ctx context.Context, worktreePath, promptText, logDir string, pv provider.Provider, extraFlags []string) (*smith.Process, error) {
+	return smith.SpawnWithOptions(ctx, worktreePath, promptText, logDir, pv, extraFlags, smith.SpawnOptions{LogPrefix: "burnish"})
+}
 
 // temperRunFn is the function used to run temper verification.
 // It is a package-level variable so tests can substitute a stub.

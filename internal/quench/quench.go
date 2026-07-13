@@ -151,7 +151,7 @@ func BatchFix(ctx context.Context, p BatchFixParams) *FixResult {
 			log.Printf("[quench] PR #%d: Provider %s rate limited, retrying with %s",
 				p.PRNumber, providers[pi-1].Label(), pv.Label())
 		}
-		process, err := smith.SpawnWithProvider(ctx, p.WorktreePath, prompt, logDir, pv, p.ExtraFlags)
+		process, err := smith.SpawnWithOptions(ctx, p.WorktreePath, prompt, logDir, pv, p.ExtraFlags, smith.SpawnOptions{LogPrefix: "quench"})
 		if err != nil {
 			result.Error = fmt.Errorf("spawning smith (%s) for batch CI fix: %w", pv.Label(), err)
 			result.Duration = time.Since(start)
@@ -266,7 +266,7 @@ var temperRunFn = func(ctx context.Context, worktreePath string, cfg temper.Conf
 
 // smithSpawnFn is the function used to spawn Smith. Package-level variable for test stubbing.
 var smithSpawnFn = func(ctx context.Context, worktreePath, prompt, logDir string, pv provider.Provider, extraFlags []string) (*smith.Process, error) {
-	return smith.SpawnWithProvider(ctx, worktreePath, prompt, logDir, pv, extraFlags)
+	return smith.SpawnWithOptions(ctx, worktreePath, prompt, logDir, pv, extraFlags, smith.SpawnOptions{LogPrefix: "quench"})
 }
 
 // Fix attempts to resolve CI failures on a PR branch.

@@ -634,6 +634,76 @@ func TestRun_VerifyClean_PassesWhenStepLeavesArtifactClean(t *testing.T) {
 	assert.Empty(t, res.FailedStep)
 }
 
+// readTemperLog returns the contents of the single temper-*.log file written to
+// <dir>/.forge-logs, failing the test if zero or more than one is present.
+func readTemperLog(t *testing.T, dir string) string {
+	t.Helper()
+	entries, err := os.ReadDir(filepath.Join(dir, ".forge-logs"))
+	require.NoError(t, err)
+	var matches []string
+	for _, e := range entries {
+		if !e.IsDir() && strings.HasPrefix(e.Name(), "temper-") && strings.HasSuffix(e.Name(), ".log") {
+			matches = append(matches, e.Name())
+		}
+	}
+	require.Len(t, matches, 1, "expected exactly one temper-*.log file")
+	data, err := os.ReadFile(filepath.Join(dir, ".forge-logs", matches[0]))
+	require.NoError(t, err)
+	return string(data)
+}
+
+func TestWriteTemperLog_ContainsFullPerStepOutput(t *testing.T) {
+	dir := t.TempDir()
+	// A large output that would be truncated in the ingot OutputSummary must be
+	// preserved in full in the temper log.
+	longOutput := strings.Repeat("build error line\n", 500)
+	result := &Result{
+		Steps: []StepResult{
+			{Name: "build", Command: "go build ./...", ExitCode: 0, Output: "ok\n", Duration: time.Second, Passed: true},
+			{Name: "test", Command: "go test ./...", ExitCode: 1, Output: longOutput, Duration: 3 * time.Second, Passed: false},
+		},
+		Passed:     false,
+		FailedStep: "test",
+		Duration:   4 * time.Second,
+	}
+
+	writeTemperLog(dir, result)
+
+	logContent := readTemperLog(t, dir)
+	assert.Contains(t, logContent, "Overall: FAIL (first failing step: test)")
+	assert.Contains(t, logContent, "go build ./...")
+	assert.Contains(t, logContent, "go test ./...")
+	assert.Contains(t, logContent, "Exit:     1")
+	// The FULL, untruncated output must be present.
+	assert.Contains(t, logContent, longOutput)
+	assert.GreaterOrEqual(t, len(logContent), len(longOutput))
+}
+
+// TestRun_WritesTemperLogToForgeLogs verifies the temper log lands in the
+// worktree's .forge-logs directory (where preserveWorktreeLogs later finds it)
+// as a side effect of a normal Run.
+func TestRun_WritesTemperLogToForgeLogs(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses echo semantics; skip on Windows")
+	}
+	dir := t.TempDir()
+	cfg := Config{Steps: []Step{{
+		Name:    "greet",
+		Command: "echo",
+		Args:    []string{"hello-from-temper"},
+		Timeout: 30 * time.Second,
+	}}}
+
+	res := Run(context.Background(), dir, cfg, nil, "Forge-test", "test")
+	require.NotNil(t, res)
+	require.True(t, res.Passed)
+
+	logContent := readTemperLog(t, dir)
+	assert.Contains(t, logContent, "greet")
+	assert.Contains(t, logContent, "hello-from-temper")
+	assert.Contains(t, logContent, "PASS")
+}
+
 func TestConfigFromCommands_Timeouts(t *testing.T) {
 	cfg := ConfigFromCommands("make build", "make test", "make lint", false)
 	require.NotNil(t, cfg)

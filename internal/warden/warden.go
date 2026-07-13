@@ -131,7 +131,7 @@ func Review(ctx context.Context, worktreePath, beadID, beadTitle, beadDescriptio
 	// pass flags as-is (provider.BuildArgs handles translation).
 	var usedProvider provider.Provider
 	for pi, pv := range pvList {
-		process, err := smith.SpawnWithProvider(ctx, worktreePath, prompt, logDir, pv, wardenFlags)
+		process, err := smith.SpawnWithOptions(ctx, worktreePath, prompt, logDir, pv, wardenFlags, smith.SpawnOptions{LogPrefix: "warden"})
 		if err != nil {
 			return nil, fmt.Errorf("spawning warden (%s): %w", pv.Label(), err)
 		}

@@ -103,7 +103,7 @@ func (p *Params) rebaseWithSmith(ctx context.Context, providers []provider.Provi
 			log.Printf("[rebase] PR #%d: provider %s rate-limited, trying %s",
 				p.PRNumber, providers[pi-1].Label(), pv.Label())
 		}
-		process, err := smith.SpawnWithProvider(ctx, p.WorktreePath, prompt, logDir, pv, p.ExtraFlags)
+		process, err := smith.SpawnWithOptions(ctx, p.WorktreePath, prompt, logDir, pv, p.ExtraFlags, smith.SpawnOptions{LogPrefix: "rebase"})
 		if err != nil {
 			return fmt.Errorf("spawning Smith (%s): %w", pv.Label(), err)
 		}

@@ -166,11 +166,44 @@ func Spawn(ctx context.Context, worktreePath, promptText, logDir string, extraFl
 	return SpawnWithProvider(ctx, worktreePath, promptText, logDir, provider.Provider{Kind: provider.Claude}, extraFlags)
 }
 
+// SpawnOptions configures optional behaviour for SpawnWithOptions.
+type SpawnOptions struct {
+	// LogPrefix is the filename prefix for the session log file written into
+	// logDir (e.g. "warden" produces warden-<unixtime>.log). This lets each
+	// pipeline stage that reuses the Smith spawn machinery emit a
+	// stage-identifiable log file. An empty value defaults to "smith" so
+	// existing callers keep their historical filenames.
+	LogPrefix string
+}
+
+// logFileName builds the session log filename for the given stage prefix and
+// unix timestamp. An empty prefix defaults to "smith" so callers that do not
+// supply a stage keep the historical smith-<unixtime>.log naming.
+func logFileName(prefix string, ts int64) string {
+	if prefix == "" {
+		prefix = "smith"
+	}
+	return fmt.Sprintf("%s-%d.log", prefix, ts)
+}
+
 // SpawnWithProvider starts an AI coding agent process for the given provider.
 // The provider determines which binary is executed and how arguments are built.
 //
-// logDir is where the session log file is written.
+// logDir is where the session log file is written. The log file is named
+// smith-<unixtime>.log; callers that need a stage-specific prefix should use
+// SpawnWithOptions instead.
 func SpawnWithProvider(ctx context.Context, worktreePath, promptText, logDir string, pv provider.Provider, extraFlags []string) (*Process, error) {
+	return SpawnWithOptions(ctx, worktreePath, promptText, logDir, pv, extraFlags, SpawnOptions{})
+}
+
+// SpawnWithOptions starts an AI coding agent process for the given provider,
+// with additional behaviour controlled by opts. It is the underlying
+// implementation shared by SpawnWithProvider (and the various pipeline stages
+// that reuse the Smith spawn machinery), differing only in the log filename
+// prefix chosen via SpawnOptions.LogPrefix.
+//
+// logDir is where the session log file is written.
+func SpawnWithOptions(ctx context.Context, worktreePath, promptText, logDir string, pv provider.Provider, extraFlags []string, opts SpawnOptions) (*Process, error) {
 	if err := worktree.ValidateWorktreeDir(worktreePath); err != nil {
 		return nil, fmt.Errorf("smith pre-flight: working directory is not a valid worktree — refusing to run to prevent editing the main checkout: %w", err)
 	}
@@ -193,7 +226,7 @@ func SpawnWithProvider(ctx context.Context, worktreePath, promptText, logDir str
 	if err := os.MkdirAll(logDir, 0o755); err != nil {
 		return nil, fmt.Errorf("creating log directory: %w", err)
 	}
-	logPath := filepath.Join(logDir, fmt.Sprintf("smith-%d.log", time.Now().Unix()))
+	logPath := filepath.Join(logDir, logFileName(opts.LogPrefix, time.Now().Unix()))
 	logFile, err := os.Create(logPath)
 	if err != nil {
 		return nil, fmt.Errorf("creating log file: %w", err)

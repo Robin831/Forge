@@ -11,6 +11,14 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestLogFileName(t *testing.T) {
+	// Empty prefix defaults to "smith" to preserve historical naming.
+	assert.Equal(t, "smith-42.log", logFileName("", 42))
+	// Stage callers get a stage-identifiable filename.
+	assert.Equal(t, "warden-100.log", logFileName("warden", 100))
+	assert.Equal(t, "quench-7.log", logFileName("quench", 7))
+}
+
 // newTestLogFile creates a temp log file for readStreamJSON calls.
 func newTestLogFile(t *testing.T) *os.File {
 	t.Helper()
