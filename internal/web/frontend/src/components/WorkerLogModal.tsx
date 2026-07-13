@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Terminal, X } from 'lucide-react'
 import type { LogLine, LogTailResponse, WorkerInfo } from '../api'
-import { ApiError, apiGet } from '../api'
+import { ApiError, apiGet, steerDisabledReason } from '../api'
 import { useAuth } from '../auth'
 import { useEventSource } from '../hooks/useEventSource'
 import LogViewer from './LogViewer'
+import SteerComposer from './SteerComposer'
 
 interface WorkerLogModalProps {
   worker: WorkerInfo | null
@@ -153,6 +154,14 @@ export default function WorkerLogModal({ worker, onClose }: WorkerLogModalProps)
           liveWaiting={isLive && liveStatus === 'open'}
           keyPrefix={worker.id}
         />
+
+        {isLive && (
+          <SteerComposer
+            beadID={worker.bead_id}
+            disabledReason={steerDisabledReason(worker)}
+            compact
+          />
+        )}
       </div>
     </div>
   )

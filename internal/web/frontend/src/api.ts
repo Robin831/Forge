@@ -559,6 +559,46 @@ export const actions = {
       `/api/bead/${encodeURIComponent(beadID)}/comment`,
       { anvil, body },
     ),
+  // steer delivers a human steering message to a bead's in-flight pipeline.
+  // Unlike the other bead actions it is keyed purely by bead id — the daemon
+  // resolves the active pipeline from its in-memory control registry, so no
+  // anvil is sent. The daemon returns an actionable error (surfaced by apiPost)
+  // when the bead has no active pipeline, the message is empty, or the session
+  // is not a Claude session.
+  steer: (beadID: string, message: string) =>
+    apiPost<{ message?: string }>(
+      `/api/bead/${encodeURIComponent(beadID)}/steer`,
+      { message },
+    ),
+}
+
+// Steerable is the minimal worker shape steerDisabledReason inspects — a subset
+// of WorkerInfo / BeadDetailWorker so either can be passed directly.
+export interface Steerable {
+  status: string
+  session_id?: string
+  model?: string
+}
+
+// steerDisabledReason returns a human-readable reason why a worker cannot be
+// steered, or null when steering is allowed. It mirrors the daemon's steer
+// validation (internal/daemon workerSessionNonClaude + the active-handle check):
+// steering needs an active pipeline (a running or pending Smith) and a Claude
+// session — only Claude reports a resumable session_id. A positively non-Claude
+// session (a recorded non-claude model with no captured session_id) is rejected;
+// an as-yet-unrecorded session (both fields empty, spawn still starting) is
+// optimistically treated as steerable so a just-started Claude spawn is not
+// falsely blocked.
+export function steerDisabledReason(worker: Steerable | null | undefined): string | null {
+  const noPipeline = 'No active pipeline — steering requires a running Smith worker.'
+  if (!worker) return noPipeline
+  if (worker.status !== 'running' && worker.status !== 'pending') return noPipeline
+  const sessionID = worker.session_id ?? ''
+  const model = worker.model ?? ''
+  if (sessionID === '' && model !== '' && !model.toLowerCase().includes('claude')) {
+    return `Not a Claude session (model ${model}) — steering is only supported for Claude sessions.`
+  }
+  return null
 }
 
 // ForgeSession is one design conversation persisted on the server.
