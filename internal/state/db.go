@@ -2152,6 +2152,10 @@ const (
 	// PR — the daemon auto-opens the PR rather than escalating to needs_human.
 	EventDispatchRecoveredStrandedBranch EventType = "dispatch_recovered_stranded_branch"
 	EventRateLimited                     EventType = "rate_limited"
+	// EventAuthFailed fires when a provider rejects the credentials (invalid API
+	// key, unauthorized, expired token). Unlike a rate limit, this is escalated
+	// for human attention rather than retried/failed-over (Forge-d5ns).
+	EventAuthFailed                      EventType = "auth_failed"
 	EventCostLimitHit                    EventType = "cost_limit_hit"
 	EventDispatchPaused                  EventType = "dispatch_paused"
 	EventDispatchResumed                 EventType = "dispatch_resumed"

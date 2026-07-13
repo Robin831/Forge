@@ -233,6 +233,42 @@ func TestRateLimited_ReleasesBeadToOpen(t *testing.T) {
 	assert.False(t, outcome.Success)
 }
 
+// TestAuthFailed_EscalatesWithoutRelease verifies that an authentication
+// failure is escalated for human attention (AuthFailed + NeedsHuman) rather than
+// released back to open for retry — a bad credential fails identically on every
+// attempt, so releasing it would loop forever (Forge-d5ns).
+func TestAuthFailed_EscalatesWithoutRelease(t *testing.T) {
+	db := newTestDB(t)
+	params, releasedID, mu := baseParams(t, db)
+
+	// Multiple providers configured — an auth failure must NOT rotate through
+	// them (unlike a rate limit). It should stop on the first provider.
+	params.Providers = []provider.Provider{{Kind: provider.Claude}, {Kind: provider.Gemini}}
+
+	var smithCalls int
+	params.SmithRunner = func(_ context.Context, _, _, _ string, _ provider.Provider, _ []string) (*smith.Process, error) {
+		smithCalls++
+		return smith.NewProcessForTest(&smith.Result{
+			ExitCode:    2,
+			AuthFailed:  true,
+			ErrorOutput: "Error: Invalid API key provided",
+		}), nil
+	}
+
+	outcome := Run(context.Background(), params)
+
+	mu.Lock()
+	defer mu.Unlock()
+	assert.True(t, outcome.AuthFailed, "outcome.AuthFailed should be true")
+	assert.True(t, outcome.NeedsHuman, "auth failure must escalate for human attention")
+	assert.NotEmpty(t, outcome.AuthProvider, "the failing provider must be named")
+	assert.NotNil(t, outcome.Error)
+	assert.False(t, outcome.Success)
+	assert.False(t, outcome.RateLimited, "auth failure is not a rate limit")
+	assert.Empty(t, *releasedID, "auth failure must NOT release the bead back to open")
+	assert.Equal(t, 1, smithCalls, "auth failure must not rotate through providers")
+}
+
 // TestWardenApprove_Success verifies the happy path where Warden approves.
 // It also verifies that the changelog fragment summary is extracted.
 func TestWardenApprove_Success(t *testing.T) {
