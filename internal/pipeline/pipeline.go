@@ -96,6 +96,10 @@ func drainSteer(ch <-chan string) (string, bool) {
 		if !ok {
 			return "", false
 		}
+		msg = strings.TrimSpace(msg)
+		if msg == "" {
+			return "", false
+		}
 		return msg, true
 	default:
 		return "", false
@@ -121,7 +125,7 @@ func mergeSteerWithFeedback(feedback, steer string) string {
 	}
 	return fmt.Sprintf(
 		"Operator steering message (address this first, it takes precedence):\n%s\n\n"+
-			"The automated review also requested the following changes; incorporate them as well unless the steering above supersedes them:\n%s",
+			"The automated verification also requested the following changes; incorporate them as well unless the steering above supersedes them:\n%s",
 		steer, feedback)
 }
 
