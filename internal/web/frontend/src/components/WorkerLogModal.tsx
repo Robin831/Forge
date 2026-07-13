@@ -315,10 +315,25 @@ function ToolRow({ entry }: { entry: ToolEntry }) {
     if (entry.isError) setExpanded(true)
   }, [entry.isError])
 
-  const resultLines = entry.result ? entry.result.split('\n') : []
-  const truncated = resultLines.length > RESULT_PREVIEW_LINES
-  const preview = resultLines.slice(0, RESULT_PREVIEW_LINES).join('\n')
-  const hiddenLines = resultLines.length - RESULT_PREVIEW_LINES
+  const { preview, totalLines } = useMemo(() => {
+    if (!entry.result) return { preview: '', totalLines: 0 }
+    let lineCount = 1
+    let previewEnd = -1
+    for (let i = 0; i < entry.result.length; i++) {
+      if (entry.result[i] === '\n') {
+        lineCount++
+        if (lineCount === RESULT_PREVIEW_LINES + 1) {
+          previewEnd = i
+        }
+      }
+    }
+    return {
+      preview: previewEnd === -1 ? entry.result : entry.result.slice(0, previewEnd),
+      totalLines: lineCount,
+    }
+  }, [entry.result])
+  const truncated = totalLines > RESULT_PREVIEW_LINES
+  const hiddenLines = totalLines - RESULT_PREVIEW_LINES
   const hasExpandable = truncated || entry.input != null
 
   return (
@@ -481,6 +496,7 @@ function MarkdownBlock({ text }: { text: string }) {
               <code className="rounded bg-slate-800 px-1 py-0.5 text-amber-200">{children}</code>
             )
           },
+          img: () => null,
           pre: ({ children }) => <pre className="overflow-x-auto">{children}</pre>,
           blockquote: ({ children }) => (
             <blockquote className="border-l-2 border-slate-700 pl-3 text-slate-400">
