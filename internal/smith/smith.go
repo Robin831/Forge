@@ -170,7 +170,7 @@ func Spawn(ctx context.Context, worktreePath, promptText, logDir string, extraFl
 // SpawnOptions configures optional behaviour for SpawnWithOptions.
 type SpawnOptions struct {
 	// LogPrefix is the filename prefix for the session log file written into
-	// logDir (e.g. "warden" produces warden-<ts>.log). This lets each
+	// logDir (e.g. "warden" produces warden-<ts>-<seq>.log). This lets each
 	// pipeline stage that reuses the Smith spawn machinery emit a
 	// stage-identifiable log file. An empty value defaults to "smith" so
 	// existing callers keep their historical filenames.
@@ -200,7 +200,7 @@ func logFileName(prefix string, ts int64) string {
 // The provider determines which binary is executed and how arguments are built.
 //
 // logDir is where the session log file is written. The log file is named
-// smith-<ts>.log; callers that need a stage-specific prefix should use
+// smith-<ts>-<seq>.log; callers that need a stage-specific prefix should use
 // SpawnWithOptions instead.
 func SpawnWithProvider(ctx context.Context, worktreePath, promptText, logDir string, pv provider.Provider, extraFlags []string) (*Process, error) {
 	return SpawnWithOptions(ctx, worktreePath, promptText, logDir, pv, extraFlags, SpawnOptions{})

@@ -523,7 +523,7 @@ func stepStatus(s StepResult) string {
 }
 
 // writeTemperLog persists the full, untruncated output of every temper step to
-// <worktreePath>/.forge-logs/temper-<ts>.log. The pipeline's
+// <worktreePath>/.forge-logs/temper-<ts>-<seq>.log. The pipeline's
 // preserveWorktreeLogs copies this file — alongside the stage-named Smith logs
 // — to ~/.forge/logs/<beadID>/, so failed-test forensics survive worktree
 // cleanup. Unlike the 1000-char ingot OutputSummary, this log contains the
