@@ -1002,6 +1002,61 @@ func TestDB_LastWorkerLogPath(t *testing.T) {
 	}
 }
 
+func TestDB_NullWorkerLogPathsUnder(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "forge-state-test-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+	db, err := Open(filepath.Join(tmpDir, "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	removed := filepath.Join(tmpDir, "logs", "BD-1")
+	sibling := filepath.Join(tmpDir, "logs", "BD-1-extra") // shares a name prefix
+	kept := filepath.Join(tmpDir, "logs", "BD-2")
+
+	insert := func(id, logPath string) {
+		w := &Worker{ID: id, BeadID: "BD", Status: WorkerDone, LogPath: logPath, StartedAt: time.Now()}
+		if err := db.InsertWorker(w); err != nil {
+			t.Fatal(err)
+		}
+	}
+	insert("w-under", filepath.Join(removed, "smith.log"))
+	insert("w-sibling", filepath.Join(sibling, "smith.log"))
+	insert("w-other", filepath.Join(kept, "smith.log"))
+	insert("w-empty", "")
+
+	n, err := db.NullWorkerLogPathsUnder(removed)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("expected exactly 1 row nulled, got %d", n)
+	}
+
+	got := map[string]string{}
+	for _, id := range []string{"w-under", "w-sibling", "w-other"} {
+		var lp string
+		if err := db.conn.QueryRow(`SELECT log_path FROM workers WHERE id = ?`, id).Scan(&lp); err != nil {
+			t.Fatal(err)
+		}
+		got[id] = lp
+	}
+
+	if got["w-under"] != "" {
+		t.Errorf("expected w-under log_path cleared, got %q", got["w-under"])
+	}
+	if got["w-sibling"] == "" {
+		t.Errorf("sibling directory row must not be cleared (name-prefix collision)")
+	}
+	if got["w-other"] == "" {
+		t.Errorf("unrelated directory row must not be cleared")
+	}
+}
+
 func TestDB_HasOpenPRForBead(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "forge-state-test-*")
 	if err != nil {

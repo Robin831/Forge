@@ -471,6 +471,11 @@ type SettingsConfig struct {
 	// When false, scheduled scanning and "forge scan" are disabled regardless
 	// of VulncheckInterval. Default: true.
 	VulncheckEnabled *bool `mapstructure:"vulncheck_enabled" yaml:"vulncheck_enabled,omitempty"`
+	// LogRetentionDays is how many days a preserved bead-log directory under
+	// ~/.forge/logs/<beadID>/ is kept after its newest file. The daily retention
+	// sweep removes older directories (unless the bead has a running worker).
+	// 0 disables the sweep entirely. Default: 30.
+	LogRetentionDays int `mapstructure:"log_retention_days" yaml:"log_retention_days"`
 	// GoRaceDetection enables the Go race detector (-race flag) as a
 	// separate temper step globally. Per-anvil settings override this.
 	// Default: false.
@@ -790,6 +795,7 @@ func (s SettingsConfig) MarshalYAML() (interface{}, error) {
 		VulncheckInterval         string              `yaml:"vulncheck_interval,omitempty"`
 		VulncheckTimeout          string              `yaml:"vulncheck_timeout,omitempty"`
 		VulncheckEnabled          *bool               `yaml:"vulncheck_enabled,omitempty"`
+		LogRetentionDays          int                 `yaml:"log_retention_days"`
 		GoRaceDetection           bool                `yaml:"go_race_detection"`
 		AutoLearnRules            bool                `yaml:"auto_learn_rules"`
 		CopilotDailyRequestLimit  int                 `yaml:"copilot_daily_request_limit,omitempty"`
@@ -854,6 +860,7 @@ func (s SettingsConfig) MarshalYAML() (interface{}, error) {
 		MergeStrategy:             s.MergeStrategy,
 		StaleInterval:             durationString(s.StaleInterval),
 		VulncheckEnabled:          s.VulncheckEnabled,
+		LogRetentionDays:          s.LogRetentionDays,
 		GoRaceDetection:           s.GoRaceDetection,
 		AutoLearnRules:            s.AutoLearnRules,
 		CopilotDailyRequestLimit:  s.CopilotDailyRequestLimit,
@@ -1280,6 +1287,7 @@ func Defaults() Config {
 			DepcheckTimeout:      5 * time.Minute,
 			VulncheckInterval:    24 * time.Hour,
 			VulncheckTimeout:     10 * time.Minute,
+			LogRetentionDays:     30,
 			SmelterInterval:      8 * time.Hour,
 			QuestgiverInterval:   24 * time.Hour,
 			AdventurerTimeout:    5 * time.Minute,
@@ -1363,6 +1371,7 @@ func Load(configFile string) (*Config, error) {
 	v.SetDefault("settings.vulncheck_interval", "24h")
 	v.SetDefault("settings.vulncheck_timeout", "10m")
 	v.SetDefault("settings.vulncheck_enabled", true)
+	v.SetDefault("settings.log_retention_days", 30)
 	v.SetDefault("settings.smelter_enabled", true)
 	v.SetDefault("settings.smelter_interval", "8h")
 	v.SetDefault("settings.questgiver_interval", "24h")
@@ -1647,6 +1656,9 @@ func (c *Config) Validate() []string {
 
 	if c.Settings.CopilotDailyRequestLimit < 0 {
 		errs = append(errs, "settings.copilot_daily_request_limit must be >= 0 (0 = no limit)")
+	}
+	if c.Settings.LogRetentionDays < 0 {
+		errs = append(errs, "settings.log_retention_days must be >= 0 (0 disables the log retention sweep)")
 	}
 	if math.IsNaN(c.Settings.CopilotWardenSampleRate) || math.IsInf(c.Settings.CopilotWardenSampleRate, 0) ||
 		c.Settings.CopilotWardenSampleRate < 0 || c.Settings.CopilotWardenSampleRate > 1 {

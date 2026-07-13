@@ -95,6 +95,7 @@ settings:
   vulncheck_enabled: true
   vulncheck_interval: 24h
   vulncheck_timeout: 10m
+  log_retention_days: 30                     # delete preserved bead logs older than this; 0 disables
   auto_learn_rules: true
   smelter_enabled: true
   smelter_interval: 8h
@@ -489,6 +490,7 @@ anvils:
 | `vulncheck_enabled` | bool | `true` | | Enable/disable vulnerability scanning entirely. When `false`, scheduled scanning and `forge scan` are disabled. |
 | `vulncheck_interval` | duration | `24h` | `0` | How often `govulncheck` runs on registered Go anvils. `0` disables. |
 | `vulncheck_timeout` | duration | `10m` | | Maximum time for a single govulncheck invocation per anvil. |
+| `log_retention_days` | int | `30` | `0` | How many days a preserved bead-log directory under `~/.forge/logs/<beadID>/` is kept after its newest file. A daily sweep removes older directories (skipping any bead with a running worker) and clears the affected `workers.log_path` rows. `0` disables the sweep. Independent of `daemon.log` rotation. |
 | `auto_learn_rules` | bool | `false` | | Automatically learn Warden review rules from Copilot comments when a PR is merged. Rules are saved to each anvil's `.forge/warden-rules.yaml`. |
 | `smelter_enabled` | bool | `true` | | Enable/disable the Smelter background process. When `false`, scheduled smelter runs are disabled. |
 | `smelter_interval` | duration | `8h` | `1h` or `0` | How often the Smelter runs its background processing. `0` disables scheduled runs. The Smelter skips the startup run if it already flushed within this interval, so daemon restarts don't produce redundant PRs. For low-volume setups where warden rules accumulate slowly, `48h` or `72h` is a reasonable value. |
@@ -509,6 +511,24 @@ anvils:
 | `forgechat.turn_timeout` | duration | `5m` | (cap `15m`) | Wall-clock budget for a single Beads-Forge AI turn (drafter, grilling, plan, emit). When the budget is exceeded, the runner returns a sentinel chat message instead of the truncated streamed preamble and logs a warning. Values above `15m` are clamped on load. |
 
 Duration values use Go syntax: `30s`, `5m`, `1h30m`, `168h`, etc.
+
+## Log Management
+
+Forge keeps its own logs bounded with two independent mechanisms under `~/.forge/logs/`:
+
+- **`daemon.log` rotation** — the daemon log is size-rotated at 50 MB, keeping 3
+  gzip-compressed backups (`daemon-<timestamp>.log.gz`). Rotation is automatic and
+  not configurable via `forge.yaml`. An already-oversized `daemon.log` (e.g. one
+  that predates rotation) is rotated out on the first write after upgrade, so total
+  daemon-log disk use stays bounded.
+- **Preserved bead-log retention sweep** — when a worktree is cleaned up, a worker's
+  logs are preserved under `~/.forge/logs/<beadID>/`. A daily sweep deletes these
+  directories once their newest file is older than `log_retention_days` (default 30),
+  skipping any bead that currently has a running worker. When a directory is removed,
+  the affected `workers.log_path` rows are cleared so the API reports "no log" rather
+  than a dangling path, and one summary event (`log_sweep_done`) is emitted per sweep.
+  Set `log_retention_days: 0` to disable the sweep. The sweep never touches the live
+  `daemon.log` file — the two mechanisms are independent.
 
 ## Wicket — GitHub Issue Triage
 
@@ -739,6 +759,7 @@ Environment variables with the `FORGE_` prefix override YAML values. Nested keys
 | `FORGE_SETTINGS_VULNCHECK_ENABLED` | `settings.vulncheck_enabled` |
 | `FORGE_SETTINGS_VULNCHECK_INTERVAL` | `settings.vulncheck_interval` |
 | `FORGE_SETTINGS_VULNCHECK_TIMEOUT` | `settings.vulncheck_timeout` |
+| `FORGE_SETTINGS_LOG_RETENTION_DAYS` | `settings.log_retention_days` |
 | `FORGE_SETTINGS_AUTO_LEARN_RULES` | `settings.auto_learn_rules` |
 | `FORGE_SETTINGS_SMELTER_ENABLED` | `settings.smelter_enabled` |
 | `FORGE_SETTINGS_SMELTER_INTERVAL` | `settings.smelter_interval` |

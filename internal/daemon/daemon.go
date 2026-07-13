@@ -43,6 +43,8 @@ import (
 	"github.com/Robin831/Forge/internal/ingot"
 	"github.com/Robin831/Forge/internal/ipc"
 	"github.com/Robin831/Forge/internal/lifecycle"
+	"github.com/Robin831/Forge/internal/logrotate"
+	"github.com/Robin831/Forge/internal/logsweep"
 	"github.com/Robin831/Forge/internal/notify"
 	"github.com/Robin831/Forge/internal/pipeline"
 	"github.com/Robin831/Forge/internal/poller"
@@ -76,6 +78,17 @@ const (
 
 	// LogFileName is the daemon log filename.
 	LogFileName = "daemon.log"
+
+	// DaemonLogMaxSizeMB is the size threshold (in MB) at which daemon.log is
+	// rotated.
+	DaemonLogMaxSizeMB = 50
+
+	// DaemonLogMaxBackups is the number of compressed daemon.log backups kept.
+	DaemonLogMaxBackups = 3
+
+	// DefaultLogSweepInterval is how often the preserved bead-log retention
+	// sweep runs.
+	DefaultLogSweepInterval = 24 * time.Hour
 
 	// DefaultPollInterval is the default interval between bead polls.
 	DefaultPollInterval = 30 * time.Second
@@ -204,7 +217,7 @@ type Daemon struct {
 	forgeDir   string // ~/.forge
 	pidFile    string
 	configFile string
-	logFile    *os.File
+	logFile    *logrotate.Logger
 	startTime  time.Time
 
 	// Cache for last poll results
@@ -335,9 +348,14 @@ func New(cfg *config.Config, configPath string) (*Daemon, error) {
 	}
 
 	logPath := filepath.Join(forgeDir, LogDir, LogFileName)
-	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
-	if err != nil {
-		return nil, fmt.Errorf("opening log file: %w", err)
+	// Size-based rotation keeps daemon.log bounded: rotate at 50 MB, keep 3
+	// compressed backups. An already-oversized file is rotated out on first
+	// write. The retention sweep never touches this handle (see logsweep).
+	logFile := &logrotate.Logger{
+		Filename:   logPath,
+		MaxSizeMB:  DaemonLogMaxSizeMB,
+		MaxBackups: DaemonLogMaxBackups,
+		Compress:   true,
 	}
 
 	// Log to both file and stderr
@@ -1198,6 +1216,18 @@ func (d *Daemon) Run(ctx context.Context) error {
 	} else {
 		d.logger.Info("vulncheck disabled via configuration (vulncheck_enabled: false)")
 	}
+
+	// Start preserved bead-log retention sweep. retentionDays is read fresh each
+	// pass so config hot-reload takes effect; 0 disables the sweep. This is
+	// independent of daemon.log rotation and never touches that live handle.
+	logSweep := logsweep.New(
+		d.db,
+		d.logger,
+		filepath.Join(d.forgeDir, LogDir),
+		DefaultLogSweepInterval,
+		func() int { return d.config().Settings.LogRetentionDays },
+	)
+	go logSweep.RunScheduled(ctx)
 
 	// Start Wicket issue triage monitor (if enabled)
 	if d.config().Settings.WicketEnabled {

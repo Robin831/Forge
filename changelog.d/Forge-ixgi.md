@@ -1,0 +1,2 @@
+category: Added
+- **Daemon log rotation and bead-log retention** - `daemon.log` is now size-rotated at 50 MB with 3 compressed backups (oversized existing logs rotate out on first write), and a daily sweep deletes preserved `~/.forge/logs/<beadID>/` directories older than the new `log_retention_days` setting (default 30; 0 disables), clearing affected `workers.log_path` rows and emitting a summary event. (Forge-ixgi)
