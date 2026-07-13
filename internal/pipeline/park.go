@@ -3,6 +3,7 @@ package pipeline
 import (
 	"context"
 	"strings"
+	"time"
 
 	"github.com/Robin831/Forge/internal/provider"
 )
@@ -72,13 +73,97 @@ type ParkHandle interface {
 	ResumeRequested() <-chan string
 }
 
+// timeoutGate owns the pipeline's smith-timeout context and lets its deadline be
+// rebuilt (extended) after a pause without leaking the previous cancel func. The
+// cancel of each derived context is stored on the struct and released when the
+// next deadline is set or when close() runs, so exactly one live timeout context
+// exists at a time.
+type timeoutGate struct {
+	base   context.Context
+	cancel context.CancelFunc
+}
+
+// set cancels the previous timeout context (if any) and derives a fresh one from
+// the base context with the given deadline, returning it for the pipeline to use.
+func (g *timeoutGate) set(deadline time.Time) context.Context {
+	if g.cancel != nil {
+		g.cancel()
+	}
+	ctx, cancel := context.WithDeadline(g.base, deadline)
+	g.cancel = cancel
+	return ctx
+}
+
+// close releases the current timeout context. Safe to call when none is set.
+func (g *timeoutGate) close() {
+	if g.cancel != nil {
+		g.cancel()
+	}
+}
+
+// pauseClock accumulates the wall-clock time a pipeline spends parked across one
+// or more pause/resume cycles so the smith-timeout deadline can be advanced by
+// exactly that amount ("pausing the deadline"). It is deliberately tiny and pure
+// (no time.Now inside) so the timeout-extension math is unit-testable: callers
+// feed it measured pause durations and ask it to project an extended deadline
+// from the pipeline's original deadline.
+type pauseClock struct {
+	// total is the sum of all completed pause durations. Non-positive additions
+	// are ignored so a clock skew (resume timestamp before pause timestamp) can
+	// never shorten the budget.
+	total time.Duration
+}
+
+// add records a single completed pause of duration d. Non-positive durations are
+// ignored.
+func (c *pauseClock) add(d time.Duration) {
+	if d > 0 {
+		c.total += d
+	}
+}
+
+// Total returns the accumulated paused duration recorded so far.
+func (c *pauseClock) Total() time.Duration { return c.total }
+
+// extend projects the extended deadline from the pipeline's original deadline by
+// adding the total accumulated pause. Recomputing from the fixed original
+// deadline (rather than mutating a running deadline) keeps the operation
+// idempotent across repeated resumes. A zero original deadline (no smith timeout
+// in effect) is returned unchanged.
+func (c *pauseClock) extend(original time.Time) time.Time {
+	return extendDeadlineForPause(original, c.total)
+}
+
+// extendDeadlineForPause advances a smith-timeout deadline by the wall-clock time
+// a pipeline spent parked, so time spent paused does not count against the smith
+// timeout budget. It is the pure, unit-testable core of the "pause the deadline"
+// behavior:
+//
+//   - A zero deadline means no timeout is in effect and is returned unchanged.
+//   - A non-positive pausedFor cannot shorten the budget and is a no-op.
+//   - Otherwise the deadline moves forward by exactly pausedFor.
+func extendDeadlineForPause(deadline time.Time, pausedFor time.Duration) time.Time {
+	if deadline.IsZero() || pausedFor <= 0 {
+		return deadline
+	}
+	return deadline.Add(pausedFor)
+}
+
 // parkUntilResume blocks the pipeline goroutine on the park handle's resume
 // signal after a pause. It returns the resume message (trimmed and defaulted to
 // DefaultResumeMessage when the operator omitted one) and true once a resume
-// arrives, or ("", false) when the context is cancelled (e.g. daemon shutdown)
-// or the handle/channel is nil. On the false path the caller leaves the worker
-// paused and exits without marking it failed.
-func parkUntilResume(ctx context.Context, h ParkHandle) (string, bool) {
+// arrives, or ("", false) when either context is cancelled or the handle/channel
+// is nil. On the false path the caller leaves the worker paused and exits without
+// marking it failed.
+//
+// Two contexts are watched so a parked pipeline unblocks promptly on daemon
+// shutdown WITHOUT the smith timeout ever tripping the park:
+//   - ctx is the pipeline's cancellable base (IPC stop/interrupt). It carries NO
+//     smith deadline, so a long pause cannot expire it.
+//   - shutdownCtx signals daemon shutdown. It lets the drain path unblock a
+//     parked goroutine that would otherwise wait indefinitely on ctx. A nil
+//     shutdownCtx disables this second edge (used by tests/callers without one).
+func parkUntilResume(ctx, shutdownCtx context.Context, h ParkHandle) (string, bool) {
 	if h == nil {
 		return "", false
 	}
@@ -86,8 +171,14 @@ func parkUntilResume(ctx context.Context, h ParkHandle) (string, bool) {
 	if resumeCh == nil {
 		return "", false
 	}
+	var shutdownDone <-chan struct{}
+	if shutdownCtx != nil {
+		shutdownDone = shutdownCtx.Done()
+	}
 	select {
 	case <-ctx.Done():
+		return "", false
+	case <-shutdownDone:
 		return "", false
 	case msg, ok := <-resumeCh:
 		if !ok {

@@ -1014,11 +1014,28 @@ func (db *DB) ActiveWorkers() ([]Worker, error) {
 		ORDER BY started_at`)
 }
 
+// PausedWorkers returns workers currently parked by an operator pause (status
+// 'paused'). A parked pipeline goroutine still holds its git worktree and will
+// respawn a running smith on resume, so callers that clean up "abandoned"
+// worktrees must treat these worktrees as in-use and retain them. ActiveWorkers
+// deliberately excludes paused workers (they are not making progress), so this
+// is provided as a separate query to union in where worktree retention matters.
+func (db *DB) PausedWorkers() ([]Worker, error) {
+	return db.queryWorkers(`SELECT id, bead_id, anvil, branch, pid, status, phase, title, pr_number, started_at, completed_at, log_path, session_id, model
+		FROM workers WHERE status = 'paused'
+		ORDER BY started_at`)
+}
+
 // StalledWorkers returns active non-stalled workers whose log files have not
 // been modified within the given staleThreshold. Workers without a log path
 // (pending workers) are still considered stalled if their start time exceeds
 // the threshold. Already-stalled workers are excluded to avoid repeated
 // filesystem stat calls on log files that won't change their status.
+//
+// Paused workers are intentionally excluded (the status allowlist below omits
+// 'paused'): a bead parked by an operator pause holds its worktree and stops
+// producing log output by design, so it must NOT be flagged stale. Do not add
+// 'paused' to the status filters here or in the lifecycle-worker query.
 // All phases listed in backgroundPhases are excluded from the global check
 // because they only produce log output when external state changes (e.g. PR
 // events) and can be legitimately silent for long stretches. However,

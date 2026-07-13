@@ -495,6 +495,28 @@ type Params struct {
 	// bead's control handle (see internal/daemon/control.go).
 	ParkHandle ParkHandle
 
+	// ShutdownCtx, when non-nil, is watched alongside the pipeline's cancellable
+	// base context while a bead is parked so a parked goroutine unblocks promptly
+	// on daemon shutdown. Because the park wait no longer rides the smith-timeout
+	// context (that would let the timeout trip the pause), the base context alone
+	// only carries IPC interrupt; this second edge ensures the shutdown drain does
+	// not hang on a parked pipeline. When the shutdown fires while parked, the
+	// worker is left paused (not failed) so it can resume after restart. Nil
+	// disables the second edge (tests / callers without a daemon context).
+	ShutdownCtx context.Context
+
+	// SmithTimeout, when > 0, makes the pipeline own its smith-timeout deadline
+	// internally rather than relying on a deadline baked into the passed-in ctx.
+	// This is required for the pause/park/resume mechanic: while a bead is parked
+	// the smith timeout must be suspended so wall-clock time spent paused does not
+	// count against the budget. On each resume the pipeline advances the deadline
+	// by the time it spent parked (see extendDeadlineForPause). When 0, the passed
+	// ctx governs the deadline unchanged (used by callers that do not park, e.g.
+	// crucible child pipelines). The daemon passes a cancellable (deadline-free)
+	// ctx plus this field so the interrupt/shutdown cancel still propagates while
+	// the timeout remains extendable.
+	SmithTimeout time.Duration
+
 	// SmithInterrupter overrides how a running Smith spawn is gracefully
 	// stopped during steering. Production calls smith.Process.Interrupt; tests
 	// inject a stub to observe interruption without real signals.
@@ -743,6 +765,25 @@ func Run(ctx context.Context, p Params) *Outcome {
 		workerID = fmt.Sprintf("%s-%s-%d", p.AnvilName, p.Bead.ID, time.Now().Unix())
 	}
 	outcome.WorkerID = workerID
+
+	// Smith-timeout ownership. When SmithTimeout > 0 the pipeline manages its own
+	// deadline (rather than inheriting one from ctx) so the pause/park/resume
+	// mechanic can suspend it: while parked, wall-clock time must not count
+	// against the smith budget. baseCtx keeps the caller's cancellation/interrupt
+	// semantics (shutdown, IPC interrupt); ctx is re-derived with a deadline that
+	// is pushed forward on each resume by the time spent parked. The park wait
+	// blocks on baseCtx (never the timeout ctx) so a long pause cannot trip the
+	// smith timeout. When SmithTimeout <= 0, ctx is used as-is (callers that do
+	// not park, e.g. crucible children, keep their inherited deadline).
+	baseCtx := ctx
+	originalDeadline := time.Time{}
+	var pauses pauseClock
+	timeout := &timeoutGate{base: baseCtx}
+	defer timeout.close()
+	if p.SmithTimeout > 0 {
+		originalDeadline = start.Add(p.SmithTimeout)
+		ctx = timeout.set(originalDeadline)
+	}
 
 	// Resolve injectable dependencies, falling back to defaults.
 	createWorktree := p.WorktreeCreator
@@ -1448,16 +1489,42 @@ func Run(ctx context.Context, p Params) *Outcome {
 				p.Bead.ID, p.AnvilName)
 
 			// Park the goroutine on the resume signal without exiting the loop.
-			resumeMsg, ok := parkUntilResume(ctx, parkHandle)
+			// Block on baseCtx, NOT the smith-timeout ctx: a parked pipeline must
+			// survive an arbitrarily long pause, so only cancellation/interrupt
+			// (shutdown) may unblock the wait — never the smith timeout.
+			pauseStart := time.Now()
+			resumeMsg, ok := parkUntilResume(baseCtx, p.ShutdownCtx, parkHandle)
 			if !ok {
-				// The context was cancelled (or the handle went away) while
-				// parked — e.g. daemon shutdown. Leave the worker paused and
-				// exit WITHOUT marking it failed; the parked spawn was already
-				// interrupted cleanly.
-				log.Printf("[pipeline:%s] Parked pipeline cancelled before resume", workerID)
-				outcome.Error = ctx.Err()
+				// The base context was cancelled (IPC interrupt), the daemon began
+				// shutting down, or the handle went away while parked. Leave the
+				// worker paused and exit WITHOUT marking it failed; the parked spawn
+				// was already interrupted cleanly and the worker can resume after a
+				// restart. Surface a non-nil error so the caller does not mistake a
+				// still-parked outcome for success (baseCtx.Err() is nil when it was
+				// the shutdown context, not baseCtx, that fired).
+				parkErr := baseCtx.Err()
+				if parkErr == nil {
+					parkErr = context.Canceled
+				}
+				log.Printf("[pipeline:%s] Parked pipeline cancelled before resume: %v", workerID, parkErr)
+				outcome.Error = parkErr
 				outcome.Duration = time.Since(start)
 				return outcome
+			}
+
+			// Pause the deadline: advance the smith timeout by the wall-clock time
+			// spent parked so the pause is not charged against the smith budget.
+			// The deadline is recomputed from the fixed original deadline plus the
+			// accumulated pause (idempotent across repeated pauses), and the
+			// timeout context is rebuilt from baseCtx so the extension is not
+			// clamped by the previous (shorter) deadline.
+			if p.SmithTimeout > 0 {
+				parkedFor := time.Since(pauseStart)
+				pauses.add(parkedFor)
+				extendedDeadline := pauses.extend(originalDeadline)
+				ctx = timeout.set(extendedDeadline)
+				log.Printf("[pipeline:%s] Resumed after %s parked; smith deadline extended to %s (total paused %s)",
+					workerID, parkedFor.Round(time.Second), extendedDeadline.Format(time.RFC3339), pauses.Total().Round(time.Second))
 			}
 
 			// Resume: transition paused -> running and continue.
