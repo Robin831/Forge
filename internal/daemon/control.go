@@ -179,6 +179,20 @@ func (d *Daemon) releaseBeadSlotIfOwner(beadID string, expectedCtrl *controlHand
 	}
 }
 
+// releaseStoppedBeadSlot releases the in-memory bead slot from an IPC stop
+// handler. It uses releaseBeadSlotIfOwner when a control handle is currently
+// registered — so a re-dispatch that raced with the stop keeps its freshly
+// registered handle — and falls back to the unconditional releaseBeadSlot when
+// no handle is present. Shared by the stop_bead and queue_stop verbs so both
+// stop paths release the slot identically.
+func (d *Daemon) releaseStoppedBeadSlot(beadID string) {
+	if ctrl, ok := d.lookupControlHandle(beadID); ok {
+		d.releaseBeadSlotIfOwner(beadID, ctrl)
+	} else {
+		d.releaseBeadSlot(beadID)
+	}
+}
+
 // lookupControlHandle returns the control handle for a bead, if one is
 // currently registered. This is the accessor the IPC/API sibling uses to reach
 // a running pipeline's steer mailbox and interrupt.
