@@ -48,8 +48,7 @@ export default function DashboardPage() {
       <div className="flex flex-wrap items-center justify-between gap-3">
         {dispatchPaused ? (
           <p className="text-sm text-amber-200/90">
-            Auto-dispatch is <strong>paused</strong>
-            {pausedSince ? <> since {new Date(pausedSince).toLocaleString()}</> : null}. Running
+            Auto-dispatch is <strong>paused</strong>{pausedSince ? <>{' '}since {Number.isNaN(Date.parse(pausedSince)) ? pausedSince : new Date(pausedSince).toLocaleString()}</> : null}. Running
             workers continue; no new beads are dispatched. Resume to start dispatching again.
           </p>
         ) : (

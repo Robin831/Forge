@@ -411,6 +411,7 @@ func New(cfg *config.Config, configPath string) (*Daemon, error) {
 		queueTimestamps:       make(map[string]queueTimestamp),
 	}
 	d.lifecycleCond = sync.NewCond(&sync.Mutex{})
+	d.pausedSince.Store(time.Time{})
 	d.notifier.Store(notifier)
 	d.dispatcher.Store(dispatcher)
 	// Wire up the crucible-active check so orphan recovery skips parent beads
@@ -1385,7 +1386,9 @@ func (d *Daemon) restoreDispatchPause() {
 	} else {
 		d.pausedSince.Store(time.Time{})
 	}
-	_ = d.db.LogEvent(state.EventDispatchPaused, "Dispatch pause restored from previous run", "", "")
+	if err := d.db.LogEvent(state.EventDispatchPaused, "Dispatch pause restored from previous run", "", ""); err != nil {
+		d.logger.Warn("failed to log dispatch-pause-restored event", "error", err)
+	}
 	d.logger.Info("dispatch pause restored from previous run")
 }
 
