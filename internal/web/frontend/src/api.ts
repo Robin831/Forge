@@ -570,6 +570,25 @@ export const actions = {
       `/api/bead/${encodeURIComponent(beadID)}/steer`,
       { message },
     ),
+  // pause parks a bead's in-flight Smith spawn. Like steer it is keyed purely
+  // by bead id — the daemon resolves the active pipeline and validates the
+  // worker is running before parking it. The daemon returns an actionable
+  // error (surfaced by apiPost) when the bead has no active pipeline or its
+  // worker is not running.
+  pause: (beadID: string) =>
+    apiPost<{ status?: string; message?: string }>(
+      `/api/bead/${encodeURIComponent(beadID)}/pause`,
+    ),
+  // resume continues a paused bead's pipeline. The optional message becomes the
+  // prompt the resumed Claude spawn continues with; the daemon defaults it when
+  // omitted. It transparently handles both a warm resume (live parked goroutine)
+  // and a cold resume (paused worker surviving a daemon restart). The daemon
+  // returns an actionable error when the bead is not paused.
+  resume: (beadID: string, message?: string) =>
+    apiPost<{ status?: string; message?: string }>(
+      `/api/bead/${encodeURIComponent(beadID)}/resume`,
+      message ? { message } : undefined,
+    ),
 }
 
 // Steerable is the minimal worker shape steerDisabledReason inspects — a subset
@@ -597,6 +616,36 @@ export function steerDisabledReason(worker: Steerable | null | undefined): strin
   const model = worker.model ?? ''
   if (sessionID === '' && model !== '' && !model.toLowerCase().includes('claude')) {
     return `Not a Claude session (model ${model}) — steering is only supported for Claude sessions.`
+  }
+  return null
+}
+
+// Pausable is the minimal worker shape the pause/resume gates inspect — a
+// subset of WorkerInfo / BeadDetailWorker so either can be passed directly.
+export interface Pausable {
+  status: string
+}
+
+// pauseDisabledReason returns a human-readable reason why a worker cannot be
+// paused, or null when pausing is allowed. It mirrors the daemon's paused-status
+// transition table (state.CanTransitionPause): only a running worker may be
+// paused. A missing worker or any non-running status is rejected.
+export function pauseDisabledReason(worker: Pausable | null | undefined): string | null {
+  if (!worker) return 'No active pipeline — pausing requires a running worker.'
+  if (worker.status !== 'running') {
+    return `Cannot pause a ${worker.status} worker — only a running worker can be paused.`
+  }
+  return null
+}
+
+// resumeDisabledReason returns a human-readable reason why a worker cannot be
+// resumed, or null when resuming is allowed. It mirrors the daemon's
+// paused-status transition table: only a paused worker may be resumed. A missing
+// worker or any non-paused status is rejected.
+export function resumeDisabledReason(worker: Pausable | null | undefined): string | null {
+  if (!worker) return 'No paused pipeline — resuming requires a paused worker.'
+  if (worker.status !== 'paused') {
+    return `Cannot resume a ${worker.status} worker — only a paused worker can be resumed.`
   }
   return null
 }

@@ -94,6 +94,8 @@ func TestActions_RequireAuth(t *testing.T) {
 		"/api/bead/Forge-abc1/note",
 		"/api/bead/Forge-abc1/comment",
 		"/api/bead/Forge-abc1/steer",
+		"/api/bead/Forge-abc1/pause",
+		"/api/bead/Forge-abc1/resume",
 	} {
 		req := httptest.NewRequest("POST", path, strings.NewReader(`{}`))
 		req.Header.Set("Content-Type", "application/json")
@@ -556,6 +558,108 @@ func TestActions_BeadSteer_PropagatesDaemonError(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), "no active pipeline") {
 		t.Errorf("expected daemon error surfaced, got %s", rec.Body.String())
+	}
+}
+
+func TestActions_BeadPause_OK(t *testing.T) {
+	rh := &recordingHandler{}
+	srv := newServerWithDefaults(t, rh.handle)
+	cookie := loginAndGetCookie(t, srv)
+
+	rec := postAction(t, srv, cookie, "/api/bead/Forge-abc1/pause", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	cmd, _ := rh.lastCommand()
+	if cmd.Type != "pause_bead" {
+		t.Fatalf("expected pause_bead, got %s", cmd.Type)
+	}
+	var p ipc.PauseBeadPayload
+	_ = json.Unmarshal(cmd.Payload, &p)
+	if p.BeadID != "Forge-abc1" {
+		t.Errorf("payload mismatch: %+v", p)
+	}
+}
+
+func TestActions_BeadPause_InvalidID(t *testing.T) {
+	srv := newServerWithDefaults(t, nil)
+	cookie := loginAndGetCookie(t, srv)
+
+	rec := postAction(t, srv, cookie, "/api/bead/not%20a%20bead/pause", nil)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", rec.Code)
+	}
+}
+
+func TestActions_BeadPause_PropagatesDaemonError(t *testing.T) {
+	rh := &recordingHandler{
+		resp: ipc.Response{
+			Type:    "error",
+			Payload: []byte(`{"message":"bead Forge-abc1 cannot be paused from status \"failed\"; only a running bead may be paused"}`),
+		},
+	}
+	srv := newServerWithDefaults(t, rh.handle)
+	cookie := loginAndGetCookie(t, srv)
+
+	rec := postAction(t, srv, cookie, "/api/bead/Forge-abc1/pause", nil)
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "cannot be paused") {
+		t.Errorf("expected daemon error surfaced, got %s", rec.Body.String())
+	}
+}
+
+func TestActions_BeadResume_OK(t *testing.T) {
+	rh := &recordingHandler{}
+	srv := newServerWithDefaults(t, rh.handle)
+	cookie := loginAndGetCookie(t, srv)
+
+	rec := postAction(t, srv, cookie, "/api/bead/Forge-abc1/resume", map[string]any{
+		"message": "carry on where you left off",
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	cmd, _ := rh.lastCommand()
+	if cmd.Type != "resume_bead" {
+		t.Fatalf("expected resume_bead, got %s", cmd.Type)
+	}
+	var p ipc.ResumeBeadPayload
+	_ = json.Unmarshal(cmd.Payload, &p)
+	if p.BeadID != "Forge-abc1" || p.Message != "carry on where you left off" {
+		t.Errorf("payload mismatch: %+v", p)
+	}
+}
+
+func TestActions_BeadResume_OmittedMessageDispatchesEmpty(t *testing.T) {
+	// An empty body is valid — the daemon substitutes its default resume prompt.
+	rh := &recordingHandler{}
+	srv := newServerWithDefaults(t, rh.handle)
+	cookie := loginAndGetCookie(t, srv)
+
+	rec := postAction(t, srv, cookie, "/api/bead/Forge-abc1/resume", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	cmd, _ := rh.lastCommand()
+	if cmd.Type != "resume_bead" {
+		t.Fatalf("expected resume_bead, got %s", cmd.Type)
+	}
+	var p ipc.ResumeBeadPayload
+	_ = json.Unmarshal(cmd.Payload, &p)
+	if p.BeadID != "Forge-abc1" || p.Message != "" {
+		t.Errorf("expected empty message, got %+v", p)
+	}
+}
+
+func TestActions_BeadResume_InvalidID(t *testing.T) {
+	srv := newServerWithDefaults(t, nil)
+	cookie := loginAndGetCookie(t, srv)
+
+	rec := postAction(t, srv, cookie, "/api/bead/not%20a%20bead/resume", nil)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", rec.Code)
 	}
 }
 
