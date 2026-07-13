@@ -172,6 +172,9 @@ func (w *Worker) Run(ctx context.Context, extraFlags []string) (*smith.Result, e
 	log.Printf("[%s] Waiting for Smith (PID %d)", w.ID, process.PID)
 	result = process.Wait()
 
+	// Persist the captured session_id and model (Claude only; empty otherwise).
+	_ = w.db.UpdateWorkerSession(w.ID, result.SessionID, result.Model)
+
 	// Step 5: Determine outcome
 	if result.ExitCode == 0 {
 		w.transition(state.WorkerDone)

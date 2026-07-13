@@ -113,6 +113,9 @@ func (p *Params) rebaseWithSmith(ctx context.Context, providers []provider.Provi
 			}
 		}
 		result := process.Wait()
+		if p.WorkerID != "" && p.DB != nil {
+			_ = p.DB.UpdateWorkerSession(p.WorkerID, result.SessionID, smith.SessionModel(result, pv))
+		}
 		if result.ResultSubtype == "success" && !result.IsError {
 			result.RateLimited = false
 		}

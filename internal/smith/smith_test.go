@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Robin831/Forge/internal/provider"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -229,6 +230,64 @@ func TestReadStreamJSON_EmptyInput(t *testing.T) {
 	assert.Empty(t, result.FullOutput)
 	assert.Empty(t, result.Summary)
 	assert.False(t, result.RateLimited)
+}
+
+func TestReadStreamJSON_SessionIDAndModel(t *testing.T) {
+	// Claude emits session_id + model on the initial system init event and
+	// repeats session_id on the result event. The first non-empty values win.
+	input := strings.Join([]string{
+		`{"type":"system","subtype":"init","session_id":"abc-123","model":"claude-opus-4-8"}`,
+		`{"type":"assistant","message":{"content":[{"type":"text","text":"working"}]}}`,
+		`{"type":"result","subtype":"success","session_id":"abc-123","result":"done","total_cost_usd":0.01}`,
+	}, "\n")
+
+	var buf strings.Builder
+	result := &Result{}
+	readStreamJSON(strings.NewReader(input), &buf, newTestLogFile(t), result)
+
+	assert.Equal(t, "abc-123", result.SessionID)
+	assert.Equal(t, "claude-opus-4-8", result.Model)
+}
+
+func TestReadStreamJSON_SessionIDFromResultOnly(t *testing.T) {
+	// Even if the init event is missing, the session_id on the result event
+	// is captured.
+	input := `{"type":"result","subtype":"success","session_id":"only-on-result","result":"done"}`
+
+	var buf strings.Builder
+	result := &Result{}
+	readStreamJSON(strings.NewReader(input), &buf, newTestLogFile(t), result)
+
+	assert.Equal(t, "only-on-result", result.SessionID)
+	assert.Empty(t, result.Model)
+}
+
+func TestReadStreamJSON_NoSessionIDForNonClaude(t *testing.T) {
+	// Gemini-style deltas + result carry no session_id/model — both stay empty
+	// without any error.
+	input := strings.Join([]string{
+		`{"type":"message","role":"assistant","content":"hi","delta":true}`,
+		`{"type":"result","subtype":"success","stats":{"input_tokens":10,"output_tokens":5}}`,
+	}, "\n")
+
+	var buf strings.Builder
+	result := &Result{}
+	readStreamJSON(strings.NewReader(input), &buf, newTestLogFile(t), result)
+
+	assert.Empty(t, result.SessionID)
+	assert.Empty(t, result.Model)
+}
+
+func TestSessionModel(t *testing.T) {
+	// Prefers the stream-reported model when present.
+	assert.Equal(t, "claude-opus-4-8",
+		SessionModel(&Result{Model: "claude-opus-4-8"}, provider.Provider{Kind: provider.Claude, Model: "cfg-model"}))
+	// Falls back to the provider-configured model when the stream is silent.
+	assert.Equal(t, "cfg-model",
+		SessionModel(&Result{}, provider.Provider{Kind: provider.Claude, Model: "cfg-model"}))
+	// Nil result is safe.
+	assert.Equal(t, "cfg-model",
+		SessionModel(nil, provider.Provider{Model: "cfg-model"}))
 }
 
 // TestWaitWithExitTimeout_NormalExit verifies that when the process exits

@@ -163,6 +163,9 @@ func BatchFix(ctx context.Context, p BatchFixParams) *FixResult {
 			}
 		}
 		smithResult = process.Wait()
+		if p.WorkerID != "" && p.DB != nil {
+			_ = p.DB.UpdateWorkerSession(p.WorkerID, smithResult.SessionID, smith.SessionModel(smithResult, pv))
+		}
 		if smithResult.ResultSubtype == "success" && !smithResult.IsError {
 			smithResult.RateLimited = false
 		}
@@ -400,6 +403,9 @@ func Fix(ctx context.Context, p FixParams) *FixResult {
 				}
 			}
 			smithResult = process.Wait()
+			if p.WorkerID != "" && p.DB != nil {
+				_ = p.DB.UpdateWorkerSession(p.WorkerID, smithResult.SessionID, smith.SessionModel(smithResult, pv))
+			}
 			// Treat a genuine success event as not rate-limited.
 			// Do NOT use ExitCode == 0 here: Claude can exit 0 with is_error:true
 			// (subtype:"success") when the session was rate-limit rejected — that

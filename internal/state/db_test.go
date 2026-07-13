@@ -8,6 +8,88 @@ import (
 	"time"
 )
 
+func TestDB_UpdateWorkerSession(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "forge-state-session-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+	db, err := Open(filepath.Join(tmpDir, "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	w := &Worker{
+		ID:        "worker-session-1",
+		BeadID:    "bd-session",
+		Anvil:     "anvil-1",
+		Status:    WorkerRunning,
+		StartedAt: time.Now(),
+	}
+	if err := db.InsertWorker(w); err != nil {
+		t.Fatal(err)
+	}
+
+	// Defaults are empty before any session is recorded.
+	got, err := db.WorkersByBead("bd-session", "anvil-1", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("expected 1 worker, got %d", len(got))
+	}
+	if got[0].SessionID != "" || got[0].Model != "" {
+		t.Errorf("expected empty session/model defaults, got session=%q model=%q", got[0].SessionID, got[0].Model)
+	}
+
+	if err := db.UpdateWorkerSession("worker-session-1", "sess-abc", "claude-opus-4-8"); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err = db.WorkersByBead("bd-session", "anvil-1", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got[0].SessionID != "sess-abc" {
+		t.Errorf("SessionID = %q, want %q", got[0].SessionID, "sess-abc")
+	}
+	if got[0].Model != "claude-opus-4-8" {
+		t.Errorf("Model = %q, want %q", got[0].Model, "claude-opus-4-8")
+	}
+}
+
+// TestDB_MigrationIdempotent verifies that running the column migrations twice
+// on the same database is safe (session_id/model migrations must not fail if
+// the columns already exist).
+func TestDB_MigrationIdempotent(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "forge-state-migrate-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+	db, err := Open(filepath.Join(tmpDir, "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	// Open already ran migrate() once; a second explicit pass must be a no-op.
+	if err := db.migrate(); err != nil {
+		t.Fatalf("second migrate() failed: %v", err)
+	}
+
+	for _, col := range []string{"session_id", "model"} {
+		exists, err := db.columnExists("workers", col)
+		if err != nil {
+			t.Fatalf("columnExists(%q): %v", col, err)
+		}
+		if !exists {
+			t.Errorf("expected workers.%s column to exist after migration", col)
+		}
+	}
+}
+
 func TestDB_PRLifecycle(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "forge-state-test-*")
 	if err != nil {

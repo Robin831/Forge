@@ -50,6 +50,10 @@ export interface WorkerInfo {
    *  from the bead's ingot in /api/status (the IPC WorkerInfo carries only the
    *  number). Used to render the PR number as a clickable link. */
   pr_url?: string
+  /** Provider session identifier captured from the smith stream (Claude only). */
+  session_id?: string
+  /** Model actually used for this worker spawn. */
+  model?: string
 }
 
 export interface WorkersResponse {

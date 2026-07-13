@@ -4730,6 +4730,8 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 				CompletedAt: completedAt,
 				LogPath:     w.LogPath,
 				PRNumber:    w.PRNumber,
+				SessionID:   w.SessionID,
+				Model:       w.Model,
 			})
 		}
 		data, _ := json.Marshal(ipc.WorkersResponse{Workers: out})
@@ -7950,6 +7952,9 @@ func (d *Daemon) handleForceSmith(beadID, anvil, branch, userNote string, anvilC
 		_ = d.db.UpdateWorkerLogPath(workerID, process.LogPath)
 
 		smithResult := process.Wait()
+		if smithResult != nil {
+			_ = d.db.UpdateWorkerSession(workerID, smithResult.SessionID, smith.SessionModel(smithResult, pv))
+		}
 		if smithResult != nil && smithResult.ExitCode == 0 {
 			d.logger.Info("force_smith: smith completed", "bead", beadID, "provider", pv.Label())
 			// Push changes before removing the force_smith worktree.
