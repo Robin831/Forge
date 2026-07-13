@@ -83,3 +83,39 @@ func TestTemper_TimeoutFailure_RecoversOnRetry(t *testing.T) {
 	assert.Equal(t, int32(1), atomic.LoadInt32(&smithCalls), "Smith must run exactly once — the retry does not re-invoke Smith")
 	assert.Equal(t, int32(2), atomic.LoadInt32(&temperCalls), "Temper must run twice (initial timeout + passing retry)")
 }
+
+// TestTemper_CancellationInfraFailure_AbortsWithoutEscalation verifies that when
+// the pipeline context is cancelled (daemon shutdown / IPC interrupt) the
+// resulting SIGKILL — which Temper classifies as infra — does NOT trigger a
+// retry-without-smith or escalate the bead to needs_human. The pipeline must
+// abort cleanly with the context error so the bead can be retried after restart.
+func TestTemper_CancellationInfraFailure_AbortsWithoutEscalation(t *testing.T) {
+	db := newTestDB(t)
+	params, _, _ := baseParams(t, db)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var temperCalls int32
+	params.TemperRunner = func(_ context.Context, _ string, _ temper.Config, _ *state.DB, _, _ string) *temper.Result {
+		atomic.AddInt32(&temperCalls, 1)
+		// Simulate the daemon shutting down while the step was running: the
+		// context is cancelled and the step is killed by SIGKILL, which Temper
+		// reports as an infra failure.
+		cancel()
+		return &temper.Result{
+			Passed:         false,
+			FailedStep:     "test",
+			Classification: temper.ClassificationInfra,
+			Summary:        "infra failure: signal: killed",
+		}
+	}
+
+	outcome := Run(ctx, params)
+
+	assert.False(t, outcome.NeedsHuman, "a cancellation-induced infra failure must NOT escalate to needs_human")
+	assert.False(t, outcome.Success)
+	require.Error(t, outcome.Error)
+	assert.ErrorIs(t, outcome.Error, context.Canceled, "aborted pipeline must surface the context cancellation")
+	assert.Equal(t, int32(1), atomic.LoadInt32(&temperCalls), "Temper must NOT be retried once the context is cancelled")
+}

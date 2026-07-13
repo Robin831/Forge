@@ -2209,6 +2209,21 @@ func Run(ctx context.Context, p Params) *Outcome {
 		// only if it fails the same way do we escalate to needs-attention with
 		// the classification — never loop Smith on a phantom failure.
 		if !temperResult.Passed && temperResult.Classification.IsRetryableWithoutSmith() {
+			// A cancelled pipeline context (daemon shutdown or IPC interrupt)
+			// kills the step via SIGKILL, which classifyFailure reports as an
+			// infra failure. That is NOT an infrastructure problem with the
+			// code — retrying would just be killed again and escalating would
+			// wrongly flag the bead as needs_human. Abort cleanly like the
+			// parked-pipeline path so the bead stays open for a retry after
+			// restart.
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				log.Printf("[pipeline:%s] Temper step %q killed by context cancellation (%v) — aborting without escalation",
+					workerID, temperResult.FailedStep, ctxErr)
+				outcome.Error = ctxErr
+				outcome.Duration = time.Since(start)
+				return outcome
+			}
+
 			log.Printf("[pipeline:%s] Temper failed at step %q with classification %q — retrying once without Smith",
 				workerID, temperResult.FailedStep, temperResult.Classification)
 			_ = p.DB.LogEvent(state.EventTemperFailed,
@@ -2219,6 +2234,17 @@ func Run(ctx context.Context, p Params) *Outcome {
 			retryResult := runTemper(ctx, wt.Path, iterTemperCfg, p.DB, p.Bead.ID, p.AnvilName)
 			temperResult = retryResult
 			outcome.TemperResult = temperResult
+
+			// The retry itself can be interrupted mid-flight by a shutdown; the
+			// same cancellation-induced SIGKILL would look like a persistent
+			// infra failure. Abort cleanly rather than escalating to needs_human.
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				log.Printf("[pipeline:%s] Temper retry for step %q killed by context cancellation (%v) — aborting without escalation",
+					workerID, retryResult.FailedStep, ctxErr)
+				outcome.Error = ctxErr
+				outcome.Duration = time.Since(start)
+				return outcome
+			}
 
 			if !retryResult.Passed && retryResult.Classification.IsRetryableWithoutSmith() {
 				// Still infra/timeout after the retry: escalate to needs-attention
