@@ -6568,22 +6568,17 @@ func (d *Daemon) handleSteerBead(cmd ipc.Command) ipc.Response {
 		return steerErrorResponse(fmt.Sprintf("bead %s is not running a Claude session (model %q); steering is only supported for Claude sessions", beadID, w.Model))
 	}
 
-	// Push the message into the steer mailbox. The pipeline goroutine is the sole
-	// consumer: while a spawn is running it drains the mailbox and gracefully
-	// interrupts only that spawn (waitSmithWithSteer), then resumes the same
-	// session with the steer text — the pipeline context is never cancelled, so
-	// the resume spawn is born with a live context (mode A). If no spawn is
-	// running (between spawns / Temper / Warden), the message is consumed before
-	// the next spawn (mode B). A full mailbox is a transient condition — surface
-	// it rather than silently dropping the steer.
+	// Snapshot the live-spawn state BEFORE pushing to the mailbox: pushSteer
+	// feeds waitSmithWithSteer's select, which can consume the message,
+	// interrupt the spawn, and clear SpawnLive(false) before we read it back.
+	wasLive := ctrl.hasLiveSpawn()
+
 	if !ctrl.pushSteer(message) {
 		return steerErrorResponse(fmt.Sprintf("steer mailbox is full for bead %s; try again shortly", beadID))
 	}
 
-	// Derive the response label from whether a spawn is actually live right now,
-	// NOT from any interrupt trigger: steering must not cancel the pipeline.
 	mode := "queued for the next spawn (mode B)"
-	if ctrl.hasLiveSpawn() {
+	if wasLive {
 		mode = "interrupting the running spawn (mode A)"
 	}
 	d.logger.Info("steer delivered", "bead", beadID, "worker", ctrl.workerID, "mode", mode)
