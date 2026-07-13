@@ -140,7 +140,7 @@ export function relativizePath(p: string, cwd?: string): string {
   if (cwd) {
     const norm = cwd.replace(/[/\\]+$/, '')
     if (p === norm) return p
-    if (p.startsWith(norm)) {
+    if (p.startsWith(norm) && (p.length === norm.length || p[norm.length] === '/' || p[norm.length] === '\\')) {
       const rest = p.slice(norm.length).replace(/^[/\\]+/, '')
       if (rest) return rest
     }

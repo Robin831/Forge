@@ -137,6 +137,10 @@ describe('relativizePath', () => {
     )
   })
 
+  it('does not strip a prefix that is not a path-boundary match', () => {
+    expect(relativizePath('/repo/root2/file', '/repo/root')).toBe('/repo/root2/file')
+  })
+
   it('leaves unrelated paths untouched', () => {
     expect(relativizePath('/etc/hosts')).toBe('/etc/hosts')
     expect(relativizePath('/etc/hosts', '/repo/root')).toBe('/etc/hosts')

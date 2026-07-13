@@ -225,7 +225,7 @@ export default function WorkerLogModal({ worker, onClose }: WorkerLogModalProps)
           ) : (
             <div className="flex flex-col gap-3 px-4 py-3">
               {visible.map(({ entry, originalIndex }) => (
-                <TranscriptRow key={originalIndex} entry={entry} />
+                <TranscriptRow key={`${worker.id}-${originalIndex}`} entry={entry} />
               ))}
             </div>
           )}
@@ -445,10 +445,10 @@ function SummaryRow({ entry }: { entry: SummaryEntry }) {
   if (entry.durationMs != null) parts.push(formatDuration(entry.durationMs))
   if (entry.numTurns != null) parts.push(`${entry.numTurns} turn${entry.numTurns === 1 ? '' : 's'}`)
   if (entry.totalCostUsd != null) parts.push(`$${entry.totalCostUsd.toFixed(4)}`)
-  const tokens = [entry.inputTokens, entry.outputTokens]
-  if (tokens.some((t) => t != null)) {
-    parts.push(`${entry.inputTokens ?? 0} in / ${entry.outputTokens ?? 0} out tok`)
-  }
+  const tokParts: string[] = []
+  if (entry.inputTokens != null) tokParts.push(`${entry.inputTokens} in`)
+  if (entry.outputTokens != null) tokParts.push(`${entry.outputTokens} out`)
+  if (tokParts.length) parts.push(`${tokParts.join(' / ')} tok`)
   return (
     <div className="mt-1 flex gap-2 border-t border-slate-800 pt-3 text-slate-400">
       <span className="select-none text-amber-400" aria-hidden>
@@ -483,21 +483,15 @@ function MarkdownBlock({ text }: { text: string }) {
           h1: ({ children }) => <h1 className="text-sm font-bold text-slate-100">{children}</h1>,
           h2: ({ children }) => <h2 className="text-sm font-bold text-slate-100">{children}</h2>,
           h3: ({ children }) => <h3 className="font-bold text-slate-100">{children}</h3>,
-          code: ({ children, className }) => {
-            const isBlock = /language-/.test(className ?? '')
-            if (isBlock) {
-              return (
-                <code className="block overflow-x-auto rounded bg-slate-900/80 p-2 text-slate-200">
-                  {children}
-                </code>
-              )
-            }
-            return (
-              <code className="rounded bg-slate-800 px-1 py-0.5 text-amber-200">{children}</code>
-            )
-          },
+          code: ({ children }) => (
+            <code className="rounded bg-slate-800 px-1 py-0.5 text-amber-200">{children}</code>
+          ),
           img: () => null,
-          pre: ({ children }) => <pre className="overflow-x-auto">{children}</pre>,
+          pre: ({ children }) => (
+            <pre className="overflow-x-auto rounded bg-slate-900/80 p-2 text-slate-200 [&>code]:bg-transparent [&>code]:p-0 [&>code]:text-inherit">
+              {children}
+            </pre>
+          ),
           blockquote: ({ children }) => (
             <blockquote className="border-l-2 border-slate-700 pl-3 text-slate-400">
               {children}
@@ -515,8 +509,9 @@ function formatDuration(ms: number): string {
   if (ms < 1000) return `${Math.round(ms)}ms`
   const seconds = ms / 1000
   if (seconds < 60) return `${seconds.toFixed(1)}s`
-  const minutes = Math.floor(seconds / 60)
-  const rem = Math.round(seconds % 60)
+  const totalSec = Math.round(seconds)
+  const minutes = Math.floor(totalSec / 60)
+  const rem = totalSec % 60
   return `${minutes}m ${rem}s`
 }
 
