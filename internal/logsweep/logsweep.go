@@ -164,10 +164,11 @@ func (m *Monitor) runOnce(ctx context.Context) {
 			"dirs_removed", result.DirsRemoved,
 			"bytes_freed", result.BytesFreed,
 			"retention_days", retention)
-	}
-	msg := formatSummary(result, retention)
-	if err := m.db.LogEvent(state.EventLogSweepDone, msg, "", ""); err != nil {
-		m.logger.Warn("log sweep: failed to record summary event", "error", err)
+
+		msg := formatSummary(result, retention)
+		if err := m.db.LogEvent(state.EventLogSweepDone, msg, "", ""); err != nil {
+			m.logger.Warn("log sweep: failed to record summary event", "error", err)
+		}
 	}
 }
 

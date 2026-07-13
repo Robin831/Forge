@@ -134,9 +134,33 @@ func TestRunOnce_SelectsCorrectDirs(t *testing.T) {
 		t.Errorf("expected NullWorkerLogPathsUnder called once for %q, got %v", oldDir, db.nulled)
 	}
 
-	// A summary event must always be emitted.
+	// A summary event is emitted only when dirs were removed.
 	if len(db.events) != 1 || db.events[0] != state.EventLogSweepDone {
 		t.Errorf("expected one EventLogSweepDone, got %v", db.events)
+	}
+}
+
+func TestRunOnce_SanitizedBeadIDProtectsActiveWorker(t *testing.T) {
+	logsRoot := t.TempDir()
+
+	// The worker's BeadID contains a slash, which SanitizeBeadID turns into '_'.
+	// The on-disk directory uses the sanitized form.
+	sanitizedName := "org_repo-xyz"
+	activeDir := makeBeadDir(t, logsRoot, sanitizedName, 40*24*time.Hour)
+
+	db := &fakeDB{
+		workers: []state.Worker{{BeadID: "org/repo-xyz", Status: "running"}},
+	}
+
+	m := New(db, discardLogger(), logsRoot, 24*time.Hour, func() int { return 30 })
+	m.runOnce(context.Background())
+
+	// The directory must survive because the sanitized active BeadID matches.
+	if _, err := os.Stat(activeDir); err != nil {
+		t.Errorf("expected sanitized active-bead dir %q to remain (running worker), got err=%v", activeDir, err)
+	}
+	if len(db.nulled) != 0 {
+		t.Errorf("expected no dirs removed, got nulled=%v", db.nulled)
 	}
 }
 
@@ -239,6 +263,20 @@ func TestLooksLikeBeadDir(t *testing.T) {
 				t.Errorf("looksLikeBeadDir(%q) = %v, want %v", tt.name, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestRunOnce_NoEventWhenNothingRemoved(t *testing.T) {
+	logsRoot := t.TempDir()
+	// A fresh dir within retention — nothing to sweep.
+	makeBeadDir(t, logsRoot, "fresh-bead", 24*time.Hour)
+
+	db := &fakeDB{}
+	m := New(db, discardLogger(), logsRoot, 24*time.Hour, func() int { return 30 })
+	m.runOnce(context.Background())
+
+	if len(db.events) != 0 {
+		t.Errorf("expected no sweep event when nothing removed, got %v", db.events)
 	}
 }
 

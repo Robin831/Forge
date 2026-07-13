@@ -491,6 +491,7 @@ anvils:
 | `vulncheck_interval` | duration | `24h` | `0` | How often `govulncheck` runs on registered Go anvils. `0` disables. |
 | `vulncheck_timeout` | duration | `10m` | | Maximum time for a single govulncheck invocation per anvil. |
 | `log_retention_days` | int | `30` | `0` | How many days a preserved bead-log directory under `~/.forge/logs/<beadID>/` is kept after its newest file. A daily sweep removes older directories (skipping any bead with a running worker) and clears the affected `workers.log_path` rows. `0` disables the sweep. Independent of `daemon.log` rotation. |
+| `log_sweep_interval` | duration | `24h` | `0` | How often the preserved bead-log retention sweep runs. `0` disables scheduled sweeps (the `log_retention_days` setting still governs per-pass behavior). Hot-reloadable via config file change; takes effect on daemon restart. |
 | `auto_learn_rules` | bool | `false` | | Automatically learn Warden review rules from Copilot comments when a PR is merged. Rules are saved to each anvil's `.forge/warden-rules.yaml`. |
 | `smelter_enabled` | bool | `true` | | Enable/disable the Smelter background process. When `false`, scheduled smelter runs are disabled. |
 | `smelter_interval` | duration | `8h` | `1h` or `0` | How often the Smelter runs its background processing. `0` disables scheduled runs. The Smelter skips the startup run if it already flushed within this interval, so daemon restarts don't produce redundant PRs. For low-volume setups where warden rules accumulate slowly, `48h` or `72h` is a reasonable value. |
@@ -760,6 +761,7 @@ Environment variables with the `FORGE_` prefix override YAML values. Nested keys
 | `FORGE_SETTINGS_VULNCHECK_INTERVAL` | `settings.vulncheck_interval` |
 | `FORGE_SETTINGS_VULNCHECK_TIMEOUT` | `settings.vulncheck_timeout` |
 | `FORGE_SETTINGS_LOG_RETENTION_DAYS` | `settings.log_retention_days` |
+| `FORGE_SETTINGS_LOG_SWEEP_INTERVAL` | `settings.log_sweep_interval` |
 | `FORGE_SETTINGS_AUTO_LEARN_RULES` | `settings.auto_learn_rules` |
 | `FORGE_SETTINGS_SMELTER_ENABLED` | `settings.smelter_enabled` |
 | `FORGE_SETTINGS_SMELTER_INTERVAL` | `settings.smelter_interval` |

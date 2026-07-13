@@ -258,6 +258,31 @@ func TestCompress_BackupContent(t *testing.T) {
 	}
 }
 
+func TestOpen_EagerFailure(t *testing.T) {
+	l := &Logger{Filename: "/nonexistent/path/daemon.log", MaxSizeMB: 1}
+	if err := l.Open(); err == nil {
+		l.Close()
+		t.Fatal("expected error opening file in nonexistent directory")
+	}
+}
+
+func TestOpen_Idempotent(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "daemon.log")
+	l := &Logger{Filename: path, MaxSizeMB: 1}
+	defer l.Close()
+
+	if err := l.Open(); err != nil {
+		t.Fatalf("first Open: %v", err)
+	}
+	if err := l.Open(); err != nil {
+		t.Fatalf("second Open: %v", err)
+	}
+	if _, err := l.Write([]byte("hello")); err != nil {
+		t.Fatalf("Write after Open: %v", err)
+	}
+}
+
 func TestBackupExists_ChecksBothPlainAndCompressed(t *testing.T) {
 	dir := t.TempDir()
 

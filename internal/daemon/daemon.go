@@ -80,8 +80,8 @@ const (
 	LogFileName = "daemon.log"
 
 	// DaemonLogMaxSizeMB is the size threshold (in MB) at which daemon.log is
-	// rotated.
-	DaemonLogMaxSizeMB = 50
+	// rotated. 0 defers to logrotate's package default (50 MB).
+	DaemonLogMaxSizeMB = 0
 
 	// DaemonLogMaxBackups is the number of compressed daemon.log backups kept.
 	DaemonLogMaxBackups = 3
@@ -356,6 +356,9 @@ func New(cfg *config.Config, configPath string) (*Daemon, error) {
 		MaxSizeMB:  DaemonLogMaxSizeMB,
 		MaxBackups: DaemonLogMaxBackups,
 		Compress:   true,
+	}
+	if err := logFile.Open(); err != nil {
+		return nil, fmt.Errorf("opening log file: %w", err)
 	}
 
 	// Log to both file and stderr
@@ -1221,7 +1224,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 	// pass so config hot-reload takes effect; 0 disables the sweep. This is
 	// independent of daemon.log rotation and never touches that live handle.
 	logSweepInterval := d.config().Settings.LogSweepInterval
-	if logSweepInterval <= 0 {
+	if logSweepInterval == 0 {
 		logSweepInterval = DefaultLogSweepInterval
 	}
 	logSweep := logsweep.New(

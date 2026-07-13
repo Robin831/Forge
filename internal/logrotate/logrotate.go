@@ -64,6 +64,18 @@ func (l *Logger) maxBytes() int64 {
 	return int64(size) * megabyte
 }
 
+// Open eagerly opens (or creates) the log file so that errors surface at
+// construction time rather than on the first Write. It is safe to call before
+// Write and is idempotent.
+func (l *Logger) Open() error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.file != nil {
+		return nil
+	}
+	return l.openExisting()
+}
+
 // Write implements io.Writer. It opens the active file on first use, rotates
 // when the incoming write would push the file past the size threshold, and
 // then appends the bytes.
@@ -202,6 +214,10 @@ func (l *Logger) uniqueBackupName(t time.Time) string {
 		if !backupExists(candidate) {
 			return candidate
 		}
+		// NOTE: '-1' sorts lexically before the bare '.ext' sibling, so among
+		// same-timestamp collisions the newer backup is treated as older by
+		// pruneBackups. This is harmless in practice (requires >MaxSizeMB
+		// written within a single millisecond).
 		candidate = filepath.Join(dir, fmt.Sprintf("%s-%d%s", stem, i, ext))
 	}
 }
