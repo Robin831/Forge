@@ -283,18 +283,34 @@ type SteerBeadPayload struct {
 // awaiting a resume_bead; no failure is recorded. The daemon rejects the command
 // when the bead has no active pipeline (not found) or its worker is not running
 // (illegal transition).
+//
+// A paused bead's worker row and worktree survive a daemon restart (the parked
+// goroutine does not). After a restart the bead is surfaced in Needs Attention
+// and can be resumed (resume_bead cold-resumes it in place) or discarded
+// (stop_bead / queue_stop). Pausing is only possible while a live pipeline is
+// running, so pause_bead itself is not used after a restart — only resume/discard.
 type PauseBeadPayload struct {
 	BeadID string `json:"bead_id"`
 }
 
 // ResumeBeadPayload is the payload for a "resume_bead" command. It requests that
-// a paused bead's pipeline resume: the daemon validates the bead has an active
-// pipeline whose worker is in the paused state and dispatches the resume request
-// into the pipeline goroutine, which respawns `claude --resume <session>` with
+// a paused bead's pipeline resume, respawning `claude --resume <session>` with
 // Message as the new prompt. Message is optional; when empty (or whitespace) the
-// daemon substitutes the default "Continue with the task." prompt. The daemon
-// rejects the command when the bead has no active pipeline (not found) or its
-// worker is not paused (illegal transition).
+// daemon substitutes the default "Continue with the task." prompt.
+//
+// Two cases are handled transparently:
+//   - Warm resume: a live pipeline goroutine is still parked. The daemon
+//     validates its worker is in the paused state and signals the goroutine
+//     through the control handle to respawn and continue.
+//   - Cold resume (after a daemon restart): the parked goroutine did not survive
+//     the restart, but the paused worker row and worktree did. The daemon
+//     reconstructs the resume state from the persisted session and re-dispatches
+//     the bead into a fresh pipeline that resumes the recorded session in the
+//     retained worktree.
+//
+// The daemon rejects the command when the bead has neither a live pipeline nor a
+// paused worker row (not found), or when a live worker is not in the paused state
+// (illegal transition).
 type ResumeBeadPayload struct {
 	BeadID  string `json:"bead_id"`
 	Message string `json:"message,omitempty"`

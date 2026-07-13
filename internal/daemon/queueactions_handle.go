@@ -66,6 +66,10 @@ func (h *queueActionsHandle) ActiveWorkerByBeadAndAnvil(beadID, anvil string) (*
 	return h.db.ActiveWorkerByBeadAndAnvil(beadID, anvil)
 }
 
+func (h *queueActionsHandle) PausedWorkerByBeadAndAnvil(beadID, anvil string) (*state.Worker, error) {
+	return h.db.PausedWorkerByBead(beadID, anvil)
+}
+
 func (h *queueActionsHandle) UpdateWorkerStatus(workerID string, status state.WorkerStatus) error {
 	return h.db.UpdateWorkerStatus(workerID, status)
 }

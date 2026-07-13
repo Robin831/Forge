@@ -1338,6 +1338,46 @@ func (db *DB) ActiveWorkerByBeadAndAnvil(beadID, anvil string) (*Worker, error) 
 	return &workers[0], nil
 }
 
+// PausedWorkerByBead returns the paused worker row for a given bead scoped to a
+// specific anvil, or (nil, nil) when the bead has no worker parked by an
+// operator pause. A paused worker survives a daemon restart (its row and
+// worktree persist) even though the parked pipeline goroutine does not, so
+// daemon-restart recovery uses this to reconstruct the resume state
+// (session_id/model) and to route the resume/discard actions surfaced in Needs
+// Attention. Only the 'paused' status is matched — ActiveWorkerByBeadAndAnvil
+// deliberately excludes it.
+func (db *DB) PausedWorkerByBead(beadID, anvil string) (*Worker, error) {
+	workers, err := db.queryWorkers(`SELECT id, bead_id, anvil, branch, pid, status, phase, title, pr_number, started_at, completed_at, log_path, session_id, model
+		FROM workers WHERE bead_id = ? AND anvil = ? AND status = 'paused'
+		ORDER BY started_at DESC
+		LIMIT 1`, beadID, anvil)
+	if err != nil {
+		return nil, err
+	}
+	if len(workers) == 0 {
+		return nil, nil
+	}
+	return &workers[0], nil
+}
+
+// PausedWorkerByBeadID returns the most recent paused worker row for a bead
+// across any anvil, or (nil, nil) when none is parked. The per-bead resume IPC
+// verb only carries a bead ID (not an anvil), so daemon-restart cold-resume uses
+// this to locate the parked worker and recover its anvil + resume state.
+func (db *DB) PausedWorkerByBeadID(beadID string) (*Worker, error) {
+	workers, err := db.queryWorkers(`SELECT id, bead_id, anvil, branch, pid, status, phase, title, pr_number, started_at, completed_at, log_path, session_id, model
+		FROM workers WHERE bead_id = ? AND status = 'paused'
+		ORDER BY started_at DESC
+		LIMIT 1`, beadID)
+	if err != nil {
+		return nil, err
+	}
+	if len(workers) == 0 {
+		return nil, nil
+	}
+	return &workers[0], nil
+}
+
 // HasWorkerRecord returns true if Forge has ever had a worker for the given
 // bead in the given anvil (any status). This is used by orphan recovery to
 // distinguish beads that Forge previously claimed from beads that are
@@ -3155,9 +3195,16 @@ type NeedsAttentionBead struct {
 }
 
 // NeedsAttentionBeads returns all beads with needs_human=1, clarification_needed=1,
-// or status=stalled, enriched with title from queue_cache or workers tables. It also
-// includes PRs that have exhausted their CI-fix, review-fix, or rebase attempt limits.
-// The maxCI/maxRev/maxRebase thresholds determine which PRs are considered exhausted.
+// status=stalled, or status=paused, enriched with title from queue_cache or workers
+// tables. It also includes PRs that have exhausted their CI-fix, review-fix, or rebase
+// attempt limits. The maxCI/maxRev/maxRebase thresholds determine which PRs are
+// considered exhausted.
+//
+// Paused workers are surfaced here so an operator can resume or discard a bead that
+// was parked by a per-bead pause — in particular one whose parked pipeline goroutine
+// did not survive a daemon restart. A paused bead is, by definition, awaiting a human
+// decision (resume or discard), so it belongs in Needs Attention regardless of whether
+// a live pipeline goroutine is still parked for it.
 func (db *DB) NeedsAttentionBeads(maxCI, maxRev, maxRebase int) ([]NeedsAttentionBead, error) {
 	rows, err := db.conn.Query(
 		`SELECT bead_id, anvil, needs_human, clarification_needed, reason, title, description, failure_count
@@ -3190,6 +3237,16 @@ func (db *DB) NeedsAttentionBeads(maxCI, maxRev, maxRebase int) ([]NeedsAttentio
 		     FROM workers w
 		     LEFT JOIN queue_cache q2 ON w.bead_id = q2.bead_id AND w.anvil = q2.anvil
 		     WHERE w.status = 'stalled'
+		     UNION ALL
+		     SELECT w.bead_id, w.anvil, 0 AS needs_human, 0 AS clarification_needed,
+		            'Paused — resume or discard' AS reason,
+		            COALESCE(NULLIF(q3.title, ''), NULLIF(w.title, ''), '') AS title,
+		            COALESCE(q3.description, '') AS description,
+		            0 AS failure_count,
+		            COALESCE(w.updated_at, w.started_at) AS updated_at
+		     FROM workers w
+		     LEFT JOIN queue_cache q3 ON w.bead_id = q3.bead_id AND w.anvil = q3.anvil
+		     WHERE w.status = 'paused'
 		 )
 		 ORDER BY updated_at DESC`)
 	if err != nil {
