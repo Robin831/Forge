@@ -2032,6 +2032,8 @@ const (
 	EventSmithFailed          EventType = "smith_failed"
 	EventSmithRecheck         EventType = "smith_recheck"
 	EventBeadSteered          EventType = "bead_steered"
+	EventBeadPaused           EventType = "bead_paused"
+	EventBeadResumed          EventType = "bead_resumed"
 	EventWardenStarted        EventType = "warden_started"
 	EventWardenPass           EventType = "warden_pass"
 	EventWardenReject         EventType = "warden_reject"

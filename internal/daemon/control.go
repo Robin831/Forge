@@ -1,6 +1,14 @@
 package daemon
 
-import "sync"
+import (
+	"sync"
+
+	"github.com/Robin831/Forge/internal/pipeline"
+)
+
+// controlHandle satisfies the pipeline.ParkHandle contract so the pipeline
+// goroutine can observe pause/resume requests for the bead it controls.
+var _ pipeline.ParkHandle = (*controlHandle)(nil)
 
 // steerMailboxSize bounds the buffered steer channel on each control handle.
 // A small buffer lets the IPC/API layer enqueue a handful of steer messages
@@ -132,6 +140,21 @@ func (h *controlHandle) requestResume(msg string) bool {
 	default:
 		return false
 	}
+}
+
+// PauseRequested returns the channel that signals a pause request for this
+// bead's pipeline. It satisfies the pipeline.ParkHandle contract: the pipeline
+// goroutine selects on it (alongside the running spawn) to trigger the graceful
+// interrupt + park.
+func (h *controlHandle) PauseRequested() <-chan struct{} {
+	return h.pause
+}
+
+// ResumeRequested returns the channel delivering the resume message to a parked
+// pipeline. It satisfies the pipeline.ParkHandle contract: a pipeline goroutine
+// parked after a pause blocks on it to respawn `claude --resume <session>`.
+func (h *controlHandle) ResumeRequested() <-chan string {
+	return h.resume
 }
 
 // registerControlHandle records the control handle for a bead so the IPC/API
