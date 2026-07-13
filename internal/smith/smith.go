@@ -177,10 +177,15 @@ type SpawnOptions struct {
 }
 
 // logFileName builds the session log filename for the given stage prefix and
-// unix timestamp. An empty prefix defaults to "smith" so callers that do not
-// supply a stage keep the historical smith-<unixtime>.log naming.
+// timestamp (milliseconds since epoch). An empty prefix defaults to "smith" so
+// callers that do not supply a stage keep the historical smith-*.log naming.
+// The prefix is sanitised to a safe basename to prevent path traversal.
 func logFileName(prefix string, ts int64) string {
 	if prefix == "" {
+		prefix = "smith"
+	}
+	prefix = filepath.Base(prefix)
+	if prefix == "." || prefix == ".." {
 		prefix = "smith"
 	}
 	return fmt.Sprintf("%s-%d.log", prefix, ts)
@@ -226,7 +231,7 @@ func SpawnWithOptions(ctx context.Context, worktreePath, promptText, logDir stri
 	if err := os.MkdirAll(logDir, 0o755); err != nil {
 		return nil, fmt.Errorf("creating log directory: %w", err)
 	}
-	logPath := filepath.Join(logDir, logFileName(opts.LogPrefix, time.Now().Unix()))
+	logPath := filepath.Join(logDir, logFileName(opts.LogPrefix, time.Now().UnixMilli()))
 	logFile, err := os.Create(logPath)
 	if err != nil {
 		return nil, fmt.Errorf("creating log file: %w", err)

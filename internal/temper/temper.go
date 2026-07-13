@@ -535,7 +535,7 @@ func writeTemperLog(worktreePath string, result *Result) {
 		log.Printf("[temper] failed to create log dir %s: %v", logDir, err)
 		return
 	}
-	logPath := filepath.Join(logDir, fmt.Sprintf("temper-%d.log", time.Now().Unix()))
+	logPath := filepath.Join(logDir, fmt.Sprintf("temper-%d.log", time.Now().UnixMilli()))
 
 	var b strings.Builder
 	fmt.Fprintf(&b, "Temper verification — %d step(s), total %.1fs\n", len(result.Steps), result.Duration.Seconds())

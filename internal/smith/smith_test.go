@@ -17,6 +17,11 @@ func TestLogFileName(t *testing.T) {
 	// Stage callers get a stage-identifiable filename.
 	assert.Equal(t, "warden-100.log", logFileName("warden", 100))
 	assert.Equal(t, "quench-7.log", logFileName("quench", 7))
+	// Path-traversal prefixes are sanitised to a safe basename.
+	assert.Equal(t, "foo-1.log", logFileName("../foo", 1))
+	assert.Equal(t, "bar-2.log", logFileName("a/b/bar", 2))
+	assert.Equal(t, "smith-3.log", logFileName("../..", 3))
+	assert.Equal(t, "smith-4.log", logFileName(".", 4))
 }
 
 // newTestLogFile creates a temp log file for readStreamJSON calls.
