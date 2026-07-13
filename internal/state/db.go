@@ -1930,7 +1930,7 @@ const (
 	EventSmithStats           EventType = "smith_stats"
 	EventSmithFailed          EventType = "smith_failed"
 	EventSmithRecheck         EventType = "smith_recheck"
-	EventSmithSteered         EventType = "smith_steered"
+	EventBeadSteered          EventType = "bead_steered"
 	EventWardenStarted        EventType = "warden_started"
 	EventWardenPass           EventType = "warden_pass"
 	EventWardenReject         EventType = "warden_reject"

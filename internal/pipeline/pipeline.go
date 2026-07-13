@@ -470,6 +470,12 @@ type Params struct {
 	// steer-<ts>.log prefix; tests inject a stub. sessionID is the captured
 	// session to resume and steerMsg is delivered as the new stdin prompt.
 	SmithResumeRunner func(ctx context.Context, wtPath, steerMsg, logDir string, pv provider.Provider, sessionID string, extraFlags []string) (*smith.Process, error)
+
+	// SteerNoteAppender overrides how the full steering message is persisted to
+	// the bead's notes (the bead-notes mechanism). Production shells out to
+	// `bd update <id> --append-notes`; tests inject a stub to avoid the bd CLI.
+	// See recordSteer, which pairs the note with a bead_steered activity event.
+	SteerNoteAppender func(beadID, anvilPath, note string) error
 }
 
 // wardenProviders returns the provider list for the Warden stage. When
@@ -535,6 +541,50 @@ func releaseBead(beadID, anvilPath string) error {
 		return fmt.Errorf("bd update %s --status=open --assignee= --json: %w: %s", beadID, err, out)
 	}
 	return nil
+}
+
+// appendSteerNote appends the full steering message to the bead's notes via the
+// bd CLI (the bead-notes mechanism). Like releaseBead it uses a fresh context
+// so a cancelled or timed-out pipeline context does not prevent the note from
+// being recorded.
+func appendSteerNote(beadID, anvilPath, note string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), executil.DefaultBdTimeout)
+	defer cancel()
+	cmd := executil.HideWindow(exec.CommandContext(ctx, "bd", "update", beadID, "--append-notes", note))
+	cmd.Dir = anvilPath
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("bd update %s --append-notes: %w: %s", beadID, err, out)
+	}
+	return nil
+}
+
+// recordSteer persists an accepted operator steer exactly once. It writes a
+// bead_steered event to the activity feed carrying a short excerpt of the
+// steering message, and appends the full message to the bead's notes (the
+// bead-notes mechanism) so the complete instruction survives beyond the
+// truncated feed entry. Both writes are best-effort: neither a failed event log
+// nor a failed note append derails the steer itself. It is called from both
+// steer mode A (interrupt of a running spawn) and steer mode B (message
+// consumed between spawns); mode identifies which path accepted the steer.
+func (p *Params) recordSteer(workerID string, iteration int, mode, message string) {
+	message = strings.TrimSpace(message)
+	if message == "" {
+		return
+	}
+
+	_ = p.DB.LogEvent(state.EventBeadSteered,
+		fmt.Sprintf("Steer accepted (%s, iteration %d): %s", mode, iteration, truncateOutput(message, 200)),
+		p.Bead.ID, p.AnvilName)
+
+	appendNote := p.SteerNoteAppender
+	if appendNote == nil {
+		appendNote = appendSteerNote
+	}
+	note := fmt.Sprintf("Operator steer (%s, iteration %d):\n%s", mode, iteration, message)
+	if err := appendNote(p.Bead.ID, p.AnvilConfig.Path, note); err != nil {
+		log.Printf("[pipeline:%s] failed to append steer note to bead %s: %v", workerID, p.Bead.ID, err)
+	}
 }
 
 func hasDepsUpdateLabel(labels []string) bool {
@@ -1190,9 +1240,7 @@ func Run(ctx context.Context, p Params) *Outcome {
 		// prior session to resume it against yet).
 		if iteration > 1 && !pendingResume {
 			if steerMsg, ok := drainSteer(steerCh); ok {
-				_ = p.DB.LogEvent(state.EventSmithSteered,
-					fmt.Sprintf("Steer enqueued between spawns (iteration %d): %s", iteration, truncateOutput(steerMsg, 200)),
-					p.Bead.ID, p.AnvilName)
+				p.recordSteer(workerID, iteration, "mode B, between spawns", steerMsg)
 				if lastSessionID != "" {
 					// Resume the last completed session with the steer text merged
 					// into the pending Warden/Temper feedback that would otherwise
@@ -1333,9 +1381,7 @@ func Run(ctx context.Context, p Params) *Outcome {
 		// verdicts because an interrupted spawn is expected to be incomplete.
 		if steerMsgThisIter != "" {
 			log.Printf("[pipeline:%s] Steer interrupt during iteration %d (session=%q)", workerID, iteration, smithResult.SessionID)
-			_ = p.DB.LogEvent(state.EventSmithSteered,
-				fmt.Sprintf("Steer interrupt (iteration %d): %s", iteration, truncateOutput(steerMsgThisIter, 200)),
-				p.Bead.ID, p.AnvilName)
+			p.recordSteer(workerID, iteration, "mode A, interrupt", steerMsgThisIter)
 
 			if smithResult.SessionID == "" {
 				// Without a session_id we cannot resume (only Claude reports one).
