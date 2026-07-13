@@ -178,3 +178,65 @@ func TestPauseResumeWorkWithDeletedPidfileOverSocket(t *testing.T) {
 	assert.Equal(t, "ok", resp.Type)
 	assert.True(t, gotResume, "resume_dispatch must reach the daemon over the socket")
 }
+
+func TestStop_NoDaemon_ReturnsError(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	err := Stop()
+	require.Error(t, err, "Stop must fail when no daemon is running")
+	assert.Contains(t, err.Error(), "no daemon running")
+}
+
+func TestStop_SocketAliveNoPidfile_ShutsDownOverSocket(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	var gotShutdown bool
+	startStubDaemon(t, func(cmd ipc.Command) ipc.Response {
+		switch cmd.Type {
+		case "ping":
+			return pongResponse(t)
+		case "shutdown":
+			gotShutdown = true
+			return ipc.Response{Type: "ok"}
+		}
+		return ipc.Response{Type: "error"}
+	})
+
+	// No pidfile: there is no SIGINT target, so Stop must shut the daemon down
+	// over the socket.
+	require.NoError(t, Stop())
+	assert.True(t, gotShutdown, "Stop must route shutdown over the socket when the pidfile is absent")
+}
+
+// TestStop_SocketAlivePresentStalePidfile_ShutsDownOverSocket is the
+// regression guard for the review feedback: a present-but-stale pidfile (here a
+// dead PID left after a crash) must NOT be SIGINT'd. Stop must recognise the
+// pidfile as stale via pidfileProcessAlive and shut the live daemon down over
+// the socket instead.
+func TestStop_SocketAlivePresentStalePidfile_ShutsDownOverSocket(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	require.NoError(t, os.MkdirAll(filepath.Join(home, ".forge"), 0o755))
+
+	// Pidfile present but points at a PID above pid_max that cannot exist, so
+	// Signal(0) fails and the pidfile is stale.
+	pidPath := filepath.Join(home, ".forge", PIDFileName)
+	require.NoError(t, os.WriteFile(pidPath, []byte("4194303"), 0o644))
+
+	var gotShutdown bool
+	startStubDaemon(t, func(cmd ipc.Command) ipc.Response {
+		switch cmd.Type {
+		case "ping":
+			return pongResponse(t)
+		case "shutdown":
+			gotShutdown = true
+			return ipc.Response{Type: "ok"}
+		}
+		return ipc.Response{Type: "error"}
+	})
+
+	require.NoError(t, Stop())
+	assert.True(t, gotShutdown, "a present-but-stale pidfile must fall back to socket shutdown, not SIGINT the stale PID")
+}

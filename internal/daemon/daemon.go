@@ -7017,6 +7017,28 @@ func IsRunning() (int, bool) {
 		return pid, true
 	}
 
+	// Socket did not answer: fall back to pidfile-based liveness. Because this
+	// is reached only after the ping failed, the pidfile-deleting staleness
+	// heuristic inside pidfileProcessAlive can never run against a live daemon.
+	return pidfileProcessAlive()
+}
+
+// pidfileProcessAlive reports whether the daemon PID file points to a live
+// forge process, and returns that PID when it does. It performs the full
+// staleness validation used as IsRunning's socket-dead fallback: the process
+// must exist, be signalable, be a forge binary, and the pidfile must not
+// predate the process. When it finds a stale pidfile — one pointing at a
+// non-forge process or a newer forge incarnation — it removes the pidfile so
+// the next writePID succeeds cleanly and returns (0, false).
+//
+// It is the shared arbiter of "is the pidfile the real daemon?": IsRunning
+// uses it to decide liveness when the socket is silent, and Stop uses it to
+// decide whether the pidfile PID is a safe SIGINT target or whether it must
+// instead shut the daemon down over the socket.
+//
+// On Windows, Signal(0) is unsupported and the pidfile cannot be validated
+// this way, so it always returns (0, false); callers there rely on the socket.
+func pidfileProcessAlive() (int, bool) {
 	pidPath, err := pidFilePath()
 	if err != nil {
 		return 0, false
@@ -7033,8 +7055,8 @@ func IsRunning() (int, bool) {
 		return 0, false
 	}
 
-	// On Windows, Signal(0) is not supported and the ping above is the only
-	// liveness signal — a socket that did not answer means the daemon is gone.
+	// On Windows, Signal(0) is not supported; the pidfile is not a usable
+	// liveness signal there and callers fall back to the socket.
 	if runtime.GOOS == "windows" {
 		_ = proc.Release()
 		return 0, false
@@ -7096,22 +7118,27 @@ func IsRunning() (int, bool) {
 }
 
 // Stop sends a graceful shutdown signal to the running daemon. On Unix we send
-// SIGINT to the pidfile PID; if the pidfile is missing or stale but the socket
-// is answering, we fall back to the IPC "shutdown" command. On Windows,
-// syscall.SIGINT is not supported, so the IPC "shutdown" command is always used.
+// SIGINT to the pidfile PID, but only when the pidfile points at a verified-live
+// forge process; if it is missing or present-but-stale (e.g. a reused or dead
+// PID left after a crash) we fall back to the IPC "shutdown" command. On
+// Windows, syscall.SIGINT is not supported, so the IPC "shutdown" command is
+// always used.
 func Stop() error {
 	_, running := IsRunning()
 	if !running {
 		return fmt.Errorf("no daemon running")
 	}
 
-	// Unix: prefer SIGINT to the pidfile PID for graceful shutdown. The
-	// pidfile is the SIGINT target; if it is absent or stale (e.g. deleted
-	// after a crash) but the socket is answering, fall back to the IPC
-	// "shutdown" command like Windows does. Never signal PID 0 — on Unix that
-	// targets the whole process group.
+	// Unix: prefer SIGINT to the pidfile PID for graceful shutdown, but only
+	// when pidfileProcessAlive confirms the pidfile actually points at a live
+	// forge process. A bare readPIDFile is not enough: a present-but-stale
+	// pidfile (reused or dead PID after a crash) would otherwise send SIGINT to
+	// an unrelated process while the real daemon — reachable over the socket —
+	// keeps running. When the pidfile is absent or stale, fall through to the
+	// IPC "shutdown" command like Windows does. Never signal PID 0 — on Unix
+	// that targets the whole process group.
 	if runtime.GOOS != "windows" {
-		if pid, ok := readPIDFile(); ok {
+		if pid, ok := pidfileProcessAlive(); ok {
 			proc, err := os.FindProcess(pid)
 			if err != nil {
 				return fmt.Errorf("finding process %d: %w", pid, err)
