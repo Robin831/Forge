@@ -814,6 +814,68 @@ func (db *DB) RepointWorkerLogPaths(beadID, oldLogDir, newDir string) (int, erro
 	return count, nil
 }
 
+// NullWorkerLogPathsUnder clears (sets to '') the log_path of every workers row
+// whose log_path points at a file inside dir. It is called after the log
+// retention sweep removes a preserved bead-log directory so the API reports
+// "no log" rather than a dangling path. Returns the number of rows updated.
+//
+// Matching is done in Go via logPathIsUnder (path-boundary aware) rather than a
+// SQL LIKE so sibling directories sharing a name prefix are never affected.
+func (db *DB) NullWorkerLogPathsUnder(dir string) (int, error) {
+	if dir == "" {
+		return 0, nil
+	}
+
+	rows, err := db.conn.Query(`SELECT id, log_path FROM workers WHERE log_path != ''`)
+	if err != nil {
+		return 0, err
+	}
+	var ids []string
+	for rows.Next() {
+		var id, logPath string
+		if err := rows.Scan(&id, &logPath); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		if logPathIsUnder(logPath, dir) {
+			ids = append(ids, id)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return 0, err
+	}
+	rows.Close()
+
+	if len(ids) == 0 {
+		return 0, nil
+	}
+
+	tx, err := db.conn.Begin()
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+
+	stmt, err := tx.Prepare(`UPDATE workers SET log_path = '' WHERE id = ?`)
+	if err != nil {
+		return 0, err
+	}
+	defer stmt.Close()
+
+	count := 0
+	for _, id := range ids {
+		if _, err := stmt.Exec(id); err != nil {
+			return 0, err
+		}
+		count++
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	return count, nil
+}
+
 // BackfillDanglingWorkerLogPaths repairs workers rows whose log_path contains
 // .forge-logs and points at a file that no longer exists (a removed worktree).
 // For each dangling row it looks for a preserved copy at
@@ -2063,6 +2125,10 @@ const (
 
 	// Recovery circuit breaker — orphan bead recovery exhausted retries.
 	EventRecoveryCircuitBreak EventType = "recovery_circuit_break"
+
+	// EventLogSweepDone fires once per log-retention sweep with a summary of how
+	// many preserved bead-log directories were removed and how many bytes freed.
+	EventLogSweepDone EventType = "log_sweep_done"
 )
 
 // Event represents a logged event.
