@@ -3377,6 +3377,9 @@ func (d *Daemon) dispatchBead(ctx context.Context, bead poller.Bead, anvilCfg co
 			Providers:                 d.filterCopilotIfLimited(provider.FromConfig(smithProviderSpecs)),
 			TemperConfig:              d.resolveTemperConfig(anvilCfg),
 			GoRaceDetection:           d.resolveGoRaceDetection(anvilCfg),
+			TemperStepTimeout:         d.cfg.Load().Settings.TemperStepTimeout,
+			TemperGitTimeout:          d.cfg.Load().Settings.TemperGitTimeout,
+			TemperOutputCap:           d.cfg.Load().Settings.TemperOutputCap,
 			SmithTimeout:              d.cfg.Load().Settings.SmithTimeout,
 			AutoMergeCrucibleChildren: d.cfg.Load().Settings.IsAutoMergeCrucibleChildren(),
 			MaxPipelineIterations:     d.cfg.Load().Settings.MaxPipelineIterations,
@@ -3502,13 +3505,16 @@ normalPipeline:
 		AnvilConfig:     anvilCfg,
 		Bead:            bead,
 		ExtraFlags:      cfg.Settings.ClaudeFlags,
-		TemperConfig:    d.resolveTemperConfig(anvilCfg),
-		GoRaceDetection: d.resolveGoRaceDetection(anvilCfg),
-		Providers:       d.filterCopilotIfLimited(provider.FromConfig(config.ProvidersForStageWithAnvil(cfg.Settings, &anvilCfg, "smith"))),
-		Notifier:        d.notifier.Load(),
-		BaseBranch:      bead.EpicBranch,
-		WorkerID:        claimWorkerID,
-		MaxIterations:   cfg.Settings.MaxPipelineIterations,
+		TemperConfig:      d.resolveTemperConfig(anvilCfg),
+		GoRaceDetection:   d.resolveGoRaceDetection(anvilCfg),
+		TemperStepTimeout: cfg.Settings.TemperStepTimeout,
+		TemperGitTimeout:  cfg.Settings.TemperGitTimeout,
+		TemperOutputCap:   cfg.Settings.TemperOutputCap,
+		Providers:         d.filterCopilotIfLimited(provider.FromConfig(config.ProvidersForStageWithAnvil(cfg.Settings, &anvilCfg, "smith"))),
+		Notifier:          d.notifier.Load(),
+		BaseBranch:        bead.EpicBranch,
+		WorkerID:          claimWorkerID,
+		MaxIterations:     cfg.Settings.MaxPipelineIterations,
 
 		// The pipeline owns its smith-timeout deadline (see pipelineCtx above) so
 		// pause/park/resume can suspend it while a bead is parked.
@@ -7864,13 +7870,24 @@ func (d *Daemon) resolveTemperConfig(anvilCfg config.AnvilConfig) *temper.Config
 	if anvilCfg.Temper == nil || anvilCfg.Temper.IsEmpty() {
 		return nil
 	}
+	var cfg *temper.Config
 	if len(anvilCfg.Temper.Steps) > 0 {
 		if anvilCfg.Temper.Build != "" || anvilCfg.Temper.Test != "" || anvilCfg.Temper.Lint != "" {
 			d.logger.Warn("temper.steps overrides temper.build/test/lint", "path", anvilCfg.Path)
 		}
-		return temper.ConfigFromSteps(anvilCfg.Temper.Steps)
+		cfg = temper.ConfigFromSteps(anvilCfg.Temper.Steps)
+	} else {
+		cfg = temper.ConfigFromCommands(anvilCfg.Temper.Build, anvilCfg.Temper.Test, anvilCfg.Temper.Lint, anvilCfg.Temper.LintRequired)
 	}
-	return temper.ConfigFromCommands(anvilCfg.Temper.Build, anvilCfg.Temper.Test, anvilCfg.Temper.Lint, anvilCfg.Temper.LintRequired)
+	if cfg != nil {
+		if dc := d.cfg.Load(); dc != nil {
+			s := dc.Settings
+			cfg.StepTimeout = s.TemperStepTimeout
+			cfg.GitTimeout = s.TemperGitTimeout
+			cfg.OutputCap = s.TemperOutputCap
+		}
+	}
+	return cfg
 }
 
 // resolveGoRaceDetection resolves the effective Go race detection setting.
@@ -8692,12 +8709,15 @@ func (d *Daemon) runPostForceSmithPipeline(ctx context.Context, beadID, anvil st
 		Bead:            bead,
 		BaseBranch:      bead.EpicBranch, // empty for non-Crucible beads; set for children
 		ExtraFlags:      d.cfg.Load().Settings.ClaudeFlags,
-		TemperConfig:    d.resolveTemperConfig(anvilCfg),
-		GoRaceDetection: d.resolveGoRaceDetection(anvilCfg),
-		Providers:       d.filterCopilotIfLimited(provider.FromConfig(smithProviderSpecs)),
-		Notifier:        d.notifier.Load(),
-		MaxIterations:   d.cfg.Load().Settings.MaxPipelineIterations,
-		SkipSmith:       true,
+		TemperConfig:      d.resolveTemperConfig(anvilCfg),
+		GoRaceDetection:   d.resolveGoRaceDetection(anvilCfg),
+		TemperStepTimeout: d.cfg.Load().Settings.TemperStepTimeout,
+		TemperGitTimeout:  d.cfg.Load().Settings.TemperGitTimeout,
+		TemperOutputCap:   d.cfg.Load().Settings.TemperOutputCap,
+		Providers:         d.filterCopilotIfLimited(provider.FromConfig(smithProviderSpecs)),
+		Notifier:          d.notifier.Load(),
+		MaxIterations:     d.cfg.Load().Settings.MaxPipelineIterations,
+		SkipSmith:         true,
 
 		WardenModelOverride:         d.cfg.Load().Settings.WardenModelOverride,
 		SchematicModelOverride:      d.cfg.Load().Settings.SchematicModelOverride,

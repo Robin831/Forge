@@ -48,6 +48,9 @@ type Params struct {
 	SchematicConfig       *schematic.Config
 	TemperConfig          *temper.Config // nil = auto-detect
 	GoRaceDetection       bool
+	TemperStepTimeout     time.Duration
+	TemperGitTimeout      time.Duration
+	TemperOutputCap       int
 	SmithTimeout          time.Duration
 	MaxPipelineIterations int
 
@@ -646,13 +649,16 @@ func (p *Params) runChildPipeline(ctx context.Context, child poller.Bead, baseBr
 		AnvilName:       p.AnvilName,
 		AnvilConfig:     p.AnvilConfig,
 		Bead:            child,
-		ExtraFlags:      p.ExtraFlags,
-		TemperConfig:    p.TemperConfig,
-		GoRaceDetection: p.GoRaceDetection,
-		Providers:       p.Providers,
-		BaseBranch:      baseBranch,
-		SchematicConfig: p.SchematicConfig,
-		MaxIterations:   p.MaxPipelineIterations,
+		ExtraFlags:        p.ExtraFlags,
+		TemperConfig:      p.TemperConfig,
+		GoRaceDetection:   p.GoRaceDetection,
+		TemperStepTimeout: p.TemperStepTimeout,
+		TemperGitTimeout:  p.TemperGitTimeout,
+		TemperOutputCap:   p.TemperOutputCap,
+		Providers:         p.Providers,
+		BaseBranch:        baseBranch,
+		SchematicConfig:   p.SchematicConfig,
+		MaxIterations:     p.MaxPipelineIterations,
 
 		WardenModelOverride:         p.WardenModelOverride,
 		SchematicModelOverride:      p.SchematicModelOverride,
