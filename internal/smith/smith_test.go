@@ -12,6 +12,36 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestLogFileName(t *testing.T) {
+	logSeq.Store(0)
+
+	// Empty prefix defaults to "smith" to preserve historical naming.
+	assert.Equal(t, "smith-42-1.log", logFileName("", 42))
+	// Stage callers get a stage-identifiable filename.
+	assert.Equal(t, "warden-100-2.log", logFileName("warden", 100))
+	assert.Equal(t, "quench-7-3.log", logFileName("quench", 7))
+	// Path-traversal prefixes are sanitised to a safe basename.
+	assert.Equal(t, "foo-1-4.log", logFileName("../foo", 1))
+	assert.Equal(t, "bar-2-5.log", logFileName("a/b/bar", 2))
+	assert.Equal(t, "smith-3-6.log", logFileName("../..", 3))
+	assert.Equal(t, "smith-4-7.log", logFileName(".", 4))
+	// Bare path separators must not escape the log directory.
+	assert.Equal(t, "smith-5-8.log", logFileName("/", 5))
+	assert.Equal(t, "smith-6-9.log", logFileName("///", 6))
+}
+
+func TestLogFileName_NoDuplicates(t *testing.T) {
+	logSeq.Store(0)
+	seen := make(map[string]bool)
+	for i := 0; i < 100; i++ {
+		name := logFileName("smith", 1000)
+		if seen[name] {
+			t.Fatalf("duplicate log filename: %s", name)
+		}
+		seen[name] = true
+	}
+}
+
 // newTestLogFile creates a temp log file for readStreamJSON calls.
 func newTestLogFile(t *testing.T) *os.File {
 	t.Helper()

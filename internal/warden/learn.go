@@ -162,7 +162,7 @@ func FetchRecentPRNumbers(ctx context.Context, repoDir string, limit int) ([]int
 }
 
 // aiRunner executes an AI session with the given prompt and returns its
-// full text response. It uses smith.SpawnWithProvider to benefit from
+// full text response. It uses smith.SpawnWithOptions to benefit from
 // stream-json parsing, provider fallback, and cost tracking. It is a
 // package-level variable so tests can inject a stub without spawning a real
 // process.
@@ -175,7 +175,7 @@ var aiRunner = func(ctx context.Context, dir, prompt string) ([]byte, error) {
 		// Distillation should be quick, but give it 5 turns just in case AI
 		// wants to look at some files to understand the context of the comments.
 		extraFlags := []string{"--max-turns", "5"}
-		process, err := smith.SpawnWithProvider(ctx, dir, prompt, logDir, pv, extraFlags)
+		process, err := smith.SpawnWithOptions(ctx, dir, prompt, logDir, pv, extraFlags, smith.SpawnOptions{LogPrefix: "warden"})
 		if err != nil {
 			lastErr = err
 			continue

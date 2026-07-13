@@ -102,7 +102,7 @@ func newSmithRunner(cfg Config, workDir string) PassRunner {
 		logDir := filepath.Join(workDir, ".forge-logs")
 		flags := []string{"--max-turns", strconv.Itoa(assayMaxTurns)}
 
-		proc, err := smith.SpawnWithProvider(ctx, workDir, prompt, logDir, pv, flags)
+		proc, err := smith.SpawnWithOptions(ctx, workDir, prompt, logDir, pv, flags, smith.SpawnOptions{LogPrefix: "assay"})
 		if err != nil {
 			return PassOutput{}, fmt.Errorf("assay pass %s: spawning %s: %w", pass, pv.Label(), err)
 		}
