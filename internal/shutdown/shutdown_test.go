@@ -3,12 +3,128 @@ package shutdown
 import (
 	"io"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/Robin831/Forge/internal/state"
+	"github.com/Robin831/Forge/internal/worktree"
 )
+
+// openTestDB opens a fresh state.DB in a temp directory and registers cleanup.
+func openTestDB(t *testing.T) *state.DB {
+	t.Helper()
+	db, err := state.Open(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatalf("open state db: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+	return db
+}
+
+// makeWorktreeDir creates a fake worktree directory under <anvil>/.workers/<name>
+// containing a marker file, and returns its path.
+func makeWorktreeDir(t *testing.T, anvil, name string) string {
+	t.Helper()
+	p := filepath.Join(anvil, ".workers", name)
+	if err := os.MkdirAll(p, 0o755); err != nil {
+		t.Fatalf("mkdir worktree %q: %v", p, err)
+	}
+	if err := os.WriteFile(filepath.Join(p, "marker"), []byte("work"), 0o644); err != nil {
+		t.Fatalf("write marker in %q: %v", p, err)
+	}
+	return p
+}
+
+// TestCleanupWorktreesRetainsPaused verifies the shutdown-retention contract:
+// a worktree belonging to a paused (parked) worker is preserved across a full
+// shutdown cleanup — treated like a drained pipeline whose state persists — while
+// every non-paused worktree is removed. This is the load-bearing path that lets a
+// bead paused before a daemon restart be resumed in place afterwards.
+//
+// The anvil is a plain temp dir (not a git repo); worktree.Manager.Remove falls
+// back to os.RemoveAll when `git worktree remove` fails, which is exactly the
+// removal we assert on here.
+func TestCleanupWorktreesRetainsPaused(t *testing.T) {
+	db := openTestDB(t)
+	anvil := t.TempDir()
+
+	pausedDir := makeWorktreeDir(t, anvil, "Forge-paused")
+	// A second paused worker with a plain (non-forge/) branch, to prove the
+	// forge/ prefix is stripped correctly when building the retention set.
+	pausedPlainDir := makeWorktreeDir(t, anvil, "Forge-plain")
+	goneDir := makeWorktreeDir(t, anvil, "Forge-gone")
+
+	if err := db.InsertWorker(&state.Worker{
+		ID: "w-paused", BeadID: "Forge-paused", Anvil: "anvil-1", Branch: "forge/Forge-paused",
+		Status: state.WorkerPaused, Phase: "smith", StartedAt: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.InsertWorker(&state.Worker{
+		ID: "w-plain", BeadID: "Forge-plain", Anvil: "anvil-1", Branch: "Forge-plain",
+		Status: state.WorkerPaused, Phase: "smith", StartedAt: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// A running worker must NOT contribute to the retention set — its worktree is
+	// cleaned up like any other on shutdown.
+	if err := db.InsertWorker(&state.Worker{
+		ID: "w-gone", BeadID: "Forge-gone", Anvil: "anvil-1", Branch: "forge/Forge-gone",
+		Status: state.WorkerRunning, Phase: "smith", StartedAt: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	m := NewManager(db, worktree.NewManager(), discardLogger(), map[string]string{"anvil-1": anvil})
+	m.CleanupWorktrees()
+
+	if _, err := os.Stat(pausedDir); err != nil {
+		t.Errorf("paused worktree must be retained across shutdown, but it was removed: %v", err)
+	}
+	if _, err := os.Stat(pausedPlainDir); err != nil {
+		t.Errorf("paused worktree with plain branch must be retained, but it was removed: %v", err)
+	}
+	if _, err := os.Stat(goneDir); !os.IsNotExist(err) {
+		t.Errorf("non-paused worktree must be removed on shutdown, but it survived (stat err=%v)", err)
+	}
+}
+
+// TestCleanupWorktreesRemovesAllWhenNonePaused verifies that with no paused
+// workers the retention set is empty and every worktree is removed — the retain
+// logic must not accidentally preserve worktrees when nothing is parked.
+func TestCleanupWorktreesRemovesAllWhenNonePaused(t *testing.T) {
+	db := openTestDB(t)
+	anvil := t.TempDir()
+
+	a := makeWorktreeDir(t, anvil, "Forge-a")
+	b := makeWorktreeDir(t, anvil, "Forge-b")
+
+	// Only a running worker exists; PausedWorkers() returns empty.
+	if err := db.InsertWorker(&state.Worker{
+		ID: "w-a", BeadID: "Forge-a", Anvil: "anvil-1", Branch: "forge/Forge-a",
+		Status: state.WorkerRunning, Phase: "smith", StartedAt: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	m := NewManager(db, worktree.NewManager(), discardLogger(), map[string]string{"anvil-1": anvil})
+	m.CleanupWorktrees()
+
+	for _, p := range []string{a, b} {
+		if _, err := os.Stat(p); !os.IsNotExist(err) {
+			t.Errorf("worktree %q must be removed when no workers are paused (stat err=%v)", p, err)
+		}
+	}
+}
+
+// TestCleanupWorktreesNilManager verifies CleanupWorktrees is a no-op (and does
+// not panic) when no worktree manager is configured.
+func TestCleanupWorktreesNilManager(t *testing.T) {
+	m := NewManager(openTestDB(t), nil, discardLogger(), map[string]string{"anvil-1": t.TempDir()})
+	m.CleanupWorktrees() // must not panic
+}
 
 func discardLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
