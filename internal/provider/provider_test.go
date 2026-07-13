@@ -98,6 +98,75 @@ func TestProvider_BuildArgs_Claude_ClaudeFlagModelOverrides(t *testing.T) {
 	assert.Equal(t, 1, count, "--model should appear exactly once")
 }
 
+func TestProvider_BuildArgsResume_Claude(t *testing.T) {
+	p := Provider{Kind: Claude}
+	args, err := p.BuildArgsResume(nil, "sess-123")
+	assert.NoError(t, err)
+
+	// --resume <id> must be present with the correct session id.
+	resumeIdx := indexOf(args, "--resume")
+	assert.NotEqual(t, -1, resumeIdx, "--resume flag should be present")
+	if resumeIdx >= 0 && resumeIdx+1 < len(args) {
+		assert.Equal(t, "sess-123", args[resumeIdx+1])
+	}
+
+	// --resume must be injected before the -p flag.
+	pIdx := indexOf(args, "-p")
+	assert.NotEqual(t, -1, pIdx, "-p flag should be present")
+	assert.Less(t, resumeIdx, pIdx, "--resume must appear before -p")
+
+	// The remaining one-shot flags are still present.
+	assert.Contains(t, args, "--dangerously-skip-permissions")
+	assert.Contains(t, args, "--output-format")
+	assert.Contains(t, args, "stream-json")
+}
+
+func TestProvider_BuildArgsResume_Claude_WithModelAndFlags(t *testing.T) {
+	p := Provider{Kind: Claude, Model: "claude-opus-4-6"}
+	args, err := p.BuildArgsResume([]string{"--max-turns", "50"}, "sess-abc")
+	assert.NoError(t, err)
+	assert.Contains(t, args, "--resume")
+	assert.Contains(t, args, "sess-abc")
+	assert.Contains(t, args, "--model")
+	assert.Contains(t, args, "claude-opus-4-6")
+	assert.Contains(t, args, "--max-turns")
+	assert.Contains(t, args, "50")
+}
+
+func TestProvider_BuildArgsResume_EmptySessionID(t *testing.T) {
+	p := Provider{Kind: Claude}
+	args, err := p.BuildArgsResume(nil, "")
+	assert.Error(t, err)
+	assert.Nil(t, args)
+}
+
+func TestProvider_BuildArgsResume_NonClaudeReturnsError(t *testing.T) {
+	for _, kind := range []Kind{Gemini, Copilot, OpenAI} {
+		p := Provider{Kind: kind}
+		args, err := p.BuildArgsResume(nil, "sess-123")
+		assert.Error(t, err, "resume should error for %s", kind)
+		assert.Nil(t, args, "resume args should be nil for %s", kind)
+		assert.Contains(t, err.Error(), string(kind), "error should name the provider kind")
+	}
+}
+
+// BuildArgs (non-resume) must not inject a --resume flag.
+func TestProvider_BuildArgs_Claude_NoResumeByDefault(t *testing.T) {
+	p := Provider{Kind: Claude}
+	args := p.BuildArgs(nil)
+	assert.NotContains(t, args, "--resume")
+}
+
+// indexOf returns the index of the first occurrence of s in args, or -1.
+func indexOf(args []string, s string) int {
+	for i, a := range args {
+		if a == s {
+			return i
+		}
+	}
+	return -1
+}
+
 func TestProvider_BuildArgs_Gemini(t *testing.T) {
 	p := Provider{Kind: Gemini}
 	args := p.BuildArgs(nil)
