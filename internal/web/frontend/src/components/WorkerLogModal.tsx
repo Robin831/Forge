@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Terminal, X } from 'lucide-react'
+import { Pause, Play, Terminal, X } from 'lucide-react'
 import type { LogLine, LogTailResponse, WorkerInfo } from '../api'
-import { ApiError, apiGet, steerDisabledReason } from '../api'
+import { actions, ApiError, apiGet, steerDisabledReason } from '../api'
 import { useAuth } from '../auth'
+import { useAction } from '../hooks/useAction'
 import { useEventSource } from '../hooks/useEventSource'
 import LogViewer from './LogViewer'
 import SteerComposer from './SteerComposer'
@@ -20,7 +21,12 @@ const TAIL_LINES = 500
 // parsing/rendering is delegated to the shared LogViewer component.
 export default function WorkerLogModal({ worker, onClose }: WorkerLogModalProps) {
   const { logout } = useAuth()
+  const { run, busy } = useAction()
   const isLive = !!worker && (worker.status === 'pending' || worker.status === 'running')
+  // Pause/resume follow the daemon's paused-status transition table: only a
+  // running worker may be paused, and only a paused worker may be resumed.
+  const canPause = worker?.status === 'running'
+  const canResume = worker?.status === 'paused'
 
   const [tailLines, setTailLines] = useState<string[] | null>(null)
   const [tailError, setTailError] = useState<string | null>(null)
@@ -154,6 +160,50 @@ export default function WorkerLogModal({ worker, onClose }: WorkerLogModalProps)
           liveWaiting={isLive && liveStatus === 'open'}
           keyPrefix={worker.id}
         />
+
+        {(canPause || canResume) && (
+          <div className="flex items-center gap-2 border-t border-slate-800 bg-slate-950/40 px-4 py-2">
+            {canPause && (
+              <button
+                type="button"
+                onClick={() =>
+                  run(() => actions.pause(worker.bead_id), {
+                    successMessage: `Pause requested for ${worker.bead_id}`,
+                  })
+                }
+                disabled={busy}
+                data-testid="worker-log-pause"
+                className="inline-flex items-center gap-1.5 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-1.5 text-xs text-amber-200 hover:bg-amber-500/20 focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-300 disabled:opacity-50"
+                title="Pause worker"
+              >
+                <Pause size={12} aria-hidden />
+                {busy ? 'Pausing…' : 'Pause'}
+              </button>
+            )}
+            {canResume && (
+              <button
+                type="button"
+                onClick={() =>
+                  run(() => actions.resume(worker.bead_id), {
+                    successMessage: `Resume requested for ${worker.bead_id}`,
+                  })
+                }
+                disabled={busy}
+                data-testid="worker-log-resume"
+                className="inline-flex items-center gap-1.5 rounded-md border border-emerald-500/40 bg-emerald-500/10 px-3 py-1.5 text-xs text-emerald-200 hover:bg-emerald-500/20 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-300 disabled:opacity-50"
+                title="Resume worker"
+              >
+                <Play size={12} aria-hidden />
+                {busy ? 'Resuming…' : 'Resume'}
+              </button>
+            )}
+            {canResume && (
+              <span className="text-xs text-amber-300/80">
+                Worker is paused — resume to continue the pipeline.
+              </span>
+            )}
+          </div>
+        )}
 
         {isLive && (
           <SteerComposer

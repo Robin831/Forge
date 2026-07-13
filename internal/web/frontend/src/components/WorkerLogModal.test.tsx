@@ -127,3 +127,30 @@ describe('WorkerLogModal transcript rendering', () => {
     })
   })
 })
+
+describe('WorkerLogModal pause/resume controls', () => {
+  it('shows a Resume button for a paused worker and no Pause button', async () => {
+    apiGetMock.mockResolvedValue({ lines: [] })
+    const paused: WorkerInfo = { ...completedWorker, status: 'paused' }
+
+    render(<WorkerLogModal worker={paused} onClose={() => {}} />)
+
+    expect(await screen.findByTestId('worker-log-resume')).toBeInTheDocument()
+    expect(screen.queryByTestId('worker-log-pause')).not.toBeInTheDocument()
+  })
+
+  it('shows a Pause button for a running worker and no Resume button', () => {
+    useEventSourceMock.mockReturnValue({
+      items: [],
+      status: 'open',
+      error: null,
+      clear: () => {},
+    })
+    const running: WorkerInfo = { ...completedWorker, status: 'running' }
+
+    render(<WorkerLogModal worker={running} onClose={() => {}} />)
+
+    expect(screen.getByTestId('worker-log-pause')).toBeInTheDocument()
+    expect(screen.queryByTestId('worker-log-resume')).not.toBeInTheDocument()
+  })
+})

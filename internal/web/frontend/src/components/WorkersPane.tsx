@@ -4,6 +4,8 @@ import {
   ChevronDown,
   ChevronRight,
   MonitorOff,
+  Pause,
+  Play,
   Skull,
   Users,
 } from 'lucide-react'
@@ -33,6 +35,7 @@ interface WorkersPaneProps {
 const STATUS_CLASSES: Record<string, string> = {
   pending: 'bg-slate-700/60 text-slate-200 border-slate-600/60',
   running: 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40',
+  paused: 'bg-amber-500/20 text-amber-300 border-amber-500/40',
   done: 'bg-sky-500/20 text-sky-300 border-sky-500/40',
   failed: 'bg-red-500/20 text-red-300 border-red-500/40',
 }
@@ -146,12 +149,17 @@ export default function WorkersPane({
   const groups = useMemo(() => groupWorkersByAnvil(sorted), [sorted])
 
   // Idle slot count = (configured cap) - (active Smith-like workers). We count
-  // workers that occupy a Smith slot (pending/running/reviewing) and that are
-  // not bellows monitors (already filtered above). "reviewing" covers Warden
-  // phase workers (state.WorkerReviewing) which also hold a slot. When the
-  // daemon reports a cap of 0 we omit the placeholders entirely.
+  // workers that occupy a Smith slot (pending/running/reviewing/paused) and that
+  // are not bellows monitors (already filtered above). "reviewing" covers Warden
+  // phase workers (state.WorkerReviewing) which also hold a slot; a "paused"
+  // worker retains its worktree while parked, so it still occupies its slot.
+  // When the daemon reports a cap of 0 we omit the placeholders entirely.
   const activeSlotWorkers = sorted.filter(
-    (w) => w.status === 'pending' || w.status === 'running' || w.status === 'reviewing',
+    (w) =>
+      w.status === 'pending' ||
+      w.status === 'running' ||
+      w.status === 'reviewing' ||
+      w.status === 'paused',
   )
   const idleCount = Math.max(0, maxTotalSmiths - activeSlotWorkers.length)
 
@@ -199,6 +207,18 @@ export default function WorkersPane({
     })
     if (ok) setKillTarget(null)
   }
+
+  const handlePause = (w: WorkerInfo) =>
+    run(() => actions.pause(w.bead_id), {
+      successMessage: `Pause requested for ${w.bead_id}`,
+      onSuccess: onActionSuccess,
+    })
+
+  const handleResume = (w: WorkerInfo) =>
+    run(() => actions.resume(w.bead_id), {
+      successMessage: `Resume requested for ${w.bead_id}`,
+      onSuccess: onActionSuccess,
+    })
 
   return (
     <>
@@ -250,6 +270,12 @@ export default function WorkersPane({
                         const hasLog = !!w.log_path && !isBellows
                         const clickable = hasLog && !!onSelectWorker
                         const canKill = w.status === 'pending' || w.status === 'running'
+                        // Pause/resume mirror the daemon's paused-status
+                        // transition table: only a running worker may be paused,
+                        // and only a paused worker may be resumed. Bellows
+                        // pseudo-workers have no pausable pipeline.
+                        const canPause = w.status === 'running' && !isBellows
+                        const canResume = w.status === 'paused' && !isBellows
                         // Only failed workers have a smith_failed escalation the
                         // daemon can resolve. Healthy / in-flight workers have
                         // nothing for the panel to fetch, so we hide the toggle.
@@ -346,6 +372,36 @@ export default function WorkersPane({
                                     }
                                   >
                                     <AlertTriangle size={14} />
+                                  </button>
+                                </div>
+                              )}
+                              {canPause && (
+                                <div className="flex items-start p-2">
+                                  <button
+                                    type="button"
+                                    onClick={() => handlePause(w)}
+                                    disabled={busy}
+                                    data-testid={`workers-pause-${w.id}`}
+                                    className="rounded-md border border-amber-500/40 bg-amber-500/10 p-1.5 text-amber-300 hover:bg-amber-500/20 focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-400 disabled:opacity-50"
+                                    aria-label={`Pause worker for ${w.bead_id}`}
+                                    title="Pause worker"
+                                  >
+                                    <Pause size={14} />
+                                  </button>
+                                </div>
+                              )}
+                              {canResume && (
+                                <div className="flex items-start p-2">
+                                  <button
+                                    type="button"
+                                    onClick={() => handleResume(w)}
+                                    disabled={busy}
+                                    data-testid={`workers-resume-${w.id}`}
+                                    className="rounded-md border border-emerald-500/40 bg-emerald-500/10 p-1.5 text-emerald-300 hover:bg-emerald-500/20 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400 disabled:opacity-50"
+                                    aria-label={`Resume worker for ${w.bead_id}`}
+                                    title="Resume worker"
+                                  >
+                                    <Play size={14} />
                                   </button>
                                 </div>
                               )}

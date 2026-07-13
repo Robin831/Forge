@@ -27,6 +27,17 @@ export default function DashboardPage() {
   const crucibles = useApiPoll<CruciblesResponse>('/api/crucibles', POLL_INTERVAL_MS)
   const [logWorker, setLogWorker] = useState<WorkerInfo | null>(null)
 
+  // Re-resolve the open modal's worker from the latest poll so its status
+  // (and the pause/resume controls gated on it) stay live — e.g. after a pause
+  // the row flips running → paused within one poll and the modal follows. Falls
+  // back to the last-selected snapshot if the worker has aged out of the list.
+  const liveLogWorker = useMemo(() => {
+    if (!logWorker) return null
+    return (
+      (workers.data?.workers ?? []).find((w) => w.id === logWorker.id) ?? logWorker
+    )
+  }, [logWorker, workers.data])
+
   const activeWorkers = useMemo(
     () =>
       (workers.data?.workers ?? []).filter(
@@ -131,7 +142,7 @@ export default function DashboardPage() {
         Live activity via SSE · daemon polled every {POLL_INTERVAL_MS / 1000}s · Hearth 2.0
       </footer>
 
-      <WorkerLogModal worker={logWorker} onClose={() => setLogWorker(null)} />
+      <WorkerLogModal worker={liveLogWorker} onClose={() => setLogWorker(null)} />
     </div>
   )
 }

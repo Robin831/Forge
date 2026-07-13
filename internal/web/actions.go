@@ -369,6 +369,67 @@ func (s *Server) handleBeadSteer(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// handleBeadPause proxies POST /api/bead/{bead_id}/pause to the daemon's
+// pause_bead IPC. Like steering it is keyed purely by bead id — the daemon
+// resolves the active pipeline from its in-memory control registry and
+// validates the worker is running before parking its spawn — so no anvil is
+// required and the body is ignored. The daemon returns an actionable error
+// (surfaced by writeIPCResponse) when the bead has no active pipeline or its
+// worker is not in the running state. The action is recorded in the actor
+// audit trail here; the bead_paused event itself is emitted by the pipeline
+// goroutine when it actually parks.
+func (s *Server) handleBeadPause(w http.ResponseWriter, r *http.Request) {
+	beadID := chi.URLParam(r, "bead_id")
+	if !isValidBeadID(beadID) {
+		writeError(w, http.StatusBadRequest, "invalid bead id")
+		return
+	}
+	s.logActor(r, "pause_bead", "bead", beadID)
+	s.dispatchAction(w, "pause_bead", ipc.PauseBeadPayload{BeadID: beadID})
+}
+
+// resumeRequest is the optional JSON body for POST /api/bead/{bead_id}/resume.
+// Message is the prompt the resumed Claude spawn continues with; when empty (or
+// whitespace) the daemon substitutes its default "Continue with the task."
+// prompt. Like the pause endpoint, resume is keyed purely by bead id.
+type resumeRequest struct {
+	Message string `json:"message"`
+}
+
+// handleBeadResume proxies POST /api/bead/{bead_id}/resume to the daemon's
+// resume_bead IPC. The optional message continues the parked session; the
+// daemon defaults it when omitted. The daemon transparently handles both a warm
+// resume (a live parked goroutine is still registered) and a cold resume (the
+// paused worker row and worktree survived a daemon restart). It returns an
+// actionable error when the bead has neither a live pipeline nor a paused worker
+// row, or when its live worker is not paused. The action is recorded in the
+// actor audit trail here; the bead_resumed event is emitted by the resuming
+// pipeline.
+func (s *Server) handleBeadResume(w http.ResponseWriter, r *http.Request) {
+	beadID := chi.URLParam(r, "bead_id")
+	if !isValidBeadID(beadID) {
+		writeError(w, http.StatusBadRequest, "invalid bead id")
+		return
+	}
+	var req resumeRequest
+	body, err := io.ReadAll(io.LimitReader(r.Body, 32*1024))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
+		return
+	}
+	if len(body) > 0 {
+		if err := json.Unmarshal(body, &req); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+			return
+		}
+	}
+	s.logActor(r, "resume_bead", "bead", beadID)
+	s.dispatchAction(w, "resume_bead", ipc.ResumeBeadPayload{
+		BeadID:  beadID,
+		Message: strings.TrimSpace(req.Message),
+	})
+}
+
 // maxCommentBodyBytes caps the payload size on POST /api/bead/{id}/comment.
 // The body is forwarded to bd as a single argv entry, and Windows caps the
 // entire CreateProcess command line at 32,767 characters — so the 32 KiB

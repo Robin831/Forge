@@ -55,6 +55,14 @@ export function eventClasses(type: string): string {
   if (type.includes('pr_created')) {
     return 'text-purple-300'
   }
+  // bead_paused reads as a deliberate hold — amber, matching the paused status
+  // chip; bead_resumed is a "back in motion" signal — emerald.
+  if (type.includes('resumed')) {
+    return 'text-emerald-300'
+  }
+  if (type.includes('paused')) {
+    return 'text-amber-300'
+  }
   if (type.includes('claimed') || type.includes('start')) {
     return 'text-sky-300'
   }
