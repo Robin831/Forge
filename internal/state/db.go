@@ -665,6 +665,17 @@ func (db *DB) UpdateWorkerLogPath(id string, logPath string) error {
 	return err
 }
 
+// portableBase returns the last element of path, splitting on both '/' and '\'
+// so paths recorded on a different OS are handled correctly.
+func portableBase(path string) string {
+	for i := len(path) - 1; i >= 0; i-- {
+		if path[i] == '/' || path[i] == '\\' {
+			return path[i+1:]
+		}
+	}
+	return path
+}
+
 // logPathIsUnder reports whether path is a file located inside dir (not dir
 // itself). Both are cleaned before the boundary-aware prefix comparison so a
 // sibling directory sharing a name prefix (e.g. ".forge-logs-old") never matches.
@@ -756,7 +767,7 @@ func (db *DB) BackfillDanglingWorkerLogPaths(logsRoot string) (int, error) {
 		return 0, nil
 	}
 
-	rows, err := db.conn.Query(`SELECT id, bead_id, log_path FROM workers WHERE log_path LIKE '%/.forge-logs/%'`)
+	rows, err := db.conn.Query(`SELECT id, bead_id, log_path FROM workers WHERE log_path LIKE '%/.forge-logs/%' OR log_path LIKE '%\.forge-logs\%'`)
 	if err != nil {
 		return 0, err
 	}
@@ -781,7 +792,7 @@ func (db *DB) BackfillDanglingWorkerLogPaths(logsRoot string) (int, error) {
 		} else if !os.IsNotExist(statErr) {
 			continue // permission or other transient error — do not clobber.
 		}
-		candidate := filepath.Join(logsRoot, forge.SanitizeBeadID(beadID), filepath.Base(logPath))
+		candidate := filepath.Join(logsRoot, forge.SanitizeBeadID(beadID), portableBase(logPath))
 		if _, err := os.Lstat(candidate); err != nil {
 			continue // no preserved copy to point at.
 		}

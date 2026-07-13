@@ -265,6 +265,43 @@ func TestBackfillDanglingWorkerLogPaths(t *testing.T) {
 	}
 }
 
+func TestBackfillDanglingWorkerLogPaths_BackslashPaths(t *testing.T) {
+	db := newRepointTestDB(t)
+	logsRoot := t.TempDir()
+
+	// Simulate a Windows-style path where filepath.Join produced backslashes.
+	// The SQL LIKE must match both separators.
+	dangling := `C:\anvil\.workers\BD-W\.forge-logs\500.log`
+	preserved := filepath.Join(logsRoot, "BD-W", "500.log")
+	if err := os.MkdirAll(filepath.Dir(preserved), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(preserved, []byte("win"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.InsertWorker(&Worker{
+		ID:        "w-win",
+		BeadID:    "BD-W",
+		Anvil:     "anvil",
+		Status:    WorkerDone,
+		LogPath:   dangling,
+		StartedAt: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	n, err := db.BackfillDanglingWorkerLogPaths(logsRoot)
+	if err != nil {
+		t.Fatalf("BackfillDanglingWorkerLogPaths: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("expected 1 repair for backslash path, got %d", n)
+	}
+	if got := getLogPath(t, db, "w-win"); got != preserved {
+		t.Errorf("w-win log_path = %q, want %q", got, preserved)
+	}
+}
+
 func TestBackfillDanglingWorkerLogPaths_SanitizesBeadID(t *testing.T) {
 	db := newRepointTestDB(t)
 	logsRoot := t.TempDir()
