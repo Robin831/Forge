@@ -744,19 +744,19 @@ func (db *DB) RepointWorkerLogPaths(beadID, oldLogDir, newDir string) (int, erro
 	return count, nil
 }
 
-// BackfillDanglingWorkerLogPaths repairs pre-existing workers rows whose log_path
-// points at a file that no longer exists (typically a removed worktree's
-// .forge-logs). For each dangling row it looks for a preserved copy at
-// logsRoot/<bead_id>/<basename>; when that file exists the row is repointed to
-// it. Rows whose log_path still resolves to an existing file (or whose preserved
-// copy is absent) are left untouched, so repeat calls on later daemon starts are
-// cheap. Returns the number of rows repaired.
+// BackfillDanglingWorkerLogPaths repairs workers rows whose log_path contains
+// .forge-logs and points at a file that no longer exists (a removed worktree).
+// For each dangling row it looks for a preserved copy at
+// logsRoot/<bead_id>/<basename>; when that file exists the row is repointed.
+// Only .forge-logs paths are considered, so unrelated log_path values are never
+// touched and already-repointed rows are skipped on subsequent starts.
+// Returns the number of rows repaired.
 func (db *DB) BackfillDanglingWorkerLogPaths(logsRoot string) (int, error) {
 	if logsRoot == "" {
 		return 0, nil
 	}
 
-	rows, err := db.conn.Query(`SELECT id, bead_id, log_path FROM workers WHERE log_path != ''`)
+	rows, err := db.conn.Query(`SELECT id, bead_id, log_path FROM workers WHERE log_path LIKE '%/.forge-logs/%'`)
 	if err != nil {
 		return 0, err
 	}
