@@ -4858,18 +4858,15 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 			return items[i].ParentID < items[j].ParentID
 		})
 		resp := ipc.CruciblesResponse{Crucibles: items}
-		data, _ := json.Marshal(resp)
-		return ipc.Response{Type: "ok", Payload: data}
+		return okResponse(resp)
 
 	case "crucible_action":
 		var ca ipc.CrucibleActionPayload
 		if err := json.Unmarshal(cmd.Payload, &ca); err != nil {
-			msg, _ := json.Marshal(map[string]string{"message": "invalid crucible_action payload"})
-			return ipc.Response{Type: "error", Payload: msg}
+			return errorResponse("invalid crucible_action payload")
 		}
 		if ca.ParentID == "" || ca.Anvil == "" {
-			msg, _ := json.Marshal(map[string]string{"message": "parent_id and anvil are required"})
-			return ipc.Response{Type: "error", Payload: msg}
+			return errorResponse("parent_id and anvil are required")
 		}
 		// Canonicalise the user-provided anvil name (case-insensitive) so DB
 		// queries and crucibleStatuses keys match the configured form.
@@ -4885,8 +4882,7 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 			// re-discover it as a crucible candidate.
 			anvilCfg, ok := d.cfg.Load().Anvils[ca.Anvil]
 			if !ok || anvilCfg.Path == "" {
-				msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("anvil %q not found", ca.Anvil)})
-				return ipc.Response{Type: "error", Payload: msg}
+				return errorResponse(fmt.Sprintf("anvil %q not found", ca.Anvil))
 			}
 
 			// Clear circuit breaker / needs_human for the parent bead
@@ -4906,8 +4902,7 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 			output, err := d.restoreBeadAfterPause(resetCtx, ca.ParentID, anvilCfg)
 			if err != nil {
 				d.logger.Warn("failed to reset crucible parent status", "bead", ca.ParentID, "error", err, "output", string(output))
-				msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("failed to reset crucible parent status: %v (%s)", err, string(output))})
-				return ipc.Response{Type: "error", Payload: msg}
+				return errorResponse(fmt.Sprintf("failed to reset crucible parent status: %v (%s)", err, string(output)))
 			}
 
 			// Clear the paused crucible status so it doesn't linger in the UI.
@@ -4919,15 +4914,13 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 			// Trigger poll to rediscover the parent and re-enter crucible loop.
 			go d.pollAndDispatch(d.runCtx, false)
 
-			data, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("crucible %s resumed", ca.ParentID)})
-			return ipc.Response{Type: "ok", Payload: data}
+			return okResponse(map[string]string{"message": fmt.Sprintf("crucible %s resumed", ca.ParentID)})
 
 		case "stop":
 			// Stop: close the parent bead.
 			anvilCfg, ok := d.cfg.Load().Anvils[ca.Anvil]
 			if !ok || anvilCfg.Path == "" {
-				msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("anvil %q not found", ca.Anvil)})
-				return ipc.Response{Type: "error", Payload: msg}
+				return errorResponse(fmt.Sprintf("anvil %q not found", ca.Anvil))
 			}
 
 			closeCtx, closeCancel := context.WithTimeout(d.runCtx, executil.DefaultBdTimeout)
@@ -4935,8 +4928,7 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 			closeCmd := executil.HideWindow(exec.CommandContext(closeCtx, "bd", "close", ca.ParentID, "--reason=stopped from Hearth", "--json"))
 			closeCmd.Dir = anvilCfg.Path
 			if output, err := closeCmd.CombinedOutput(); err != nil {
-				msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("failed to close crucible parent: %v (%s)", err, string(output))})
-				return ipc.Response{Type: "error", Payload: msg}
+				return errorResponse(fmt.Sprintf("failed to close crucible parent: %v (%s)", err, string(output)))
 			}
 
 			// Clear the crucible status from the UI.
@@ -4945,30 +4937,25 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 			_ = d.db.LogEvent(state.EventBeadClosed, fmt.Sprintf("Crucible %s stopped (manual)", ca.ParentID), ca.ParentID, ca.Anvil)
 			d.logger.Info("crucible stopped", "parent", ca.ParentID, "anvil", ca.Anvil)
 
-			data, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("crucible %s stopped", ca.ParentID)})
-			return ipc.Response{Type: "ok", Payload: data}
+			return okResponse(map[string]string{"message": fmt.Sprintf("crucible %s stopped", ca.ParentID)})
 
 		default:
-			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("unknown crucible action %q", ca.Action)})
-			return ipc.Response{Type: "error", Payload: msg}
+			return errorResponse(fmt.Sprintf("unknown crucible action %q", ca.Action))
 		}
 
 	case "kill_worker":
 		var kp ipc.KillWorkerPayload
 		if err := json.Unmarshal(cmd.Payload, &kp); err != nil {
-			msg, _ := json.Marshal(map[string]string{"message": "invalid kill payload"})
-			return ipc.Response{Type: "error", Payload: msg}
+			return errorResponse("invalid kill payload")
 		}
 		// PID is always looked up from state.db inside killWorkerProcess;
 		// the client-supplied kp.PID is intentionally ignored.
 		// Runs synchronously so the response reflects the actual outcome.
 		if err := d.killWorkerProcess(kp.WorkerID); err != nil {
 			d.logger.Error("kill_worker failed", "worker", kp.WorkerID, "error", err)
-			msg, _ := json.Marshal(map[string]string{"message": err.Error()})
-			return ipc.Response{Type: "error", Payload: msg}
+			return errorResponse(err.Error())
 		}
-		data, _ := json.Marshal(map[string]string{"killed": kp.WorkerID})
-		return ipc.Response{Type: "ok", Payload: data}
+		return okResponse(map[string]string{"killed": kp.WorkerID})
 
 	case "shutdown":
 		go func() {
@@ -4976,8 +4963,7 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 				d.cancel()
 			}
 		}()
-		data, _ := json.Marshal(map[string]string{"message": "shutting down"})
-		return ipc.Response{Type: "ok", Payload: data}
+		return okResponse(map[string]string{"message": "shutting down"})
 
 	case "refresh":
 		go func() {
@@ -4986,16 +4972,14 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 				d.bellowsMonitor.Refresh()
 			}
 		}()
-		data, _ := json.Marshal(map[string]string{"message": "poll triggered"})
-		return ipc.Response{Type: "ok", Payload: data}
+		return okResponse(map[string]string{"message": "poll triggered"})
 
 	case "pause_dispatch":
 		d.pauseMu.Lock()
 		// Idempotent: pausing while already paused is a no-op success.
 		if d.dispatchPaused.Load() {
 			d.pauseMu.Unlock()
-			data, _ := json.Marshal(map[string]string{"message": "dispatch paused"})
-			return ipc.Response{Type: "ok", Payload: data}
+			return okResponse(map[string]string{"message": "dispatch paused"})
 		}
 		now := time.Now()
 		// Flip in-memory flag first so concurrent poll cycles see the pause
@@ -5007,8 +4991,7 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 			d.pausedSince.Store(time.Time{})
 			d.pauseMu.Unlock()
 			d.logger.Error("failed to persist dispatch pause", "error", err)
-			msg, _ := json.Marshal(map[string]string{"message": "failed to persist dispatch pause: " + err.Error()})
-			return ipc.Response{Type: "error", Payload: msg}
+			return errorResponse("failed to persist dispatch pause: " + err.Error())
 		}
 		if err := d.db.SetSetting(state.SettingDispatchPausedAt, now.Format(time.RFC3339)); err != nil {
 			d.logger.Warn("failed to persist dispatch pause timestamp", "error", err)
@@ -5018,22 +5001,19 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 		}
 		d.logger.Info("dispatch paused (manual)")
 		d.pauseMu.Unlock()
-		data, _ := json.Marshal(map[string]string{"message": "dispatch paused"})
-		return ipc.Response{Type: "ok", Payload: data}
+		return okResponse(map[string]string{"message": "dispatch paused"})
 
 	case "resume_dispatch":
 		d.pauseMu.Lock()
 		// Idempotent: resuming while not paused is a no-op success.
 		if !d.dispatchPaused.Load() {
 			d.pauseMu.Unlock()
-			data, _ := json.Marshal(map[string]string{"message": "dispatch resumed"})
-			return ipc.Response{Type: "ok", Payload: data}
+			return okResponse(map[string]string{"message": "dispatch resumed"})
 		}
 		if err := d.db.SetSetting(state.SettingDispatchPaused, "0"); err != nil {
 			d.pauseMu.Unlock()
 			d.logger.Error("failed to persist dispatch resume", "error", err)
-			msg, _ := json.Marshal(map[string]string{"message": "failed to persist dispatch resume: " + err.Error()})
-			return ipc.Response{Type: "error", Payload: msg}
+			return errorResponse("failed to persist dispatch resume: " + err.Error())
 		}
 		if err := d.db.SetSetting(state.SettingDispatchPausedAt, ""); err != nil {
 			d.logger.Warn("failed to clear dispatch pause timestamp", "error", err)
@@ -5048,35 +5028,29 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 		// Kick a poll so resuming takes effect immediately rather than
 		// waiting for the next ticker.
 		go d.pollAndDispatch(d.runCtx, false)
-		data, _ := json.Marshal(map[string]string{"message": "dispatch resumed"})
-		return ipc.Response{Type: "ok", Payload: data}
+		return okResponse(map[string]string{"message": "dispatch resumed"})
 
 	case "reconcile_prs":
 		go d.reconcileOpenPRs(d.runCtx)
-		data, _ := json.Marshal(map[string]string{"message": "PR reconciliation triggered"})
-		return ipc.Response{Type: "ok", Payload: data}
+		return okResponse(map[string]string{"message": "PR reconciliation triggered"})
 
 	case "wicket_scan":
 		d.wicketMu.Lock()
 		wm := d.wicketMonitor
 		d.wicketMu.Unlock()
 		if wm == nil {
-			msg, _ := json.Marshal(map[string]string{"message": "wicket monitor is not running"})
-			return ipc.Response{Type: "error", Payload: msg}
+			return errorResponse("wicket monitor is not running")
 		}
 		wm.TriggerScan()
-		data, _ := json.Marshal(map[string]string{"message": "wicket scan triggered"})
-		return ipc.Response{Type: "ok", Payload: data}
+		return okResponse(map[string]string{"message": "wicket scan triggered"})
 
 	case "subscribe":
-		data, _ := json.Marshal(map[string]string{"message": "subscribed"})
-		return ipc.Response{Type: "ok", Payload: data}
+		return okResponse(map[string]string{"message": "subscribed"})
 
 	case "queue":
 		items, err := d.db.QueueCache()
 		if err != nil {
-			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("queue cache: %v", err)})
-			return ipc.Response{Type: "error", Payload: msg}
+			return errorResponse(fmt.Sprintf("queue cache: %v", err))
 		}
 		// Snapshot the anvil dispatch tags once so the loop avoids repeatedly
 		// re-reading the config and the Hearth web UI can render an Apply
@@ -5111,14 +5085,12 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 				AutoDispatchTag: anvilTags[it.Anvil],
 			})
 		}
-		data, _ := json.Marshal(ipc.QueueResponse{Items: out})
-		return ipc.Response{Type: "ok", Payload: data}
+		return okResponse(ipc.QueueResponse{Items: out})
 
 	case "workers":
 		workers, err := d.db.ActiveWorkers()
 		if err != nil {
-			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("active workers: %v", err)})
-			return ipc.Response{Type: "error", Payload: msg}
+			return errorResponse(fmt.Sprintf("active workers: %v", err))
 		}
 		// Build an index of PRs that currently meet every ready-to-merge
 		// condition (CI green, no pending reviews, no unresolved threads, not
@@ -5163,8 +5135,7 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 				Model:       w.Model,
 			})
 		}
-		data, _ := json.Marshal(ipc.WorkersResponse{Workers: out})
-		return ipc.Response{Type: "ok", Payload: data}
+		return okResponse(ipc.WorkersResponse{Workers: out})
 
 	case "events":
 		limit := 50
@@ -5178,8 +5149,7 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 		}
 		events, err := d.db.RecentEvents(limit)
 		if err != nil {
-			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("recent events: %v", err)})
-			return ipc.Response{Type: "error", Payload: msg}
+			return errorResponse(fmt.Sprintf("recent events: %v", err))
 		}
 		out := make([]ipc.EventInfo, 0, len(events))
 		for _, e := range events {
@@ -5192,14 +5162,12 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 				Anvil:     e.Anvil,
 			})
 		}
-		data, _ := json.Marshal(ipc.EventsResponse{Events: out})
-		return ipc.Response{Type: "ok", Payload: data}
+		return okResponse(ipc.EventsResponse{Events: out})
 
 	case "run_bead":
 		var rp ipc.RunBeadPayload
 		if err := json.Unmarshal(cmd.Payload, &rp); err != nil {
-			msg, _ := json.Marshal(map[string]string{"message": "invalid run_bead payload"})
-			return ipc.Response{Type: "error", Payload: msg}
+			return errorResponse("invalid run_bead payload")
 		}
 
 		var targetBead *poller.Bead
@@ -5208,18 +5176,15 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 			// Force-run: fetch bead directly via bd show, bypassing bd ready.
 			// This allows running children, blocked beads, etc. independently.
 			if rp.Anvil == "" {
-				msg, _ := json.Marshal(map[string]string{"message": "force-run requires --anvil flag"})
-				return ipc.Response{Type: "error", Payload: msg}
+				return errorResponse("force-run requires --anvil flag")
 			}
 			anvilCfg, ok := d.cfg.Load().Anvils[rp.Anvil]
 			if !ok {
-				msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("anvil %q not found", rp.Anvil)})
-				return ipc.Response{Type: "error", Payload: msg}
+				return errorResponse(fmt.Sprintf("anvil %q not found", rp.Anvil))
 			}
 			bead, err := crucible.FetchBead(context.Background(), rp.BeadID, anvilCfg.Path)
 			if err != nil {
-				msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("bd show %s: %v", rp.BeadID, err)})
-				return ipc.Response{Type: "error", Payload: msg}
+				return errorResponse(fmt.Sprintf("bd show %s: %v", rp.BeadID, err))
 			}
 			bead.Anvil = rp.Anvil
 			bead.ForceIndependent = true
@@ -5249,8 +5214,7 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 					var err error
 					beads, err = p.PollSingle(context.Background(), rp.Anvil)
 					if err != nil {
-						msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("anvil %q not found or poll failed: %v", rp.Anvil, err)})
-						return ipc.Response{Type: "error", Payload: msg}
+						return errorResponse(fmt.Sprintf("anvil %q not found or poll failed: %v", rp.Anvil, err))
 					}
 				} else {
 					var results []poller.AnvilResult
@@ -5275,29 +5239,25 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 					if len(pollErrors) > 0 {
 						errorMsg += fmt.Sprintf(" (also %d anvils failed to poll: %v)", len(pollErrors), pollErrors)
 					}
-					msg, _ := json.Marshal(map[string]string{"message": errorMsg})
-					return ipc.Response{Type: "error", Payload: msg}
+					return errorResponse(errorMsg)
 				}
 			}
 		}
 
 		// Skip if bead is already in flight
 		if _, inFlight := d.activeBeads.LoadOrStore(targetBead.ID, true); inFlight {
-			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("bead %q is already in flight", targetBead.ID)})
-			return ipc.Response{Type: "error", Payload: msg}
+			return errorResponse(fmt.Sprintf("bead %q is already in flight", targetBead.ID))
 		}
 
 		// Block beads that need clarification (consistent with auto-dispatch behavior)
 		needed, err := d.isBeadClarificationNeeded(targetBead.ID, targetBead.Anvil)
 		if err != nil {
 			d.releaseBeadSlot(targetBead.ID)
-			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("failed to check clarification status for %q: %v", targetBead.ID, err)})
-			return ipc.Response{Type: "error", Payload: msg}
+			return errorResponse(fmt.Sprintf("failed to check clarification status for %q: %v", targetBead.ID, err))
 		}
 		if needed {
 			d.releaseBeadSlot(targetBead.ID)
-			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("bead %q needs clarification; use 'forge queue unclarify --anvil %s %s' to clear", targetBead.ID, targetBead.Anvil, targetBead.ID)})
-			return ipc.Response{Type: "error", Payload: msg}
+			return errorResponse(fmt.Sprintf("bead %q needs clarification; use 'forge queue unclarify --anvil %s %s' to clear", targetBead.ID, targetBead.Anvil, targetBead.ID))
 		}
 
 		// Manual dispatch resets the dispatch circuit breaker so the bead can be retried,
@@ -5332,13 +5292,11 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 		canSpawnAnvil, err := worker.CanSpawn(d.db, targetBead.Anvil, maxSmiths)
 		if err != nil {
 			d.releaseBeadSlot(targetBead.ID)
-			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("checking anvil capacity: %v", err)})
-			return ipc.Response{Type: "error", Payload: msg}
+			return errorResponse(fmt.Sprintf("checking anvil capacity: %v", err))
 		}
 		if !canSpawnAnvil {
 			d.releaseBeadSlot(targetBead.ID)
-			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("anvil %q capacity reached (max %d smiths)", targetBead.Anvil, maxSmiths)})
-			return ipc.Response{Type: "error", Payload: msg}
+			return errorResponse(fmt.Sprintf("anvil %q capacity reached (max %d smiths)", targetBead.Anvil, maxSmiths))
 		}
 
 		maxTotal := d.cfg.Load().Settings.MaxTotalSmiths
@@ -5348,13 +5306,11 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 		canSpawnGlobal, err := worker.CanSpawnGlobal(d.db, maxTotal)
 		if err != nil {
 			d.releaseBeadSlot(targetBead.ID)
-			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("checking global capacity: %v", err)})
-			return ipc.Response{Type: "error", Payload: msg}
+			return errorResponse(fmt.Sprintf("checking global capacity: %v", err))
 		}
 		if !canSpawnGlobal {
 			d.releaseBeadSlot(targetBead.ID)
-			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("global capacity reached (max %d smiths)", maxTotal)})
-			return ipc.Response{Type: "error", Payload: msg}
+			return errorResponse(fmt.Sprintf("global capacity reached (max %d smiths)", maxTotal))
 		}
 
 		// Insert a pending worker row BEFORE claiming so orphan recovery can
@@ -5366,8 +5322,7 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 		if err := d.claimBead(context.Background(), targetBead.ID, anvilCfg.Path); err != nil {
 			d.abortClaim(targetBead.ID, targetBead.Anvil, claimWorkerID, fmt.Sprintf("claim failed: %v", err), err)
 			d.releaseBeadSlot(targetBead.ID)
-			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("failed to claim bead: %v", err)})
-			return ipc.Response{Type: "error", Payload: msg}
+			return errorResponse(fmt.Sprintf("failed to claim bead: %v", err))
 		}
 
 		// Create and register the control handle only after workerID is known
@@ -5382,47 +5337,39 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 		d.wg.Add(1)
 		go d.dispatchBead(context.Background(), *targetBead, anvilCfg, claimWorkerID, ctrl, nil, manualReservation)
 
-		data, _ := json.Marshal(map[string]string{"message": "dispatched"})
-		return ipc.Response{Type: "ok", Payload: data}
+		return okResponse(map[string]string{"message": "dispatched"})
 
 	case "set_clarification":
 		var cp ipc.ClarificationPayload
 		if err := json.Unmarshal(cmd.Payload, &cp); err != nil {
-			msg, _ := json.Marshal(map[string]string{"message": "invalid set_clarification payload"})
-			return ipc.Response{Type: "error", Payload: msg}
+			return errorResponse("invalid set_clarification payload")
 		}
 		if err := queueactions.Clarify(context.Background(), d.queueActionsHandle(), queueactions.Params{
 			BeadID:    cp.BeadID,
 			AnvilName: cp.Anvil,
 			Note:      cp.Reason,
 		}); err != nil {
-			msg, _ := json.Marshal(map[string]string{"message": queueActionsErrorMessage("set clarification", err)})
-			return ipc.Response{Type: "error", Payload: msg}
+			return errorResponse(queueActionsErrorMessage("set clarification", err))
 		}
 		d.logger.Info("bead marked as clarification_needed", "bead", cp.BeadID, "anvil", cp.Anvil, "reason", strings.TrimSpace(cp.Reason))
-		data, _ := json.Marshal(map[string]string{"message": "clarification_needed set"})
-		return ipc.Response{Type: "ok", Payload: data}
+		return okResponse(map[string]string{"message": "clarification_needed set"})
 
 	case "append_notes":
 		var np ipc.AppendNotesPayload
 		if err := json.Unmarshal(cmd.Payload, &np); err != nil {
-			msg, _ := json.Marshal(map[string]string{"message": "invalid append_notes payload"})
-			return ipc.Response{Type: "error", Payload: msg}
+			return errorResponse("invalid append_notes payload")
 		}
 		if np.BeadID == "" || np.Anvil == "" {
-			msg, _ := json.Marshal(map[string]string{"message": "bead_id and anvil are required"})
-			return ipc.Response{Type: "error", Payload: msg}
+			return errorResponse("bead_id and anvil are required")
 		}
 
 		cfgSnapshot := d.cfg.Load()
 		anvilCfg, ok := cfgSnapshot.Anvils[np.Anvil]
 		if !ok {
-			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("anvil %q not found", np.Anvil)})
-			return ipc.Response{Type: "error", Payload: msg}
+			return errorResponse(fmt.Sprintf("anvil %q not found", np.Anvil))
 		}
 		if anvilCfg.Path == "" {
-			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("anvil %q has no path configured", np.Anvil)})
-			return ipc.Response{Type: "error", Payload: msg}
+			return errorResponse(fmt.Sprintf("anvil %q has no path configured", np.Anvil))
 		}
 
 		reqID, _ := d.reqTracker.Track()
@@ -5432,12 +5379,10 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 			notesCmd := executil.HideWindow(exec.CommandContext(notesCtx, "bd", "update", np.BeadID, "--append-notes", np.Notes))
 			notesCmd.Dir = anvilCfg.Path
 			if out, err := notesCmd.CombinedOutput(); err != nil {
-				errMsg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("bd update %s --append-notes: %v: %s", np.BeadID, err, string(out))})
-				d.completeAsync(reqID, ipc.Response{Type: "error", Payload: errMsg})
+				d.completeAsync(reqID, errorResponse(fmt.Sprintf("bd update %s --append-notes: %v: %s", np.BeadID, err, string(out))))
 				return
 			}
-			data, _ := json.Marshal(map[string]string{"message": "notes appended"})
-			d.completeAsync(reqID, ipc.Response{Type: "ok", Payload: data})
+			d.completeAsync(reqID, okResponse(map[string]string{"message": "notes appended"}))
 		}()
 		resp, _ := ipc.NewQueuedResponse(reqID, "appending notes")
 		return resp
@@ -5445,27 +5390,22 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 	case "tag_bead":
 		var tp ipc.TagBeadPayload
 		if err := json.Unmarshal(cmd.Payload, &tp); err != nil {
-			msg, _ := json.Marshal(map[string]string{"message": "invalid tag_bead payload"})
-			return ipc.Response{Type: "error", Payload: msg}
+			return errorResponse("invalid tag_bead payload")
 		}
 		if tp.BeadID == "" || tp.Anvil == "" {
-			msg, _ := json.Marshal(map[string]string{"message": "bead_id and anvil are required"})
-			return ipc.Response{Type: "error", Payload: msg}
+			return errorResponse("bead_id and anvil are required")
 		}
 		cfgSnapshot := d.cfg.Load()
 		anvilCfg, ok := cfgSnapshot.Anvils[tp.Anvil]
 		if !ok {
-			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("anvil %q not found", tp.Anvil)})
-			return ipc.Response{Type: "error", Payload: msg}
+			return errorResponse(fmt.Sprintf("anvil %q not found", tp.Anvil))
 		}
 		if anvilCfg.Path == "" {
-			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("anvil %q has no path configured", tp.Anvil)})
-			return ipc.Response{Type: "error", Payload: msg}
+			return errorResponse(fmt.Sprintf("anvil %q has no path configured", tp.Anvil))
 		}
 		tag := anvilCfg.AutoDispatchTag
 		if tag == "" {
-			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("anvil %q has no auto_dispatch_tag configured", tp.Anvil)})
-			return ipc.Response{Type: "error", Payload: msg}
+			return errorResponse(fmt.Sprintf("anvil %q has no auto_dispatch_tag configured", tp.Anvil))
 		}
 		reqID, _ := d.reqTracker.Track()
 		go func() {
@@ -5474,8 +5414,7 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 			tagCmd := executil.HideWindow(exec.CommandContext(tagCtx, "bd", "update", tp.BeadID, "--add-label", tag))
 			tagCmd.Dir = anvilCfg.Path
 			if out, err := tagCmd.CombinedOutput(); err != nil {
-				errMsg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("bd update failed: %v: %s", err, string(out))})
-				d.completeAsync(reqID, ipc.Response{Type: "error", Payload: errMsg})
+				d.completeAsync(reqID, errorResponse(fmt.Sprintf("bd update failed: %v: %s", err, string(out))))
 				return
 			}
 			d.logger.Info("label added to bead", "bead", tp.BeadID, "anvil", tp.Anvil, "tag", tag)
@@ -5483,8 +5422,7 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 			refreshCtx, refreshCancel := context.WithTimeout(d.runCtx, 30*time.Second)
 			defer refreshCancel()
 			d.pollAndDispatch(refreshCtx, false)
-			data, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("label %q added", tag)})
-			d.completeAsync(reqID, ipc.Response{Type: "ok", Payload: data})
+			d.completeAsync(reqID, okResponse(map[string]string{"message": fmt.Sprintf("label %q added", tag)}))
 		}()
 		resp, _ := ipc.NewQueuedResponse(reqID, "tagging bead")
 		return resp
@@ -5492,12 +5430,10 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 	case "update_label":
 		var up ipc.UpdateLabelPayload
 		if err := json.Unmarshal(cmd.Payload, &up); err != nil {
-			msg, _ := json.Marshal(map[string]string{"message": "invalid update_label payload"})
-			return ipc.Response{Type: "error", Payload: msg}
+			return errorResponse("invalid update_label payload")
 		}
 		if up.BeadID == "" || up.Anvil == "" || up.Label == "" {
-			msg, _ := json.Marshal(map[string]string{"message": "bead_id, anvil, and label are required"})
-			return ipc.Response{Type: "error", Payload: msg}
+			return errorResponse("bead_id, anvil, and label are required")
 		}
 		var bdFlag, pastTense, gerund string
 		switch up.Action {
@@ -5510,18 +5446,15 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 			pastTense = "removed"
 			gerund = "removing"
 		default:
-			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("invalid action %q (want add|remove)", up.Action)})
-			return ipc.Response{Type: "error", Payload: msg}
+			return errorResponse(fmt.Sprintf("invalid action %q (want add|remove)", up.Action))
 		}
 		cfgSnapshot := d.cfg.Load()
 		anvilCfg, ok := cfgSnapshot.Anvils[up.Anvil]
 		if !ok {
-			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("anvil %q not found", up.Anvil)})
-			return ipc.Response{Type: "error", Payload: msg}
+			return errorResponse(fmt.Sprintf("anvil %q not found", up.Anvil))
 		}
 		if anvilCfg.Path == "" {
-			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("anvil %q has no path configured", up.Anvil)})
-			return ipc.Response{Type: "error", Payload: msg}
+			return errorResponse(fmt.Sprintf("anvil %q has no path configured", up.Anvil))
 		}
 		reqID, _ := d.reqTracker.Track()
 		go func() {
@@ -5530,8 +5463,7 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 			labelCmd := executil.HideWindow(exec.CommandContext(labelCtx, "bd", "update", up.BeadID, bdFlag, up.Label))
 			labelCmd.Dir = anvilCfg.Path
 			if out, err := labelCmd.CombinedOutput(); err != nil {
-				errMsg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("bd update failed: %v: %s", err, string(out))})
-				d.completeAsync(reqID, ipc.Response{Type: "error", Payload: errMsg})
+				d.completeAsync(reqID, errorResponse(fmt.Sprintf("bd update failed: %v: %s", err, string(out))))
 				return
 			}
 			d.logger.Info("label updated", "bead", up.BeadID, "anvil", up.Anvil, "label", up.Label, "action", up.Action)
@@ -5541,8 +5473,7 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 			refreshCtx, refreshCancel := context.WithTimeout(d.runCtx, 30*time.Second)
 			defer refreshCancel()
 			d.pollAndDispatch(refreshCtx, false)
-			data, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("label %q %s", up.Label, pastTense)})
-			d.completeAsync(reqID, ipc.Response{Type: "ok", Payload: data})
+			d.completeAsync(reqID, okResponse(map[string]string{"message": fmt.Sprintf("label %q %s", up.Label, pastTense)}))
 		}()
 		resp, _ := ipc.NewQueuedResponse(reqID, fmt.Sprintf("%s label", gerund))
 		return resp
@@ -5550,22 +5481,18 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 	case "close_bead":
 		var cp ipc.CloseBeadPayload
 		if err := json.Unmarshal(cmd.Payload, &cp); err != nil {
-			msg, _ := json.Marshal(map[string]string{"message": "invalid close_bead payload"})
-			return ipc.Response{Type: "error", Payload: msg}
+			return errorResponse("invalid close_bead payload")
 		}
 		if cp.BeadID == "" || cp.Anvil == "" {
-			msg, _ := json.Marshal(map[string]string{"message": "bead_id and anvil are required"})
-			return ipc.Response{Type: "error", Payload: msg}
+			return errorResponse("bead_id and anvil are required")
 		}
 		cfgSnapshot := d.cfg.Load()
 		anvilCfg, ok := cfgSnapshot.Anvils[cp.Anvil]
 		if !ok {
-			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("anvil %q not found", cp.Anvil)})
-			return ipc.Response{Type: "error", Payload: msg}
+			return errorResponse(fmt.Sprintf("anvil %q not found", cp.Anvil))
 		}
 		if anvilCfg.Path == "" {
-			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("anvil %q has no path configured", cp.Anvil)})
-			return ipc.Response{Type: "error", Payload: msg}
+			return errorResponse(fmt.Sprintf("anvil %q has no path configured", cp.Anvil))
 		}
 		reqID, _ := d.reqTracker.Track()
 		go func() {
@@ -5574,8 +5501,7 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 			closeCmd := executil.HideWindow(exec.CommandContext(closeCtx, "bd", "close", cp.BeadID))
 			closeCmd.Dir = anvilCfg.Path
 			if out, err := closeCmd.CombinedOutput(); err != nil {
-				errMsg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("bd close failed: %v: %s", err, string(out))})
-				d.completeAsync(reqID, ipc.Response{Type: "error", Payload: errMsg})
+				d.completeAsync(reqID, errorResponse(fmt.Sprintf("bd close failed: %v: %s", err, string(out))))
 				return
 			}
 			d.logger.Info("bead closed via TUI", "bead", cp.BeadID, "anvil", cp.Anvil)
@@ -5583,8 +5509,7 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 			refreshCtx, refreshCancel := context.WithTimeout(d.runCtx, 30*time.Second)
 			defer refreshCancel()
 			d.pollAndDispatch(refreshCtx, false)
-			data, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("bead %s closed", cp.BeadID)})
-			d.completeAsync(reqID, ipc.Response{Type: "ok", Payload: data})
+			d.completeAsync(reqID, okResponse(map[string]string{"message": fmt.Sprintf("bead %s closed", cp.BeadID)}))
 		}()
 		resp, _ := ipc.NewQueuedResponse(reqID, "closing bead")
 		return resp
@@ -5592,78 +5517,24 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 	case "stop_bead":
 		var sp ipc.StopBeadPayload
 		if err := json.Unmarshal(cmd.Payload, &sp); err != nil {
-			msg, _ := json.Marshal(map[string]string{"message": "invalid stop_bead payload"})
-			return ipc.Response{Type: "error", Payload: msg}
+			return errorResponse("invalid stop_bead payload")
 		}
-		if sp.BeadID == "" || sp.Anvil == "" {
-			msg, _ := json.Marshal(map[string]string{"message": "bead_id and anvil are required"})
-			return ipc.Response{Type: "error", Payload: msg}
-		}
-		anvilCfg, ok := d.cfg.Load().Anvils[sp.Anvil]
-		if !ok {
-			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("anvil %q not found", sp.Anvil)})
-			return ipc.Response{Type: "error", Payload: msg}
-		}
-		if anvilCfg.Path == "" {
-			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("anvil %q has no path configured", sp.Anvil)})
-			return ipc.Response{Type: "error", Payload: msg}
-		}
-
-		terminatedWorkerID, err := queueactions.Stop(context.Background(), d.queueActionsHandle(), queueactions.Params{
-			BeadID:    sp.BeadID,
-			AnvilName: sp.Anvil,
-			Note:      sp.Reason,
+		// stop_bead and queue_stop share one implementation; both release the bd
+		// claim so a stop from the CLI and from the web GUI behave identically.
+		return d.stopBead(stopBeadParams{
+			beadID:       sp.BeadID,
+			anvil:        sp.Anvil,
+			reason:       sp.Reason,
+			releaseClaim: true,
 		})
-		if err != nil {
-			msg, _ := json.Marshal(map[string]string{"message": queueActionsErrorMessage("stop bead", err)})
-			return ipc.Response{Type: "error", Payload: msg}
-		}
-		if terminatedWorkerID != "" {
-			d.logger.Info("killed worker for stopped bead", "worker", terminatedWorkerID, "bead", sp.BeadID, "anvil", sp.Anvil)
-		}
-
-		// Use releaseBeadSlotIfOwner to avoid deleting a handle registered by
-		// a new dispatch if re-dispatch races with the old goroutine's cleanup.
-		if ctrl, ok := d.lookupControlHandle(sp.BeadID); ok {
-			d.releaseBeadSlotIfOwner(sp.BeadID, ctrl)
-		} else {
-			d.releaseBeadSlot(sp.BeadID)
-		}
-
-		reqID, _ := d.reqTracker.Track()
-		beadID := sp.BeadID
-		anvilName := sp.Anvil
-		reason := queueactions.SanitizeControl(strings.TrimSpace(sp.Reason))
-		if reason == "" {
-			reason = "manually stopped"
-		}
-		go func() {
-			releaseCtx, releaseCancel := context.WithTimeout(d.runCtx, executil.DefaultBdTimeout)
-			defer releaseCancel()
-			releaseCmd := executil.HideWindow(exec.CommandContext(releaseCtx, "bd", "update", beadID, "--status=open", "--assignee=", "--json"))
-			releaseCmd.Dir = anvilCfg.Path
-			if out, err := releaseCmd.CombinedOutput(); err != nil {
-				d.logger.Warn("bd update failed when releasing stopped bead", "bead", beadID, "error", err, "output", strings.TrimSpace(string(out)))
-				errMsg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("bead stopped but bd release failed: %v", err)})
-				d.completeAsync(reqID, ipc.Response{Type: "error", Payload: errMsg})
-				return
-			}
-			d.logger.Info("bead stopped", "bead", beadID, "anvil", anvilName, "reason", reason)
-			data, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("bead %s stopped", beadID)})
-			d.completeAsync(reqID, ipc.Response{Type: "ok", Payload: data})
-		}()
-		resp, _ := ipc.NewQueuedResponse(reqID, "stopping bead")
-		return resp
 
 	case "create_pr":
 		var cp ipc.CreatePRPayload
 		if err := json.Unmarshal(cmd.Payload, &cp); err != nil {
-			msg, _ := json.Marshal(map[string]string{"message": "invalid create_pr payload"})
-			return ipc.Response{Type: "error", Payload: msg}
+			return errorResponse("invalid create_pr payload")
 		}
 		if cp.BeadID == "" || cp.Anvil == "" {
-			msg, _ := json.Marshal(map[string]string{"message": "bead_id and anvil are required"})
-			return ipc.Response{Type: "error", Payload: msg}
+			return errorResponse("bead_id and anvil are required")
 		}
 		// Canonicalise the anvil name so the helper's config lookup matches the
 		// configured key regardless of how the user typed it on the CLI.
@@ -5679,8 +5550,7 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 		defer opCancel()
 		prNumber, prURL, err := d.openPRForExistingBranch(opCtx, cp.BeadID, anvilName)
 		if err != nil {
-			msg, _ := json.Marshal(map[string]string{"message": err.Error()})
-			return ipc.Response{Type: "error", Payload: msg}
+			return errorResponse(err.Error())
 		}
 		// Include the PR number and (when known) its web URL as structured
 		// fields so the Hearth "Create PR" button can render a clickable link.
@@ -5696,30 +5566,25 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 	case "clear_clarification":
 		var cp ipc.ClarificationPayload
 		if err := json.Unmarshal(cmd.Payload, &cp); err != nil {
-			msg, _ := json.Marshal(map[string]string{"message": "invalid clear_clarification payload"})
-			return ipc.Response{Type: "error", Payload: msg}
+			return errorResponse("invalid clear_clarification payload")
 		}
 		if err := queueactions.Unclarify(context.Background(), d.queueActionsHandle(), queueactions.Params{
 			BeadID:    cp.BeadID,
 			AnvilName: cp.Anvil,
 			Note:      cp.Reason,
 		}); err != nil {
-			msg, _ := json.Marshal(map[string]string{"message": queueActionsErrorMessage("clear clarification", err)})
-			return ipc.Response{Type: "error", Payload: msg}
+			return errorResponse(queueActionsErrorMessage("clear clarification", err))
 		}
 		d.logger.Info("clarification_needed cleared", "bead", cp.BeadID, "anvil", cp.Anvil)
-		data, _ := json.Marshal(map[string]string{"message": "clarification_needed cleared"})
-		return ipc.Response{Type: "ok", Payload: data}
+		return okResponse(map[string]string{"message": "clarification_needed cleared"})
 
 	case "retry_bead":
 		var rp ipc.RetryBeadPayload
 		if err := json.Unmarshal(cmd.Payload, &rp); err != nil {
-			msg, _ := json.Marshal(map[string]string{"message": "invalid retry_bead payload"})
-			return ipc.Response{Type: "error", Payload: msg}
+			return errorResponse("invalid retry_bead payload")
 		}
 		if rp.PRID == 0 && (rp.BeadID == "" || rp.Anvil == "") {
-			msg, _ := json.Marshal(map[string]string{"message": "bead_id and anvil are required"})
-			return ipc.Response{Type: "error", Payload: msg}
+			return errorResponse("bead_id and anvil are required")
 		}
 		// Canonicalise the user-provided anvil name (case-insensitive) so DB
 		// queries below match records that were stored under the configured
@@ -5733,17 +5598,14 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 		if rp.PRID > 0 {
 			pr, err := d.db.GetPRByID(rp.PRID)
 			if err != nil || pr == nil {
-				msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("PR %d not found", rp.PRID)})
-				return ipc.Response{Type: "error", Payload: msg}
+				return errorResponse(fmt.Sprintf("PR %d not found", rp.PRID))
 			}
 			if err := d.db.ResetPRFixCounts(rp.PRID); err != nil {
-				msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("failed to reset PR fix counts: %v", err)})
-				return ipc.Response{Type: "error", Payload: msg}
+				return errorResponse(fmt.Sprintf("failed to reset PR fix counts: %v", err))
 			}
 			if d.lifecycleMgr == nil {
 				d.logger.Error("lifecycle manager not ready for retry_bead PR reset", "pr_id", rp.PRID, "bead", pr.BeadID, "anvil", pr.Anvil)
-				msg, _ := json.Marshal(map[string]string{"message": "lifecycle manager not ready"})
-				return ipc.Response{Type: "error", Payload: msg}
+				return errorResponse("lifecycle manager not ready")
 			}
 			d.lifecycleMgr.ResetPRState(pr.Anvil, pr.Number)
 			if d.bellowsMonitor != nil {
@@ -5759,8 +5621,7 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 				pr.Anvil,
 			)
 			d.logger.Info("PR fix counts reset", "pr_id", rp.PRID, "bead", pr.BeadID, "anvil", pr.Anvil)
-			data, _ := json.Marshal(map[string]string{"message": "PR fix counts reset, status set to open"})
-			return ipc.Response{Type: "ok", Payload: data}
+			return okResponse(map[string]string{"message": "PR fix counts reset, status set to open"})
 		}
 		// Bead retry: delegate the state mutation + audit event to the
 		// shared queueactions.Retry, then handle the daemon-local async work
@@ -5770,8 +5631,7 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 			AnvilName: rp.Anvil,
 		})
 		if err != nil {
-			msg, _ := json.Marshal(map[string]string{"message": queueActionsErrorMessage("retry bead", err)})
-			return ipc.Response{Type: "error", Payload: msg}
+			return errorResponse(queueActionsErrorMessage("retry bead", err))
 		}
 		d.logger.Info("retry reset for bead", "bead", rp.BeadID, "anvil", rp.Anvil)
 		reqID, _ := d.reqTracker.Track()
@@ -5808,8 +5668,7 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 			if hadCircuitBreaker {
 				retryMsg = "retry state reset"
 			}
-			data, _ := json.Marshal(map[string]string{"message": retryMsg})
-			d.completeAsync(reqID, ipc.Response{Type: "ok", Payload: data})
+			d.completeAsync(reqID, okResponse(map[string]string{"message": retryMsg}))
 		}()
 		resp, _ := ipc.NewQueuedResponse(reqID, "retrying bead")
 		return resp
@@ -5817,8 +5676,7 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 	case "clear_bead":
 		var cp ipc.ClearBeadPayload
 		if err := json.Unmarshal(cmd.Payload, &cp); err != nil {
-			msg, _ := json.Marshal(map[string]string{"message": "invalid clear_bead payload"})
-			return ipc.Response{Type: "error", Payload: msg}
+			return errorResponse("invalid clear_bead payload")
 		}
 		if cp.Anvil != "" {
 			if canonical, _, ok := d.resolveAnvilConfig(cp.Anvil); ok {
@@ -5829,35 +5687,29 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 			BeadID:    cp.BeadID,
 			AnvilName: cp.Anvil,
 		}); err != nil {
-			msg, _ := json.Marshal(map[string]string{"message": queueActionsErrorMessage("clear needs-attention flags", err)})
-			return ipc.Response{Type: "error", Payload: msg}
+			return errorResponse(queueActionsErrorMessage("clear needs-attention flags", err))
 		}
 		d.logger.Info("needs-attention flags cleared", "bead", cp.BeadID, "anvil", cp.Anvil)
-		data, _ := json.Marshal(map[string]string{"message": "needs-attention flags cleared"})
-		return ipc.Response{Type: "ok", Payload: data}
+		return okResponse(map[string]string{"message": "needs-attention flags cleared"})
 
 	case "dismiss_bead":
 		var dp ipc.DismissBeadPayload
 		if err := json.Unmarshal(cmd.Payload, &dp); err != nil {
-			msg, _ := json.Marshal(map[string]string{"message": "invalid dismiss_bead payload"})
-			return ipc.Response{Type: "error", Payload: msg}
+			return errorResponse("invalid dismiss_bead payload")
 		}
 		// When targeting an exhausted PR (PRID > 0), bead_id is optional — non-bead
 		// PRs (e.g. warden-learn PRs) have no associated bead.
 		if dp.PRID == 0 && (dp.BeadID == "" || dp.Anvil == "") {
-			msg, _ := json.Marshal(map[string]string{"message": "bead_id and anvil are required"})
-			return ipc.Response{Type: "error", Payload: msg}
+			return errorResponse("bead_id and anvil are required")
 		}
 		// Exhausted PR dismiss: set status to closed
 		if dp.PRID > 0 {
 			pr, err := d.db.GetPRByID(dp.PRID)
 			if err != nil || pr == nil {
-				msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("PR %d not found", dp.PRID)})
-				return ipc.Response{Type: "error", Payload: msg}
+				return errorResponse(fmt.Sprintf("PR %d not found", dp.PRID))
 			}
 			if err := d.db.DismissExhaustedPR(dp.PRID); err != nil {
-				msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("failed to dismiss exhausted PR: %v", err)})
-				return ipc.Response{Type: "error", Payload: msg}
+				return errorResponse(fmt.Sprintf("failed to dismiss exhausted PR: %v", err))
 			}
 			_ = d.db.LogEvent(
 				state.EventBeadDismissed,
@@ -5866,38 +5718,31 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 				pr.Anvil,
 			)
 			d.logger.Info("exhausted PR dismissed", "pr_id", dp.PRID, "bead", pr.BeadID, "anvil", pr.Anvil)
-			data, _ := json.Marshal(map[string]string{"message": "exhausted PR dismissed"})
-			return ipc.Response{Type: "ok", Payload: data}
+			return okResponse(map[string]string{"message": "exhausted PR dismissed"})
 		}
 		if err := d.db.DismissRetry(dp.BeadID, dp.Anvil); err != nil {
-			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("failed to dismiss: %v", err)})
-			return ipc.Response{Type: "error", Payload: msg}
+			return errorResponse(fmt.Sprintf("failed to dismiss: %v", err))
 		}
 		logMessage := fmt.Sprintf("Bead %s dismissed from needs attention", dp.BeadID)
 		_ = d.db.LogEvent(state.EventBeadDismissed, logMessage, dp.BeadID, dp.Anvil)
 		d.logger.Info("bead dismissed from needs attention", "bead", dp.BeadID, "anvil", dp.Anvil)
-		data, _ := json.Marshal(map[string]string{"message": "dismissed"})
-		return ipc.Response{Type: "ok", Payload: data}
+		return okResponse(map[string]string{"message": "dismissed"})
 
 	case "warden_rerun":
 		var wp ipc.WardenRerunPayload
 		if err := json.Unmarshal(cmd.Payload, &wp); err != nil {
-			msg, _ := json.Marshal(map[string]string{"message": "invalid warden_rerun payload"})
-			return ipc.Response{Type: "error", Payload: msg}
+			return errorResponse("invalid warden_rerun payload")
 		}
 		if wp.BeadID == "" || wp.Anvil == "" {
-			msg, _ := json.Marshal(map[string]string{"message": "bead_id and anvil are required"})
-			return ipc.Response{Type: "error", Payload: msg}
+			return errorResponse("bead_id and anvil are required")
 		}
 		anvilCfg, ok := d.cfg.Load().Anvils[wp.Anvil]
 		if !ok {
-			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("anvil %q not found", wp.Anvil)})
-			return ipc.Response{Type: "error", Payload: msg}
+			return errorResponse(fmt.Sprintf("anvil %q not found", wp.Anvil))
 		}
 		branch, err := d.db.LastWorkerBranchForBead(wp.BeadID, wp.Anvil)
 		if err != nil || branch == "" {
-			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("no branch found for bead %s", wp.BeadID)})
-			return ipc.Response{Type: "error", Payload: msg}
+			return errorResponse(fmt.Sprintf("no branch found for bead %s", wp.BeadID))
 		}
 		_ = d.db.LogEvent(state.EventWardenRerun, fmt.Sprintf("Warden re-review requested for %s (manual)", wp.BeadID), wp.BeadID, wp.Anvil)
 		d.logger.Info("warden re-review requested", "bead", wp.BeadID, "anvil", wp.Anvil, "branch", branch)
@@ -5908,36 +5753,29 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 			d.handleWardenRerun(wp.BeadID, wp.Anvil, branch, anvilCfg)
 		}()
 
-		data, _ := json.Marshal(map[string]string{"message": "warden re-review started"})
-		return ipc.Response{Type: "ok", Payload: data}
+		return okResponse(map[string]string{"message": "warden re-review started"})
 
 	case "assay_rerun":
 		var arp ipc.AssayRerunPayload
 		if err := json.Unmarshal(cmd.Payload, &arp); err != nil {
-			msg, _ := json.Marshal(map[string]string{"message": "invalid assay_rerun payload: " + err.Error()})
-			return ipc.Response{Type: "error", Payload: msg}
+			return errorResponse("invalid assay_rerun payload: " + err.Error())
 		}
 		if arp.Anvil == "" || arp.PR == 0 {
-			msg, _ := json.Marshal(map[string]string{"message": "assay_rerun requires anvil and pr"})
-			return ipc.Response{Type: "error", Payload: msg}
+			return errorResponse("assay_rerun requires anvil and pr")
 		}
 		anvilCfg, ok := d.cfg.Load().Anvils[arp.Anvil]
 		if !ok {
-			msg, _ := json.Marshal(map[string]string{"message": "unknown anvil: " + arp.Anvil})
-			return ipc.Response{Type: "error", Payload: msg}
+			return errorResponse("unknown anvil: " + arp.Anvil)
 		}
 		pr, err := d.db.GetPRByID(arp.PR)
 		if err != nil {
-			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("failed to look up PR id %d: %v", arp.PR, err)})
-			return ipc.Response{Type: "error", Payload: msg}
+			return errorResponse(fmt.Sprintf("failed to look up PR id %d: %v", arp.PR, err))
 		}
 		if pr == nil {
-			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("PR id %d not found", arp.PR)})
-			return ipc.Response{Type: "error", Payload: msg}
+			return errorResponse(fmt.Sprintf("PR id %d not found", arp.PR))
 		}
 		if pr.Anvil != arp.Anvil {
-			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("PR id %d belongs to anvil %q, not %q", arp.PR, pr.Anvil, arp.Anvil)})
-			return ipc.Response{Type: "error", Payload: msg}
+			return errorResponse(fmt.Sprintf("PR id %d belongs to anvil %q, not %q", arp.PR, pr.Anvil, arp.Anvil))
 		}
 		_ = d.db.LogEvent(state.EventPRReviewNeeded, fmt.Sprintf("Assay re-review requested for PR #%d (manual)", pr.Number), pr.BeadID, arp.Anvil)
 		d.logger.Info("Assay re-review requested", "pr", pr.Number, "anvil", arp.Anvil, "bead", pr.BeadID)
@@ -5970,28 +5808,23 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 			})
 		}()
 
-		data, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("Assay re-review started for PR #%d", pr.Number)})
-		return ipc.Response{Type: "ok", Payload: data}
+		return okResponse(map[string]string{"message": fmt.Sprintf("Assay re-review started for PR #%d", pr.Number)})
 
 	case "approve_as_is":
 		var ap ipc.ApproveAsIsPayload
 		if err := json.Unmarshal(cmd.Payload, &ap); err != nil {
-			msg, _ := json.Marshal(map[string]string{"message": "invalid approve_as_is payload"})
-			return ipc.Response{Type: "error", Payload: msg}
+			return errorResponse("invalid approve_as_is payload")
 		}
 		if ap.BeadID == "" || ap.Anvil == "" {
-			msg, _ := json.Marshal(map[string]string{"message": "bead_id and anvil are required"})
-			return ipc.Response{Type: "error", Payload: msg}
+			return errorResponse("bead_id and anvil are required")
 		}
 		anvilCfg, ok := d.cfg.Load().Anvils[ap.Anvil]
 		if !ok {
-			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("anvil %q not found", ap.Anvil)})
-			return ipc.Response{Type: "error", Payload: msg}
+			return errorResponse(fmt.Sprintf("anvil %q not found", ap.Anvil))
 		}
 		branch, err := d.db.LastWorkerBranchForBead(ap.BeadID, ap.Anvil)
 		if err != nil || branch == "" {
-			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("no branch found for bead %s", ap.BeadID)})
-			return ipc.Response{Type: "error", Payload: msg}
+			return errorResponse(fmt.Sprintf("no branch found for bead %s", ap.BeadID))
 		}
 		_ = d.db.LogEvent(state.EventApproveAsIs, fmt.Sprintf("Approve as-is requested for %s (manual)", ap.BeadID), ap.BeadID, ap.Anvil)
 		d.logger.Info("approve as-is requested", "bead", ap.BeadID, "anvil", ap.Anvil, "branch", branch)
@@ -6002,28 +5835,23 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 			d.handleApproveAsIs(ap.BeadID, ap.Anvil, branch, anvilCfg)
 		}()
 
-		data, _ := json.Marshal(map[string]string{"message": "approve as-is started"})
-		return ipc.Response{Type: "ok", Payload: data}
+		return okResponse(map[string]string{"message": "approve as-is started"})
 
 	case "force_smith":
 		var fp ipc.ForceSmithPayload
 		if err := json.Unmarshal(cmd.Payload, &fp); err != nil {
-			msg, _ := json.Marshal(map[string]string{"message": "invalid force_smith payload"})
-			return ipc.Response{Type: "error", Payload: msg}
+			return errorResponse("invalid force_smith payload")
 		}
 		if fp.BeadID == "" || fp.Anvil == "" {
-			msg, _ := json.Marshal(map[string]string{"message": "bead_id and anvil are required"})
-			return ipc.Response{Type: "error", Payload: msg}
+			return errorResponse("bead_id and anvil are required")
 		}
 		anvilCfg, ok := d.cfg.Load().Anvils[fp.Anvil]
 		if !ok {
-			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("anvil %q not found", fp.Anvil)})
-			return ipc.Response{Type: "error", Payload: msg}
+			return errorResponse(fmt.Sprintf("anvil %q not found", fp.Anvil))
 		}
 		branch, err := d.db.LastWorkerBranchForBead(fp.BeadID, fp.Anvil)
 		if err != nil || branch == "" {
-			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("no branch found for bead %s", fp.BeadID)})
-			return ipc.Response{Type: "error", Payload: msg}
+			return errorResponse(fmt.Sprintf("no branch found for bead %s", fp.BeadID))
 		}
 		_ = d.db.LogEvent(state.EventForceSmith, fmt.Sprintf("Force smith requested for %s (manual)", fp.BeadID), fp.BeadID, fp.Anvil)
 		d.logger.Info("force smith requested", "bead", fp.BeadID, "anvil", fp.Anvil, "branch", branch, "user_note", fp.UserNote)
@@ -6031,8 +5859,7 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 		// Claim the activeBeads slot so the poller doesn't dispatch a normal
 		// pipeline run concurrently while force_smith is in flight.
 		if _, alreadyInFlight := d.activeBeads.LoadOrStore(fp.BeadID, true); alreadyInFlight {
-			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("bead %s is already in flight", fp.BeadID)})
-			return ipc.Response{Type: "error", Payload: msg}
+			return errorResponse(fmt.Sprintf("bead %s is already in flight", fp.BeadID))
 		}
 		d.wg.Add(1)
 		go func() {
@@ -6041,27 +5868,22 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 			d.handleForceSmith(fp.BeadID, fp.Anvil, branch, fp.UserNote, anvilCfg)
 		}()
 
-		data, _ := json.Marshal(map[string]string{"message": "force smith started"})
-		return ipc.Response{Type: "ok", Payload: data}
+		return okResponse(map[string]string{"message": "force smith started"})
 
 	case "view_logs":
 		var vp ipc.ViewLogsPayload
 		if err := json.Unmarshal(cmd.Payload, &vp); err != nil {
-			msg, _ := json.Marshal(map[string]string{"message": "invalid view_logs payload"})
-			return ipc.Response{Type: "error", Payload: msg}
+			return errorResponse("invalid view_logs payload")
 		}
 		if vp.BeadID == "" {
-			msg, _ := json.Marshal(map[string]string{"message": "bead_id is required"})
-			return ipc.Response{Type: "error", Payload: msg}
+			return errorResponse("bead_id is required")
 		}
 		logPath, err := d.db.LastWorkerLogPath(vp.BeadID)
 		if err != nil {
-			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("failed to find log: %v", err)})
-			return ipc.Response{Type: "error", Payload: msg}
+			return errorResponse(fmt.Sprintf("failed to find log: %v", err))
 		}
 		if logPath == "" {
-			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("no worker logs found for bead %q", vp.BeadID)})
-			return ipc.Response{Type: "error", Payload: msg}
+			return errorResponse(fmt.Sprintf("no worker logs found for bead %q", vp.BeadID))
 		}
 		// Read last 50 lines of the log without loading the entire file into memory.
 		const maxLines = 50
@@ -6126,19 +5948,16 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 			lastLines = nil
 		}
 		resp := ipc.ViewLogsResponse{LogPath: logPath, LastLines: lastLines}
-		data, _ := json.Marshal(resp)
-		return ipc.Response{Type: "ok", Payload: data}
+		return okResponse(resp)
 
 	case "merge_pr":
 		var mp ipc.MergePRPayload
 		if err := json.Unmarshal(cmd.Payload, &mp); err != nil {
-			msg, _ := json.Marshal(map[string]string{"message": "invalid merge_pr payload"})
-			return ipc.Response{Type: "error", Payload: msg}
+			return errorResponse("invalid merge_pr payload")
 		}
 		// Comment 4: allow pr_id-only requests; pr_number can be derived from DB.
 		if (mp.PRID <= 0 && mp.PRNumber <= 0) || mp.Anvil == "" {
-			msg, _ := json.Marshal(map[string]string{"message": "anvil and either pr_id or pr_number are required"})
-			return ipc.Response{Type: "error", Payload: msg}
+			return errorResponse("anvil and either pr_id or pr_number are required")
 		}
 		// Load the PR record first so we can derive authoritative anvil and number.
 		var pr *state.PR
@@ -6149,36 +5968,30 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 			pr, prErr = d.db.GetPRByNumber(mp.Anvil, mp.PRNumber)
 		}
 		if prErr != nil {
-			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("failed to load PR from state db: %v", prErr)})
-			return ipc.Response{Type: "error", Payload: msg}
+			return errorResponse(fmt.Sprintf("failed to load PR from state db: %v", prErr))
 		}
 		if pr == nil {
-			msg, _ := json.Marshal(map[string]string{"message": "PR not found in state db; cannot validate merge readiness"})
-			return ipc.Response{Type: "error", Payload: msg}
+			return errorResponse("PR not found in state db; cannot validate merge readiness")
 		}
 		// Comment 3 & 5: derive authoritative anvil and PR number from the DB record.
 		// Validate that the payload's anvil matches what we loaded, to catch stale/buggy clients.
 		if mp.PRID > 0 && mp.Anvil != "" && mp.Anvil != pr.Anvil {
-			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("anvil mismatch: payload has %q but PR %d belongs to %q", mp.Anvil, mp.PRID, pr.Anvil)})
-			return ipc.Response{Type: "error", Payload: msg}
+			return errorResponse(fmt.Sprintf("anvil mismatch: payload has %q but PR %d belongs to %q", mp.Anvil, mp.PRID, pr.Anvil))
 		}
 		mergeAnvil := pr.Anvil
 		mergeNumber := pr.Number
 		cfgSnapshot := d.cfg.Load()
 		anvilCfg, ok := cfgSnapshot.Anvils[mergeAnvil]
 		if !ok {
-			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("anvil %q not found", mergeAnvil)})
-			return ipc.Response{Type: "error", Payload: msg}
+			return errorResponse(fmt.Sprintf("anvil %q not found", mergeAnvil))
 		}
 		// Validate cached readiness from state.db.
 		ready, readyErr := d.db.IsPRReadyToMerge(pr.ID)
 		if readyErr != nil {
-			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("failed to check merge readiness: %v", readyErr)})
-			return ipc.Response{Type: "error", Payload: msg}
+			return errorResponse(fmt.Sprintf("failed to check merge readiness: %v", readyErr))
 		}
 		if !ready {
-			msg, _ := json.Marshal(map[string]string{"message": "PR is not ready to merge (not approved, CI failing, conflicting, or has unresolved threads)"})
-			return ipc.Response{Type: "error", Payload: msg}
+			return errorResponse("PR is not ready to merge (not approved, CI failing, conflicting, or has unresolved threads)")
 		}
 		// Comment 6: re-check live GitHub status immediately before merging to avoid
 		// acting on stale cached state from between Bellows polls.
@@ -6186,12 +5999,10 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 		liveStatus, liveErr := d.vcsForAnvil(mergeAnvil).CheckStatus(liveCtx, anvilCfg.Path, mergeNumber)
 		liveCancel()
 		if liveErr != nil {
-			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("could not verify live PR status: %v", liveErr)})
-			return ipc.Response{Type: "error", Payload: msg}
+			return errorResponse(fmt.Sprintf("could not verify live PR status: %v", liveErr))
 		}
 		if !liveStatus.CIsPassing() || liveStatus.Mergeable == "CONFLICTING" || liveStatus.UnresolvedThreads > 0 || liveStatus.HasPendingReviewRequests() {
-			msg, _ := json.Marshal(map[string]string{"message": "PR failed live readiness check (CI failing, conflicts, unresolved threads, or pending reviews)"})
-			return ipc.Response{Type: "error", Payload: msg}
+			return errorResponse("PR failed live readiness check (CI failing, conflicts, unresolved threads, or pending reviews)")
 		}
 		beadID := pr.BeadID
 		strategy := cfgSnapshot.Settings.MergeStrategy
@@ -6212,8 +6023,7 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 			d.logger.Error("PR merge failed", "pr_number", mergeNumber, "anvil", mergeAnvil, "error", err)
 			// Sanitize error message for IPC: use only the first line to avoid multi-line/huge payloads.
 			errSummary := strings.SplitN(err.Error(), "\n", 2)[0]
-			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("merge failed: %s", errSummary)})
-			return ipc.Response{Type: "error", Payload: msg}
+			return errorResponse(fmt.Sprintf("merge failed: %s", errSummary))
 		}
 		_ = d.db.LogEvent(state.EventPRMerged,
 			fmt.Sprintf("PR #%d merged successfully (strategy: %s)", mergeNumber, strategy),
@@ -6244,30 +6054,25 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 		} else if d.bellowsMonitor != nil {
 			d.bellowsMonitor.Refresh()
 		}
-		data, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("PR #%d merged", mergeNumber)})
-		return ipc.Response{Type: "ok", Payload: data}
+		return okResponse(map[string]string{"message": fmt.Sprintf("PR #%d merged", mergeNumber)})
 
 	case "resolve_orphan":
 		var rp ipc.ResolveOrphanPayload
 		if err := json.Unmarshal(cmd.Payload, &rp); err != nil {
-			msg, _ := json.Marshal(map[string]string{"message": "invalid resolve_orphan payload"})
-			return ipc.Response{Type: "error", Payload: msg}
+			return errorResponse("invalid resolve_orphan payload")
 		}
 		if rp.BeadID == "" || rp.Anvil == "" || rp.Action == "" {
-			msg, _ := json.Marshal(map[string]string{"message": "bead_id, anvil, and action are required"})
-			return ipc.Response{Type: "error", Payload: msg}
+			return errorResponse("bead_id, anvil, and action are required")
 		}
 		cfgSnapshot := d.cfg.Load()
 		anvilCfg, ok := cfgSnapshot.Anvils[rp.Anvil]
 		if !ok || anvilCfg.Path == "" {
-			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("anvil %q not found or has no path", rp.Anvil)})
-			return ipc.Response{Type: "error", Payload: msg}
+			return errorResponse(fmt.Sprintf("anvil %q not found or has no path", rp.Anvil))
 		}
 		switch rp.Action {
 		case "recover":
 			if err := d.shutdownMgr.ResetBead(rp.BeadID, anvilCfg.Path); err != nil {
-				msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("failed to recover bead: %v", err)})
-				return ipc.Response{Type: "error", Payload: msg}
+				return errorResponse(fmt.Sprintf("failed to recover bead: %v", err))
 			}
 			_ = d.db.RemovePendingOrphan(rp.BeadID, rp.Anvil)
 			_ = d.db.LogEvent(state.EventBeadRecovered, fmt.Sprintf("Orphan %s recovered by user via Hearth", rp.BeadID), rp.BeadID, rp.Anvil)
@@ -6282,8 +6087,7 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 			closeCmd := executil.HideWindow(exec.CommandContext(closeCtx, "bd", "close", rp.BeadID))
 			closeCmd.Dir = anvilCfg.Path
 			if out, err := closeCmd.CombinedOutput(); err != nil {
-				msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("bd close failed: %v: %s", err, string(out))})
-				return ipc.Response{Type: "error", Payload: msg}
+				return errorResponse(fmt.Sprintf("bd close failed: %v: %s", err, string(out)))
 			}
 			_ = d.db.RemovePendingOrphan(rp.BeadID, rp.Anvil)
 			_ = d.db.LogEvent(state.EventBeadClosed, fmt.Sprintf("Orphan %s closed by user (work completed)", rp.BeadID), rp.BeadID, rp.Anvil)
@@ -6299,8 +6103,7 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 			discardCmd := executil.HideWindow(exec.CommandContext(discardCtx, "bd", "close", rp.BeadID, `--reason=Discarded by user during orphan recovery`))
 			discardCmd.Dir = anvilCfg.Path
 			if out, err := discardCmd.CombinedOutput(); err != nil {
-				msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("bd close failed: %v: %s", err, string(out))})
-				return ipc.Response{Type: "error", Payload: msg}
+				return errorResponse(fmt.Sprintf("bd close failed: %v: %s", err, string(out)))
 			}
 			_ = d.db.RemovePendingOrphan(rp.BeadID, rp.Anvil)
 			_ = d.db.LogEvent(state.EventBeadClosed, fmt.Sprintf("Orphan %s discarded by user", rp.BeadID), rp.BeadID, rp.Anvil)
@@ -6308,26 +6111,21 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 			// Refresh queue state so Hearth reflects the discarded orphan immediately.
 			go d.pollAndDispatch(d.runCtx, false)
 		default:
-			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("unknown orphan action: %q", rp.Action)})
-			return ipc.Response{Type: "error", Payload: msg}
+			return errorResponse(fmt.Sprintf("unknown orphan action: %q", rp.Action))
 		}
-		data, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("orphan %s handled: %s", rp.BeadID, rp.Action)})
-		return ipc.Response{Type: "ok", Payload: data}
+		return okResponse(map[string]string{"message": fmt.Sprintf("orphan %s handled: %s", rp.BeadID, rp.Action)})
 
 	case "pr_action":
 		var pa ipc.PRActionPayload
 		if err := json.Unmarshal(cmd.Payload, &pa); err != nil {
-			msg, _ := json.Marshal(map[string]string{"message": "invalid pr_action payload: " + err.Error()})
-			return ipc.Response{Type: "error", Payload: msg}
+			return errorResponse("invalid pr_action payload: " + err.Error())
 		}
 		if pa.PRNumber == 0 || pa.Anvil == "" {
-			msg, _ := json.Marshal(map[string]string{"message": "pr_action requires pr_number and anvil"})
-			return ipc.Response{Type: "error", Payload: msg}
+			return errorResponse("pr_action requires pr_number and anvil")
 		}
 		anvilCfg, ok := d.cfg.Load().Anvils[pa.Anvil]
 		if !ok {
-			msg, _ := json.Marshal(map[string]string{"message": "unknown anvil: " + pa.Anvil})
-			return ipc.Response{Type: "error", Payload: msg}
+			return errorResponse("unknown anvil: " + pa.Anvil)
 		}
 
 		switch pa.Action {
@@ -6339,8 +6137,7 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 				closeCmd := executil.HideWindow(exec.CommandContext(closeCtx, "gh", "pr", "close", strconv.Itoa(pa.PRNumber)))
 				closeCmd.Dir = anvilCfg.Path
 				if out, err := closeCmd.CombinedOutput(); err != nil {
-					errMsg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("gh pr close failed: %v: %s", err, strings.TrimSpace(string(out)))})
-					d.completeAsync(reqID, ipc.Response{Type: "error", Payload: errMsg})
+					d.completeAsync(reqID, errorResponse(fmt.Sprintf("gh pr close failed: %v: %s", err, strings.TrimSpace(string(out)))))
 					return
 				}
 				if pa.PRID > 0 {
@@ -6348,8 +6145,7 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 				}
 				_ = d.db.LogEvent(state.EventPRClosed, fmt.Sprintf("PR #%d closed by user", pa.PRNumber), pa.BeadID, pa.Anvil)
 				d.logger.Info("PR closed by user via pr_action", "pr", pa.PRNumber, "anvil", pa.Anvil)
-				data, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("PR #%d closed", pa.PRNumber)})
-				d.completeAsync(reqID, ipc.Response{Type: "ok", Payload: data})
+				d.completeAsync(reqID, okResponse(map[string]string{"message": fmt.Sprintf("PR #%d closed", pa.PRNumber)}))
 			}()
 			resp, _ := ipc.NewQueuedResponse(reqID, "closing PR")
 			return resp
@@ -6361,8 +6157,7 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 			openCmd.Dir = anvilCfg.Path
 			executil.HideWindow(openCmd)
 			if out, err := openCmd.CombinedOutput(); err != nil {
-				msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("gh pr view --web failed: %v: %s", err, strings.TrimSpace(string(out)))})
-				return ipc.Response{Type: "error", Payload: msg}
+				return errorResponse(fmt.Sprintf("gh pr view --web failed: %v: %s", err, strings.TrimSpace(string(out))))
 			}
 
 		case "merge":
@@ -6372,8 +6167,7 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 				defer mergeCancel()
 				strategy := d.cfg.Load().Settings.MergeStrategy
 				if err := d.vcsForAnvil(pa.Anvil).MergePR(mergeCtx, anvilCfg.Path, pa.PRNumber, strategy); err != nil {
-					errMsg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("merge failed: %v", err)})
-					d.completeAsync(reqID, ipc.Response{Type: "error", Payload: errMsg})
+					d.completeAsync(reqID, errorResponse(fmt.Sprintf("merge failed: %v", err)))
 					return
 				}
 				if pa.PRID > 0 {
@@ -6381,16 +6175,14 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 				}
 				_ = d.db.LogEvent(state.EventPRMerged, fmt.Sprintf("PR #%d merged by user", pa.PRNumber), pa.BeadID, pa.Anvil)
 				d.logger.Info("PR merged by user via pr_action", "pr", pa.PRNumber, "anvil", pa.Anvil)
-				data, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("PR #%d merged", pa.PRNumber)})
-				d.completeAsync(reqID, ipc.Response{Type: "ok", Payload: data})
+				d.completeAsync(reqID, okResponse(map[string]string{"message": fmt.Sprintf("PR #%d merged", pa.PRNumber)}))
 			}()
 			resp, _ := ipc.NewQueuedResponse(reqID, "merging PR")
 			return resp
 
 		case "quench", "cifix":
 			if pa.Branch == "" {
-				msg, _ := json.Marshal(map[string]string{"message": "quench action requires branch"})
-				return ipc.Response{Type: "error", Payload: msg}
+				return errorResponse("quench action requires branch")
 			}
 			req := lifecycle.ActionRequest{
 				Action:   lifecycle.ActionFixCI,
@@ -6406,8 +6198,7 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 
 		case "burnish", "reviewfix":
 			if pa.Branch == "" {
-				msg, _ := json.Marshal(map[string]string{"message": "burnish action requires branch"})
-				return ipc.Response{Type: "error", Payload: msg}
+				return errorResponse("burnish action requires branch")
 			}
 			req := lifecycle.ActionRequest{
 				Action:   lifecycle.ActionFixReview,
@@ -6423,13 +6214,11 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 
 		case "rebase":
 			if pa.Branch == "" {
-				msg, _ := json.Marshal(map[string]string{"message": "rebase action requires branch"})
-				return ipc.Response{Type: "error", Payload: msg}
+				return errorResponse("rebase action requires branch")
 			}
 			pr, err := d.db.GetPRByID(pa.PRID)
 			if err != nil {
-				msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("failed to look up PR: %v", err)})
-				return ipc.Response{Type: "error", Payload: msg}
+				return errorResponse(fmt.Sprintf("failed to look up PR: %v", err))
 			}
 			baseBranch := ""
 			if pr != nil {
@@ -6453,8 +6242,7 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 				// Set both bellows_managed=1 and bellows_manually_assigned=1 so
 				// the reconcile loop's defensive ext-* clobber leaves this PR alone.
 				if err := d.db.UpdatePRBellowsAssignment(pa.PRID, true, true); err != nil {
-					msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("failed to assign bellows: %v", err)})
-					return ipc.Response{Type: "error", Payload: msg}
+					return errorResponse(fmt.Sprintf("failed to assign bellows: %v", err))
 				}
 			}
 			_ = d.db.LogEvent("bellows_assigned", fmt.Sprintf("PR #%d assigned to bellows for lifecycle management", pa.PRNumber), pa.BeadID, pa.Anvil)
@@ -6465,8 +6253,7 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 				// Clear both flags so reconcile no longer treats this PR as
 				// user-pinned and bellows stops running lifecycle workers for it.
 				if err := d.db.UpdatePRBellowsAssignment(pa.PRID, false, false); err != nil {
-					msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("failed to unassign bellows: %v", err)})
-					return ipc.Response{Type: "error", Payload: msg}
+					return errorResponse(fmt.Sprintf("failed to unassign bellows: %v", err))
 				}
 			}
 			_ = d.db.LogEvent("bellows_unassigned", fmt.Sprintf("PR #%d released from bellows lifecycle management", pa.PRNumber), pa.BeadID, pa.Anvil)
@@ -6480,105 +6267,85 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 				approveCmd := executil.HideWindow(exec.CommandContext(approveCtx, "gh", "pr", "review", strconv.Itoa(pa.PRNumber), "--approve"))
 				approveCmd.Dir = anvilCfg.Path
 				if out, err := approveCmd.CombinedOutput(); err != nil {
-					errMsg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("gh pr review --approve failed: %v: %s", err, strings.TrimSpace(string(out)))})
-					d.completeAsync(reqID, ipc.Response{Type: "error", Payload: errMsg})
+					d.completeAsync(reqID, errorResponse(fmt.Sprintf("gh pr review --approve failed: %v: %s", err, strings.TrimSpace(string(out)))))
 					return
 				}
 				_ = d.db.LogEvent("review_approved", fmt.Sprintf("PR #%d approved by user", pa.PRNumber), pa.BeadID, pa.Anvil)
 				d.logger.Info("PR approved by user via pr_action", "pr", pa.PRNumber, "anvil", pa.Anvil)
-				data, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("PR #%d approved", pa.PRNumber)})
-				d.completeAsync(reqID, ipc.Response{Type: "ok", Payload: data})
+				d.completeAsync(reqID, okResponse(map[string]string{"message": fmt.Sprintf("PR #%d approved", pa.PRNumber)}))
 			}()
 			resp, _ := ipc.NewQueuedResponse(reqID, "approving PR")
 			return resp
 
 		default:
-			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("unknown pr_action: %q", pa.Action)})
-			return ipc.Response{Type: "error", Payload: msg}
+			return errorResponse(fmt.Sprintf("unknown pr_action: %q", pa.Action))
 		}
 
-		respData, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("PR #%d: %s", pa.PRNumber, pa.Action)})
-		return ipc.Response{Type: "ok", Payload: respData}
+		return okResponse(map[string]string{"message": fmt.Sprintf("PR #%d: %s", pa.PRNumber, pa.Action)})
 
 	case "get_ingots":
 		var p ipc.GetIngotsPayload
 		if err := json.Unmarshal(cmd.Payload, &p); err != nil {
-			msg, _ := json.Marshal(map[string]string{"message": "invalid payload: " + err.Error()})
-			return ipc.Response{Type: "error", Payload: msg}
+			return errorResponse("invalid payload: " + err.Error())
 		}
 		conn := d.db.Conn()
 		if conn == nil {
-			msg, _ := json.Marshal(map[string]string{"message": "database not available"})
-			return ipc.Response{Type: "error", Payload: msg}
+			return errorResponse("database not available")
 		}
 		ingots, err := ingot.GetIngots(conn, p.Anvil, p.Status, p.Limit)
 		if err != nil {
-			msg, _ := json.Marshal(map[string]string{"message": err.Error()})
-			return ipc.Response{Type: "error", Payload: msg}
+			return errorResponse(err.Error())
 		}
-		respData, _ := json.Marshal(ingots)
-		return ipc.Response{Type: "ok", Payload: respData}
+		return okResponse(ingots)
 
 	case "get_ingot":
 		var p ipc.GetIngotPayload
 		if err := json.Unmarshal(cmd.Payload, &p); err != nil {
-			msg, _ := json.Marshal(map[string]string{"message": "invalid payload: " + err.Error()})
-			return ipc.Response{Type: "error", Payload: msg}
+			return errorResponse("invalid payload: " + err.Error())
 		}
 		if p.BeadID == "" {
-			msg, _ := json.Marshal(map[string]string{"message": "bead_id is required"})
-			return ipc.Response{Type: "error", Payload: msg}
+			return errorResponse("bead_id is required")
 		}
 		conn := d.db.Conn()
 		if conn == nil {
-			msg, _ := json.Marshal(map[string]string{"message": "database not available"})
-			return ipc.Response{Type: "error", Payload: msg}
+			return errorResponse("database not available")
 		}
 		// If anvil is provided, query directly; otherwise search all anvils
 		if p.Anvil != "" {
 			ig, err := ingot.GetIngot(conn, p.BeadID, p.Anvil)
 			if err != nil {
-				msg, _ := json.Marshal(map[string]string{"message": err.Error()})
-				return ipc.Response{Type: "error", Payload: msg}
+				return errorResponse(err.Error())
 			}
 			if ig == nil {
-				msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("ingot %s not found in anvil %s", p.BeadID, p.Anvil)})
-				return ipc.Response{Type: "error", Payload: msg}
+				return errorResponse(fmt.Sprintf("ingot %s not found in anvil %s", p.BeadID, p.Anvil))
 			}
-			respData, _ := json.Marshal(ig)
-			return ipc.Response{Type: "ok", Payload: respData}
+			return okResponse(ig)
 		}
 		// No anvil specified — query DB directly across all anvils.
 		matches, err := ingot.GetIngotByBeadID(conn, p.BeadID)
 		if err != nil {
-			msg, _ := json.Marshal(map[string]string{"message": err.Error()})
-			return ipc.Response{Type: "error", Payload: msg}
+			return errorResponse(err.Error())
 		}
 		switch len(matches) {
 		case 0:
-			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("ingot %s not found", p.BeadID)})
-			return ipc.Response{Type: "error", Payload: msg}
+			return errorResponse(fmt.Sprintf("ingot %s not found", p.BeadID))
 		case 1:
 			// Exactly one match — fetch with test results eager-loaded.
 			ig, err := ingot.GetIngot(conn, p.BeadID, matches[0].Anvil)
 			if err != nil {
-				msg, _ := json.Marshal(map[string]string{"message": err.Error()})
-				return ipc.Response{Type: "error", Payload: msg}
+				return errorResponse(err.Error())
 			}
 			if ig == nil {
-				msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("ingot %s not found", p.BeadID)})
-				return ipc.Response{Type: "error", Payload: msg}
+				return errorResponse(fmt.Sprintf("ingot %s not found", p.BeadID))
 			}
-			respData, _ := json.Marshal(ig)
-			return ipc.Response{Type: "ok", Payload: respData}
+			return okResponse(ig)
 		default:
 			// Multiple matches — require --anvil to disambiguate.
 			anvils := make([]string, len(matches))
 			for i, m := range matches {
 				anvils[i] = m.Anvil
 			}
-			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("ingot %s found in multiple anvils (%s): use --anvil to disambiguate", p.BeadID, strings.Join(anvils, ", "))})
-			return ipc.Response{Type: "error", Payload: msg}
+			return errorResponse(fmt.Sprintf("ingot %s found in multiple anvils (%s): use --anvil to disambiguate", p.BeadID, strings.Join(anvils, ", ")))
 		}
 
 	case "wicket_status":
@@ -6619,16 +6386,14 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 		for _, st := range []string{"pending", "bead_created", "ask_clarify", "needs_human"} {
 			n, err := d.db.CountWicketIssues(state.ListWicketIssuesOpts{State: st})
 			if err != nil {
-				msg, _ := json.Marshal(map[string]string{"message": "counting wicket issues: " + err.Error()})
-				return ipc.Response{Type: "error", Payload: msg}
+				return errorResponse("counting wicket issues: " + err.Error())
 			}
 			counts[st] = n
 		}
 
 		lastScan, err := d.db.LastWicketScanAt()
 		if err != nil {
-			msg, _ := json.Marshal(map[string]string{"message": "querying last scan time: " + err.Error()})
-			return ipc.Response{Type: "error", Payload: msg}
+			return errorResponse("querying last scan time: " + err.Error())
 		}
 
 		payload := ipc.WicketStatusPayload{
@@ -6641,8 +6406,7 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 		}
 		data, err := json.Marshal(payload)
 		if err != nil {
-			msg, _ := json.Marshal(map[string]string{"message": "marshalling wicket status: " + err.Error()})
-			return ipc.Response{Type: "error", Payload: msg}
+			return errorResponse("marshalling wicket status: " + err.Error())
 		}
 		return ipc.Response{Type: "ok", Payload: data}
 
@@ -6664,17 +6428,33 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 		return d.handleResumeBead(cmd)
 
 	default:
-		msg, _ := json.Marshal(map[string]string{"message": "unknown command: " + cmd.Type})
-		return ipc.Response{Type: "error", Payload: msg}
+		return errorResponse("unknown command: " + cmd.Type)
 	}
+}
+
+// errorResponse builds an IPC error response carrying an actionable message
+// string in the {"message": ...} envelope every surface (IPC/Web/CLI) unwraps.
+// It is the single constructor for the error envelope that was previously
+// hand-rolled at ~dozens of sites across the IPC switch.
+func errorResponse(msg string) ipc.Response {
+	data, _ := json.Marshal(map[string]string{"message": msg})
+	return ipc.Response{Type: "error", Payload: data}
+}
+
+// okResponse builds an IPC success response by marshalling payload into the
+// response envelope. Like the inline json.Marshal it replaces, a marshal error
+// yields an empty payload rather than surfacing an error — every payload passed
+// here is a plain map/struct that cannot fail to encode.
+func okResponse(payload any) ipc.Response {
+	data, _ := json.Marshal(payload)
+	return ipc.Response{Type: "ok", Payload: data}
 }
 
 // steerErrorResponse builds an error IPC response carrying an actionable
 // message string, matching the {"message": ...} shape every steer surface
 // (IPC/Web/CLI) unwraps.
 func steerErrorResponse(msg string) ipc.Response {
-	data, _ := json.Marshal(map[string]string{"message": msg})
-	return ipc.Response{Type: "error", Payload: data}
+	return errorResponse(msg)
 }
 
 // workerSessionNonClaude reports whether a worker's recorded session is
@@ -7096,43 +6876,105 @@ func (d *Daemon) handleQueueClear(cmd ipc.Command) ipc.Response {
 	return ipc.Response{Type: "ok", Payload: data}
 }
 
-// handleQueueStop implements the "queue_stop" IPC verb: terminates any running
-// worker for the bead and marks it clarification_needed so neither auto nor
-// manual dispatch picks it up. Unlike stop_bead this primitive does not shell
-// out to bd update — callers needing to release the bd assignee continue to
-// use stop_bead.
+// handleQueueStop implements the "queue_stop" IPC verb — the verb the web GUI
+// and Hearth resolve page use. It shares one implementation (stopBead) with the
+// stop_bead verb so both release the bd claim: a bead stopped from the UI is
+// returned to open/unassigned in bd, becoming visible to `bd ready` again.
+// ForgeID is passed through so the multi-forge safety check applies.
 func (d *Daemon) handleQueueStop(cmd ipc.Command) ipc.Response {
 	var qp ipc.QueueActionPayload
 	if err := json.Unmarshal(cmd.Payload, &qp); err != nil {
-		msg, _ := json.Marshal(map[string]string{"message": "invalid queue_stop payload"})
-		return ipc.Response{Type: "error", Payload: msg}
+		return errorResponse("invalid queue_stop payload")
 	}
-	if qp.AnvilName != "" {
-		if canonical, _, ok := d.resolveAnvilConfig(qp.AnvilName); ok {
-			qp.AnvilName = canonical
-		}
+	return d.stopBead(stopBeadParams{
+		beadID:       qp.BeadID,
+		forgeID:      qp.ForgeID,
+		anvil:        qp.AnvilName,
+		reason:       qp.Note,
+		releaseClaim: true,
+	})
+}
+
+// stopBeadParams carries the normalized inputs to stopBead. releaseClaim
+// controls whether the bd claim is released after the worker is terminated;
+// both stop verbs set it true so UI and CLI stops behave identically. It is
+// retained as a knob so a future non-releasing caller (kept for compat) can
+// stop a worker without touching bd.
+type stopBeadParams struct {
+	beadID       string
+	forgeID      string
+	anvil        string
+	reason       string
+	releaseClaim bool
+}
+
+// stopBead is the single implementation behind both stop verbs (stop_bead and
+// queue_stop). It terminates any running worker via queueactions.Stop, releases
+// the in-memory bead slot, and — when releaseClaim is set — asynchronously
+// releases the bd claim (`bd update --status=open --assignee=`) so the poller
+// sees the bead again.
+//
+// The bd release shells out to bd, so it runs in a goroutine and the method
+// returns a queued acknowledgement the caller polls for completion. When
+// releaseClaim is false the response is returned synchronously.
+func (d *Daemon) stopBead(p stopBeadParams) ipc.Response {
+	if strings.TrimSpace(p.beadID) == "" || strings.TrimSpace(p.anvil) == "" {
+		return errorResponse("bead_id and anvil are required")
 	}
+	// Canonicalise the anvil name and resolve its config. Releasing the bd
+	// claim shells out to `bd update` inside the anvil's checkout, so the path
+	// is required even though queueactions.Stop needs only the name.
+	anvilName, anvilCfg, ok := d.resolveAnvilConfig(p.anvil)
+	if !ok {
+		return errorResponse(fmt.Sprintf("anvil %q not found", p.anvil))
+	}
+	if p.releaseClaim && anvilCfg.Path == "" {
+		return errorResponse(fmt.Sprintf("anvil %q has no path configured", anvilName))
+	}
+
 	terminatedWorkerID, err := queueactions.Stop(context.Background(), d.queueActionsHandle(), queueactions.Params{
-		BeadID:    qp.BeadID,
-		ForgeID:   qp.ForgeID,
-		AnvilName: qp.AnvilName,
-		Note:      qp.Note,
+		BeadID:    p.beadID,
+		ForgeID:   p.forgeID,
+		AnvilName: anvilName,
+		Note:      p.reason,
 	})
 	if err != nil {
-		msg, _ := json.Marshal(map[string]string{"message": queueActionsErrorMessage("stop bead", err)})
-		return ipc.Response{Type: "error", Payload: msg}
+		return errorResponse(queueActionsErrorMessage("stop bead", err))
 	}
 	if terminatedWorkerID != "" {
-		d.logger.Info("killed worker for stopped bead via queue_stop",
-			"worker", terminatedWorkerID, "bead", qp.BeadID, "anvil", qp.AnvilName)
+		d.logger.Info("killed worker for stopped bead", "worker", terminatedWorkerID, "bead", p.beadID, "anvil", anvilName)
 	}
-	if ctrl, ok := d.lookupControlHandle(qp.BeadID); ok {
-		d.releaseBeadSlotIfOwner(qp.BeadID, ctrl)
-	} else {
-		d.releaseBeadSlot(qp.BeadID)
+
+	// Use releaseBeadSlotIfOwner (via the shared helper) to avoid deleting a
+	// handle registered by a new dispatch if re-dispatch races with cleanup.
+	d.releaseStoppedBeadSlot(p.beadID)
+
+	if !p.releaseClaim {
+		return okResponse(map[string]string{"message": fmt.Sprintf("bead %s stopped", p.beadID)})
 	}
-	data, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("bead %s stopped", qp.BeadID)})
-	return ipc.Response{Type: "ok", Payload: data}
+
+	reqID, _ := d.reqTracker.Track()
+	beadID := p.beadID
+	anvilPath := anvilCfg.Path
+	reason := queueactions.SanitizeControl(strings.TrimSpace(p.reason))
+	if reason == "" {
+		reason = "manually stopped"
+	}
+	go func() {
+		releaseCtx, releaseCancel := context.WithTimeout(d.runCtx, executil.DefaultBdTimeout)
+		defer releaseCancel()
+		releaseCmd := executil.HideWindow(exec.CommandContext(releaseCtx, "bd", "update", beadID, "--status=open", "--assignee=", "--json"))
+		releaseCmd.Dir = anvilPath
+		if out, err := releaseCmd.CombinedOutput(); err != nil {
+			d.logger.Warn("bd update failed when releasing stopped bead", "bead", beadID, "error", err, "output", strings.TrimSpace(string(out)))
+			d.completeAsync(reqID, errorResponse(fmt.Sprintf("bead stopped but bd release failed: %v", err)))
+			return
+		}
+		d.logger.Info("bead stopped", "bead", beadID, "anvil", anvilName, "reason", reason)
+		d.completeAsync(reqID, okResponse(map[string]string{"message": fmt.Sprintf("bead %s stopped", beadID)}))
+	}()
+	resp, _ := ipc.NewQueuedResponse(reqID, "stopping bead")
+	return resp
 }
 
 // BroadcastEvent sends an event to all connected IPC clients.

@@ -1,13 +1,16 @@
 package daemon
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Robin831/Forge/internal/config"
 	"github.com/Robin831/Forge/internal/ipc"
@@ -32,13 +35,49 @@ func newQueueActionDaemon(t *testing.T, forgeID string) (*Daemon, *state.DB) {
 	t.Cleanup(func() { _ = db.Close() })
 
 	d := &Daemon{
-		db:     db,
-		logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		db:         db,
+		logger:     slog.New(slog.NewTextHandler(io.Discard, nil)),
+		runCtx:     context.Background(),
+		reqTracker: *ipc.NewRequestTracker("test-"),
 	}
 	d.cfg.Store(&config.Config{
 		Settings: config.SettingsConfig{ForgeID: forgeID},
 	})
 	return d, db
+}
+
+// stubBd installs a fake `bd` executable on PATH for the duration of the test.
+// It records every invocation's arguments (one line per call) to the returned
+// log path and exits 0 on `update`, letting the async claim-release goroutine
+// succeed so tests can assert the exact `bd update ... --status=open
+// --assignee=` arguments the stop verbs issue.
+func stubBd(t *testing.T, dir string) (bdLog string) {
+	t.Helper()
+	bdLog = filepath.Join(dir, "bd-args.log")
+	var bdScript, bdContent string
+	if runtime.GOOS == "windows" {
+		bdScript = filepath.Join(dir, "bd.bat")
+		bdContent = "@echo off\r\necho %*>>\"" + bdLog + "\"\r\nif \"%1\"==\"update\" (\r\n  echo {\"id\":\"%2\",\"status\":\"open\"}\r\n  exit /b 0\r\n)\r\nexit /b 1\r\n"
+	} else {
+		bdScript = filepath.Join(dir, "bd")
+		bdContent = "#!/bin/sh\necho \"$@\" >> \"" + bdLog + "\"\nif [ \"$1\" = \"update\" ]; then\n  echo '{\"id\":\"'\"$2\"'\",\"status\":\"open\"}'\n  exit 0\nfi\nexit 1\n"
+	}
+	require.NoError(t, os.WriteFile(bdScript, []byte(bdContent), 0o755))
+
+	oldPath := os.Getenv("PATH")
+	os.Setenv("PATH", dir+string(os.PathListSeparator)+oldPath)
+	t.Cleanup(func() { os.Setenv("PATH", oldPath) })
+	return bdLog
+}
+
+// waitAsyncDone blocks until every queued async request has completed, so a
+// test can safely read side effects the async goroutine produced (e.g. the bd
+// claim-release log).
+func waitAsyncDone(t *testing.T, d *Daemon) {
+	t.Helper()
+	require.Eventually(t, func() bool {
+		return d.reqTracker.Pending() == 0
+	}, 5*time.Second, 10*time.Millisecond, "async goroutine never completed")
 }
 
 // expectEvent asserts that an event of the given type was logged for
@@ -311,9 +350,23 @@ func TestHandleIPC_QueueClear(t *testing.T) {
 
 // ---------- queue_stop ----------
 
+// configureAnvil registers a single anvil pointing at dir so the stop verbs can
+// resolve a path to shell out `bd` in. Returns the daemon and its state DB.
+func configureStopDaemon(t *testing.T, forgeID, anvil, dir string) (*Daemon, *state.DB) {
+	t.Helper()
+	d, db := newQueueActionDaemon(t, forgeID)
+	cfg := d.cfg.Load()
+	updated := *cfg
+	updated.Anvils = map[string]config.AnvilConfig{anvil: {Path: dir}}
+	d.cfg.Store(&updated)
+	return d, db
+}
+
 func TestHandleIPC_QueueStop(t *testing.T) {
-	t.Run("happy path sets clarification, frees activeBeads slot, logs event with note", func(t *testing.T) {
-		d, db := newQueueActionDaemon(t, "forge-a")
+	t.Run("happy path releases claim, sets clarification, frees activeBeads slot, logs event with note", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		bdLog := stubBd(t, tmpDir)
+		d, db := configureStopDaemon(t, "forge-a", "anvil-1", tmpDir)
 		d.activeBeads.Store("BD-STOP", struct{}{})
 
 		payload, _ := json.Marshal(ipc.QueueActionPayload{
@@ -323,8 +376,10 @@ func TestHandleIPC_QueueStop(t *testing.T) {
 			ForgeID:   "forge-a",
 		})
 		resp := d.handleIPC(ipc.Command{Type: "queue_stop", Payload: payload})
-		assert.Equal(t, "ok", resp.Type)
+		// The bd claim-release is async, so the verb acknowledges with "queued".
+		assert.Equal(t, "queued", resp.Type)
 
+		// These mutations happen synchronously, before the release goroutine.
 		r, err := db.GetRetry("BD-STOP", "anvil-1")
 		require.NoError(t, err)
 		require.NotNil(t, r)
@@ -336,24 +391,37 @@ func TestHandleIPC_QueueStop(t *testing.T) {
 		assert.False(t, stillActive, "activeBeads slot should be freed")
 
 		expectEvent(t, db, state.EventBeadStopped, "BD-STOP", "anvil-1", "wrong approach")
+
+		// The web GUI uses queue_stop; the fix is that it now releases the bd
+		// claim (status=open, assignee cleared) so `bd ready` sees the bead again.
+		waitAsyncDone(t, d)
+		logged := readFileString(t, bdLog)
+		assert.Contains(t, logged, "update BD-STOP", "bd update should target the bead")
+		assert.Contains(t, logged, "--status=open", "stop must return the bead to open")
+		assert.Contains(t, logged, "--assignee=", "stop must clear the assignee")
 	})
 
 	t.Run("missing note falls back to default reason", func(t *testing.T) {
-		d, db := newQueueActionDaemon(t, "forge-a")
+		tmpDir := t.TempDir()
+		stubBd(t, tmpDir)
+		d, db := configureStopDaemon(t, "forge-a", "anvil-1", tmpDir)
 		payload, _ := json.Marshal(ipc.QueueActionPayload{
 			BeadID:    "BD-STOP-2",
 			AnvilName: "anvil-1",
 		})
 		resp := d.handleIPC(ipc.Command{Type: "queue_stop", Payload: payload})
-		assert.Equal(t, "ok", resp.Type)
+		assert.Equal(t, "queued", resp.Type)
 		r, err := db.GetRetry("BD-STOP-2", "anvil-1")
 		require.NoError(t, err)
 		require.NotNil(t, r)
 		assert.Equal(t, "manually stopped", r.LastError)
+		waitAsyncDone(t, d)
 	})
 
 	t.Run("forge_id mismatch is rejected with no state mutation", func(t *testing.T) {
-		d, db := newQueueActionDaemon(t, "forge-a")
+		tmpDir := t.TempDir()
+		stubBd(t, tmpDir)
+		d, db := configureStopDaemon(t, "forge-a", "anvil-1", tmpDir)
 		d.activeBeads.Store("BD-STOP-MM", struct{}{})
 
 		payload, _ := json.Marshal(ipc.QueueActionPayload{
@@ -371,4 +439,102 @@ func TestHandleIPC_QueueStop(t *testing.T) {
 		_, stillActive := d.activeBeads.Load("BD-STOP-MM")
 		assert.True(t, stillActive, "activeBeads slot must not be freed on mismatch")
 	})
+
+	t.Run("unknown anvil is rejected", func(t *testing.T) {
+		d, _ := newQueueActionDaemon(t, "forge-a")
+		payload, _ := json.Marshal(ipc.QueueActionPayload{
+			BeadID:    "BD-STOP-NA",
+			AnvilName: "no-such-anvil",
+		})
+		resp := d.handleIPC(ipc.Command{Type: "queue_stop", Payload: payload})
+		assert.Contains(t, unmarshalErrorMessage(t, resp), "not found")
+	})
+}
+
+// TestStopVerbsReleaseClaim asserts the core consolidation guarantee: both the
+// stop_bead (CLI/Hearth) and queue_stop (web GUI) verbs run one implementation
+// that releases the bd claim — status=open with the assignee cleared — so a
+// bead stopped from either surface reappears in `bd ready`.
+func TestStopVerbsReleaseClaim(t *testing.T) {
+	cases := []struct {
+		name    string
+		command func(beadID string) ipc.Command
+	}{
+		{
+			name: "stop_bead",
+			command: func(beadID string) ipc.Command {
+				payload, _ := json.Marshal(ipc.StopBeadPayload{BeadID: beadID, Anvil: "anvil-1", Reason: "done"})
+				return ipc.Command{Type: "stop_bead", Payload: payload}
+			},
+		},
+		{
+			name: "queue_stop",
+			command: func(beadID string) ipc.Command {
+				payload, _ := json.Marshal(ipc.QueueActionPayload{BeadID: beadID, AnvilName: "anvil-1", Note: "done"})
+				return ipc.Command{Type: "queue_stop", Payload: payload}
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			bdLog := stubBd(t, tmpDir)
+			d, db := configureStopDaemon(t, "", "anvil-1", tmpDir)
+
+			beadID := "BD-" + tc.name
+			resp := d.handleIPC(tc.command(beadID))
+			assert.Equal(t, "queued", resp.Type)
+
+			// Bead is marked stopped (clarification) synchronously.
+			r, err := db.GetRetry(beadID, "anvil-1")
+			require.NoError(t, err)
+			require.NotNil(t, r)
+			assert.True(t, r.ClarificationNeeded)
+
+			waitAsyncDone(t, d)
+			logged := readFileString(t, bdLog)
+			assert.Contains(t, logged, "update "+beadID)
+			assert.Contains(t, logged, "--status=open")
+			assert.Contains(t, logged, "--assignee=")
+		})
+	}
+}
+
+// readFileString reads a file created by the fake bd stub. The stub appends on
+// every call, so the file always exists by the time the async request settles.
+func readFileString(t *testing.T, path string) string {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	require.NoError(t, err)
+	return string(b)
+}
+
+// TestErrorResponseWireFormat asserts errorResponse produces byte-identical
+// output to the inline json.Marshal envelope it replaced across the IPC switch,
+// so the mechanical sweep did not change the wire format any surface unwraps.
+func TestErrorResponseWireFormat(t *testing.T) {
+	for _, msg := range []string{"boom", "anvil \"x\" not found", ""} {
+		got := errorResponse(msg)
+		assert.Equal(t, "error", got.Type)
+		want, err := json.Marshal(map[string]string{"message": msg})
+		require.NoError(t, err)
+		assert.Equal(t, string(want), string(got.Payload), "error envelope must be byte-identical to inline marshal")
+	}
+}
+
+// TestOkResponseWireFormat asserts okResponse produces byte-identical output to
+// the inline json.Marshal + ipc.Response{Type:"ok"} construction it replaced.
+func TestOkResponseWireFormat(t *testing.T) {
+	payloads := []any{
+		map[string]string{"message": "bead X stopped"},
+		map[string]string{"killed": "worker-7"},
+		ipc.QueueResponse{},
+	}
+	for _, p := range payloads {
+		got := okResponse(p)
+		assert.Equal(t, "ok", got.Type)
+		want, err := json.Marshal(p)
+		require.NoError(t, err)
+		assert.Equal(t, string(want), string(got.Payload), "ok envelope must be byte-identical to inline marshal")
+	}
 }
