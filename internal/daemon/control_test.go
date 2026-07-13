@@ -81,6 +81,34 @@ func TestControlHandlePushSteerFullMailbox(t *testing.T) {
 	}
 }
 
+// TestReleaseBeadSlot verifies that releaseBeadSlot atomically removes both the
+// activeBeads reservation and the control handle, and that the handle is still
+// accessible while the bead is in activeBeads (i.e. activeBeads is deleted first).
+func TestReleaseBeadSlot(t *testing.T) {
+	d := &Daemon{}
+	const bead = "Forge-release"
+
+	d.activeBeads.Store(bead, true)
+	h := newControlHandle("worker-r")
+	d.registerControlHandle(bead, h)
+
+	if _, ok := d.activeBeads.Load(bead); !ok {
+		t.Fatal("expected bead in activeBeads before release")
+	}
+	if _, ok := d.lookupControlHandle(bead); !ok {
+		t.Fatal("expected handle before release")
+	}
+
+	d.releaseBeadSlot(bead)
+
+	if _, ok := d.activeBeads.Load(bead); ok {
+		t.Fatal("expected bead removed from activeBeads after release")
+	}
+	if _, ok := d.lookupControlHandle(bead); ok {
+		t.Fatal("expected handle removed after release")
+	}
+}
+
 // TestControlHandleInterruptCleared verifies that clearing the interrupt (as the
 // pipeline does when it returns) makes fireInterrupt a no-op returning false.
 func TestControlHandleInterruptCleared(t *testing.T) {

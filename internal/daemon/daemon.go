@@ -135,9 +135,9 @@ type Daemon struct {
 	activeBeads sync.Map // beadID -> true, currently in-flight
 	// controlHandles is the in-memory registry of active pipeline control
 	// handles keyed by beadID (beadID string -> *controlHandle). A handle is
-	// registered at the same site as activeBeads.LoadOrStore (before launching
-	// the dispatchBead goroutine) and deregistered in dispatchBead's defer
-	// stack after activeBeads.Delete, so there is no window where a bead is
+	// registered atomically alongside activeBeads.LoadOrStore and cleaned up
+	// via releaseBeadSlot (which pairs activeBeads.Delete +
+	// deregisterControlHandle), so there is no window where a bead is
 	// in-flight but has no handle. See control.go.
 	controlHandles sync.Map
 	// pendingActions parks lifecycle actions that arrived while a bead was in
@@ -2816,35 +2816,37 @@ func (d *Daemon) pollAndDispatch(ctx context.Context, fullPoll bool) {
 		if _, alreadyInFlight := d.activeBeads.LoadOrStore(bead.ID, true); alreadyInFlight {
 			continue
 		}
+		ctrl := newControlHandle("")
+		d.registerControlHandle(bead.ID, ctrl)
 
 		// Skip beads that need clarification (analogous to needs_human)
 		if _, needed := clarSet[bead.ID+"\x00"+bead.Anvil]; needed {
-			d.activeBeads.Delete(bead.ID)
+			d.releaseBeadSlot(bead.ID)
 			continue
 		}
 
 		// Skip beads that need human attention (needs_human=1)
 		if _, broken := needsHumanSet[bead.ID+"\x00"+bead.Anvil]; broken {
-			d.activeBeads.Delete(bead.ID)
+			d.releaseBeadSlot(bead.ID)
 			continue
 		}
 
 		// Skip beads that already have an open PR (bellows should handle them)
 		if hasPR, err := d.db.HasOpenPRForBead(bead.ID, bead.Anvil); err == nil && hasPR {
 			d.logger.Debug("skipping bead with open PR", "bead", bead.ID)
-			d.activeBeads.Delete(bead.ID)
+			d.releaseBeadSlot(bead.ID)
 			continue
 		}
 
 		anvilCfg, ok := cfg.Anvils[bead.Anvil]
 		if !ok || anvilCfg.Path == "" {
-			d.activeBeads.Delete(bead.ID)
+			d.releaseBeadSlot(bead.ID)
 			continue
 		}
 
 		// Apply auto-dispatch filtering
 		if !shouldDispatch(bead, anvilCfg) {
-			d.activeBeads.Delete(bead.ID)
+			d.releaseBeadSlot(bead.ID)
 			continue
 		}
 
@@ -2858,20 +2860,20 @@ func (d *Daemon) pollAndDispatch(ctx context.Context, fullPoll bool) {
 			cnt, err := worker.DispatchActiveCount(d.db, bead.Anvil)
 			if err != nil {
 				d.logger.Error("checking per-anvil capacity", "anvil", bead.Anvil, "error", err)
-				d.activeBeads.Delete(bead.ID)
+				d.releaseBeadSlot(bead.ID)
 				anvilActive[bead.Anvil] = maxSmiths // treat as at-capacity for this cycle
 				continue
 			}
 			anvilActive[bead.Anvil] = cnt
 		}
 		if anvilActive[bead.Anvil]+thisCycleAnvil[bead.Anvil] >= maxSmiths {
-			d.activeBeads.Delete(bead.ID)
+			d.releaseBeadSlot(bead.ID)
 			continue
 		}
 
 		// Check global capacity using snapshot + in-cycle count
 		if globalActive+thisCycleTotal >= maxTotal {
-			d.activeBeads.Delete(bead.ID)
+			d.releaseBeadSlot(bead.ID)
 			break
 		}
 
@@ -2885,19 +2887,18 @@ func (d *Daemon) pollAndDispatch(ctx context.Context, fullPoll bool) {
 		// (Forge-au4z). This also covers the known claim→worktree crash window.
 		// The pipeline overwrites this row via INSERT OR REPLACE when it starts.
 		claimWorkerID := d.insertPendingWorker(bead.ID, bead.Anvil, bead.Title)
+		ctrl.workerID = claimWorkerID
 
 		// Claim the bead atomically before dispatching.
 		if err := d.claimBead(ctx, bead.ID, anvilCfg.Path); err != nil {
 			d.logger.Warn("failed to claim bead", "bead", bead.ID, "error", err)
 			d.abortClaim(bead.ID, bead.Anvil, claimWorkerID, fmt.Sprintf("claim failed: %v", err), err)
-			d.activeBeads.Delete(bead.ID)
+			d.releaseBeadSlot(bead.ID)
 			continue
 		}
 
 		thisCycleAnvil[bead.Anvil]++
 		thisCycleTotal++
-		ctrl := newControlHandle(claimWorkerID)
-		d.registerControlHandle(bead.ID, ctrl)
 		d.wg.Add(1)
 		go d.dispatchBead(ctx, bead, anvilCfg, claimWorkerID, ctrl)
 	}
@@ -2916,17 +2917,16 @@ func (d *Daemon) pollAndDispatch(ctx context.Context, fullPoll bool) {
 // no handle (the IPC layer can steer/interrupt immediately).
 func (d *Daemon) dispatchBead(ctx context.Context, bead poller.Bead, anvilCfg config.AnvilConfig, claimWorkerID string, ctrl *controlHandle) {
 	defer d.wg.Done()
-	// Drain order: deregisterControlHandle runs first (registered last → LIFO),
-	// then activeBeads.Delete, then drainPendingAction fires so any parked
-	// lifecycle action sees the bead as free. This keeps the control handle
-	// alive for as long as the bead is marked in-flight.
 	defer func() {
+		// releaseBeadSlot removes activeBeads first, then the control handle,
+		// so the handle stays accessible for the full in-flight duration.
+		// drainPendingAction fires last so any parked lifecycle action sees
+		// the bead as free.
+		d.releaseBeadSlot(bead.ID)
 		if ctx.Err() == nil {
 			d.drainPendingAction(ctx, bead.ID)
 		}
 	}()
-	defer d.activeBeads.Delete(bead.ID)
-	defer d.deregisterControlHandle(bead.ID)
 
 	d.logger.Info("dispatching bead", "bead", bead.ID, "anvil", bead.Anvil, "title", bead.Title)
 
@@ -4878,16 +4878,18 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("bead %q is already in flight", targetBead.ID)})
 			return ipc.Response{Type: "error", Payload: msg}
 		}
+		ctrl := newControlHandle("")
+		d.registerControlHandle(targetBead.ID, ctrl)
 
 		// Block beads that need clarification (consistent with auto-dispatch behavior)
 		needed, err := d.isBeadClarificationNeeded(targetBead.ID, targetBead.Anvil)
 		if err != nil {
-			d.activeBeads.Delete(targetBead.ID)
+			d.releaseBeadSlot(targetBead.ID)
 			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("failed to check clarification status for %q: %v", targetBead.ID, err)})
 			return ipc.Response{Type: "error", Payload: msg}
 		}
 		if needed {
-			d.activeBeads.Delete(targetBead.ID)
+			d.releaseBeadSlot(targetBead.ID)
 			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("bead %q needs clarification; use 'forge queue unclarify --anvil %s %s' to clear", targetBead.ID, targetBead.Anvil, targetBead.ID)})
 			return ipc.Response{Type: "error", Payload: msg}
 		}
@@ -4923,12 +4925,12 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 		}
 		canSpawnAnvil, err := worker.CanSpawn(d.db, targetBead.Anvil, maxSmiths)
 		if err != nil {
-			d.activeBeads.Delete(targetBead.ID)
+			d.releaseBeadSlot(targetBead.ID)
 			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("checking anvil capacity: %v", err)})
 			return ipc.Response{Type: "error", Payload: msg}
 		}
 		if !canSpawnAnvil {
-			d.activeBeads.Delete(targetBead.ID)
+			d.releaseBeadSlot(targetBead.ID)
 			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("anvil %q capacity reached (max %d smiths)", targetBead.Anvil, maxSmiths)})
 			return ipc.Response{Type: "error", Payload: msg}
 		}
@@ -4939,12 +4941,12 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 		}
 		canSpawnGlobal, err := worker.CanSpawnGlobal(d.db, maxTotal)
 		if err != nil {
-			d.activeBeads.Delete(targetBead.ID)
+			d.releaseBeadSlot(targetBead.ID)
 			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("checking global capacity: %v", err)})
 			return ipc.Response{Type: "error", Payload: msg}
 		}
 		if !canSpawnGlobal {
-			d.activeBeads.Delete(targetBead.ID)
+			d.releaseBeadSlot(targetBead.ID)
 			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("global capacity reached (max %d smiths)", maxTotal)})
 			return ipc.Response{Type: "error", Payload: msg}
 		}
@@ -4953,17 +4955,16 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 		// identify this as Forge-owned even if the claim is killed after
 		// committing server-side, and through the claim→worktree window (Forge-au4z).
 		claimWorkerID := d.insertPendingWorker(targetBead.ID, targetBead.Anvil, targetBead.Title)
+		ctrl.workerID = claimWorkerID
 
 		// Claim the bead
 		if err := d.claimBead(context.Background(), targetBead.ID, anvilCfg.Path); err != nil {
 			d.abortClaim(targetBead.ID, targetBead.Anvil, claimWorkerID, fmt.Sprintf("claim failed: %v", err), err)
-			d.activeBeads.Delete(targetBead.ID)
+			d.releaseBeadSlot(targetBead.ID)
 			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("failed to claim bead: %v", err)})
 			return ipc.Response{Type: "error", Payload: msg}
 		}
 
-		ctrl := newControlHandle(claimWorkerID)
-		d.registerControlHandle(targetBead.ID, ctrl)
 		d.wg.Add(1)
 		go d.dispatchBead(context.Background(), *targetBead, anvilCfg, claimWorkerID, ctrl)
 

@@ -15,10 +15,11 @@ const steerMailboxSize = 16
 // beadID, pushes a steer message into the mailbox, and/or triggers the
 // interrupt to stop the currently running spawn.
 //
-// A handle is registered at the same site as activeBeads (before launching the
-// dispatchBead goroutine) so steering can be queued immediately. It is
-// deregistered in dispatchBead's defer stack after activeBeads.Delete, so
-// there is no window where the bead is in-flight but has no handle.
+// A handle is registered atomically alongside activeBeads.LoadOrStore so
+// steering can be queued immediately after dispatch. It is deregistered via
+// releaseBeadSlot (which pairs activeBeads.Delete + deregisterControlHandle
+// in a single call), so there is no window where the bead is in-flight but
+// has no handle.
 type controlHandle struct {
 	// workerID is the DB worker row ID for the pipeline this handle controls.
 	workerID string
@@ -85,11 +86,20 @@ func (d *Daemon) registerControlHandle(beadID string, h *controlHandle) {
 	d.controlHandles.Store(beadID, h)
 }
 
-// deregisterControlHandle removes the control handle for a bead. Called in
-// dispatchBead's defer stack after activeBeads.Delete, so the handle remains
-// accessible for the full duration the bead is marked in-flight.
+// deregisterControlHandle removes the control handle for a bead. Prefer
+// releaseBeadSlot which pairs this with activeBeads.Delete in the correct order.
 func (d *Daemon) deregisterControlHandle(beadID string) {
 	d.controlHandles.Delete(beadID)
+}
+
+// releaseBeadSlot atomically removes both the activeBeads reservation and the
+// control handle for a bead. Ordering: activeBeads.Delete first, then
+// deregisterControlHandle, so the handle remains accessible for the full
+// duration the bead is marked in-flight. Safe to call even if no handle was
+// registered (sync.Map.Delete is a no-op for absent keys).
+func (d *Daemon) releaseBeadSlot(beadID string) {
+	d.activeBeads.Delete(beadID)
+	d.deregisterControlHandle(beadID)
 }
 
 // lookupControlHandle returns the control handle for a bead, if one is
