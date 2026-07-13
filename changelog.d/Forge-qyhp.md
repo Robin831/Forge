@@ -1,0 +1,2 @@
+category: Fixed
+- **Crucible no longer ships incomplete epics as success** - A child PR-creation failure now pauses the crucible (with one automatic retry to absorb transient gh/network failures) instead of continuing and merging an epic that is missing the child's work. Skipped children (external blockers, claim failures) are now accounted for separately, and the final PR is created and the parent bead closed only when every child's work is on the feature branch. (Forge-qyhp)

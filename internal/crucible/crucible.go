@@ -109,8 +109,12 @@ type Result struct {
 	FinalPR       *vcs.PR // Non-nil when final PR was created successfully.
 	ChildrenDone  int
 	ChildrenTotal int
-	Error         error
-	PausedChildID string // Non-empty if paused due to child failure.
+	// ChildrenSkipped counts children whose work never landed on the feature
+	// branch (external blockers, claim failure). A non-zero value means the
+	// epic is incomplete and the Crucible must not ship a final PR.
+	ChildrenSkipped int
+	Error           error
+	PausedChildID   string // Non-empty if paused due to child failure.
 }
 
 // Run orchestrates a parent bead's children on a feature branch.
@@ -292,18 +296,32 @@ func Run(ctx context.Context, p Params) *Result {
 	})
 
 	// 4. Dispatch each child in order.
+	//
+	// completedChildren counts children whose work actually landed on the
+	// feature branch (merged, or a legitimate no-op close). skippedChildren
+	// records children whose work never landed (external blockers, claim
+	// failure) — if any child is skipped the epic is incomplete and we must
+	// pause instead of shipping a final PR, so the missing work is never
+	// silently reported as success.
+	completedChildren := 0
+	var skippedChildren []string
 	for i, child := range sorted {
 		if ctx.Err() != nil {
 			return &Result{
-				Error:         ctx.Err(),
-				ChildrenDone:  i,
-				ChildrenTotal: len(sorted),
+				Error:           ctx.Err(),
+				ChildrenDone:    completedChildren,
+				ChildrenTotal:   len(sorted),
+				ChildrenSkipped: len(skippedChildren),
 			}
 		}
 
 		// Skip children with unresolved external dependencies.
 		if hasExternalBlockers(child, sorted, p.ParentBead.ID) {
 			log.Warn("skipping child with external blockers", "child", child.ID)
+			skippedChildren = append(skippedChildren, child.ID)
+			p.emitEvent(state.EventCrucibleChildFailed,
+				fmt.Sprintf("Crucible %s: child %s skipped — unresolved external dependencies", p.ParentBead.ID, child.ID),
+				child.ID)
 			continue
 		}
 
@@ -318,6 +336,7 @@ func Run(ctx context.Context, p Params) *Result {
 			if err := p.closeBead(ctx, child.ID, anvilPath); err != nil {
 				log.Warn("failed to close orchestration task", "child", child.ID, "error", err)
 			}
+			completedChildren++
 			continue
 		}
 
@@ -332,15 +351,20 @@ func Run(ctx context.Context, p Params) *Result {
 			Branch:            branch,
 			Phase:             "dispatching",
 			TotalChildren:     len(sorted),
-			CompletedChildren: i,
+			CompletedChildren: completedChildren,
 			CurrentChild:      child.ID,
 			StartedAt:         time.Now(),
 		})
 
-		// Claim child bead.
+		// Claim child bead. A claim failure means the child's work never runs,
+		// so record it as skipped — the epic cannot be shipped complete.
 		if err := p.claimBead(ctx, child.ID, anvilPath); err != nil {
 			log.Error("failed to claim child", "child", child.ID, "error", err)
-			continue // Skip this child rather than pausing the whole Crucible.
+			skippedChildren = append(skippedChildren, child.ID)
+			p.emitEvent(state.EventCrucibleChildFailed,
+				fmt.Sprintf("Crucible %s: child %s skipped — claim failed: %v", p.ParentBead.ID, child.ID, err),
+				child.ID)
+			continue // Don't pause immediately; account for the skip at the end.
 		}
 
 		// Run pipeline for child, targeting the feature branch.
@@ -356,6 +380,7 @@ func Run(ctx context.Context, p Params) *Result {
 			if err := p.closeBead(ctx, child.ID, anvilPath); err != nil {
 				log.Warn("failed to close no-diff child bead", "child", child.ID, "error", err)
 			}
+			completedChildren++
 			continue
 		}
 
@@ -370,6 +395,7 @@ func Run(ctx context.Context, p Params) *Result {
 			if err := p.closeBead(ctx, child.ID, anvilPath); err != nil {
 				log.Warn("failed to close no-changes-needed child bead", "child", child.ID, "error", err)
 			}
+			completedChildren++
 			continue
 		}
 
@@ -401,15 +427,16 @@ func Run(ctx context.Context, p Params) *Result {
 				Branch:            branch,
 				Phase:             "paused",
 				TotalChildren:     len(sorted),
-				CompletedChildren: i,
+				CompletedChildren: completedChildren,
 				CurrentChild:      child.ID,
 			})
 
 			return &Result{
-				ChildrenDone:  i,
-				ChildrenTotal: len(sorted),
-				PausedChildID: child.ID,
-				Error:         fmt.Errorf("child %s failed: %s", child.ID, reason),
+				ChildrenDone:    completedChildren,
+				ChildrenTotal:   len(sorted),
+				ChildrenSkipped: len(skippedChildren),
+				PausedChildID:   child.ID,
+				Error:           fmt.Errorf("child %s failed: %s", child.ID, reason),
 			}
 		}
 
@@ -423,8 +450,12 @@ func Run(ctx context.Context, p Params) *Result {
 			childReviewerNotes = childResult.ReviewResult.Summary
 		}
 
-		// Create PR from child branch → feature branch.
-		pr, err := p.createPR(ctx, vcs.CreateParams{
+		// Create PR from child branch → feature branch. A failure here must
+		// pause the Crucible, exactly like a merge failure: without the PR the
+		// child's work is never merged into the feature branch, so continuing
+		// would ship an epic missing this child's changes. Retry once to absorb
+		// transient gh/network failures before pausing.
+		childPRParams := vcs.CreateParams{
 			WorktreePath:    anvilPath,
 			BeadID:          child.ID,
 			Title:           fmt.Sprintf("%s (%s)", child.Title, child.ID),
@@ -437,14 +468,38 @@ func Run(ctx context.Context, p Params) *Result {
 			ChangeSummary:   childChangelogSummary,
 			ReviewerNotes:   childReviewerNotes,
 			ExternalRef:     child.ExternalRef,
-		})
+		}
+		pr, err := p.createPR(ctx, childPRParams)
 		if err != nil {
-			log.Error("failed to create child PR", "child", child.ID, "error", err)
+			log.Warn("child PR creation failed, retrying once", "child", child.ID, "error", err)
+			pr, err = p.createPR(ctx, childPRParams)
+		}
+		if err != nil {
+			log.Error("failed to create child PR after retry", "child", child.ID, "error", err)
 			p.emitEvent(state.EventCrucibleChildFailed,
 				fmt.Sprintf("Crucible %s: child %s PR creation failed — %v", p.ParentBead.ID, child.ID, err),
 				child.ID)
-			// Continue anyway — the branch changes are still pushed.
-			continue
+			p.emitEvent(state.EventCruciblePaused,
+				fmt.Sprintf("Crucible %s paused: child %s PR creation failed", p.ParentBead.ID, child.ID),
+				p.ParentBead.ID)
+
+			p.updateStatus(Status{
+				ParentID:          p.ParentBead.ID,
+				Anvil:             p.AnvilName,
+				Branch:            branch,
+				Phase:             "paused",
+				TotalChildren:     len(sorted),
+				CompletedChildren: completedChildren,
+				CurrentChild:      child.ID,
+			})
+
+			return &Result{
+				ChildrenDone:    completedChildren,
+				ChildrenTotal:   len(sorted),
+				ChildrenSkipped: len(skippedChildren),
+				PausedChildID:   child.ID,
+				Error:           fmt.Errorf("child %s PR creation failed: %w", child.ID, err),
+			}
 		}
 
 		log.Info("crucible child PR created", "child", child.ID, "pr", pr.Number)
@@ -456,6 +511,7 @@ func Run(ctx context.Context, p Params) *Result {
 		// When AutoMergeCrucibleChildren is false, PRs are left open for human review.
 		if !p.AutoMergeCrucibleChildren {
 			log.Info("auto-merge disabled, skipping merge for child PR", "child", child.ID, "pr", pr.Number)
+			completedChildren++
 			continue
 		}
 		if err := p.mergePR(ctx, pr.Number, anvilPath); err != nil {
@@ -468,10 +524,11 @@ func Run(ctx context.Context, p Params) *Result {
 				p.ParentBead.ID)
 
 			return &Result{
-				ChildrenDone:  i,
-				ChildrenTotal: len(sorted),
-				PausedChildID: child.ID,
-				Error:         fmt.Errorf("child %s PR #%d merge failed: %w", child.ID, pr.Number, err),
+				ChildrenDone:    completedChildren,
+				ChildrenTotal:   len(sorted),
+				ChildrenSkipped: len(skippedChildren),
+				PausedChildID:   child.ID,
+				Error:           fmt.Errorf("child %s PR #%d merge failed: %w", child.ID, pr.Number, err),
 			}
 		}
 
@@ -484,9 +541,37 @@ func Run(ctx context.Context, p Params) *Result {
 		if err := p.closeBead(ctx, child.ID, anvilPath); err != nil {
 			log.Warn("failed to close child bead", "child", child.ID, "error", err)
 		}
+		completedChildren++
 	}
 
-	// 5. Create final PR from feature branch → main.
+	// 5. If any child was skipped its work never reached the feature branch,
+	// so the epic is incomplete. Pause instead of shipping a final PR that
+	// silently omits the skipped child's changes, and leave the parent open.
+	if len(skippedChildren) > 0 {
+		reason := fmt.Sprintf("epic incomplete: %d of %d children skipped (%s)",
+			len(skippedChildren), len(sorted), strings.Join(skippedChildren, ", "))
+		log.Error("crucible paused: children skipped", "skipped", skippedChildren, "completed", completedChildren)
+		p.emitEvent(state.EventCruciblePaused,
+			fmt.Sprintf("Crucible %s paused: %s", p.ParentBead.ID, reason),
+			p.ParentBead.ID)
+		p.updateStatus(Status{
+			ParentID:          p.ParentBead.ID,
+			Anvil:             p.AnvilName,
+			Branch:            branch,
+			Phase:             "paused",
+			TotalChildren:     len(sorted),
+			CompletedChildren: completedChildren,
+		})
+		return &Result{
+			ChildrenDone:    completedChildren,
+			ChildrenTotal:   len(sorted),
+			ChildrenSkipped: len(skippedChildren),
+			PausedChildID:   skippedChildren[0],
+			Error:           fmt.Errorf("%s", reason),
+		}
+	}
+
+	// 6. Create final PR from feature branch → main.
 	log.Info("all children complete, creating final PR", "branch", branch)
 	p.updateStatus(Status{
 		ParentID:          p.ParentBead.ID,
@@ -494,7 +579,7 @@ func Run(ctx context.Context, p Params) *Result {
 		Branch:            branch,
 		Phase:             "final_pr",
 		TotalChildren:     len(sorted),
-		CompletedChildren: len(sorted),
+		CompletedChildren: completedChildren,
 	})
 
 	finalPR, err := p.createPR(ctx, vcs.CreateParams{
@@ -511,7 +596,7 @@ func Run(ctx context.Context, p Params) *Result {
 	})
 	if err != nil {
 		return &Result{
-			ChildrenDone:  len(sorted),
+			ChildrenDone:  completedChildren,
 			ChildrenTotal: len(sorted),
 			Error:         fmt.Errorf("creating final PR: %w", err),
 		}
@@ -528,10 +613,11 @@ func Run(ctx context.Context, p Params) *Result {
 		Branch:            branch,
 		Phase:             "complete",
 		TotalChildren:     len(sorted),
-		CompletedChildren: len(sorted),
+		CompletedChildren: completedChildren,
 	})
 
-	// Close the parent bead now that the final PR is created.
+	// Close the parent bead now that the final PR is created. Reached only when
+	// no child was skipped, so every child's work is on the feature branch.
 	if err := p.closeBead(ctx, p.ParentBead.ID, anvilPath); err != nil {
 		log.Warn("failed to close parent bead", "parent", p.ParentBead.ID, "error", err)
 	}
@@ -539,7 +625,7 @@ func Run(ctx context.Context, p Params) *Result {
 	return &Result{
 		Success:       true,
 		FinalPR:       finalPR,
-		ChildrenDone:  len(sorted),
+		ChildrenDone:  completedChildren,
 		ChildrenTotal: len(sorted),
 	}
 }
