@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"context"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -322,4 +323,112 @@ func TestSteer_BetweenSpawns_AppliedAtWardenApproval(t *testing.T) {
 	assert.EqualValues(t, 1, atomic.LoadInt32(&resumeCalls), "the last session must be resumed exactly once")
 	assert.Equal(t, "sess-1", resumeSession, "the steer must resume the last completed session")
 	assert.Contains(t, resumeMsg, "also update the docs", "the resume prompt must carry the steer message")
+}
+
+// TestPause_BetweenSpawns_LoopTop_ParksBeforeNextSpawn covers the loop-top pause
+// drain: a pause enqueued while Warden runs on an iteration that ends in
+// request_changes (not approval) has no live spawn to interrupt and is not seen
+// by the Warden-approval drain. It must be honoured at the TOP of the next
+// iteration — parking the pipeline BEFORE the next Smith spawn starts — rather
+// than silently carried past. Resuming continues the recorded session.
+func TestPause_BetweenSpawns_LoopTop_ParksBeforeNextSpawn(t *testing.T) {
+	db := newTestDB(t)
+	params, _, _ := baseParams(t, db)
+	params.WorkerID = "test-worker"
+
+	params.SmithRunner = func(_ context.Context, _, _, _ string, _ provider.Provider, _ []string) (*smith.Process, error) {
+		return smith.NewProcessForTest(&smith.Result{ExitCode: 0, SessionID: "sess-1", ResultSubtype: "success"}), nil
+	}
+	params.EmptyDiffChecker = func(_, _ string) bool { return false }
+
+	ph := &fakeParkHandle{pause: make(chan struct{}, 1), resume: make(chan string, 1)}
+	params.ParkHandle = ph
+
+	var wardenCalls int32
+	params.WardenReviewer = func(_ context.Context, _, _, _, _, _ string, _ *state.DB, _ string, _ ...provider.Provider) (*warden.ReviewResult, error) {
+		if atomic.AddInt32(&wardenCalls, 1) == 1 {
+			// Operator pauses while the first review is in flight; that review
+			// then requests changes (no approval-time drain). The acknowledged
+			// pause must be caught at the next iteration's loop top.
+			ph.pause <- struct{}{}
+			return &warden.ReviewResult{Verdict: warden.VerdictRequestChanges, Summary: "tweak it"}, nil
+		}
+		return &warden.ReviewResult{Verdict: warden.VerdictApprove, Summary: "LGTM"}, nil
+	}
+
+	var resumeSession string
+	var resumeCalls int32
+	params.SmithResumeRunner = func(_ context.Context, _, _, _ string, _ provider.Provider, sessionID string, _ []string) (*smith.Process, error) {
+		atomic.AddInt32(&resumeCalls, 1)
+		resumeSession = sessionID
+		return smith.NewProcessForTest(&smith.Result{ExitCode: 0, SessionID: "sess-2", ResultSubtype: "success"}), nil
+	}
+
+	done := make(chan *Outcome, 1)
+	go func() { done <- Run(context.Background(), params) }()
+
+	require.Eventually(t, func() bool {
+		w, err := db.GetWorker("test-worker")
+		return err == nil && w.Status == state.WorkerPaused
+	}, 2*time.Second, 5*time.Millisecond, "a pause enqueued during a request_changes iteration must park the bead at the next loop top, not be dropped")
+
+	// The next spawn must not have started while parked.
+	assert.EqualValues(t, 0, atomic.LoadInt32(&resumeCalls), "the pipeline must park BEFORE the next spawn, not after starting it")
+
+	ph.resume <- ""
+	select {
+	case outcome := <-done:
+		require.NoError(t, outcome.Error)
+		assert.True(t, outcome.Success, "pipeline should succeed after the parked pause resumes")
+		assert.EqualValues(t, 1, atomic.LoadInt32(&resumeCalls), "the parked session must be resumed exactly once after resume")
+		assert.Equal(t, "sess-1", resumeSession, "resume must reuse the session captured before the pause")
+	case <-time.After(2 * time.Second):
+		t.Fatal("pipeline did not resume within the deadline")
+	}
+}
+
+// TestPause_TerminalPath_SurfacedNotDropped covers the terminal safety net: a
+// pause enqueued while Warden runs on the FINAL iteration, which then reaches a
+// non-approval terminal path (request_changes at max iterations → needs-human),
+// cannot take effect — there is no further spawn or loop turn to honour it. It
+// must NOT be silently dropped: Run's deferred exit handler surfaces it in the
+// event log so the operator learns the acknowledged pause could not be applied.
+func TestPause_TerminalPath_SurfacedNotDropped(t *testing.T) {
+	db := newTestDB(t)
+	params, _, _ := baseParams(t, db)
+	params.WorkerID = "test-worker"
+	params.MaxIterations = 1
+
+	params.SmithRunner = func(_ context.Context, _, _, _ string, _ provider.Provider, _ []string) (*smith.Process, error) {
+		return smith.NewProcessForTest(&smith.Result{ExitCode: 0, SessionID: "sess-1", ResultSubtype: "success"}), nil
+	}
+	params.EmptyDiffChecker = func(_, _ string) bool { return false }
+
+	ph := &fakeParkHandle{pause: make(chan struct{}, 1), resume: make(chan string, 1)}
+	params.ParkHandle = ph
+
+	params.WardenReviewer = func(_ context.Context, _, _, _, _, _ string, _ *state.DB, _ string, _ ...provider.Provider) (*warden.ReviewResult, error) {
+		// Operator pauses during the only review, which then requests changes at
+		// the iteration cap — a terminal non-approval path.
+		ph.pause <- struct{}{}
+		return &warden.ReviewResult{Verdict: warden.VerdictRequestChanges, Summary: "not done"}, nil
+	}
+
+	outcome := Run(context.Background(), params)
+
+	assert.True(t, outcome.NeedsHuman, "request_changes at max iterations should escalate to needs-human")
+	assert.False(t, outcome.Success)
+
+	// The acknowledged pause could not take effect on this terminal path, so it
+	// must be surfaced in the event log rather than silently discarded.
+	events, err := db.RecentEvents(50)
+	require.NoError(t, err)
+	var surfaced bool
+	for _, e := range events {
+		if e.Type == state.EventBeadPaused && strings.Contains(e.Message, "could not take effect") {
+			surfaced = true
+			break
+		}
+	}
+	assert.True(t, surfaced, "a pause that cannot take effect on a terminal path must be surfaced in the event log, not silently dropped")
 }

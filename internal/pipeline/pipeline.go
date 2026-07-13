@@ -146,11 +146,15 @@ func drainSteer(ch <-chan string) (string, bool) {
 // It is the between-spawns counterpart to waitSmithWithSteer's pause branch:
 // waitSmithWithSteer only observes a pause DURING a spawn, so a pause enqueued
 // while Temper/Warden ran (when no spawn is live to interrupt) would otherwise
-// never be seen. Draining it here — at the loop top and immediately before a
-// bead completes on Warden approval — guarantees an acknowledged pause is either
-// honoured (the pipeline parks) or, on a terminal path, surfaced rather than
-// silently dropped. The pipeline goroutine is the sole consumer of the pause
-// signal, so this drain never races waitSmithWithSteer for the same token.
+// never be seen. It is drained at three points: at the loop top (park before the
+// next spawn), immediately before a bead completes on Warden approval (park
+// instead of completing), and — as a terminal safety net — in Run's deferred
+// exit handler, which surfaces a still-pending pause in the event log when the
+// pipeline finishes on a non-approval path (failure/escalation) with no further
+// turn to honour it. Together these guarantee an acknowledged pause is either
+// honoured (the pipeline parks) or explicitly surfaced, never silently dropped.
+// The pipeline goroutine is the sole consumer of the pause signal, so this drain
+// never races waitSmithWithSteer for the same token.
 func drainPause(ch <-chan struct{}) bool {
 	if ch == nil {
 		return false
@@ -899,6 +903,36 @@ func Run(ctx context.Context, p Params) *Outcome {
 	if parkHandle != nil {
 		pauseCh = parkHandle.PauseRequested()
 	}
+
+	// Terminal safety net: a pause or steer acknowledged to the operator with
+	// success must NEVER be silently dropped. The in-spawn (waitSmithWithSteer),
+	// loop-top, and Warden-approval drains honour a pending signal by parking or
+	// re-iterating. But a signal can also be enqueued while Temper/Warden run on
+	// an iteration that then reaches a TERMINAL non-approval path — a Temper
+	// failure, exhausted iterations, a Smith/spawn error, or an escalation to a
+	// human. On those paths there is no further spawn or loop turn to carry the
+	// signal, and the worker exits failed/needs-human rather than paused, so the
+	// pause/steer cannot take effect. Rather than discard it, drain and surface
+	// it in the event log on the way out: the operator is told explicitly that
+	// the signal could not be applied (and to re-dispatch), never left believing
+	// a silent success. This runs on EVERY return; on the paths that already
+	// consumed the signal (park, loop-top, Warden approval) the channels are
+	// empty here, so it is a no-op.
+	defer func() {
+		if drainPause(pauseCh) {
+			log.Printf("[pipeline:%s] Pause acknowledged but pipeline terminated before it could take effect — surfacing", workerID)
+			_ = p.DB.LogEvent(state.EventBeadPaused,
+				"Pause could not take effect: the pipeline had already terminated (no further Smith turn to interrupt). Re-dispatch the bead to apply it.",
+				p.Bead.ID, p.AnvilName)
+		}
+		if steerMsg, ok := drainSteer(steerCh); ok {
+			log.Printf("[pipeline:%s] Steer acknowledged but pipeline terminated before it could take effect — surfacing", workerID)
+			_ = p.DB.LogEvent(state.EventBeadSteered,
+				fmt.Sprintf("Steer could not take effect: the pipeline had already terminated (no further Smith turn). Re-dispatch the bead to apply it. Message: %q", steerMsg),
+				p.Bead.ID, p.AnvilName)
+		}
+	}()
+
 	interruptSpawn := p.SmithInterrupter
 	if interruptSpawn == nil {
 		interruptSpawn = func(proc *smith.Process) { proc.Interrupt(steerGrace) }
@@ -1482,6 +1516,32 @@ func Run(ctx context.Context, p Params) *Outcome {
 	for iteration := 1; iteration <= maxIter; iteration++ {
 		outcome.Iterations = iteration
 		log.Printf("[pipeline:%s] Iteration %d/%d", workerID, iteration, maxIter)
+
+		// Between-spawns pause (loop top): an operator may have paused while
+		// Temper/Warden ran on the PRIOR iteration — a window with no live spawn
+		// for waitSmithWithSteer to interrupt. Consume it HERE, before this
+		// iteration's spawn, so an acknowledged pause parks the pipeline instead
+		// of being carried silently past. parkPipeline blocks until a resume
+		// arrives (or the park is cancelled by shutdown, in which case the worker
+		// is left paused and we return). We pass the last completed session so the
+		// resume continues it in place; on resume parkPipeline has armed
+		// pendingResume (or folded the message into the prompt), so we fall
+		// through into the spawn rather than continuing/skipping the iteration.
+		//
+		// The iteration > 1 && !pendingResume guard mirrors the mode-B steer
+		// drain below: a between-spawns pause can only exist AFTER a prior
+		// spawn+Temper+Warden cycle, so on iteration 1 a pending pause is instead
+		// left for waitSmithWithSteer to observe as an in-spawn park of the very
+		// first spawn (never consumed early here). Skipping when a resume is
+		// already armed keeps this from clobbering a steer/park resume that is
+		// about to run; such a pause is picked up by the next spawn's
+		// waitSmithWithSteer instead, so it is never lost.
+		if iteration > 1 && !pendingResume && drainPause(pauseCh) {
+			log.Printf("[pipeline:%s] Pause pending at loop top (iteration %d) — parking before spawn", workerID, iteration)
+			if parkPipeline(lastSessionID, lastSessionProvider, iteration) {
+				return outcome
+			}
+		}
 
 		// Capture HEAD before smith runs so we can detect new commits afterward
 		// and compute the diff for the next iteration's prompt context.
