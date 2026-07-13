@@ -1239,6 +1239,7 @@ func Run(ctx context.Context, p Params) *Outcome {
 	var resumeSessionID string
 	var resumeMessage string
 	var resumeProvider provider.Provider
+	var resumeParkStart time.Time
 
 	// lastSessionID is the session_id captured from the most recently completed
 	// Smith spawn (fresh or resumed). Steer mode B uses it to resume that
@@ -1350,6 +1351,19 @@ func Run(ctx context.Context, p Params) *Outcome {
 					log.Printf("[pipeline:%s] Steer mode B: no session to resume, folded queued steer message into fresh prompt (iteration %d)", workerID, iteration)
 				}
 			}
+		}
+
+		// Finalize the smith-timeout extension right before the spawn so
+		// that overhead between the park event and this point (DB ops,
+		// gitRevParseHEAD, hooks) does not consume the remaining budget.
+		if p.SmithTimeout > 0 && !resumeParkStart.IsZero() {
+			parkedFor := time.Since(resumeParkStart)
+			pauses.add(parkedFor)
+			extendedDeadline := pauses.extend(originalDeadline)
+			ctx = timeout.set(extendedDeadline)
+			log.Printf("[pipeline:%s] Smith deadline extended to %s (total paused %s)",
+				workerID, extendedDeadline.Format(time.RFC3339), pauses.Total().Round(time.Second))
+			resumeParkStart = time.Time{}
 		}
 
 		if pendingResume {
@@ -1475,6 +1489,7 @@ func Run(ctx context.Context, p Params) *Outcome {
 		// incomplete, and before steer mode A because the two are mutually
 		// exclusive for a single spawn.
 		if pausedThisIter {
+			resumeParkStart = time.Now()
 			park := ParkRecord{
 				SessionID: smithResult.SessionID,
 				Iteration: iteration,
@@ -1512,19 +1527,15 @@ func Run(ctx context.Context, p Params) *Outcome {
 				return outcome
 			}
 
-			// Pause the deadline: advance the smith timeout by the wall-clock time
-			// spent parked so the pause is not charged against the smith budget.
-			// The deadline is recomputed from the fixed original deadline plus the
-			// accumulated pause (idempotent across repeated pauses), and the
-			// timeout context is rebuilt from baseCtx so the extension is not
-			// clamped by the previous (shorter) deadline.
+			// Set a temporary generous deadline so hooks and overhead code
+			// between here and the next spawn do not see an expired context.
+			// The real extension (accounting for ALL overhead between the park
+			// event and the spawn) happens right before spawnResume/spawnSmith.
 			if p.SmithTimeout > 0 {
 				parkedFor := time.Since(pauseStart)
-				pauses.add(parkedFor)
-				extendedDeadline := pauses.extend(originalDeadline)
-				ctx = timeout.set(extendedDeadline)
-				log.Printf("[pipeline:%s] Resumed after %s parked; smith deadline extended to %s (total paused %s)",
-					workerID, parkedFor.Round(time.Second), extendedDeadline.Format(time.RFC3339), pauses.Total().Round(time.Second))
+				log.Printf("[pipeline:%s] Resumed after %s parked; deadline will be extended before next spawn (total paused so far %s)",
+					workerID, parkedFor.Round(time.Second), (pauses.Total() + parkedFor).Round(time.Second))
+				ctx = timeout.set(time.Now().Add(p.SmithTimeout))
 			}
 
 			// Resume: transition paused -> running and continue.
