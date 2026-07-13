@@ -12,6 +12,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"os/exec"
@@ -125,6 +126,10 @@ type Config struct {
 	// monitoring records (e.g. the worker DB row) so that live-tail and
 	// progress tracking work during the schematic phase.
 	OnSpawn func(pid int, logPath string)
+	// LogDir, when set, receives a copy of the schematic session log so it
+	// survives the temp-dir cleanup. Typically set to the worktree's
+	// .forge-logs directory by the pipeline.
+	LogDir string
 }
 
 // DefaultConfig returns sensible defaults for Schematic.
@@ -229,8 +234,8 @@ func Run(ctx context.Context, cfg Config, bead poller.Bead, anvilPath string, pv
 
 	log.Printf("[schematic:%s] Analysing bead scope (provider: %s)", bead.ID, pv.Label())
 
-	// Use the same smith.SpawnWithProvider to run the AI session in a temp dir
-	// so the schematic session cannot modify the main repo.
+	// Run the AI session in a temp dir so the schematic session cannot modify
+	// the main repo.
 	workDir, err := os.MkdirTemp("", "forge-schematic-*")
 	if err != nil {
 		return &Result{
@@ -258,6 +263,10 @@ func Run(ctx context.Context, cfg Config, bead poller.Bead, anvilPath string, pv
 	}
 
 	smithResult := process.Wait()
+
+	if cfg.LogDir != "" {
+		copySessionLog(process.LogPath, cfg.LogDir)
+	}
 
 	result := &Result{
 		Duration: time.Since(start),
@@ -1005,4 +1014,33 @@ Output your verdict as a JSON block:
 `)
 
 	return b.String()
+}
+
+func copySessionLog(src, dstDir string) {
+	if src == "" {
+		return
+	}
+	sf, err := os.Open(src)
+	if err != nil {
+		log.Printf("[schematic] failed to open session log for copy: %v", err)
+		return
+	}
+	defer sf.Close()
+
+	if err := os.MkdirAll(dstDir, 0o755); err != nil {
+		log.Printf("[schematic] failed to create log dir %s: %v", dstDir, err)
+		return
+	}
+
+	dst := filepath.Join(dstDir, filepath.Base(src))
+	df, err := os.Create(dst)
+	if err != nil {
+		log.Printf("[schematic] failed to create log copy %s: %v", dst, err)
+		return
+	}
+	defer df.Close()
+
+	if _, err := io.Copy(df, sf); err != nil {
+		log.Printf("[schematic] failed to copy session log: %v", err)
+	}
 }

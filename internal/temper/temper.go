@@ -537,39 +537,38 @@ func writeTemperLog(worktreePath string, result *Result) {
 	}
 	logPath := filepath.Join(logDir, fmt.Sprintf("temper-%d.log", time.Now().UnixMilli()))
 
-	var b strings.Builder
-	fmt.Fprintf(&b, "Temper verification — %d step(s), total %.1fs\n", len(result.Steps), result.Duration.Seconds())
-	if result.Passed {
-		b.WriteString("Overall: PASS\n")
-	} else {
-		fmt.Fprintf(&b, "Overall: FAIL (first failing step: %s)\n", result.FailedStep)
-	}
-	for i, s := range result.Steps {
-		fmt.Fprintf(&b, "\n=== [%d] %s — %s ===\n", i+1, s.Name, stepStatus(s))
-		fmt.Fprintf(&b, "Command:  %s\n", s.Command)
-		fmt.Fprintf(&b, "Exit:     %d\n", s.ExitCode)
-		fmt.Fprintf(&b, "Duration: %.1fs\n", s.Duration.Seconds())
-		if s.Optional {
-			b.WriteString("Optional: true\n")
-		}
-		if s.Skipped {
-			b.WriteString("Skipped:  true\n")
-		}
-		b.WriteString("Output:\n")
-		b.WriteString(s.Output)
-		if !strings.HasSuffix(s.Output, "\n") {
-			b.WriteString("\n")
-		}
-	}
-
 	f, err := os.OpenFile(logPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
 	if err != nil {
 		log.Printf("[temper] failed to create temper log %s: %v", logPath, err)
 		return
 	}
 	defer f.Close()
-	if _, err := f.WriteString(b.String()); err != nil {
-		log.Printf("[temper] failed to write temper log %s: %v", logPath, err)
+
+	w := bufio.NewWriter(f)
+	defer w.Flush()
+
+	fmt.Fprintf(w, "Temper verification — %d step(s), total %.1fs\n", len(result.Steps), result.Duration.Seconds())
+	if result.Passed {
+		fmt.Fprint(w, "Overall: PASS\n")
+	} else {
+		fmt.Fprintf(w, "Overall: FAIL (first failing step: %s)\n", result.FailedStep)
+	}
+	for i, s := range result.Steps {
+		fmt.Fprintf(w, "\n=== [%d] %s — %s ===\n", i+1, s.Name, stepStatus(s))
+		fmt.Fprintf(w, "Command:  %s\n", s.Command)
+		fmt.Fprintf(w, "Exit:     %d\n", s.ExitCode)
+		fmt.Fprintf(w, "Duration: %.1fs\n", s.Duration.Seconds())
+		if s.Optional {
+			fmt.Fprint(w, "Optional: true\n")
+		}
+		if s.Skipped {
+			fmt.Fprint(w, "Skipped:  true\n")
+		}
+		fmt.Fprint(w, "Output:\n")
+		fmt.Fprint(w, s.Output)
+		if !strings.HasSuffix(s.Output, "\n") {
+			fmt.Fprint(w, "\n")
+		}
 	}
 }
 

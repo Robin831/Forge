@@ -717,6 +717,8 @@ func Run(ctx context.Context, p Params) *Outcome {
 			}
 		}
 
+		schemCfg.LogDir = filepath.Join(wt.Path, ".forge-logs")
+
 		runSchemBool, skipReason := shouldRunSchematic(schemCfg, p.Bead, providers)
 		if runSchemBool {
 			// before_schematic hook

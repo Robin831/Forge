@@ -162,7 +162,7 @@ func FetchRecentPRNumbers(ctx context.Context, repoDir string, limit int) ([]int
 }
 
 // aiRunner executes an AI session with the given prompt and returns its
-// full text response. It uses smith.SpawnWithProvider to benefit from
+// full text response. It uses smith.SpawnWithOptions to benefit from
 // stream-json parsing, provider fallback, and cost tracking. It is a
 // package-level variable so tests can inject a stub without spawning a real
 // process.
