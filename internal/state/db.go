@@ -9,6 +9,7 @@ package state
 import (
 	"database/sql"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -661,6 +662,144 @@ func (db *DB) UpdateWorkerPID(id string, pid int) error {
 func (db *DB) UpdateWorkerLogPath(id string, logPath string) error {
 	_, err := db.conn.Exec(`UPDATE workers SET log_path = ? WHERE id = ?`, logPath, id)
 	return err
+}
+
+// logPathIsUnder reports whether path is a file located inside dir (not dir
+// itself). Both are cleaned before the boundary-aware prefix comparison so a
+// sibling directory sharing a name prefix (e.g. ".forge-logs-old") never matches.
+func logPathIsUnder(path, dir string) bool {
+	path = filepath.Clean(path)
+	dir = filepath.Clean(dir)
+	if path == dir {
+		return false
+	}
+	return strings.HasPrefix(path, dir+string(filepath.Separator))
+}
+
+// RepointWorkerLogPaths remaps the log_path of every workers row for beadID that
+// currently lives under oldLogDir (a worktree's about-to-be-removed .forge-logs
+// directory) to newDir/<basename>, where newDir holds the preserved copies. This
+// keeps historical logs reachable from the web UI after worktree cleanup.
+//
+// Filenames are unix-timestamped so collisions are unlikely; if two rows map to
+// the same basename, the first row keeps the target and later rows are left
+// untouched with a logged warning. Returns the number of rows repointed. The
+// update runs in a single transaction.
+func (db *DB) RepointWorkerLogPaths(beadID, oldLogDir, newDir string) (int, error) {
+	if beadID == "" || oldLogDir == "" || newDir == "" {
+		return 0, nil
+	}
+
+	tx, err := db.conn.Begin()
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+
+	rows, err := tx.Query(`SELECT id, log_path FROM workers WHERE bead_id = ? AND log_path != ''`, beadID)
+	if err != nil {
+		return 0, err
+	}
+
+	type repoint struct {
+		id      string
+		newPath string
+	}
+	var updates []repoint
+	claimed := make(map[string]string) // basename -> worker id that owns it
+	for rows.Next() {
+		var id, logPath string
+		if err := rows.Scan(&id, &logPath); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		if !logPathIsUnder(logPath, oldLogDir) {
+			continue
+		}
+		base := filepath.Base(logPath)
+		if owner, ok := claimed[base]; ok {
+			log.Printf("[state] RepointWorkerLogPaths: basename collision for %q (workers %s and %s); keeping %s", base, owner, id, owner)
+			continue
+		}
+		claimed[base] = id
+		updates = append(updates, repoint{id: id, newPath: filepath.Join(newDir, base)})
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return 0, err
+	}
+	rows.Close()
+
+	count := 0
+	for _, u := range updates {
+		if _, err := tx.Exec(`UPDATE workers SET log_path = ? WHERE id = ?`, u.newPath, u.id); err != nil {
+			return 0, err
+		}
+		count++
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	return count, nil
+}
+
+// BackfillDanglingWorkerLogPaths repairs pre-existing workers rows whose log_path
+// points at a file that no longer exists (typically a removed worktree's
+// .forge-logs). For each dangling row it looks for a preserved copy at
+// logsRoot/<bead_id>/<basename>; when that file exists the row is repointed to
+// it. Rows whose log_path still resolves to an existing file (or whose preserved
+// copy is absent) are left untouched, so repeat calls on later daemon starts are
+// cheap. Returns the number of rows repaired.
+func (db *DB) BackfillDanglingWorkerLogPaths(logsRoot string) (int, error) {
+	if logsRoot == "" {
+		return 0, nil
+	}
+
+	rows, err := db.conn.Query(`SELECT id, bead_id, log_path FROM workers WHERE log_path != ''`)
+	if err != nil {
+		return 0, err
+	}
+
+	type repair struct {
+		id      string
+		newPath string
+	}
+	var repairs []repair
+	for rows.Next() {
+		var id, beadID, logPath string
+		if err := rows.Scan(&id, &beadID, &logPath); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		if beadID == "" {
+			continue
+		}
+		// Only touch dangling rows; a path that still resolves is left alone.
+		if _, statErr := os.Lstat(logPath); statErr == nil {
+			continue
+		} else if !os.IsNotExist(statErr) {
+			continue // permission or other transient error — do not clobber.
+		}
+		candidate := filepath.Join(logsRoot, beadID, filepath.Base(logPath))
+		if _, err := os.Lstat(candidate); err != nil {
+			continue // no preserved copy to point at.
+		}
+		repairs = append(repairs, repair{id: id, newPath: candidate})
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return 0, err
+	}
+	rows.Close()
+
+	count := 0
+	for _, r := range repairs {
+		if _, err := db.conn.Exec(`UPDATE workers SET log_path = ? WHERE id = ?`, r.newPath, r.id); err != nil {
+			return 0, err
+		}
+		count++
+	}
+	return count, nil
 }
 
 // UpdateWorkerTitle updates the display title of a worker.

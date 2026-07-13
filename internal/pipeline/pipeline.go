@@ -591,8 +591,19 @@ func Run(ctx context.Context, p Params) *Outcome {
 	outcome.Branch = wt.Branch
 	defer func() {
 		log.Printf("[pipeline:%s] Cleaning up worktree", workerID)
-		if _, err := preserveWorktreeLogs(wt.Path, p.Bead.ID); err != nil {
+		oldLogDir := filepath.Join(wt.Path, ".forge-logs")
+		dstDir, err := preserveWorktreeLogs(wt.Path, p.Bead.ID)
+		if err != nil {
 			log.Printf("[pipeline:%s] Warning: failed to preserve smith logs: %v", workerID, err)
+		} else if dstDir != "" && p.DB != nil {
+			// Repoint this bead's worker rows from the worktree .forge-logs
+			// (about to be deleted) to the preserved copies so historical logs
+			// remain servable by the web UI after cleanup.
+			if n, rerr := p.DB.RepointWorkerLogPaths(p.Bead.ID, oldLogDir, dstDir); rerr != nil {
+				log.Printf("[pipeline:%s] Warning: failed to repoint worker log paths: %v", workerID, rerr)
+			} else if n > 0 {
+				log.Printf("[pipeline:%s] Repointed %d worker log path(s) to %s", workerID, n, dstDir)
+			}
 		}
 		removeWorktree(ctx, p.AnvilConfig.Path, wt)
 	}()
