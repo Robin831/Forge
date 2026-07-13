@@ -4581,6 +4581,13 @@ func (d *Daemon) killWorkerProcess(workerID string) error {
 // handleIPC processes incoming IPC commands from CLI/TUI clients.
 func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 	switch cmd.Type {
+	case "ping":
+		// Lightweight liveness probe used by ipc.Ping()/IsRunning(). Answers
+		// immediately without touching the DB or shelling out, so it stays
+		// cheap even under load and makes the socket the authoritative
+		// liveness signal for status/pause/resume.
+		data, _ := json.Marshal(map[string]string{"message": "pong"})
+		return ipc.Response{Type: "pong", Payload: data}
 	case "status":
 		workers, _ := d.db.ActiveWorkers()
 		prs, _ := d.db.OpenPRs()
@@ -6968,21 +6975,55 @@ func (d *Daemon) completeAsync(requestID string, resp ipc.Response) {
 	})
 }
 
-// IsRunning checks whether a daemon process is already running by reading
-// the PID file and checking if the process is alive.
+// readPIDFile reads and parses the daemon PID file. It returns the PID and
+// true only when the file exists and holds a valid positive integer. The
+// pidfile is now diagnostic metadata and the SIGINT target for `forge down`;
+// the IPC socket is the authoritative liveness signal (see IsRunning).
+func readPIDFile() (int, bool) {
+	pidPath, err := pidFilePath()
+	if err != nil {
+		return 0, false
+	}
+	data, err := os.ReadFile(pidPath)
+	if err != nil {
+		return 0, false
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
+	if err != nil || pid <= 0 {
+		return 0, false
+	}
+	return pid, true
+}
+
+// IsRunning reports whether a Forge daemon is running. The IPC socket is
+// authoritative: a daemon that answers a ping is running regardless of the
+// pidfile's state. Only when the socket does not answer does IsRunning fall
+// back to pidfile-based liveness detection.
 func IsRunning() (int, bool) {
+	// The socket is authoritative. A successful ping means a daemon is live
+	// and serving, full stop. This survives the failure mode that motivated
+	// this change: a crash (SIGKILL/OOM) leaves a stale pidfile, the PID is
+	// reused by an unrelated process, the staleness heuristic below deletes
+	// the pidfile, and a later legitimately-running daemon would otherwise
+	// report "not running" even though ~/.forge/forge.sock answers perfectly.
+	// Probing the socket first also guarantees the pidfile-deleting staleness
+	// heuristic can only run when the socket is already confirmed dead, so it
+	// can never delete a live daemon's pidfile. This mirrors what the Windows
+	// branch has always done (socket as liveness proxy), now on all platforms.
+	if ipc.Ping() {
+		// Report the pidfile PID for diagnostics when available; liveness
+		// comes from the socket, not this value.
+		pid, _ := readPIDFile()
+		return pid, true
+	}
+
 	pidPath, err := pidFilePath()
 	if err != nil {
 		return 0, false
 	}
 
-	data, err := os.ReadFile(pidPath)
-	if err != nil {
-		return 0, false
-	}
-
-	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
-	if err != nil {
+	pid, ok := readPIDFile()
+	if !ok {
 		return 0, false
 	}
 
@@ -6992,14 +7033,11 @@ func IsRunning() (int, bool) {
 		return 0, false
 	}
 
-	// On Windows, Signal(0) is not supported. Use the named pipe as a
-	// liveness proxy — the OS destroys it automatically when the process exits.
+	// On Windows, Signal(0) is not supported and the ping above is the only
+	// liveness signal — a socket that did not answer means the daemon is gone.
 	if runtime.GOOS == "windows" {
-		alive := ipc.SocketExists()
-		if !alive {
-			_ = proc.Release()
-		}
-		return pid, alive
+		_ = proc.Release()
+		return 0, false
 	}
 
 	// On Unix, FindProcess always succeeds; Signal(0) checks liveness.
@@ -7057,39 +7095,47 @@ func IsRunning() (int, bool) {
 	return pid, true
 }
 
-// Stop sends a graceful shutdown signal to the running daemon.
-// On Windows, syscall.SIGINT is not supported, so we use an IPC "shutdown"
-// command instead. On Unix we send SIGINT directly.
+// Stop sends a graceful shutdown signal to the running daemon. On Unix we send
+// SIGINT to the pidfile PID; if the pidfile is missing or stale but the socket
+// is answering, we fall back to the IPC "shutdown" command. On Windows,
+// syscall.SIGINT is not supported, so the IPC "shutdown" command is always used.
 func Stop() error {
 	_, running := IsRunning()
 	if !running {
 		return fmt.Errorf("no daemon running")
 	}
 
-	if runtime.GOOS == "windows" {
-		client, err := ipc.NewClient()
-		if err != nil {
-			return fmt.Errorf("connecting to daemon: %w", err)
+	// Unix: prefer SIGINT to the pidfile PID for graceful shutdown. The
+	// pidfile is the SIGINT target; if it is absent or stale (e.g. deleted
+	// after a crash) but the socket is answering, fall back to the IPC
+	// "shutdown" command like Windows does. Never signal PID 0 — on Unix that
+	// targets the whole process group.
+	if runtime.GOOS != "windows" {
+		if pid, ok := readPIDFile(); ok {
+			proc, err := os.FindProcess(pid)
+			if err != nil {
+				return fmt.Errorf("finding process %d: %w", pid, err)
+			}
+			if err := proc.Signal(syscall.SIGINT); err != nil {
+				return fmt.Errorf("sending shutdown signal to PID %d: %w", pid, err)
+			}
+			return nil
 		}
-		defer client.Close()
-		resp, err := client.Send(ipc.Command{Type: "shutdown"})
-		if err != nil {
-			return fmt.Errorf("sending shutdown command: %w", err)
-		}
-		if resp.Type == "error" {
-			return fmt.Errorf("daemon rejected shutdown: %s", resp.Payload)
-		}
-		return nil
 	}
 
-	// Unix: find the process and send SIGINT for graceful shutdown.
-	pid, _ := IsRunning()
-	proc, err := os.FindProcess(pid)
+	// Windows (no SIGINT), or Unix with a missing/stale pidfile: shut down
+	// over the socket.
+	client, err := ipc.NewClient()
 	if err != nil {
-		return fmt.Errorf("finding process %d: %w", pid, err)
+		return fmt.Errorf("connecting to daemon: %w", err)
 	}
-	if err := proc.Signal(syscall.SIGINT); err != nil {
-		return fmt.Errorf("sending shutdown signal to PID %d: %w", pid, err)
+	defer client.Close()
+	resp, err := client.Send(ipc.Command{Type: "shutdown"})
+	if err != nil {
+		return fmt.Errorf("sending shutdown command: %w", err)
+	}
+	if resp.Type == "error" {
+		return fmt.Errorf("daemon rejected shutdown: %s", resp.Payload)
 	}
 	return nil
 }

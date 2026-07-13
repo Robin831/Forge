@@ -887,6 +887,30 @@ func (c *Client) Close() error {
 	return nil
 }
 
+// PingTimeout bounds the liveness round-trip so a dead or absent socket cannot
+// stall a CLI command. The daemon answers "ping" synchronously without any DB
+// access or bd/gh shell-out, and each connection is served on its own
+// goroutine, so a short timeout is safe even when the daemon is busy.
+const PingTimeout = 2 * time.Second
+
+// Ping performs a lightweight liveness round-trip against the daemon's IPC
+// socket. It returns true only when the socket dials successfully AND the
+// daemon answers the ping. This is the authoritative liveness signal for
+// commands like `forge status`, `forge pause`, and `forge resume`: a daemon
+// that answers is running even if its pidfile is missing or stale.
+func Ping() bool {
+	client, err := NewClient()
+	if err != nil {
+		return false
+	}
+	defer client.Close()
+	resp, err := client.Send(Command{Type: "ping", ReadTimeout: PingTimeout})
+	if err != nil {
+		return false
+	}
+	return resp != nil && resp.Type == "pong"
+}
+
 // --- Helpers ---
 
 func writeResponse(conn net.Conn, resp Response) {
