@@ -198,6 +198,13 @@ type SpawnOptions struct {
 	// stage-identifiable log file. An empty value defaults to "smith",
 	// producing smith-<ts>-<seq>.log.
 	LogPrefix string
+
+	// ResumeSessionID, when non-empty, resumes a prior provider session instead
+	// of starting a fresh one. The provider's ResumeFlag is appended to the
+	// argument list (Claude: --resume <id>); providers that do not support
+	// resumption ignore it. Used by steer mode to continue an interrupted
+	// Claude session with a new steering message delivered on stdin.
+	ResumeSessionID string
 }
 
 // logFileName builds the session log filename for the given stage prefix and
@@ -242,6 +249,12 @@ func SpawnWithOptions(ctx context.Context, worktreePath, promptText, logDir stri
 	}
 
 	args := pv.BuildArgs(extraFlags)
+	// Steer mode: resume an existing provider session when requested. Only
+	// providers that report a session_id support this (Claude); others return
+	// nil from ResumeFlag and start a fresh session.
+	if opts.ResumeSessionID != "" {
+		args = append(args, pv.ResumeFlag(opts.ResumeSessionID)...)
+	}
 
 	cmd := exec.CommandContext(ctx, pv.Cmd(), args...)
 	cmd.Dir = worktreePath
@@ -454,6 +467,44 @@ func (p *Process) IsRunning() bool {
 		return false
 	default:
 		return true
+	}
+}
+
+// Interrupt gracefully stops a running Smith spawn so its session can be
+// resumed (steer mode A). It mirrors the daemon's killWorkerProcess signaling
+// pattern — SIGINT to the process group, wait a grace period for a clean exit,
+// then SIGKILL if still alive — but deliberately does NOT touch any state.db
+// worker row. The caller reaps the Result via Wait() and reuses the captured
+// session_id to resume the session with a new message.
+//
+// It is safe to call on an already-finished process (and on the test stub
+// returned by NewRunningProcessForTest, which has no real PID): in that case it
+// falls back to Kill so any onKill hook fires and the done channel closes.
+func (p *Process) Interrupt(grace time.Duration) {
+	p.mu.Lock()
+	cmd := p.Cmd
+	pid := p.PID
+	p.mu.Unlock()
+
+	// No live OS process to signal (already exited, or a test stub). Fall back
+	// to Kill so the done channel is closed / onKill hook fires.
+	if pid <= 0 || cmd == nil || cmd.Process == nil {
+		_ = p.Kill()
+		return
+	}
+
+	// Phase 1: request a graceful exit via SIGINT to the process group.
+	interruptProcessGroup(pid)
+
+	// Phase 2: wait up to grace for the process to exit on its own; the stream
+	// reader goroutine closes done once the process is reaped. If it overstays
+	// the grace period, force-kill the whole group.
+	timer := time.NewTimer(grace)
+	defer timer.Stop()
+	select {
+	case <-p.done:
+	case <-timer.C:
+		killProcessGroup(pid)
 	}
 }
 

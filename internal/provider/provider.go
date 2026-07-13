@@ -301,6 +301,27 @@ func (p Provider) openaiArgs(claudeFlags []string) []string {
 	return base
 }
 
+// ResumeFlag returns the CLI flag pair that resumes a prior agent session for
+// this provider, or nil when the provider does not support session
+// resumption. Only Claude reports a session_id in its stream output (see
+// smith.Result.SessionID), so only Claude can be resumed; other providers
+// return nil and the caller falls back to a fresh spawn.
+//
+// The returned flags are appended to the provider's normal BuildArgs so a
+// resumed run behaves like a one-shot run that continues an existing session,
+// delivering the new message via stdin.
+func (p Provider) ResumeFlag(sessionID string) []string {
+	if sessionID == "" {
+		return nil
+	}
+	switch p.Kind {
+	case Claude:
+		return []string{"--resume", sessionID}
+	default:
+		return nil
+	}
+}
+
 // Defaults returns the default ordered list of providers.
 // Claude is tried first, then Gemini (no specific model — CLI picks its default).
 //

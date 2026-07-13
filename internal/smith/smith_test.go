@@ -493,3 +493,36 @@ func TestTruncate(t *testing.T) {
 		})
 	}
 }
+
+// TestProcessInterrupt_ReapsRunningStub verifies that Interrupt unblocks a
+// running test process and Wait returns the captured result — including the
+// session_id — so steer mode can resume the session.
+func TestProcessInterrupt_ReapsRunningStub(t *testing.T) {
+	res := &Result{ExitCode: 0, SessionID: "sess-1"}
+	p := NewRunningProcessForTest(res)
+	if !p.IsRunning() {
+		t.Fatal("stub process should report running before interrupt")
+	}
+
+	p.Interrupt(time.Second)
+
+	got := p.Wait()
+	if got.SessionID != "sess-1" {
+		t.Fatalf("session_id must be preserved across interrupt, got %q", got.SessionID)
+	}
+	if p.IsRunning() {
+		t.Fatal("process should be done after interrupt")
+	}
+}
+
+// TestSpawnOptions_ResumeSessionID confirms the resume flag composes onto the
+// provider args (Claude), which is what SpawnWithOptions appends before exec.
+func TestSpawnOptions_ResumeSessionID(t *testing.T) {
+	pv := provider.Provider{Kind: provider.Claude}
+	args := pv.BuildArgs(nil)
+	args = append(args, pv.ResumeFlag("sess-9")...)
+	joined := strings.Join(args, " ")
+	if !strings.Contains(joined, "--resume sess-9") {
+		t.Fatalf("resume args should include --resume sess-9, got %q", joined)
+	}
+}
