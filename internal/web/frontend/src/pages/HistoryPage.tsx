@@ -94,7 +94,7 @@ export default function HistoryPage() {
                   </p>
                   <p className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-slate-500">
                     <Link
-                      to={`/bead/${w.bead_id}?anvil=${encodeURIComponent(w.anvil)}`}
+                      to={`/bead/${w.bead_id}?anvil=${encodeURIComponent(w.anvil)}&tab=logs`}
                       className="font-mono text-slate-400 hover:text-amber-300"
                     >
                       {w.bead_id}

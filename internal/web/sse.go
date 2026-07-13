@@ -190,6 +190,40 @@ func (s *Server) handlePRFindingsStream(w http.ResponseWriter, r *http.Request) 
 	}
 }
 
+// logDirAllowlist holds the forge-owned directory prefixes that worker and
+// bead log files must resolve under before they may be read. Building it once
+// (via newLogDirAllowlist) avoids repeating the UserHomeDir lookup on every
+// allowlist check. The same two roots gate every log endpoint: the persistent
+// ~/.forge tree and any worktree under ~/.workers/ (the live .forge-logs dir).
+type logDirAllowlist struct {
+	forgeDir         string
+	forgePrefix      string
+	homePrefix       string
+	workersComponent string
+}
+
+func newLogDirAllowlist() (logDirAllowlist, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return logDirAllowlist{}, err
+	}
+	forgeDir := filepath.Join(home, ".forge")
+	return logDirAllowlist{
+		forgeDir:         forgeDir,
+		forgePrefix:      forgeDir + string(filepath.Separator),
+		homePrefix:       home + string(filepath.Separator),
+		workersComponent: string(filepath.Separator) + ".workers" + string(filepath.Separator),
+	}, nil
+}
+
+// allows reports whether the cleaned, symlink-resolved path p lies under one of
+// the allowlisted roots.
+func (a logDirAllowlist) allows(p string) bool {
+	underForge := p == a.forgeDir || strings.HasPrefix(p, a.forgePrefix)
+	underWorkers := strings.HasPrefix(p, a.homePrefix) && strings.Contains(p, a.workersComponent)
+	return underForge || underWorkers
+}
+
 func toActivityEvent(e state.Event) activityEvent {
 	return activityEvent{
 		ID:        e.ID,
@@ -219,18 +253,9 @@ func openLogWaiting(ctx context.Context, logPath string, budget time.Duration, w
 
 	// Pre-compute the allowlist once so we can re-validate on each poll
 	// without repeating the UserHomeDir lookup inside the loop.
-	home, herr := os.UserHomeDir()
+	allow, herr := newLogDirAllowlist()
 	if herr != nil {
 		return nil, herr
-	}
-	forgeDir := filepath.Join(home, ".forge")
-	forgePrefix := forgeDir + string(filepath.Separator)
-	homePrefix := home + string(filepath.Separator)
-	workersComponent := string(filepath.Separator) + ".workers" + string(filepath.Separator)
-	allowed := func(p string) bool {
-		underForge := p == forgeDir || strings.HasPrefix(p, forgePrefix)
-		underWorkers := strings.HasPrefix(p, homePrefix) && strings.Contains(p, workersComponent)
-		return underForge || underWorkers
 	}
 
 	for {
@@ -245,7 +270,7 @@ func openLogWaiting(ctx context.Context, logPath string, budget time.Duration, w
 				return nil, errors.New("failed to resolve log path")
 			}
 			resolved = filepath.Clean(resolved)
-			if !allowed(resolved) {
+			if !allow.allows(resolved) {
 				return nil, errors.New("invalid log path")
 			}
 			f, err := os.Open(resolved) //nolint:gosec
@@ -308,28 +333,19 @@ func resolveWorkerLogPath(db *state.DB, workerID string) (resolvedPath string, f
 		return "", nil, 0, nil
 	}
 
-	home, herr := os.UserHomeDir()
+	allow, herr := newLogDirAllowlist()
 	if herr != nil {
 		return "", nil, http.StatusInternalServerError, errors.New("failed to resolve home directory")
 	}
-	forgeDir := filepath.Join(home, ".forge")
 
 	logPath := worker.LogPath
 	if !filepath.IsAbs(logPath) {
-		logPath = filepath.Clean(filepath.Join(forgeDir, logPath))
+		logPath = filepath.Clean(filepath.Join(allow.forgeDir, logPath))
 	} else {
 		logPath = filepath.Clean(logPath)
 	}
 
-	forgePrefix := forgeDir + string(filepath.Separator)
-	homePrefix := home + string(filepath.Separator)
-	workersComponent := string(filepath.Separator) + ".workers" + string(filepath.Separator)
-	allowed := func(p string) bool {
-		underForge := p == forgeDir || strings.HasPrefix(p, forgePrefix)
-		underWorkers := strings.HasPrefix(p, homePrefix) && strings.Contains(p, workersComponent)
-		return underForge || underWorkers
-	}
-	if !allowed(logPath) {
+	if !allow.allows(logPath) {
 		return "", nil, http.StatusBadRequest, errors.New("invalid log path")
 	}
 
@@ -353,7 +369,7 @@ func resolveWorkerLogPath(db *state.DB, workerID string) (resolvedPath string, f
 		return "", nil, http.StatusInternalServerError, errors.New("failed to resolve log path")
 	}
 	resolved = filepath.Clean(resolved)
-	if !allowed(resolved) {
+	if !allow.allows(resolved) {
 		return "", nil, http.StatusBadRequest, errors.New("invalid log path")
 	}
 	return resolved, stat, 0, nil
@@ -383,38 +399,62 @@ func (s *Server) handleWorkerLogTail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	n := 100
-	if raw := r.URL.Query().Get("tail"); raw != "" {
-		if v, perr := strconv.Atoi(raw); perr == nil && v > 0 {
+	n := clampTailParam(r.URL.Query().Get("tail"), 100)
+	lines, err := readTailLines(logPath, fi.Size(), n)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to read log file")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"lines": lines})
+}
+
+// maxTailReadBytes bounds how many bytes readTailLines reads from the end of a
+// log file so very large logs do not pull megabytes into memory.
+const maxTailReadBytes int64 = 1 << 20 // 1 MiB
+
+// clampTailParam parses a `tail` query value, falling back to def when it is
+// empty or non-numeric, and clamps the result to [1, 10000].
+func clampTailParam(raw string, def int) int {
+	n := def
+	if raw != "" {
+		if v, err := strconv.Atoi(raw); err == nil && v > 0 {
 			n = v
 		}
 	}
 	if n > 10000 {
 		n = 10000
 	}
+	if n < 1 {
+		n = 1
+	}
+	return n
+}
 
-	const maxTailReadBytes int64 = 1 << 20 // 1 MiB
+// readTailLines returns the last n fully-terminated lines of the file at
+// logPath. At most maxTailReadBytes is read from the end of the file; when the
+// file is larger the first (partial) line of the read window is discarded. A
+// trailing partial line (the file may still be mid-write) is always dropped so
+// callers only observe complete records.
+func readTailLines(logPath string, size int64, n int) ([]string, error) {
 	var data []byte
+	var err error
 	var seeked bool
-	if fi.Size() <= maxTailReadBytes {
+	if size <= maxTailReadBytes {
 		data, err = os.ReadFile(logPath) //nolint:gosec
 	} else {
 		seeked = true
 		f, ferr := os.Open(logPath) //nolint:gosec
 		if ferr != nil {
-			writeError(w, http.StatusInternalServerError, "failed to read log file")
-			return
+			return nil, ferr
 		}
 		defer f.Close()
 		if _, ferr = f.Seek(-maxTailReadBytes, io.SeekEnd); ferr != nil {
-			writeError(w, http.StatusInternalServerError, "failed to read log file")
-			return
+			return nil, ferr
 		}
 		data, err = io.ReadAll(f)
 	}
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to read log file")
-		return
+		return nil, err
 	}
 	if seeked {
 		if idx := strings.IndexByte(string(data), '\n'); idx >= 0 {
@@ -424,9 +464,6 @@ func (s *Server) handleWorkerLogTail(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Trim a trailing partial line (file is still being written to and the
-	// last record may not be complete). Splitting on the rightmost newline
-	// ensures the response only contains fully-written lines.
 	raw := string(data)
 	if idx := strings.LastIndexByte(raw, '\n'); idx >= 0 {
 		raw = raw[:idx]
@@ -440,7 +477,7 @@ func (s *Server) handleWorkerLogTail(w http.ResponseWriter, r *http.Request) {
 	if len(lines) > n {
 		lines = lines[len(lines)-n:]
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"lines": lines})
+	return lines, nil
 }
 
 // handleWorkerLogStream serves GET /api/worker/{id}/stream as Server-Sent
