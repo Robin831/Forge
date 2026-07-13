@@ -800,7 +800,7 @@ var hookRunFn = hooks.RunHook
 
 // smithSpawnFn is the function used to spawn Smith. Package-level variable for test stubbing.
 // It routes through SpawnWithOptions so burnish's session logs are named
-// burnish-<ts>.log rather than the default smith- prefix.
+// burnish-<ts>-<seq>.log rather than the default smith- prefix.
 var smithSpawnFn = func(ctx context.Context, worktreePath, promptText, logDir string, pv provider.Provider, extraFlags []string) (*smith.Process, error) {
 	return smith.SpawnWithOptions(ctx, worktreePath, promptText, logDir, pv, extraFlags, smith.SpawnOptions{LogPrefix: "burnish"})
 }
