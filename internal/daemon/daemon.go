@@ -6403,6 +6403,10 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 		return d.handleQueueStop(cmd)
 	case "steer_bead":
 		return d.handleSteerBead(cmd)
+	case "pause_bead":
+		return d.handlePauseBead(cmd)
+	case "resume_bead":
+		return d.handleResumeBead(cmd)
 
 	default:
 		msg, _ := json.Marshal(map[string]string{"message": "unknown command: " + cmd.Type})
@@ -6494,6 +6498,103 @@ func (d *Daemon) handleSteerBead(cmd ipc.Command) ipc.Response {
 
 	data, _ := json.Marshal(map[string]string{
 		"message": fmt.Sprintf("steer message delivered to bead %s — %s", beadID, mode),
+	})
+	return ipc.Response{Type: "ok", Payload: data}
+}
+
+// handlePauseBead implements the "pause_bead" IPC verb: it requests that a
+// bead's in-flight pipeline park its currently running Claude spawn. Validation
+// follows the shared paused-status state machine (state.CanTransitionPause): the
+// bead must have an active registered control handle (a running pipeline) whose
+// worker row is in the running status. On success the pause request is
+// dispatched into the pipeline goroutine via the control handle; that goroutine
+// performs the graceful interrupt, records the session/iteration state,
+// transitions the worker to paused, and parks awaiting a resume_bead. The
+// handler itself does not mutate the worker status — it only validates the
+// transition and dispatches the request. Error paths: bead not found (no active
+// pipeline / missing worker row) and illegal transition (worker not running).
+func (d *Daemon) handlePauseBead(cmd ipc.Command) ipc.Response {
+	var pp ipc.PauseBeadPayload
+	if err := json.Unmarshal(cmd.Payload, &pp); err != nil {
+		return steerErrorResponse("invalid pause_bead payload")
+	}
+	beadID := strings.TrimSpace(pp.BeadID)
+	if beadID == "" {
+		return steerErrorResponse("bead_id is required")
+	}
+
+	ctrl, ok := d.lookupControlHandle(beadID)
+	if !ok {
+		return steerErrorResponse(fmt.Sprintf("bead %s not found; pausing requires an active pipeline", beadID))
+	}
+
+	w, err := d.db.GetWorker(ctrl.workerID)
+	if err != nil {
+		return steerErrorResponse(fmt.Sprintf("bead %s not found; no worker row for its pipeline", beadID))
+	}
+	if !state.CanTransitionPause(w.Status, state.WorkerPaused) {
+		return steerErrorResponse(fmt.Sprintf("bead %s cannot be paused from status %q; only a running bead may be paused", beadID, w.Status))
+	}
+
+	if !ctrl.requestPause() {
+		return steerErrorResponse(fmt.Sprintf("a pause is already pending for bead %s", beadID))
+	}
+	d.logger.Info("pause requested", "bead", beadID, "worker", ctrl.workerID)
+
+	data, _ := json.Marshal(ipc.PauseBeadResponse{
+		BeadID:  beadID,
+		Status:  string(state.WorkerPaused),
+		Message: fmt.Sprintf("pause requested for bead %s", beadID),
+	})
+	return ipc.Response{Type: "ok", Payload: data}
+}
+
+// handleResumeBead implements the "resume_bead" IPC verb: it requests that a
+// paused bead's pipeline resume. Validation follows the shared paused-status
+// state machine (state.CanTransitionPause): the bead must have an active
+// registered control handle whose worker row is in the paused status. The resume
+// message is optional and defaults to DefaultResumeMessage when the caller omits
+// it (or supplies only whitespace). On success the resume request — carrying the
+// message — is dispatched into the parked pipeline goroutine via the control
+// handle, which respawns `claude --resume <session>` with the message and
+// continues the pipeline. Error paths: bead not found (no active pipeline /
+// missing worker row) and illegal transition (worker not paused).
+func (d *Daemon) handleResumeBead(cmd ipc.Command) ipc.Response {
+	var rp ipc.ResumeBeadPayload
+	if err := json.Unmarshal(cmd.Payload, &rp); err != nil {
+		return steerErrorResponse("invalid resume_bead payload")
+	}
+	beadID := strings.TrimSpace(rp.BeadID)
+	if beadID == "" {
+		return steerErrorResponse("bead_id is required")
+	}
+	message := strings.TrimSpace(rp.Message)
+	if message == "" {
+		message = DefaultResumeMessage
+	}
+
+	ctrl, ok := d.lookupControlHandle(beadID)
+	if !ok {
+		return steerErrorResponse(fmt.Sprintf("bead %s not found; resuming requires an active paused pipeline", beadID))
+	}
+
+	w, err := d.db.GetWorker(ctrl.workerID)
+	if err != nil {
+		return steerErrorResponse(fmt.Sprintf("bead %s not found; no worker row for its pipeline", beadID))
+	}
+	if !state.CanTransitionPause(w.Status, state.WorkerRunning) {
+		return steerErrorResponse(fmt.Sprintf("bead %s cannot be resumed from status %q; only a paused bead may be resumed", beadID, w.Status))
+	}
+
+	if !ctrl.requestResume(message) {
+		return steerErrorResponse(fmt.Sprintf("a resume is already pending for bead %s", beadID))
+	}
+	d.logger.Info("resume requested", "bead", beadID, "worker", ctrl.workerID)
+
+	data, _ := json.Marshal(ipc.ResumeBeadResponse{
+		BeadID:  beadID,
+		Status:  string(state.WorkerRunning),
+		Message: fmt.Sprintf("resume requested for bead %s", beadID),
 	})
 	return ipc.Response{Type: "ok", Payload: data}
 }

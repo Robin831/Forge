@@ -9,6 +9,12 @@ import "sync"
 // memory bounded. Sends beyond the buffer are dropped (non-blocking push).
 const steerMailboxSize = 16
 
+// DefaultResumeMessage is the prompt delivered to a paused bead's resumed Claude
+// session when the human supplies no explicit resume message. The pause/resume
+// mechanic reuses the steer resume path, so a resume-with-message is free; this
+// constant provides the neutral default when the caller omits one.
+const DefaultResumeMessage = "Continue with the task."
+
 // controlHandle is the in-memory control surface for a single in-flight bead's
 // pipeline. It is the shared foundation consumed by the RUNNING-spawn and
 // BETWEEN-spawn steering features: the IPC/API layer looks up a handle by
@@ -40,6 +46,21 @@ type controlHandle struct {
 	// context cancel func for the pipeline/smith subprocess). It is nil while no
 	// spawn is cancellable (e.g. before the pipeline context is created).
 	interrupt func()
+
+	// pause is a single-slot signal that a human requested the running spawn be
+	// parked. The IPC/API layer pushes into it (non-blocking, via requestPause)
+	// after validating the worker is in a pausable (running) state; the pipeline
+	// goroutine selects on it alongside the running spawn to trigger the graceful
+	// interrupt + park. Buffered to 1: a pause is a latching request, so a second
+	// press while one is already pending is reported to the caller rather than
+	// silently coalesced.
+	pause chan struct{}
+
+	// resume is a single-slot mailbox carrying the resume message a human supplied
+	// (defaulting to DefaultResumeMessage). A pipeline goroutine parked after a
+	// pause blocks on it to respawn `claude --resume <session>` with the message
+	// as the new prompt and continue the pipeline loop.
+	resume chan string
 }
 
 // newControlHandle builds a handle for the given worker with an empty steer
@@ -48,6 +69,8 @@ func newControlHandle(workerID string) *controlHandle {
 	return &controlHandle{
 		workerID: workerID,
 		steer:    make(chan string, steerMailboxSize),
+		pause:    make(chan struct{}, 1),
+		resume:   make(chan string, 1),
 	}
 }
 
@@ -81,6 +104,30 @@ func (h *controlHandle) fireInterrupt() bool {
 func (h *controlHandle) pushSteer(msg string) bool {
 	select {
 	case h.steer <- msg:
+		return true
+	default:
+		return false
+	}
+}
+
+// requestPause signals a pause request without blocking. It returns false when a
+// pause is already pending (the single buffered slot is full), so the caller can
+// report that a pause is already in flight rather than silently coalescing.
+func (h *controlHandle) requestPause() bool {
+	select {
+	case h.pause <- struct{}{}:
+		return true
+	default:
+		return false
+	}
+}
+
+// requestResume delivers the resume message to a parked pipeline goroutine
+// without blocking. It returns false when a resume is already pending (the
+// single buffered slot is full).
+func (h *controlHandle) requestResume(msg string) bool {
+	select {
+	case h.resume <- msg:
 		return true
 	default:
 		return false
