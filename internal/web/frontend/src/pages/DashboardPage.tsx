@@ -11,7 +11,7 @@ import type {
 import AppHeader from '../components/AppHeader'
 import DispatchToggle from '../components/DispatchToggle'
 import QueuePane from '../components/QueuePane'
-import WorkersPane from '../components/WorkersPane'
+import WorkerPanelGrid from '../components/WorkerPanelGrid'
 import NeedsAttentionPane from '../components/NeedsAttentionPane'
 import LiveActivity from '../components/LiveActivity'
 import WorkerLogModal from '../components/WorkerLogModal'
@@ -117,10 +117,16 @@ export default function DashboardPage() {
 
       <PipelineBar workers={workers.data?.workers ?? []} />
 
-      {/* Bead-centric needs-attention surface (Forge-iz6s). Always present and
-          driven by the retries table, so graceful and stale escalations are
-          findable and resolvable even when no live worker row exists. */}
-      <NeedsAttentionPane />
+      {/* Full-width multi-panel live worker grid (Forge-f0iz). One large panel
+          per active worker embeds the shared CLI-style LogViewer fed by the
+          per-worker SSE stream, with idle placeholder slots up to the Smith
+          cap. Replaces the old full-width NeedsAttentionPane row here; the
+          expand button reuses the WorkerLogModal wired below. */}
+      <WorkerPanelGrid
+        workers={workers.data?.workers ?? []}
+        maxTotalSmiths={status.data?.max_total_smiths ?? 0}
+        onExpand={setLogWorker}
+      />
 
       <main className="grid flex-1 grid-cols-1 gap-4 lg:grid-cols-3">
         <QueuePane
@@ -128,13 +134,11 @@ export default function DashboardPage() {
           error={queue.error}
           items={queue.data?.items ?? []}
         />
-        <WorkersPane
-          loading={workers.loading}
-          error={workers.error}
-          workers={workers.data?.workers ?? []}
-          maxTotalSmiths={status.data?.max_total_smiths ?? 0}
-          onSelectWorker={setLogWorker}
-        />
+        {/* Bead-centric needs-attention surface (Forge-iz6s), moved into the
+            main grid where the workers list used to sit. Driven by the retries
+            table, so graceful and stale escalations stay findable and
+            resolvable even when no live worker row exists. */}
+        <NeedsAttentionPane />
         <LiveActivity />
       </main>
 
