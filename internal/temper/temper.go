@@ -40,6 +40,38 @@ var vitestSingleThreadArgs = []string{
 	"--poolOptions.threads.minThreads=1",
 }
 
+// Classification categorises why a step failed so the pipeline can treat
+// infrastructure and timeout failures differently from real code failures.
+// A passed or skipped step carries the empty classification.
+type Classification string
+
+const (
+	// ClassificationTestFailure is a genuine test failure — the code under
+	// test is wrong. This is the default classification for a non-zero exit.
+	ClassificationTestFailure Classification = "test_failure"
+	// ClassificationBuildError is a compile/build failure. Reserved: it is
+	// defined for callers that can detect a compile-failure signal, but Temper
+	// does not currently auto-assign it (a build step that fails is reported as
+	// test_failure unless it matches an infra/timeout pattern).
+	ClassificationBuildError Classification = "build_error"
+	// ClassificationTimeout means the step was killed because its deadline
+	// (per-step Timeout or the configured temper_step_timeout) was exceeded.
+	ClassificationTimeout Classification = "timeout"
+	// ClassificationInfra means the step died from an infrastructure/host
+	// failure — a signal death (SIGKILL/SIGSEGV/SIGABRT/SIGBUS, e.g. an OOM
+	// kill) or a host-crash marker in the output (generalising the .NET
+	// test-host crash carve-out). Not evidence that Smith's code is wrong.
+	ClassificationInfra Classification = "infra"
+)
+
+// IsRetryableWithoutSmith reports whether a failure with this classification
+// should be retried by re-running Temper (without invoking Smith) rather than
+// looping Smith on what may be a phantom failure. Timeouts and infra failures
+// qualify; real test/build failures do not.
+func (c Classification) IsRetryableWithoutSmith() bool {
+	return c == ClassificationTimeout || c == ClassificationInfra
+}
+
 // StepResult captures the outcome of a single verification step.
 type StepResult struct {
 	// Name identifies the step (e.g., "build", "lint", "test").
@@ -48,7 +80,8 @@ type StepResult struct {
 	Command string
 	// ExitCode is the process exit code.
 	ExitCode int
-	// Output is the combined stdout+stderr.
+	// Output is the combined stdout+stderr, bounded to the configured output
+	// cap via head+tail truncation with an elision marker.
 	Output string
 	// Duration is how long the step took.
 	Duration time.Duration
@@ -60,6 +93,9 @@ type StepResult struct {
 	// Skipped is true when the step was skipped because no changed files
 	// matched its Paths globs.
 	Skipped bool
+	// Classification categorises a failure (test_failure/build_error/timeout/
+	// infra). Empty for passed or skipped steps.
+	Classification Classification
 }
 
 // Result is the overall Temper verification result.
@@ -73,6 +109,10 @@ type Result struct {
 	Duration time.Duration
 	// FailedStep is the name of the first failed step, or empty if all passed.
 	FailedStep string
+	// Classification is the classification of the first failed step, or empty
+	// if all passed. Lets the pipeline distinguish timeout/infra failures
+	// (retryable without Smith) from real code failures.
+	Classification Classification
 	// Summary is a human-readable summary of the verification.
 	Summary string
 }
@@ -88,7 +128,8 @@ type Step struct {
 	// Dir is the working directory (relative to worktree, or absolute).
 	// If empty, runs in the worktree root.
 	Dir string
-	// Timeout is the maximum duration for this step. Zero means 5 minutes.
+	// Timeout is the maximum duration for this step. Zero means the
+	// Config.StepTimeout (which itself defaults to DefaultStepTimeout).
 	Timeout time.Duration
 	// Optional means failure here doesn't fail the overall check.
 	Optional bool
@@ -140,7 +181,33 @@ type Config struct {
 	// globs are checked against this list and skipped when no files match.
 	// A nil value means "unknown" and disables path-based filtering.
 	ChangedFiles []string
+	// StepTimeout is the default per-step timeout applied to any step whose
+	// own Step.Timeout is zero. A value <= 0 falls back to DefaultStepTimeout.
+	// Sourced from the temper_step_timeout setting.
+	StepTimeout time.Duration
+	// GitTimeout is the timeout for internal git invocations (e.g. the
+	// VerifyClean status check). A value <= 0 falls back to DefaultGitTimeout.
+	// Sourced from the temper_git_timeout setting.
+	GitTimeout time.Duration
+	// OutputCap is the maximum number of bytes of combined stdout+stderr
+	// retained per step (head+tail, with an elision marker for the middle).
+	// A value <= 0 falls back to DefaultOutputCap.
+	OutputCap int
 }
+
+// Default timeouts and output cap applied when the corresponding Config field
+// is unset. StepTimeout and GitTimeout are overridable via the
+// temper_step_timeout / temper_git_timeout settings; OutputCap keeps step
+// output (and therefore the warden/fix prompt embedding) bounded.
+const (
+	// DefaultStepTimeout is the per-step timeout used when neither Step.Timeout
+	// nor Config.StepTimeout is set.
+	DefaultStepTimeout = 5 * time.Minute
+	// DefaultGitTimeout is the timeout for internal git invocations.
+	DefaultGitTimeout = 30 * time.Second
+	// DefaultOutputCap is the default per-step combined-output byte cap (256 KiB).
+	DefaultOutputCap = 256 * 1024
+)
 
 // DetectOptions controls optional steps during auto-detection.
 type DetectOptions struct {
@@ -322,14 +389,18 @@ func matchesChangedFiles(patterns, changedFiles []string) bool {
 // in the worktree and returns its trimmed output. Empty output means no
 // modifications, additions, or untracked files exist under those paths.
 //
-// A 30s timeout guards against a stuck git invocation. GIT_DIR and
-// GIT_WORK_TREE are stripped from the environment so the -C flag reliably
-// targets the correct repo even when Forge itself runs inside a git worktree.
-func verifyCleanCheck(ctx context.Context, worktreePath string, pathspecs []string) (string, error) {
+// A configurable timeout (gitTimeout, defaulting to DefaultGitTimeout) guards
+// against a stuck git invocation. GIT_DIR and GIT_WORK_TREE are stripped from
+// the environment so the -C flag reliably targets the correct repo even when
+// Forge itself runs inside a git worktree.
+func verifyCleanCheck(ctx context.Context, worktreePath string, pathspecs []string, gitTimeout time.Duration) (string, error) {
 	if len(pathspecs) == 0 {
 		return "", nil
 	}
-	checkCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	if gitTimeout <= 0 {
+		gitTimeout = DefaultGitTimeout
+	}
+	checkCtx, cancel := context.WithTimeout(ctx, gitTimeout)
 	defer cancel()
 
 	args := []string{"-C", worktreePath, "status", "--porcelain", "--"}
@@ -384,6 +455,21 @@ func Run(ctx context.Context, worktreePath string, cfg Config, db *state.DB, bea
 	result := &Result{}
 	start := time.Now()
 
+	// Resolve the effective step timeout, git timeout, and output cap, each
+	// falling back to its package default when the Config leaves it unset.
+	stepTimeout := cfg.StepTimeout
+	if stepTimeout <= 0 {
+		stepTimeout = DefaultStepTimeout
+	}
+	gitTimeout := cfg.GitTimeout
+	if gitTimeout <= 0 {
+		gitTimeout = DefaultGitTimeout
+	}
+	outputCap := cfg.OutputCap
+	if outputCap <= 0 {
+		outputCap = DefaultOutputCap
+	}
+
 	if db != nil {
 		_ = db.LogEvent(state.EventTemperStarted, fmt.Sprintf("Starting %d verification step(s) for %s", len(cfg.Steps), beadID), beadID, anvil)
 	}
@@ -398,6 +484,7 @@ func Run(ctx context.Context, worktreePath string, cfg Config, db *state.DB, bea
 			result.Steps = append(result.Steps, stepResult)
 			if !stepResult.Passed && !step.Optional {
 				result.FailedStep = step.Name
+				result.Classification = stepResult.Classification
 				break
 			}
 			continue
@@ -436,14 +523,14 @@ func Run(ctx context.Context, worktreePath string, cfg Config, db *state.DB, bea
 			}
 		}
 
-		stepResult := runStep(ctx, worktreePath, step)
+		stepResult := runStep(ctx, worktreePath, step, stepTimeout, outputCap)
 
 		// VerifyClean: if the step succeeded but mutated tracked or untracked
 		// files under one of the VerifyClean pathspecs, the committed artifact
 		// is out of sync with current source — convert the step to a failure
 		// so the pipeline loops back to Smith with actionable feedback.
 		if stepResult.Passed && len(step.VerifyClean) > 0 {
-			dirty, err := verifyCleanCheck(ctx, worktreePath, step.VerifyClean)
+			dirty, err := verifyCleanCheck(ctx, worktreePath, step.VerifyClean, gitTimeout)
 			if err != nil {
 				log.Printf("[temper] VerifyClean check for step %q failed: %v", step.Name, err)
 				stepResult.Passed = false
@@ -472,6 +559,7 @@ func Run(ctx context.Context, worktreePath string, cfg Config, db *state.DB, bea
 
 		if !stepResult.Passed && !step.Optional {
 			result.FailedStep = step.Name
+			result.Classification = stepResult.Classification
 			break
 		}
 	}
@@ -580,11 +668,13 @@ func writeTemperLog(worktreePath string, result *Result) {
 	}
 }
 
-// runStep executes a single verification step.
-func runStep(ctx context.Context, worktreePath string, step Step) StepResult {
+// runStep executes a single verification step. defaultTimeout is the resolved
+// per-step timeout used when the step does not set its own Timeout; outputCap
+// bounds the retained combined stdout+stderr.
+func runStep(ctx context.Context, worktreePath string, step Step, defaultTimeout time.Duration, outputCap int) StepResult {
 	timeout := step.Timeout
-	if timeout == 0 {
-		timeout = 5 * time.Minute
+	if timeout <= 0 {
+		timeout = defaultTimeout
 	}
 
 	stepCtx, cancel := context.WithTimeout(ctx, timeout)
@@ -611,9 +701,11 @@ func runStep(ctx context.Context, worktreePath string, step Step) StepResult {
 	executil.SetProcessGroup(cmd)
 	cmd.Dir = dir
 
-	var output bytes.Buffer
-	cmd.Stdout = &output
-	cmd.Stderr = &output
+	// Bound the retained output with a head+tail buffer so a verbose test suite
+	// cannot balloon memory or the warden/fix prompt that embeds StepResult.Output.
+	output := newHeadTailBuffer(outputCap)
+	cmd.Stdout = output
+	cmd.Stderr = output
 
 	err := cmd.Run()
 	// Reap the tree even on success — a step may exit cleanly while leaving
@@ -621,6 +713,7 @@ func runStep(ctx context.Context, worktreePath string, step Step) StepResult {
 	// http-server as a side effect).
 	_ = executil.KillProcessTree(cmd)
 	duration := time.Since(start)
+	ps := cmd.ProcessState
 
 	exitCode := 0
 	passed := true
@@ -633,29 +726,69 @@ func runStep(ctx context.Context, worktreePath string, step Step) StepResult {
 		}
 	}
 
+	outStr := output.String()
+
 	// Tolerate a .NET test-host teardown crash: when opted in, a non-zero exit
 	// whose output shows all tests passed AND an explicit host-crash marker is
 	// treated as a pass. This is the "testhost OOM'd at teardown after every
 	// test passed" case — a real test failure (Failed: N>0) or a build error
 	// (no crash marker) is NOT tolerated.
-	if !passed && step.TolerateHostCrash && dotnetTestHostCrashTolerable(output.String()) {
+	if !passed && step.TolerateHostCrash && dotnetTestHostCrashTolerable(outStr) {
 		log.Printf("[temper] step %q: exit %d tolerated — all tests passed but the .NET test host crashed at teardown", step.Name, exitCode)
-		output.WriteString(fmt.Sprintf(
+		outStr += fmt.Sprintf(
 			"\n\n[temper] NOTE: step exited %d, but every test passed and the .NET test host crashed/aborted at teardown (tolerate_host_crash). Treated as PASS — this is a host-level failure, not a test failure.\n",
-			exitCode))
+			exitCode)
 		passed = true
 	}
 
+	var classification Classification
+	if !passed {
+		classification = classifyFailure(stepCtx, ps, outStr)
+		if classification == ClassificationTimeout {
+			log.Printf("[temper] step %q: killed after exceeding timeout %s — classified as timeout", step.Name, timeout)
+		} else if classification == ClassificationInfra {
+			log.Printf("[temper] step %q: exit %d classified as infra (signal death or host-crash marker)", step.Name, exitCode)
+		}
+	}
+
 	return StepResult{
-		Name:     step.Name,
-		Command:  fmt.Sprintf("%s %s", step.Command, strings.Join(step.Args, " ")),
-		ExitCode: exitCode,
-		Output:   output.String(),
-		Duration: duration,
-		Passed:   passed,
-		Optional: step.Optional,
+		Name:           step.Name,
+		Command:        fmt.Sprintf("%s %s", step.Command, strings.Join(step.Args, " ")),
+		ExitCode:       exitCode,
+		Output:         outStr,
+		Duration:       duration,
+		Passed:         passed,
+		Optional:       step.Optional,
+		Classification: classification,
 	}
 }
+
+// classifyFailure categorises why a step failed. Order matters: a timeout kill
+// also manifests as a signal death, so the context deadline is checked first.
+// A summary showing genuine test failures is authoritative — a real test
+// failure that also crashed the host is a test_failure, not infra.
+func classifyFailure(stepCtx context.Context, ps *os.ProcessState, output string) Classification {
+	if stepCtx.Err() == context.DeadlineExceeded {
+		return ClassificationTimeout
+	}
+	if dotnetTestFailureRE.MatchString(output) {
+		return ClassificationTestFailure
+	}
+	if infraFailureRE.MatchString(output) {
+		return ClassificationInfra
+	}
+	if signaled, _ := processSignaled(ps); signaled {
+		return ClassificationInfra
+	}
+	return ClassificationTestFailure
+}
+
+// infraFailureRE matches output markers that indicate an infrastructure/host
+// failure rather than a real test failure — generalising the .NET test-host
+// crash carve-out to Go and native process deaths. Kept specific to
+// process-death signatures (not bare "out of memory" which can legitimately
+// appear in test assertions) to avoid mis-classifying real failures.
+var infraFailureRE = regexp.MustCompile(`(?i)test host process crashed|active test run was aborted|testhost process .*(crashed|exited)|aborted \(core dumped\)|signal: killed|signal: segmentation fault|signal: (aborted|bus error)|fatal error: runtime: out of memory|runtime: out of memory`)
 
 // dotnetTestHostCrashRE detects an explicit .NET/VSTest test-host crash or abort
 // marker — the signal that a non-zero exit is a host-level failure rather than a

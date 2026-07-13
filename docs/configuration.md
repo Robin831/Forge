@@ -63,6 +63,9 @@ settings:
   bellows_interval: 2m
   stale_interval: 5m
   go_race_detection: false         # Enable Go race detector globally (-race flag in Temper)
+  temper_step_timeout: 5m          # Default timeout for a Temper step (per-step timeout still overrides)
+  temper_git_timeout: 30s          # Timeout for internal git calls during Temper (e.g. VerifyClean)
+  temper_output_cap: 262144        # Max bytes of combined stdout+stderr kept per step (head+tail truncated)
   claude_flags:
     - --dangerously-skip-permissions
     - --max-turns
@@ -487,6 +490,9 @@ anvils:
 | `merge_strategy` | string | `"squash"` | | How PRs are merged from Hearth TUI. Valid: `squash`, `merge`, `rebase`. |
 | `stale_interval` | duration | `5m` | `30s` or `0` | How long a worker's log can go without modification before marking as stalled. `0` disables stale detection. |
 | `go_race_detection` | bool | `false` | | Enable the `-race` flag for Go tests in Temper globally. Per-anvil `go_race_detection` overrides this. |
+| `temper_step_timeout` | duration | `5m` | | Default timeout applied to a Temper verification step whose own per-step `timeout` is unset. A per-step timeout still overrides this. Raise it for long-but-legitimate test suites so they finish instead of being killed and reported as a phantom failure (timeouts are retried once without Smith, then escalated). |
+| `temper_git_timeout` | duration | `30s` | | Timeout for internal git invocations made during Temper verification (e.g. the `VerifyClean` status check). |
+| `temper_output_cap` | int (bytes) | `262144` | | Maximum bytes of combined stdout+stderr retained per Temper step. Output beyond the cap is head+tail truncated with an elision marker, bounding both memory and the warden/fix prompt that embeds the output. |
 | `depcheck_interval` | duration | `168h` | `1h` or `0` | How often the dependency checker scans anvils for outdated dependencies (Go, .NET, Node). `0` disables. |
 | `depcheck_timeout` | duration | `5m` | | Maximum time for a single depcheck invocation per anvil. |
 | `vulncheck_enabled` | bool | `true` | | Enable/disable vulnerability scanning entirely. When `false`, scheduled scanning and `forge scan` are disabled. |

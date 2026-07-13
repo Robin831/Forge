@@ -398,6 +398,15 @@ type Params struct {
 	// GoRaceDetection enables a separate 'go test -race' step in Temper.
 	// Only used during auto-detection (when TemperConfig is nil).
 	GoRaceDetection bool
+	// TemperStepTimeout, TemperGitTimeout, and TemperOutputCap carry the
+	// temper_step_timeout / temper_git_timeout / temper_output_cap settings so
+	// they apply even on the auto-detect path (where TemperConfig is nil).
+	// Each is applied only when the resolved config leaves the field unset, so
+	// an explicit per-anvil value still wins. Zero values fall back to the
+	// temper package defaults.
+	TemperStepTimeout time.Duration
+	TemperGitTimeout  time.Duration
+	TemperOutputCap   int
 	// Providers is the ordered list of AI providers to try for the Smith stage.
 	// If empty, provider.Defaults() is used (Claude → Gemini).
 	Providers []provider.Provider
@@ -2165,6 +2174,17 @@ func Run(ctx context.Context, p Params) *Outcome {
 		} else {
 			iterTemperCfg = temper.DefaultConfigWithRace(wt.Path, temper.DetectOptionsFromAnvilFlag(p.AnvilConfig.GolangciLint), p.GoRaceDetection)
 		}
+		// Apply the configurable timeouts/output cap. Only fill fields the
+		// resolved config left unset so a per-anvil temper config still wins.
+		if iterTemperCfg.StepTimeout <= 0 {
+			iterTemperCfg.StepTimeout = p.TemperStepTimeout
+		}
+		if iterTemperCfg.GitTimeout <= 0 {
+			iterTemperCfg.GitTimeout = p.TemperGitTimeout
+		}
+		if iterTemperCfg.OutputCap <= 0 {
+			iterTemperCfg.OutputCap = p.TemperOutputCap
+		}
 
 		// Recompute the changed-file list every iteration so that files added
 		// by Smith in later iterations are not silently missed by path filters.
@@ -2182,6 +2202,74 @@ func Run(ctx context.Context, p Params) *Outcome {
 
 		temperResult := runTemper(ctx, wt.Path, iterTemperCfg, p.DB, p.Bead.ID, p.AnvilName)
 		outcome.TemperResult = temperResult
+
+		// Infra/timeout retry-without-smith: a step killed by its deadline or by
+		// an infrastructure failure (signal death, host crash) is not evidence
+		// that Smith's code is wrong. Re-run Temper ONCE without invoking Smith;
+		// only if it fails the same way do we escalate to needs-attention with
+		// the classification — never loop Smith on a phantom failure.
+		if !temperResult.Passed && temperResult.Classification.IsRetryableWithoutSmith() {
+			// A cancelled pipeline context (daemon shutdown or IPC interrupt)
+			// kills the step via SIGKILL, which classifyFailure reports as an
+			// infra failure. That is NOT an infrastructure problem with the
+			// code — retrying would just be killed again and escalating would
+			// wrongly flag the bead as needs_human. Abort cleanly like the
+			// parked-pipeline path so the bead stays open for a retry after
+			// restart.
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				log.Printf("[pipeline:%s] Temper step %q killed by context cancellation (%v) — aborting without escalation",
+					workerID, temperResult.FailedStep, ctxErr)
+				outcome.Error = ctxErr
+				outcome.Duration = time.Since(start)
+				return outcome
+			}
+
+			log.Printf("[pipeline:%s] Temper failed at step %q with classification %q — retrying once without Smith",
+				workerID, temperResult.FailedStep, temperResult.Classification)
+			_ = p.DB.LogEvent(state.EventTemperFailed,
+				fmt.Sprintf("Temper step %q classified as %s (iteration %d) — retrying once without Smith",
+					temperResult.FailedStep, temperResult.Classification, iteration),
+				p.Bead.ID, p.AnvilName)
+
+			retryResult := runTemper(ctx, wt.Path, iterTemperCfg, p.DB, p.Bead.ID, p.AnvilName)
+			temperResult = retryResult
+			outcome.TemperResult = temperResult
+
+			// The retry itself can be interrupted mid-flight by a shutdown; the
+			// same cancellation-induced SIGKILL would look like a persistent
+			// infra failure. Abort cleanly rather than escalating to needs_human.
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				log.Printf("[pipeline:%s] Temper retry for step %q killed by context cancellation (%v) — aborting without escalation",
+					workerID, retryResult.FailedStep, ctxErr)
+				outcome.Error = ctxErr
+				outcome.Duration = time.Since(start)
+				return outcome
+			}
+
+			if !retryResult.Passed && retryResult.Classification.IsRetryableWithoutSmith() {
+				// Still infra/timeout after the retry: escalate to needs-attention
+				// with the classification instead of looping Smith on it.
+				log.Printf("[pipeline:%s] Temper %s failure persisted after retry at step %q — escalating to needs_human",
+					workerID, retryResult.Classification, retryResult.FailedStep)
+				recordIngotTemperResults(p.DB, workerID, p.Bead.ID, p.AnvilName, temperResult, ingotRec)
+				_ = p.DB.LogEvent(state.EventTemperFailed,
+					fmt.Sprintf("Temper %s failure persisted after one retry at step %q (iteration %d) — needs human attention. %s",
+						retryResult.Classification, retryResult.FailedStep, iteration, retryResult.Summary),
+					p.Bead.ID, p.AnvilName)
+				outcome.NeedsHuman = true
+				outcome.Error = fmt.Errorf("temper %s failure persisted after retry at step %s", retryResult.Classification, retryResult.FailedStep)
+				_ = p.DB.UpdateWorkerStatus(workerID, state.WorkerDone)
+				markIngotFailed()
+				outcome.Duration = time.Since(start)
+				return outcome
+			}
+			// Retry passed, or surfaced a real test/build failure: fall through
+			// to the normal handling below (Warden on pass, Smith loop on a real
+			// code failure).
+		}
+
+		// Record the (possibly retried) Temper result once so per-step ingot
+		// rows are not duplicated by the retry above.
 		recordIngotTemperResults(p.DB, workerID, p.Bead.ID, p.AnvilName, temperResult, ingotRec)
 
 		// after_temper hook (best-effort)

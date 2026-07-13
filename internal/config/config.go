@@ -495,6 +495,20 @@ type SettingsConfig struct {
 	// separate temper step globally. Per-anvil settings override this.
 	// Default: false.
 	GoRaceDetection bool `mapstructure:"go_race_detection" yaml:"go_race_detection"`
+	// TemperStepTimeout is the default timeout applied to a Temper verification
+	// step whose own per-step timeout is unset. A per-step Timeout still
+	// overrides this. Raising it lets long-but-legitimate test suites finish
+	// instead of being killed and reported as a phantom failure. Default: 5m.
+	TemperStepTimeout time.Duration `mapstructure:"temper_step_timeout" yaml:"temper_step_timeout,omitempty"`
+	// TemperGitTimeout is the timeout for internal git invocations made during
+	// Temper verification (e.g. the VerifyClean status check). Default: 30s.
+	TemperGitTimeout time.Duration `mapstructure:"temper_git_timeout" yaml:"temper_git_timeout,omitempty"`
+	// TemperOutputCap is the maximum number of bytes of combined stdout+stderr
+	// retained per Temper step. Output beyond the cap is head+tail truncated
+	// with an elision marker, bounding both memory and the warden/fix prompt
+	// that embeds the output. A value <= 0 falls back to the package default
+	// (256 KiB). Default: 262144.
+	TemperOutputCap int `mapstructure:"temper_output_cap" yaml:"temper_output_cap,omitempty"`
 	// AutoLearnRules enables automatic learning of Warden review rules from
 	// Copilot comments when a PR is merged. Bellows will fetch Copilot review
 	// comments, distill them into rules via Claude, and save them to the
@@ -644,6 +658,11 @@ const DefaultMaxLifecycleWorkers = 2
 // worker from the very first dispatch, preventing the "N concurrent workers blow
 // past the limit by ~N × per-bead cost" overshoot (Forge-s3w7).
 const DefaultPerWorkerCostEstimate = 2.0
+
+// DefaultTemperOutputCap is the fallback per-step combined-output byte cap
+// (256 KiB) used when settings.temper_output_cap is unset or <= 0. It mirrors
+// temper.DefaultOutputCap; kept here to avoid a config→temper import cycle.
+const DefaultTemperOutputCap = 256 * 1024
 
 // MaxForgeChatTurnTimeout is the hard upper bound for settings.forgechat.turn_timeout.
 // Values above this are clamped on load and a warning is logged. Picked so that
@@ -822,6 +841,9 @@ func (s SettingsConfig) MarshalYAML() (interface{}, error) {
 		LogRetentionDays          int                 `yaml:"log_retention_days"`
 		LogSweepInterval          string              `yaml:"log_sweep_interval,omitempty"`
 		GoRaceDetection           bool                `yaml:"go_race_detection"`
+		TemperStepTimeout         string              `yaml:"temper_step_timeout,omitempty"`
+		TemperGitTimeout          string              `yaml:"temper_git_timeout,omitempty"`
+		TemperOutputCap           int                 `yaml:"temper_output_cap,omitempty"`
 		AutoLearnRules            bool                `yaml:"auto_learn_rules"`
 		CopilotDailyRequestLimit  int                 `yaml:"copilot_daily_request_limit,omitempty"`
 		CrucibleEnabled           bool                `yaml:"crucible_enabled"`
@@ -888,6 +910,7 @@ func (s SettingsConfig) MarshalYAML() (interface{}, error) {
 		VulncheckEnabled:          s.VulncheckEnabled,
 		LogRetentionDays:          s.LogRetentionDays,
 		GoRaceDetection:           s.GoRaceDetection,
+		TemperOutputCap:           s.TemperOutputCap,
 		AutoLearnRules:            s.AutoLearnRules,
 		CopilotDailyRequestLimit:  s.CopilotDailyRequestLimit,
 		CrucibleEnabled:           s.CrucibleEnabled,
@@ -944,6 +967,12 @@ func (s SettingsConfig) MarshalYAML() (interface{}, error) {
 	}
 	if s.LogSweepInterval > 0 {
 		sh.LogSweepInterval = durationString(s.LogSweepInterval)
+	}
+	if s.TemperStepTimeout > 0 {
+		sh.TemperStepTimeout = durationString(s.TemperStepTimeout)
+	}
+	if s.TemperGitTimeout > 0 {
+		sh.TemperGitTimeout = durationString(s.TemperGitTimeout)
 	}
 	// Always emit SmelterInterval so an intentional 0 (disable scheduled runs)
 	// is persisted and not silently dropped back to the 8h default on next load.
@@ -1312,6 +1341,9 @@ func Defaults() Config {
 			MaxLifecycleWorkers:  DefaultMaxLifecycleWorkers,
 			BurnishVerifyTimeout: 5 * time.Minute,
 			StaleInterval:        5 * time.Minute,
+			TemperStepTimeout:    5 * time.Minute,
+			TemperGitTimeout:     30 * time.Second,
+			TemperOutputCap:      DefaultTemperOutputCap,
 			DepcheckInterval:     168 * time.Hour, // weekly
 			DepcheckTimeout:      5 * time.Minute,
 			VulncheckInterval:    24 * time.Hour,
@@ -1396,6 +1428,9 @@ func Load(configFile string) (*Config, error) {
 	v.SetDefault("settings.max_lifecycle_workers", DefaultMaxLifecycleWorkers)
 	v.SetDefault("settings.burnish_verify_timeout", "5m")
 	v.SetDefault("settings.stale_interval", "5m")
+	v.SetDefault("settings.temper_step_timeout", "5m")
+	v.SetDefault("settings.temper_git_timeout", "30s")
+	v.SetDefault("settings.temper_output_cap", DefaultTemperOutputCap)
 	v.SetDefault("settings.depcheck_interval", "168h")
 	v.SetDefault("settings.depcheck_timeout", "5m")
 	v.SetDefault("settings.vulncheck_interval", "24h")
@@ -1512,6 +1547,20 @@ func Load(configFile string) (*Config, error) {
 			return nil, fmt.Errorf("invalid burnish_verify_timeout %q: %w", raw, err)
 		}
 		cfg.Settings.BurnishVerifyTimeout = d
+	}
+	if raw := v.GetString("settings.temper_step_timeout"); raw != "" {
+		d, err := time.ParseDuration(raw)
+		if err != nil {
+			return nil, fmt.Errorf("invalid temper_step_timeout %q: %w", raw, err)
+		}
+		cfg.Settings.TemperStepTimeout = d
+	}
+	if raw := v.GetString("settings.temper_git_timeout"); raw != "" {
+		d, err := time.ParseDuration(raw)
+		if err != nil {
+			return nil, fmt.Errorf("invalid temper_git_timeout %q: %w", raw, err)
+		}
+		cfg.Settings.TemperGitTimeout = d
 	}
 	if raw := v.GetString("settings.depcheck_interval"); raw != "" {
 		d, err := time.ParseDuration(raw)
