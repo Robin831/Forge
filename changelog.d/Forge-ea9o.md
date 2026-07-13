@@ -1,0 +1,2 @@
+category: Fixed
+- **CLI daemon liveness is now socket-authoritative** - `forge status`, `forge pause`, and `forge resume` decide daemon liveness by pinging `~/.forge/forge.sock` first, so a healthy daemon is reported as Running (and pause/resume work) even when its pidfile is missing or stale after a crash and PID reuse. The pidfile-deleting staleness heuristic can no longer run against a live daemon, and `forge down` shuts the daemon down over the socket whenever the pidfile is missing or present-but-stale instead of signalling an unrelated PID. (Forge-ea9o)
