@@ -179,7 +179,18 @@ func TestSteer_ModeB_EnqueueBetweenSpawns(t *testing.T) {
 	// The resume iteration produces a diff so Warden re-reviews and approves.
 	params.EmptyDiffChecker = func(_, _ string) bool { return false }
 
+	// Capture notes handed to the bead-notes appender so we can verify
+	// the mode B persistence contract.
 	var mu sync.Mutex
+	var notes []string
+	params.SteerNoteAppender = func(beadID, _, note string) error {
+		mu.Lock()
+		defer mu.Unlock()
+		assert.Equal(t, "test-bead", beadID, "note must target the bead under work")
+		notes = append(notes, note)
+		return nil
+	}
+
 	var gotSessionID, gotResumeMsg string
 	var resumeCalls int32
 	params.SmithResumeRunner = func(_ context.Context, _, steerMsg, _ string, _ provider.Provider, sessionID string, _ []string) (*smith.Process, error) {
@@ -203,6 +214,23 @@ func TestSteer_ModeB_EnqueueBetweenSpawns(t *testing.T) {
 	assert.Equal(t, "sess-1", gotSessionID, "mode B must resume the last completed session_id")
 	assert.Contains(t, gotResumeMsg, "prioritise the caching layer", "resume prompt must carry the steer message")
 	assert.Contains(t, gotResumeMsg, "address the nil pointer", "resume prompt must merge in the pending Warden feedback")
+
+	// Exactly one bead_steered event must be recorded for the mode B steer.
+	events, err := db.RecentEvents(50)
+	require.NoError(t, err)
+	var steered []string
+	for _, e := range events {
+		if e.Type == state.EventBeadSteered {
+			steered = append(steered, e.Message)
+		}
+	}
+	require.Len(t, steered, 1, "mode B must record exactly one bead_steered event")
+	assert.Contains(t, steered[0], "prioritise the caching layer", "the event excerpt must include the steering text")
+	assert.Contains(t, steered[0], "mode B", "the event must identify it as mode B")
+
+	// Exactly one note, carrying the full steering message.
+	require.Len(t, notes, 1, "the full steering message must be appended to bead notes exactly once")
+	assert.Contains(t, notes[0], "prioritise the caching layer", "the note must contain the complete steering message")
 
 	w, err := db.GetWorker(outcome.WorkerID)
 	require.NoError(t, err)
