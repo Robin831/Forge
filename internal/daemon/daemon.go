@@ -255,8 +255,15 @@ type Daemon struct {
 	// returns before claiming/dispatching any new beads — currently running
 	// workers are left untouched and finish normally. Manual `forge queue run`
 	// dispatch is still allowed (mirrors the cost-limit pause behavior). The
-	// flag is in-memory only and resets to false on daemon restart by design.
+	// flag is persisted in state.db (daemon_settings) so a manual pause
+	// survives daemon restarts — it is restored on startup before the first
+	// pollAndDispatch. The cost-limit pause remains in-memory only.
 	dispatchPaused atomic.Bool
+
+	// pausedSince records when the current manual dispatch pause began. It is
+	// stored as a time.Time (zero when not manually paused) and surfaced in
+	// StatusPayload.PausedSince so UIs can show "paused since <time>".
+	pausedSince atomic.Value
 
 	// Per-anvil VCS providers for PR operations (GitHub, GitLab, etc.).
 	vcsProviders   map[string]vcs.Provider
@@ -1054,6 +1061,12 @@ func (d *Daemon) Run(ctx context.Context) error {
 	ticker := time.NewTicker(pollInterval)
 	defer ticker.Stop()
 
+	// Restore a manual dispatch pause persisted from a previous run so a
+	// pause set before a restart (e.g. a systemd restart) is not silently
+	// undone. Must run before the initial pollAndDispatch. The cost-limit
+	// pause is intentionally not persisted (recomputed from daily costs).
+	d.restoreDispatchPause()
+
 	// Initial poll (full/unfiltered to populate the Blocks cache)
 	d.pollAndDispatch(ctx, true)
 
@@ -1343,6 +1356,29 @@ func assaySummaryLine(findings []assay.Finding) string {
 		parts = append(parts, fmt.Sprintf("%d pre-existing", pre))
 	}
 	return "Assay (AI review): " + strings.Join(parts, ", ")
+}
+
+// restoreDispatchPause reads the persisted manual dispatch-pause flag from
+// state.db and, if it was set, restores the in-memory atomic and pausedSince
+// so a pause survives daemon restarts. It logs an event mirroring
+// EventDispatchPaused semantics. The cost-limit pause is not persisted.
+func (d *Daemon) restoreDispatchPause() {
+	paused, ok, err := d.db.GetSetting(state.SettingDispatchPaused)
+	if err != nil {
+		d.logger.Error("failed to read persisted dispatch pause", "error", err)
+		return
+	}
+	if !ok || paused != "1" {
+		return
+	}
+	d.dispatchPaused.Store(true)
+	if at, ok, _ := d.db.GetSetting(state.SettingDispatchPausedAt); ok && at != "" {
+		if t, perr := time.Parse(time.RFC3339, at); perr == nil {
+			d.pausedSince.Store(t)
+		}
+	}
+	_ = d.db.LogEvent(state.EventDispatchPaused, "Dispatch pause restored from previous run", "", "")
+	d.logger.Info("dispatch pause restored from previous run")
 }
 
 // runAssayReview performs one Assay review of the PR's current head: it fetches
@@ -4437,6 +4473,13 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 			AnvilLastPoll:          anvilLastPoll,
 			MaxTotalSmiths:         d.cfg.Load().Settings.MaxTotalSmiths,
 		}
+		// Surface when the manual dispatch pause began (not the cost-limit pause).
+		if payload.DispatchPaused {
+			if since, ok := d.pausedSince.Load().(time.Time); ok && !since.IsZero() {
+				s := since
+				payload.PausedSince = &s
+			}
+		}
 		data, _ := json.Marshal(payload)
 		return ipc.Response{Type: "status", Payload: data}
 
@@ -4603,6 +4646,10 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 		// Idempotent: pausing while already paused is a no-op success.
 		already := d.dispatchPaused.Swap(true)
 		if !already {
+			now := time.Now()
+			d.pausedSince.Store(now)
+			_ = d.db.SetSetting(state.SettingDispatchPaused, "1")
+			_ = d.db.SetSetting(state.SettingDispatchPausedAt, now.Format(time.RFC3339))
 			_ = d.db.LogEvent(state.EventDispatchPaused, "Dispatch manually paused — running workers continue; no new beads dispatched", "", "")
 			d.logger.Info("dispatch paused (manual)")
 		}
@@ -4613,6 +4660,9 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 		// Idempotent: resuming while not paused is a no-op success.
 		was := d.dispatchPaused.Swap(false)
 		if was {
+			d.pausedSince.Store(time.Time{})
+			_ = d.db.SetSetting(state.SettingDispatchPaused, "0")
+			_ = d.db.SetSetting(state.SettingDispatchPausedAt, "")
 			_ = d.db.LogEvent(state.EventDispatchResumed, "Dispatch manually resumed", "", "")
 			d.logger.Info("dispatch resumed (manual)")
 			// Kick a poll so resuming takes effect immediately rather than

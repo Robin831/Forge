@@ -8,6 +8,18 @@ interface DispatchToggleProps {
   // GET /api/status (dispatch_paused). The component is otherwise stateless —
   // the parent re-renders it from the next status poll after a toggle.
   paused: boolean
+  // pausedSince is the RFC3339 timestamp of when the manual pause began
+  // (status.paused_since). Undefined when not manually paused or unknown; when
+  // present it is rendered in the banner as "paused since <time>".
+  pausedSince?: string
+}
+
+// formatPausedSince renders an RFC3339 timestamp as a short human-readable
+// local time, falling back to the raw value if it cannot be parsed.
+function formatPausedSince(iso: string): string {
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return iso
+  return d.toLocaleString()
 }
 
 // DispatchToggle renders the daemon-wide pause/resume control plus a clear
@@ -16,7 +28,7 @@ interface DispatchToggleProps {
 // normally) — useful for draining the active set to zero before restarting the
 // daemon. The keyboard shortcut "p" toggles the state from anywhere on the
 // dashboard (ignored while typing in an input/textarea).
-export default function DispatchToggle({ paused }: DispatchToggleProps) {
+export default function DispatchToggle({ paused, pausedSince }: DispatchToggleProps) {
   const { run, busy } = useAction()
 
   const toggle = () => {
@@ -57,7 +69,7 @@ export default function DispatchToggle({ paused }: DispatchToggleProps) {
           aria-live="polite"
         >
           <Pause size={10} aria-hidden />
-          dispatch paused
+          {pausedSince ? `dispatch paused since ${formatPausedSince(pausedSince)}` : 'dispatch paused'}
         </span>
       )}
       <button

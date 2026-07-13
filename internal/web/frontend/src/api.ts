@@ -95,6 +95,7 @@ export interface StatusResponse {
   daily_cost_limit?: number
   cost_limit_paused?: boolean
   dispatch_paused?: boolean
+  paused_since?: string
   copilot_premium_requests?: number
   copilot_request_limit?: number
   copilot_limit_reached?: boolean
