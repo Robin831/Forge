@@ -1,0 +1,2 @@
+category: Fixed
+- **Schematic no longer orphans or duplicates sub-beads on partial decomposition** - Sub-beads are now tagged with a `schematic:<parent-id>` marker label, and re-decomposition reuses existing marked children by title instead of creating a second set alongside the orphans. Partial-decomposition failures and verdict-parse skips now emit events so they are visible in the activity feed. (Forge-fysf)

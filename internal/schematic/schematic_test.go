@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os/exec"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -739,6 +740,287 @@ func TestCreateSubBeads_ExitOneWithAddedDependencyNoRetry(t *testing.T) {
 	require.NoError(t, err, "exit 1 with success marker in stdout should be treated as success on the first attempt")
 	require.Len(t, subs, 2)
 	assert.Equal(t, 1, depCount(), "the bd exit-1 quirk must not cause a retry")
+}
+
+func TestSchematicChildLabel(t *testing.T) {
+	assert.Equal(t, "schematic:Forge-abc1", schematicChildLabel("Forge-abc1"))
+	assert.Equal(t, SchematicChildLabelPrefix+"parent-1", schematicChildLabel("parent-1"))
+}
+
+func TestConfig_EmitEvent(t *testing.T) {
+	// Nil-safe: emitting with no callback configured is a no-op.
+	Config{}.emitEvent(EventKindParseFailed, "no callback")
+
+	var gotKind, gotMsg string
+	var calls int
+	cfg := Config{OnEvent: func(kind, message string) {
+		calls++
+		gotKind, gotMsg = kind, message
+	}}
+	cfg.emitEvent(EventKindDecomposeFailed, "boom")
+	assert.Equal(t, 1, calls)
+	assert.Equal(t, EventKindDecomposeFailed, gotKind)
+	assert.Equal(t, "boom", gotMsg)
+}
+
+func TestDepEdgeAlreadyExists(t *testing.T) {
+	cases := []struct {
+		name string
+		out  string
+		want bool
+	}{
+		{"already exists", "error: dependency already exists", true},
+		{"already depends", "test-2 already depends on test-1", true},
+		{"duplicate", "duplicate dependency edge", true},
+		{"mixed case", "Dependency Already Exists", true},
+		{"unrelated", "connection refused", false},
+		{"empty", "", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, depEdgeAlreadyExists([]byte(tc.out)))
+		})
+	}
+}
+
+func TestFindExistingChildren_ParsesAndSkipsClosed(t *testing.T) {
+	fake := &fakeRunner{
+		response: func(args []string) ([]byte, error) {
+			if len(args) > 0 && args[0] == "list" {
+				return []byte(`[
+					{"id":"c1","title":"Task A","status":"open"},
+					{"id":"c2","title":"Task B","status":"in_progress"},
+					{"id":"c3","title":"Task C","status":"closed"},
+					{"id":"","title":"No ID","status":"open"}
+				]`), nil
+			}
+			return []byte("ok"), nil
+		},
+	}
+	got := findExistingChildren(context.Background(), "/tmp", "schematic:p", fake.run)
+	assert.Equal(t, map[string]string{"Task A": "c1", "Task B": "c2"}, got,
+		"closed children and entries without an ID must be excluded")
+}
+
+func TestFindExistingChildren_QueryErrorReturnsEmpty(t *testing.T) {
+	fake := &fakeRunner{
+		response: func(args []string) ([]byte, error) {
+			return nil, errors.New("bd list: connection refused")
+		},
+	}
+	got := findExistingChildren(context.Background(), "/tmp", "schematic:p", fake.run)
+	assert.Empty(t, got, "a failed query must yield an empty map so decomposition proceeds")
+}
+
+func TestCreateSubBeads_AppliesMarkerLabel(t *testing.T) {
+	fake := newFakeRunner()
+	parent := poller.Bead{ID: "parent-1", Title: "Feature", Priority: 2}
+	tasks := []subTaskVerdict{{Title: "Only task", Description: "Desc"}}
+
+	_, err := createSubBeads(context.Background(), parent, tasks, "/tmp", fake.run)
+	require.NoError(t, err)
+
+	marker := schematicChildLabel(parent.ID)
+	foundLabeledCreate := false
+	for _, call := range fake.calls {
+		if len(call) == 0 || call[0] != "create" {
+			continue
+		}
+		hasLabelsFlag := false
+		hasMarker := false
+		for i, a := range call {
+			if a == "--labels" && i+1 < len(call) && call[i+1] == marker {
+				hasLabelsFlag = true
+			}
+			if a == marker {
+				hasMarker = true
+			}
+		}
+		if hasLabelsFlag && hasMarker {
+			foundLabeledCreate = true
+		}
+	}
+	assert.True(t, foundLabeledCreate, "every created sub-bead must carry --labels %q", marker)
+}
+
+func TestCreateSubBeads_ReusesExistingMarkedChildren(t *testing.T) {
+	disableDepRetrySleep(t)
+	parent := poller.Bead{ID: "parent-1", Title: "Big feature", Priority: 2}
+
+	var createCount int
+	var mu sync.Mutex
+	fake := &fakeRunner{
+		response: func(args []string) ([]byte, error) {
+			if len(args) > 0 && args[0] == "list" {
+				// "Task A" already exists from a prior partial pass.
+				return []byte(`[{"id":"existing-A","title":"Task A","status":"open"}]`), nil
+			}
+			if len(args) > 0 && args[0] == "create" {
+				mu.Lock()
+				createCount++
+				id := fmt.Sprintf("new-%d", createCount)
+				mu.Unlock()
+				return []byte(fmt.Sprintf(`{"id":%q}`, id)), nil
+			}
+			return []byte("ok"), nil
+		},
+	}
+	tasks := []subTaskVerdict{
+		{Title: "Task A", Description: "Desc A"},
+		{Title: "Task B", Description: "Desc B"},
+	}
+
+	subs, err := createSubBeads(context.Background(), parent, tasks, "/tmp", fake.run)
+	require.NoError(t, err)
+	require.Len(t, subs, 2)
+
+	assert.Equal(t, "existing-A", subs[0].ID, "Task A should reuse the pre-existing marked child")
+	assert.Equal(t, "new-1", subs[1].ID, "Task B should be freshly created")
+	assert.Equal(t, 1, createCount, "only the missing task should be created (no duplicate for Task A)")
+}
+
+// TestCreateSubBeads_PartialFailureThenRedecomposeNoDuplicates exercises the
+// core bug fix: a mid-loop failure leaves marker-labeled children behind, and a
+// subsequent re-decomposition reuses them instead of creating a second set.
+func TestCreateSubBeads_PartialFailureThenRedecomposeNoDuplicates(t *testing.T) {
+	disableDepRetrySleep(t)
+	parent := poller.Bead{ID: "parent-1", Title: "Feature", Priority: 2}
+
+	type child struct{ id, title string }
+	var created []child
+	var idc int
+	var mu sync.Mutex
+	failDep := true
+
+	fake := &fakeRunner{
+		response: func(args []string) ([]byte, error) {
+			mu.Lock()
+			defer mu.Unlock()
+			switch args[0] {
+			case "list":
+				var b strings.Builder
+				b.WriteString("[")
+				for i, c := range created {
+					if i > 0 {
+						b.WriteString(",")
+					}
+					b.WriteString(fmt.Sprintf(`{"id":%q,"title":%q,"status":"open"}`, c.id, c.title))
+				}
+				b.WriteString("]")
+				return []byte(b.String()), nil
+			case "create":
+				idc++
+				id := fmt.Sprintf("bead-%d", idc)
+				title := ""
+				for _, a := range args {
+					if strings.HasPrefix(a, "--title=") {
+						title = strings.TrimPrefix(a, "--title=")
+					}
+				}
+				created = append(created, child{id, title})
+				return []byte(fmt.Sprintf(`{"id":%q}`, id)), nil
+			case "dep":
+				if failDep {
+					// Permanent (non-transient) error → fails immediately.
+					return nil, errors.New("bd dep add: connection refused")
+				}
+				return []byte("ok"), nil
+			default:
+				return []byte("ok"), nil
+			}
+		},
+	}
+
+	tasks := []subTaskVerdict{
+		{Title: "Task A", Description: "A"},
+		{Title: "Task B", Description: "B"},
+	}
+
+	// Pass 1: both children created, then the sequential dep add fails.
+	subs1, err1 := createSubBeads(context.Background(), parent, tasks, "/tmp", fake.run)
+	require.Error(t, err1, "pass 1 must fail on the dep-add error")
+	require.Len(t, created, 2, "both children should exist after the partial pass")
+
+	// Pass 2: dep add now succeeds; re-decompose the same parent.
+	failDep = false
+	createdBefore := len(created)
+	subs2, err2 := createSubBeads(context.Background(), parent, tasks, "/tmp", fake.run)
+	require.NoError(t, err2, "pass 2 should succeed")
+	require.Len(t, subs2, 2)
+
+	assert.Equal(t, createdBefore, len(created),
+		"re-decomposition must reuse the marked children, not create duplicates")
+	assert.Equal(t, subs1[0].ID, subs2[0].ID, "Task A should keep the same ID across passes")
+	assert.Equal(t, subs1[1].ID, subs2[1].ID, "Task B should keep the same ID across passes")
+}
+
+// TestCreateSubBeads_ClosesSupersededOrphansOnTitleChange covers the safety net
+// for the case where a re-decomposition produces different task titles than the
+// pass that partially ran: the old marker-labeled children are closed so bd is
+// left with exactly one coherent set (no orphans).
+func TestCreateSubBeads_ClosesSupersededOrphansOnTitleChange(t *testing.T) {
+	disableDepRetrySleep(t)
+	parent := poller.Bead{ID: "parent-1", Title: "Feature", Priority: 2}
+
+	var closed []string
+	var idc int
+	var mu sync.Mutex
+	fake := &fakeRunner{
+		response: func(args []string) ([]byte, error) {
+			mu.Lock()
+			defer mu.Unlock()
+			switch args[0] {
+			case "list":
+				// A prior pass left two children with the OLD titles.
+				return []byte(`[
+					{"id":"old-A","title":"Old Task A","status":"open"},
+					{"id":"old-B","title":"Old Task B","status":"open"}
+				]`), nil
+			case "create":
+				idc++
+				return []byte(fmt.Sprintf(`{"id":"new-%d"}`, idc)), nil
+			case "close":
+				closed = append(closed, args[1])
+				return []byte("ok"), nil
+			default:
+				return []byte("ok"), nil
+			}
+		},
+	}
+
+	// The new decomposition uses DIFFERENT titles.
+	tasks := []subTaskVerdict{
+		{Title: "New Task X", Description: "X"},
+		{Title: "New Task Y", Description: "Y"},
+	}
+
+	subs, err := createSubBeads(context.Background(), parent, tasks, "/tmp", fake.run)
+	require.NoError(t, err)
+	require.Len(t, subs, 2)
+	assert.Equal(t, "new-1", subs[0].ID)
+	assert.Equal(t, "new-2", subs[1].ID)
+
+	// The two orphaned children with the old titles must be closed.
+	assert.Contains(t, closed, "old-A", "superseded orphan should be closed")
+	assert.Contains(t, closed, "old-B", "superseded orphan should be closed")
+}
+
+func TestChainSequentialDep_AlreadyExistsTolerated(t *testing.T) {
+	disableDepRetrySleep(t)
+	parent := poller.Bead{ID: "parent-1"}
+	subs := []SubBead{{ID: "c1", Title: "A"}, {ID: "c2", Title: "B"}}
+
+	fake := &fakeRunner{
+		response: func(args []string) ([]byte, error) {
+			if len(args) > 0 && args[0] == "dep" {
+				return []byte("error: dependency already exists"), errors.New("bd dep add failed")
+			}
+			return []byte("ok"), nil
+		},
+	}
+
+	err := chainSequentialDep(context.Background(), "/tmp", parent, subs, fake.run)
+	assert.NoError(t, err, "an already-existing dependency edge must be treated as success")
 }
 
 func TestIsTransientDepErr(t *testing.T) {

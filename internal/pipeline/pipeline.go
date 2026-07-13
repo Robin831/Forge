@@ -1162,6 +1162,13 @@ func Run(ctx context.Context, p Params) *Outcome {
 					log.Printf("[pipeline:%s] failed to record schematic log path: %v", wID, err)
 				}
 			}
+			beadID, anvilName := p.Bead.ID, p.AnvilName
+			schemCfg.OnEvent = func(kind, message string) {
+				// Kinds map 1:1 to state event types so partial-decomposition
+				// failures and verdict-parse skips are distinctly visible in the
+				// activity feed rather than silent.
+				_ = p.DB.LogEvent(state.EventType(kind), message, beadID, anvilName)
+			}
 		}
 
 		schemCfg.LogDir = filepath.Join(wt.Path, ".forge-logs")

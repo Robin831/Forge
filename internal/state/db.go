@@ -2133,6 +2133,13 @@ const (
 	EventSchematicStarted     EventType = "schematic_started"
 	EventSchematicDone        EventType = "schematic_done"
 	EventSchematicSkipped     EventType = "schematic_skipped"
+	// EventSchematicDecomposeFailed fires when decomposition fails partway
+	// through creating sub-beads (a mid-loop create/parse/dep failure). Marker
+	// labels on the partial children make them reusable on re-decomposition.
+	EventSchematicDecomposeFailed EventType = "schematic_decompose_failed"
+	// EventSchematicParseFailed fires when the AI verdict could not be parsed
+	// and the schematic skipped rather than acting on unstructured output.
+	EventSchematicParseFailed EventType = "schematic_parse_failed"
 	EventDispatchFailed       EventType = "dispatch_failed"
 	EventDispatchCircuitBreak EventType = "dispatch_circuit_break"
 	// EventDispatchBlockedStrandedBranch fires when the pre-dispatch remote
