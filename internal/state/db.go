@@ -728,7 +728,7 @@ func (db *DB) RepointWorkerLogPaths(beadID, oldLogDir, newDir string) (int, erro
 		if !logPathIsUnder(logPath, oldLogDir) {
 			continue
 		}
-		base := filepath.Base(logPath)
+		base := portableBase(logPath)
 		if owner, ok := claimed[base]; ok {
 			log.Printf("[state] RepointWorkerLogPaths: basename collision for %q (workers %s and %s); keeping %s", base, owner, id, owner)
 			continue
@@ -804,12 +804,27 @@ func (db *DB) BackfillDanglingWorkerLogPaths(logsRoot string) (int, error) {
 	}
 	rows.Close()
 
+	tx, err := db.conn.Begin()
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+
+	stmt, err := tx.Prepare(`UPDATE workers SET log_path = ? WHERE id = ?`)
+	if err != nil {
+		return 0, err
+	}
+	defer stmt.Close()
+
 	count := 0
 	for _, r := range repairs {
-		if _, err := db.conn.Exec(`UPDATE workers SET log_path = ? WHERE id = ?`, r.newPath, r.id); err != nil {
+		if _, err := stmt.Exec(r.newPath, r.id); err != nil {
 			return 0, err
 		}
 		count++
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, err
 	}
 	return count, nil
 }
