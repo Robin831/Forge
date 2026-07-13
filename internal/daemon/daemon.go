@@ -135,10 +135,12 @@ type Daemon struct {
 	activeBeads sync.Map // beadID -> true, currently in-flight
 	// controlHandles is the in-memory registry of active pipeline control
 	// handles keyed by beadID (beadID string -> *controlHandle). A handle is
-	// registered after activeBeads.LoadOrStore and a successful claim, just
-	// before the dispatchBead goroutine launches. Cleaned up via
-	// releaseBeadSlot (activeBeads.Delete first, then deregisterControlHandle)
-	// so the handle remains accessible for the full in-flight duration.
+	// created with an immutable workerID and registered after a successful
+	// claim, just before the dispatchBead goroutine launches. There is a
+	// brief window between activeBeads.LoadOrStore and handle registration
+	// where no handle exists; IPC lookups return false during this window.
+	// Not every activeBeads key has a corresponding control handle (e.g.
+	// force_smith/lifecycle lock keys). Cleaned up via releaseBeadSlot.
 	// See control.go.
 	controlHandles sync.Map
 	// pendingActions parks lifecycle actions that arrived while a bead was in
@@ -2817,8 +2819,6 @@ func (d *Daemon) pollAndDispatch(ctx context.Context, fullPoll bool) {
 		if _, alreadyInFlight := d.activeBeads.LoadOrStore(bead.ID, true); alreadyInFlight {
 			continue
 		}
-		ctrl := newControlHandle("")
-		d.registerControlHandle(bead.ID, ctrl)
 
 		// Skip beads that need clarification (analogous to needs_human)
 		if _, needed := clarSet[bead.ID+"\x00"+bead.Anvil]; needed {
@@ -2888,15 +2888,20 @@ func (d *Daemon) pollAndDispatch(ctx context.Context, fullPoll bool) {
 		// (Forge-au4z). This also covers the known claim→worktree crash window.
 		// The pipeline overwrites this row via INSERT OR REPLACE when it starts.
 		claimWorkerID := d.insertPendingWorker(bead.ID, bead.Anvil, bead.Title)
-		ctrl.workerID = claimWorkerID
 
-		// Claim the bead atomically before dispatching.
+		// Claim the bead before dispatching.
 		if err := d.claimBead(ctx, bead.ID, anvilCfg.Path); err != nil {
 			d.logger.Warn("failed to claim bead", "bead", bead.ID, "error", err)
 			d.abortClaim(bead.ID, bead.Anvil, claimWorkerID, fmt.Sprintf("claim failed: %v", err), err)
 			d.releaseBeadSlot(bead.ID)
 			continue
 		}
+
+		// Create and register the control handle only after workerID is known
+		// and the bead is successfully claimed, so the handle is immutable once
+		// published and IPC lookups never see a partially initialized handle.
+		ctrl := newControlHandle(claimWorkerID)
+		d.registerControlHandle(bead.ID, ctrl)
 
 		thisCycleAnvil[bead.Anvil]++
 		thisCycleTotal++
@@ -2913,8 +2918,8 @@ func (d *Daemon) pollAndDispatch(ctx context.Context, fullPoll bool) {
 // dispatchBead runs the full pipeline for a single bead in a goroutine.
 // claimWorkerID is the ID of the pending worker row inserted at claim time;
 // it is passed into the pipeline so the running row overwrites the pending one.
-// ctrl is the control handle registered by the caller after a successful claim,
-// just before launching this goroutine.
+// ctrl is the control handle created with an immutable workerID and registered
+// by the caller after a successful claim, just before launching this goroutine.
 func (d *Daemon) dispatchBead(ctx context.Context, bead poller.Bead, anvilCfg config.AnvilConfig, claimWorkerID string, ctrl *controlHandle) {
 	defer d.wg.Done()
 	defer func() {
@@ -4878,8 +4883,6 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("bead %q is already in flight", targetBead.ID)})
 			return ipc.Response{Type: "error", Payload: msg}
 		}
-		ctrl := newControlHandle("")
-		d.registerControlHandle(targetBead.ID, ctrl)
 
 		// Block beads that need clarification (consistent with auto-dispatch behavior)
 		needed, err := d.isBeadClarificationNeeded(targetBead.ID, targetBead.Anvil)
@@ -4955,7 +4958,6 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 		// identify this as Forge-owned even if the claim is killed after
 		// committing server-side, and through the claim→worktree window (Forge-au4z).
 		claimWorkerID := d.insertPendingWorker(targetBead.ID, targetBead.Anvil, targetBead.Title)
-		ctrl.workerID = claimWorkerID
 
 		// Claim the bead
 		if err := d.claimBead(context.Background(), targetBead.ID, anvilCfg.Path); err != nil {
@@ -4964,6 +4966,11 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 			msg, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("failed to claim bead: %v", err)})
 			return ipc.Response{Type: "error", Payload: msg}
 		}
+
+		// Create and register the control handle only after workerID is known
+		// and the bead is successfully claimed (see pollAndDispatch).
+		ctrl := newControlHandle(claimWorkerID)
+		d.registerControlHandle(targetBead.ID, ctrl)
 
 		d.wg.Add(1)
 		go d.dispatchBead(context.Background(), *targetBead, anvilCfg, claimWorkerID, ctrl)

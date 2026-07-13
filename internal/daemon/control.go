@@ -15,9 +15,12 @@ const steerMailboxSize = 16
 // beadID, pushes a steer message into the mailbox, and/or triggers the
 // interrupt to stop the currently running spawn.
 //
-// A handle is registered after activeBeads.LoadOrStore and a successful
-// claim, just before the dispatchBead goroutine launches. It is deregistered
-// via releaseBeadSlot (which runs activeBeads.Delete first, then
+// A handle is created with an immutable workerID and registered only after the
+// pending worker row is inserted and the bead is successfully claimed — just
+// before the dispatchBead goroutine launches. There is a brief window between
+// activeBeads.LoadOrStore and handle registration where no handle exists; the
+// IPC/API layer handles this gracefully (lookupControlHandle returns false).
+// Deregistered via releaseBeadSlot (activeBeads.Delete first, then
 // deregisterControlHandle) so the handle remains accessible for the full
 // duration the bead is marked in-flight.
 type controlHandle struct {
@@ -92,11 +95,12 @@ func (d *Daemon) deregisterControlHandle(beadID string) {
 	d.controlHandles.Delete(beadID)
 }
 
-// releaseBeadSlot atomically removes both the activeBeads reservation and the
-// control handle for a bead. Ordering: activeBeads.Delete first, then
+// releaseBeadSlot removes both the activeBeads reservation and the control
+// handle for a bead. The two deletes are separate operations, not a single
+// atomic update, but ordering is intentional: activeBeads.Delete first, then
 // deregisterControlHandle, so the handle remains accessible for the full
-// duration the bead is marked in-flight. Safe to call even if no handle was
-// registered (sync.Map.Delete is a no-op for absent keys).
+// duration the bead is marked in-flight. Idempotent — safe to call even if no
+// handle was registered (sync.Map.Delete is a no-op for absent keys).
 func (d *Daemon) releaseBeadSlot(beadID string) {
 	d.activeBeads.Delete(beadID)
 	d.deregisterControlHandle(beadID)
