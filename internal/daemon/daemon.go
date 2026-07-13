@@ -2923,8 +2923,8 @@ func (d *Daemon) pollAndDispatch(ctx context.Context, fullPoll bool) {
 func (d *Daemon) dispatchBead(ctx context.Context, bead poller.Bead, anvilCfg config.AnvilConfig, claimWorkerID string, ctrl *controlHandle) {
 	defer d.wg.Done()
 	defer func() {
-		// releaseBeadSlot removes activeBeads first, then the control handle,
-		// so the handle stays accessible for the full in-flight duration.
+		// releaseBeadSlot removes the control handle first, then activeBeads,
+		// so a new dispatch cannot register a handle that this cleanup deletes.
 		// drainPendingAction fires last so any parked lifecycle action sees
 		// the bead as free.
 		d.releaseBeadSlot(bead.ID)
