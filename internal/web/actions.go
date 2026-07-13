@@ -326,6 +326,49 @@ func (s *Server) handleBeadNote(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// steerRequest is the JSON shape for POST /api/bead/{bead_id}/steer. Unlike the
+// other bead actions, steering is keyed purely by bead id (the daemon resolves
+// the active pipeline from its in-memory control registry), so no anvil is
+// required — only the human steering message.
+type steerRequest struct {
+	Message string `json:"message"`
+}
+
+// handleBeadSteer proxies POST /api/bead/{bead_id}/steer to the daemon's
+// steer_bead IPC. It delivers a human steering message to the bead's in-flight
+// pipeline; the daemon returns an actionable error when the bead has no active
+// pipeline, the message is empty, or the session is not a Claude session.
+func (s *Server) handleBeadSteer(w http.ResponseWriter, r *http.Request) {
+	beadID := chi.URLParam(r, "bead_id")
+	if !isValidBeadID(beadID) {
+		writeError(w, http.StatusBadRequest, "invalid bead id")
+		return
+	}
+
+	var req steerRequest
+	body, err := io.ReadAll(io.LimitReader(r.Body, 32*1024))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
+		return
+	}
+	if len(body) > 0 {
+		if err := json.Unmarshal(body, &req); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+			return
+		}
+	}
+	if strings.TrimSpace(req.Message) == "" {
+		writeError(w, http.StatusBadRequest, "message is required")
+		return
+	}
+
+	s.logActor(r, "steer_bead", "bead", beadID)
+	s.dispatchAction(w, "steer_bead", ipc.SteerBeadPayload{
+		BeadID:  beadID,
+		Message: req.Message,
+	})
+}
+
 // maxCommentBodyBytes caps the payload size on POST /api/bead/{id}/comment.
 // The body is forwarded to bd as a single argv entry, and Windows caps the
 // entire CreateProcess command line at 32,767 characters — so the 32 KiB

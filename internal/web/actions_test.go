@@ -93,6 +93,7 @@ func TestActions_RequireAuth(t *testing.T) {
 		"/api/bead/Forge-abc1/label/remove",
 		"/api/bead/Forge-abc1/note",
 		"/api/bead/Forge-abc1/comment",
+		"/api/bead/Forge-abc1/steer",
 	} {
 		req := httptest.NewRequest("POST", path, strings.NewReader(`{}`))
 		req.Header.Set("Content-Type", "application/json")
@@ -500,6 +501,61 @@ func TestActions_BeadNote_OK(t *testing.T) {
 	_ = json.Unmarshal(cmd.Payload, &p)
 	if p.Notes != "manual triage step" {
 		t.Errorf("payload mismatch: %+v", p)
+	}
+}
+
+func TestActions_BeadSteer_RequiresMessage(t *testing.T) {
+	srv := newServerWithDefaults(t, nil)
+	cookie := loginAndGetCookie(t, srv)
+
+	rec := postAction(t, srv, cookie, "/api/bead/Forge-abc1/steer", map[string]any{
+		"message": "   ",
+	})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", rec.Code)
+	}
+}
+
+func TestActions_BeadSteer_OK(t *testing.T) {
+	rh := &recordingHandler{}
+	srv := newServerWithDefaults(t, rh.handle)
+	cookie := loginAndGetCookie(t, srv)
+
+	rec := postAction(t, srv, cookie, "/api/bead/Forge-abc1/steer", map[string]any{
+		"message": "also update the README",
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	cmd, _ := rh.lastCommand()
+	if cmd.Type != "steer_bead" {
+		t.Fatalf("expected steer_bead, got %s", cmd.Type)
+	}
+	var p ipc.SteerBeadPayload
+	_ = json.Unmarshal(cmd.Payload, &p)
+	if p.BeadID != "Forge-abc1" || p.Message != "also update the README" {
+		t.Errorf("payload mismatch: %+v", p)
+	}
+}
+
+func TestActions_BeadSteer_PropagatesDaemonError(t *testing.T) {
+	rh := &recordingHandler{
+		resp: ipc.Response{
+			Type:    "error",
+			Payload: []byte(`{"message":"no active pipeline for bead Forge-abc1; steering requires a running Smith worker"}`),
+		},
+	}
+	srv := newServerWithDefaults(t, rh.handle)
+	cookie := loginAndGetCookie(t, srv)
+
+	rec := postAction(t, srv, cookie, "/api/bead/Forge-abc1/steer", map[string]any{
+		"message": "go left",
+	})
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "no active pipeline") {
+		t.Errorf("expected daemon error surfaced, got %s", rec.Body.String())
 	}
 }
 

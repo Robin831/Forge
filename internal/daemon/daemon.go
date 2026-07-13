@@ -6401,11 +6401,101 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 		return d.handleQueueClear(cmd)
 	case "queue_stop":
 		return d.handleQueueStop(cmd)
+	case "steer_bead":
+		return d.handleSteerBead(cmd)
 
 	default:
 		msg, _ := json.Marshal(map[string]string{"message": "unknown command: " + cmd.Type})
 		return ipc.Response{Type: "error", Payload: msg}
 	}
+}
+
+// steerErrorResponse builds an error IPC response carrying an actionable
+// message string, matching the {"message": ...} shape every steer surface
+// (IPC/Web/CLI) unwraps.
+func steerErrorResponse(msg string) ipc.Response {
+	data, _ := json.Marshal(map[string]string{"message": msg})
+	return ipc.Response{Type: "error", Payload: data}
+}
+
+// workerSessionNonClaude reports whether a worker's recorded session is
+// positively NOT a Claude session, i.e. cannot be resumed by a steer message.
+// Only Claude reports a session_id (and a claude-* model), so steering any
+// other provider would fail to resume and escalate the bead instead.
+//
+// Because the session_id and model are only persisted to state.db AFTER a spawn
+// completes, a just-started Claude spawn has neither recorded yet. To avoid
+// falsely rejecting steering of a live Claude spawn (the common steer mode A
+// case), this only returns true when there is a positively non-Claude signal: a
+// recorded model that is not a claude-* model, with no captured session_id. An
+// as-yet-unrecorded session (both empty) is treated as steerable.
+func workerSessionNonClaude(w *state.Worker) bool {
+	if w == nil {
+		return false
+	}
+	if w.SessionID != "" {
+		// Only Claude reports a session_id — a recorded one means Claude.
+		return false
+	}
+	if w.Model == "" {
+		// Nothing recorded yet (spawn still starting) — be optimistic.
+		return false
+	}
+	return !strings.Contains(strings.ToLower(w.Model), "claude")
+}
+
+// handleSteerBead implements the "steer_bead" IPC verb: it delivers a human
+// steering message to a bead's in-flight pipeline. Validation mirrors the
+// shared steer semantics used by the Web and CLI surfaces: the bead must have
+// an active registered control handle (a running pipeline), the message must be
+// non-empty, and the session must be a Claude session (only Claude reports a
+// resumable session_id). On success the message is pushed into the control
+// handle's steer mailbox and, if a Smith spawn is currently running, that spawn
+// is interrupted so the message is consumed immediately (mode A); otherwise the
+// message is picked up between spawns (mode B). The bead_steered event and note
+// persistence happen inside the pipeline when the message is actually consumed.
+func (d *Daemon) handleSteerBead(cmd ipc.Command) ipc.Response {
+	var sp ipc.SteerBeadPayload
+	if err := json.Unmarshal(cmd.Payload, &sp); err != nil {
+		return steerErrorResponse("invalid steer_bead payload")
+	}
+	beadID := strings.TrimSpace(sp.BeadID)
+	message := strings.TrimSpace(sp.Message)
+	if beadID == "" {
+		return steerErrorResponse("bead_id is required")
+	}
+	if message == "" {
+		return steerErrorResponse("steer message must not be empty")
+	}
+
+	ctrl, ok := d.lookupControlHandle(beadID)
+	if !ok {
+		return steerErrorResponse(fmt.Sprintf("no active pipeline for bead %s; steering requires a running Smith worker", beadID))
+	}
+
+	// Reject a positively non-Claude session up front so the caller gets a clear
+	// error instead of the pipeline silently escalating an unresumable steer.
+	if w, err := d.db.GetWorker(ctrl.workerID); err == nil && workerSessionNonClaude(w) {
+		return steerErrorResponse(fmt.Sprintf("bead %s is not running a Claude session (model %q); steering is only supported for Claude sessions", beadID, w.Model))
+	}
+
+	// Push the message BEFORE interrupting so an interrupted running spawn finds
+	// it already waiting in the mailbox to consume (mode A). A full mailbox is a
+	// transient condition — surface it rather than silently dropping the steer.
+	if !ctrl.pushSteer(message) {
+		return steerErrorResponse(fmt.Sprintf("steer mailbox is full for bead %s; try again shortly", beadID))
+	}
+
+	mode := "queued for the next spawn (mode B)"
+	if ctrl.fireInterrupt() {
+		mode = "interrupted the running spawn (mode A)"
+	}
+	d.logger.Info("steer delivered", "bead", beadID, "worker", ctrl.workerID, "mode", mode)
+
+	data, _ := json.Marshal(map[string]string{
+		"message": fmt.Sprintf("steer message delivered to bead %s — %s", beadID, mode),
+	})
+	return ipc.Response{Type: "ok", Payload: data}
 }
 
 // handleQueueClarify implements the "queue_clarify" IPC verb: marks a bead

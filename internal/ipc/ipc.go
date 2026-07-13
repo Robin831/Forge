@@ -31,7 +31,7 @@ import (
 
 // Command is a message sent from a client to the daemon.
 type Command struct {
-	Type    string          `json:"type"`    // "status", "kill_worker", "refresh", "queue", "run_bead", "create_pr", "set_clarification", "clear_clarification", "assay_rerun", "pause_dispatch", "resume_dispatch"
+	Type    string          `json:"type"`    // "status", "kill_worker", "refresh", "queue", "run_bead", "create_pr", "set_clarification", "clear_clarification", "assay_rerun", "pause_dispatch", "resume_dispatch", "steer_bead"
 	Payload json.RawMessage `json:"payload"` // Type-specific data
 	// ReadTimeout is an optional client-side timeout for reading the response.
 	// Zero uses DefaultReadTimeout. Long-running commands that go through bd or
@@ -259,6 +259,19 @@ type QueueActionPayload struct {
 	ForgeID   string `json:"forge_id,omitempty"`
 	AnvilName string `json:"anvil_name,omitempty"`
 	Note      string `json:"note,omitempty"`
+}
+
+// SteerBeadPayload is the payload for a "steer_bead" command. It delivers a
+// human steering message to a bead's in-flight pipeline: the daemon pushes the
+// message into the bead's control-handle steer mailbox and, when a Smith spawn
+// is currently running, interrupts it so the message is consumed immediately
+// (steer mode A); otherwise the message is picked up between spawns (mode B).
+// The daemon rejects the command with an actionable error when the bead has no
+// active pipeline, the message is empty, or the session is not a Claude session
+// (only Claude reports a resumable session_id).
+type SteerBeadPayload struct {
+	BeadID  string `json:"bead_id"`
+	Message string `json:"message"`
 }
 
 // ResolveOrphanPayload is the payload for a "resolve_orphan" command.
