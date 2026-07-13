@@ -81,7 +81,7 @@ func TestControlHandlePushSteerFullMailbox(t *testing.T) {
 	}
 }
 
-// TestReleaseBeadSlot verifies that releaseBeadSlot atomically removes both the
+// TestReleaseBeadSlot verifies that releaseBeadSlot removes both the
 // activeBeads reservation and the control handle, and that the handle is still
 // accessible while the bead is in activeBeads (i.e. activeBeads is deleted first).
 func TestReleaseBeadSlot(t *testing.T) {

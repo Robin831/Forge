@@ -5215,7 +5215,7 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 			d.logger.Info("killed worker for stopped bead", "worker", terminatedWorkerID, "bead", sp.BeadID, "anvil", sp.Anvil)
 		}
 
-		d.activeBeads.Delete(sp.BeadID)
+		d.releaseBeadSlot(sp.BeadID)
 
 		reqID, _ := d.reqTracker.Track()
 		beadID := sp.BeadID
@@ -6401,7 +6401,7 @@ func (d *Daemon) handleQueueStop(cmd ipc.Command) ipc.Response {
 		d.logger.Info("killed worker for stopped bead via queue_stop",
 			"worker", terminatedWorkerID, "bead", qp.BeadID, "anvil", qp.AnvilName)
 	}
-	d.activeBeads.Delete(qp.BeadID)
+	d.releaseBeadSlot(qp.BeadID)
 	data, _ := json.Marshal(map[string]string{"message": fmt.Sprintf("bead %s stopped", qp.BeadID)})
 	return ipc.Response{Type: "ok", Payload: data}
 }
