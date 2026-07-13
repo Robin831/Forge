@@ -172,8 +172,8 @@ type SpawnOptions struct {
 	// LogPrefix is the filename prefix for the session log file written into
 	// logDir (e.g. "warden" produces warden-<ts>-<seq>.log). This lets each
 	// pipeline stage that reuses the Smith spawn machinery emit a
-	// stage-identifiable log file. An empty value defaults to "smith" so
-	// existing callers keep their historical filenames.
+	// stage-identifiable log file. An empty value defaults to "smith",
+	// producing smith-<ts>-<seq>.log.
 	LogPrefix string
 }
 

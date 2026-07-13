@@ -549,7 +549,11 @@ func writeTemperLog(worktreePath string, result *Result) {
 	defer f.Close()
 
 	w := bufio.NewWriter(f)
-	defer w.Flush()
+	defer func() {
+		if err := w.Flush(); err != nil {
+			log.Printf("[temper] failed to flush temper log %s: %v", logPath, err)
+		}
+	}()
 
 	fmt.Fprintf(w, "Temper verification — %d step(s), total %.1fs\n", len(result.Steps), result.Duration.Seconds())
 	if result.Passed {
