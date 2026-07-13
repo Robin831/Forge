@@ -35,6 +35,16 @@ describe('SteerComposer', () => {
     expect(input.value).toBe('')
   })
 
+  it('clears the draft on Escape without submitting', async () => {
+    render(<SteerComposer beadID="Forge-abc1" disabledReason={null} />)
+    const input = screen.getByLabelText('Steer message') as HTMLInputElement
+    await userEvent.type(input, 'wip draft')
+    expect(input.value).toBe('wip draft')
+    await userEvent.type(input, '{Escape}')
+    expect(input.value).toBe('')
+    expect(steerMock).not.toHaveBeenCalled()
+  })
+
   it('does not submit an empty message', async () => {
     render(<SteerComposer beadID="Forge-abc1" disabledReason={null} />)
     const button = screen.getByRole('button', { name: /steer/i })

@@ -6,9 +6,11 @@ import { MemoryRouter } from 'react-router-dom'
 import type { WorkerInfo } from '../api'
 import { KEY_PREFIX } from '../hooks/useUIState'
 
-const { useEventSourceMock, killWorkerMock } = vi.hoisted(() => ({
+const { useEventSourceMock, killWorkerMock, pauseMock, resumeMock } = vi.hoisted(() => ({
   useEventSourceMock: vi.fn(),
   killWorkerMock: vi.fn(),
+  pauseMock: vi.fn(),
+  resumeMock: vi.fn(),
 }))
 
 vi.mock('../hooks/useEventSource', () => ({
@@ -20,6 +22,8 @@ vi.mock('../api', async (importOriginal) => ({
   actions: {
     ...(await importOriginal<typeof import('../api')>()).actions,
     killWorker: (id: string) => killWorkerMock(id),
+    pause: (beadID: string) => pauseMock(beadID),
+    resume: (beadID: string, message?: string) => resumeMock(beadID, message),
   },
 }))
 
@@ -49,6 +53,8 @@ beforeEach(() => {
   sessionStorage.clear()
   useEventSourceMock.mockReturnValue({ items: [], status: 'open', error: null, clear: () => {} })
   killWorkerMock.mockResolvedValue({})
+  pauseMock.mockResolvedValue({})
+  resumeMock.mockResolvedValue({})
 })
 
 afterEach(() => {
@@ -130,6 +136,69 @@ describe('WorkerPanel actions', () => {
     renderPanel(worker({ id: 'w1', status: 'paused' }))
     expect(screen.queryByTestId('worker-panel-kill-w1')).not.toBeInTheDocument()
     expect(screen.getByTestId('worker-panel-w1')).toBeInTheDocument()
+  })
+})
+
+describe('WorkerPanel pause/resume', () => {
+  it('pauses a running worker through a confirm dialog', async () => {
+    const user = userEvent.setup()
+    renderPanel(worker({ id: 'w1', status: 'running' }))
+
+    // Only running workers expose a pause control (no resume).
+    expect(screen.queryByTestId('worker-panel-resume-w1')).not.toBeInTheDocument()
+    await user.click(screen.getByTestId('worker-panel-pause-w1'))
+
+    const confirm = await screen.findByRole('button', { name: 'Pause worker' })
+    await user.click(confirm)
+
+    expect(pauseMock).toHaveBeenCalledWith('Forge-abc1')
+  })
+
+  it('resumes a paused worker without a confirm dialog', async () => {
+    const user = userEvent.setup()
+    renderPanel(worker({ id: 'w1', status: 'paused' }))
+
+    // Paused workers expose resume, not pause.
+    expect(screen.queryByTestId('worker-panel-pause-w1')).not.toBeInTheDocument()
+    await user.click(screen.getByTestId('worker-panel-resume-w1'))
+
+    expect(resumeMock).toHaveBeenCalledWith('Forge-abc1', undefined)
+  })
+
+  it('renders a distinct paused visual state with a frozen-stream note and visible transcript', () => {
+    useEventSourceMock.mockReturnValue({
+      items: [{ line: 'assistant: still thinking', timestamp: '' }],
+      status: 'open',
+      error: null,
+      clear: () => {},
+    })
+    renderPanel(worker({ id: 'w1', status: 'paused' }))
+
+    expect(screen.getByTestId('worker-panel-w1')).toHaveAttribute('data-paused', 'true')
+    expect(screen.getByTestId('worker-panel-frozen-w1')).toHaveTextContent(/stream frozen/i)
+    // Transcript stays visible while paused (no "no live output" placeholder).
+    expect(screen.getByText(/still thinking/)).toBeInTheDocument()
+  })
+})
+
+describe('WorkerPanel steer composer', () => {
+  it('mounts an enabled steer composer for a running worker', () => {
+    renderPanel(worker({ id: 'w1', status: 'running' }))
+    expect(screen.getByLabelText('Steer message')).toBeEnabled()
+  })
+
+  it('disables the steer composer for a paused worker (not steerable)', () => {
+    renderPanel(worker({ id: 'w1', status: 'paused' }))
+    expect(screen.getByLabelText('Steer message')).toBeDisabled()
+  })
+
+  it('omits the steer composer when the panel is collapsed', async () => {
+    const user = userEvent.setup()
+    renderPanel(worker({ id: 'w1', status: 'running' }))
+    expect(screen.getByLabelText('Steer message')).toBeInTheDocument()
+
+    await user.click(screen.getByTestId('worker-panel-toggle-w1'))
+    expect(screen.queryByLabelText('Steer message')).not.toBeInTheDocument()
   })
 })
 
