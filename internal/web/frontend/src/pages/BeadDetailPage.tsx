@@ -18,6 +18,7 @@ import { useApiPoll } from '../hooks/useApiPoll'
 import {
   actions,
   ApiError,
+  steerDisabledReason,
   type BeadBrief,
   type BeadDetailComment,
   type BeadDetailResponse,
@@ -31,6 +32,7 @@ import BeadLogsSection from '../components/BeadLogsSection'
 import ConfirmModal from '../components/ConfirmModal'
 import DepsGraphView from '../components/DepsGraphView'
 import Pane, { EmptyState } from '../components/Pane'
+import SteerComposer from '../components/SteerComposer'
 import WorkerLogModal from '../components/WorkerLogModal'
 import { useAction } from '../hooks/useAction'
 import { eventClasses, priorityClasses, priorityLabel, relativeTime } from '../lib/format'
@@ -138,6 +140,16 @@ export default function BeadDetailPage() {
     const extras = localComments.filter((c) => !c.id || !seen.has(c.id))
     return [...serverList, ...extras]
   }, [data?.comments, localComments])
+
+  // activeWorker is the bead's in-flight Smith (running or pending), if any.
+  // The bead is "active" — and thus a steer target — exactly when one exists.
+  const activeWorker = useMemo<BeadDetailWorker | null>(
+    () =>
+      (data?.workers ?? []).find(
+        (w) => w.status === 'running' || w.status === 'pending',
+      ) ?? null,
+    [data?.workers],
+  )
 
   const graphRoot = useMemo<BeadBrief | null>(
     () =>
@@ -294,6 +306,13 @@ export default function BeadDetailPage() {
           </p>
         )}
       </header>
+
+      {activeWorker && (
+        <SteerComposer
+          beadID={beadID}
+          disabledReason={steerDisabledReason(activeWorker)}
+        />
+      )}
 
       {data?.notes && data.notes.trim() !== '' && (
         <CollapsibleSection
