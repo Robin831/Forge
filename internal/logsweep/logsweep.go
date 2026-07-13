@@ -29,6 +29,7 @@ import (
 // can inject a lightweight double.
 type workerLister interface {
 	ActiveWorkers() ([]state.Worker, error)
+	PausedWorkers() ([]state.Worker, error)
 	NullWorkerLogPathsUnder(dir string) (int, error)
 	LogEvent(typ state.EventType, message, beadID, anvil string) error
 }
@@ -173,15 +174,31 @@ func (m *Monitor) runOnce(ctx context.Context) {
 }
 
 // activeBeadDirs returns the set of sanitized bead directory names that have a
-// currently active worker. Directory names on disk are SanitizeBeadID(beadID),
-// so bead IDs are sanitized here to match.
+// currently active or paused worker. Directory names on disk are
+// SanitizeBeadID(beadID), so bead IDs are sanitized here to match.
+//
+// Paused (operator-parked) workers are unioned in because a paused bead still
+// holds preserved transcript history the operator intends to resume; its
+// ~/.forge/logs/<bead>/ dir must not be swept regardless of age. ActiveWorkers
+// excludes paused workers, so PausedWorkers is queried explicitly here,
+// mirroring internal/shutdown's worktree/orphan cleanup.
 func (m *Monitor) activeBeadDirs() (map[string]bool, error) {
 	workers, err := m.db.ActiveWorkers()
 	if err != nil {
 		return nil, err
 	}
-	set := make(map[string]bool, len(workers))
+	paused, err := m.db.PausedWorkers()
+	if err != nil {
+		return nil, err
+	}
+	set := make(map[string]bool, len(workers)+len(paused))
 	for _, w := range workers {
+		if w.BeadID == "" {
+			continue
+		}
+		set[forge.SanitizeBeadID(w.BeadID)] = true
+	}
+	for _, w := range paused {
 		if w.BeadID == "" {
 			continue
 		}
