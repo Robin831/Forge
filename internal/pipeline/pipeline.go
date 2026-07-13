@@ -1993,9 +1993,11 @@ func preserveWorktreeLogs(worktreePath, beadID string) (string, error) {
 	}
 
 	// Filter to regular files only before creating any directories.
+	// Use Type().IsRegular() rather than !IsDir() to also exclude symlinks,
+	// which copyFile would follow into arbitrary locations.
 	var fileEntries []os.DirEntry
 	for _, e := range entries {
-		if !e.IsDir() {
+		if e.Type().IsRegular() {
 			fileEntries = append(fileEntries, e)
 		}
 	}
