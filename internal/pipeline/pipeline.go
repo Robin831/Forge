@@ -28,6 +28,7 @@ import (
 	"github.com/Robin831/Forge/internal/depcheck"
 	"github.com/Robin831/Forge/internal/cost"
 	"github.com/Robin831/Forge/internal/executil"
+	"github.com/Robin831/Forge/internal/forge"
 	"github.com/Robin831/Forge/internal/ingot"
 	"github.com/Robin831/Forge/internal/notify"
 	"github.com/Robin831/Forge/internal/poller"
@@ -773,8 +774,19 @@ func Run(ctx context.Context, p Params) *Outcome {
 	outcome.Branch = wt.Branch
 	defer func() {
 		log.Printf("[pipeline:%s] Cleaning up worktree", workerID)
-		if _, err := preserveWorktreeLogs(wt.Path, p.Bead.ID); err != nil {
+		oldLogDir := filepath.Join(wt.Path, ".forge-logs")
+		dstDir, err := preserveWorktreeLogs(wt.Path, p.Bead.ID)
+		if err != nil {
 			log.Printf("[pipeline:%s] Warning: failed to preserve smith logs: %v", workerID, err)
+		} else if dstDir != "" && p.DB != nil {
+			// Repoint this bead's worker rows from the worktree .forge-logs
+			// (about to be deleted) to the preserved copies so historical logs
+			// remain servable by the web UI after cleanup.
+			if n, rerr := p.DB.RepointWorkerLogPaths(p.Bead.ID, oldLogDir, dstDir); rerr != nil {
+				log.Printf("[pipeline:%s] Warning: failed to repoint worker log paths: %v", workerID, rerr)
+			} else if n > 0 {
+				log.Printf("[pipeline:%s] Repointed %d worker log path(s) to %s", workerID, n, dstDir)
+			}
 		}
 		removeWorktree(ctx, p.AnvilConfig.Path, wt)
 	}()
@@ -2322,9 +2334,11 @@ func preserveWorktreeLogs(worktreePath, beadID string) (string, error) {
 	}
 
 	// Filter to regular files only before creating any directories.
+	// Use Type().IsRegular() rather than !IsDir() to also exclude symlinks,
+	// which copyFile would follow into arbitrary locations.
 	var fileEntries []os.DirEntry
 	for _, e := range entries {
-		if !e.IsDir() {
+		if e.Type().IsRegular() {
 			fileEntries = append(fileEntries, e)
 		}
 	}
@@ -2332,11 +2346,7 @@ func preserveWorktreeLogs(worktreePath, beadID string) (string, error) {
 		return "", nil
 	}
 
-	// Sanitize beadID so it is safe to embed in a file path: replace path
-	// separators and strip ".." segments to prevent traversal outside ~/.forge/logs/.
-	safeID := strings.ReplaceAll(beadID, "/", "_")
-	safeID = strings.ReplaceAll(safeID, `\`, "_")
-	safeID = strings.ReplaceAll(safeID, "..", "__")
+	safeID := forge.SanitizeBeadID(beadID)
 
 	home, err := os.UserHomeDir()
 	if err != nil {

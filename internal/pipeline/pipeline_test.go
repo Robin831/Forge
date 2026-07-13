@@ -1359,6 +1359,40 @@ func TestPreserveWorktreeLogs_SkipsSubdirs(t *testing.T) {
 	require.True(t, os.IsNotExist(statErr), "subdirectory should not be copied to persistent log dir")
 }
 
+// TestPreserveWorktreeLogs_SkipsSymlinks verifies that symlinks inside
+// .forge-logs are not copied, preventing symlink-following into arbitrary locations.
+func TestPreserveWorktreeLogs_SkipsSymlinks(t *testing.T) {
+	if err := os.Symlink(".", filepath.Join(t.TempDir(), "probe")); err != nil {
+		t.Skip("symlinks not supported on this platform")
+	}
+
+	fakeHome := t.TempDir()
+	t.Setenv("HOME", fakeHome)
+	t.Setenv("USERPROFILE", fakeHome)
+
+	wtDir := t.TempDir()
+	logSrc := filepath.Join(wtDir, ".forge-logs")
+	require.NoError(t, os.MkdirAll(logSrc, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(logSrc, "real.log"), []byte("data"), 0o644))
+
+	// Create a symlink pointing to an external file.
+	externalFile := filepath.Join(t.TempDir(), "secret.txt")
+	require.NoError(t, os.WriteFile(externalFile, []byte("sensitive"), 0o644))
+	require.NoError(t, os.Symlink(externalFile, filepath.Join(logSrc, "link.log")))
+
+	dst, err := preserveWorktreeLogs(wtDir, "bead-sym")
+	require.NoError(t, err)
+	require.NotEmpty(t, dst)
+
+	// The regular file should be copied.
+	_, statErr := os.Stat(filepath.Join(dst, "real.log"))
+	require.NoError(t, statErr)
+
+	// The symlink should NOT be copied.
+	_, statErr = os.Lstat(filepath.Join(dst, "link.log"))
+	require.True(t, os.IsNotExist(statErr), "symlink should not be copied to persistent log dir")
+}
+
 // TestMaxIterations_StopsAfterConfiguredCap verifies that when Params.MaxIterations
 // is set to a small value, the pipeline stops after that many Smith-Warden cycles
 // even if Warden keeps requesting changes.

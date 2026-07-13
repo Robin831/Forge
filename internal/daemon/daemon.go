@@ -356,6 +356,15 @@ func New(cfg *config.Config, configPath string) (*Daemon, error) {
 		return nil, fmt.Errorf("opening state database: %w", err)
 	}
 
+	// One-time reconciliation: repair worker rows whose log_path dangles at a
+	// removed worktree but whose preserved copy still exists under ~/.forge/logs.
+	// Only dangling rows are touched, so this is cheap on subsequent starts.
+	if repaired, berr := db.BackfillDanglingWorkerLogPaths(filepath.Join(forgeDir, LogDir)); berr != nil {
+		logger.Warn("worker log-path backfill failed", "error", berr)
+	} else if repaired > 0 {
+		logger.Info("repaired dangling worker log paths", "count", repaired)
+	}
+
 	wtMgr := worktree.NewManager()
 
 	notifier, err := newNotifierFromConfig(cfg, logger)
