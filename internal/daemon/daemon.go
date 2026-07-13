@@ -3184,8 +3184,8 @@ normalPipeline:
 
 	// Wire the control handle's interrupt to the pipeline context cancel so the
 	// IPC/API layer can stop the currently running spawn. Cleared immediately
-	// after pipeline.Run returns (not via defer) so a late interrupt cannot
-	// cancel post-pipeline work like PR creation.
+	// after pipeline.Run returns (not via defer) to minimize the window where
+	// a late interrupt could cancel post-pipeline work like PR creation.
 	ctrl.setInterrupt(cancel)
 
 	// Build pipeline params, optionally enabling Schematic pre-worker.

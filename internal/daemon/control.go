@@ -61,17 +61,18 @@ func (h *controlHandle) setInterrupt(fn func()) {
 
 // fireInterrupt invokes the wired interrupt func, if any. It returns true when
 // an interrupt was actually triggered, false when none is currently wired.
-// The interrupt is invoked while holding the lock so that a concurrent
-// setInterrupt(nil) cannot clear the interrupt between our read and invocation.
+// The function pointer is read under the lock but invoked after unlocking so
+// that a panic in the interrupt does not deadlock the mutex, and concurrent
+// setInterrupt calls are not blocked during the (potentially slow) invocation.
+// Calling a stale cancel func (if setInterrupt(nil) races) is safe.
 func (h *controlHandle) fireInterrupt() bool {
 	h.mu.Lock()
 	fn := h.interrupt
+	h.mu.Unlock()
 	if fn == nil {
-		h.mu.Unlock()
 		return false
 	}
 	fn()
-	h.mu.Unlock()
 	return true
 }
 
