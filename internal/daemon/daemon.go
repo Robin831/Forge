@@ -4671,7 +4671,13 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 			return ipc.Response{Type: "ok", Payload: data}
 		}
 		now := time.Now()
+		// Flip in-memory flag first so concurrent poll cycles see the pause
+		// immediately, then persist. Revert if persistence fails.
+		d.dispatchPaused.Store(true)
+		d.pausedSince.Store(now)
 		if err := d.db.SetSetting(state.SettingDispatchPaused, "1"); err != nil {
+			d.dispatchPaused.Store(false)
+			d.pausedSince.Store(time.Time{})
 			d.pauseMu.Unlock()
 			d.logger.Error("failed to persist dispatch pause", "error", err)
 			msg, _ := json.Marshal(map[string]string{"message": "failed to persist dispatch pause: " + err.Error()})
@@ -4680,8 +4686,6 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 		if err := d.db.SetSetting(state.SettingDispatchPausedAt, now.Format(time.RFC3339)); err != nil {
 			d.logger.Warn("failed to persist dispatch pause timestamp", "error", err)
 		}
-		d.dispatchPaused.Store(true)
-		d.pausedSince.Store(now)
 		d.pauseMu.Unlock()
 		if err := d.db.LogEvent(state.EventDispatchPaused, "Dispatch manually paused — running workers continue; no new beads dispatched", "", ""); err != nil {
 			d.logger.Warn("failed to log dispatch pause event", "error", err)
