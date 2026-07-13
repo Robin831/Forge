@@ -253,8 +253,6 @@ type ProtoBlock =
   | { proto: 'tool'; entry: ToolEntry }
   | { proto: 'result'; toolUseId?: string; content: string; isError: boolean }
 
-// parseLine turns a single stream-json line into 0..N proto-blocks. Exported
-// for unit testing; the component uses parseTranscript.
 function parseLine(raw: string, cwd?: string): ProtoBlock[] {
   const trimmed = raw.trim()
   if (!trimmed) return []

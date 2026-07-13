@@ -83,7 +83,10 @@ export default function WorkerLogModal({ worker, onClose }: WorkerLogModalProps)
   const entries = useMemo(() => parseTranscript(rawLines), [rawLines])
 
   const visible = useMemo(
-    () => entries.filter((e) => verbose || e.kind !== 'hidden'),
+    () =>
+      entries
+        .map((e, i) => ({ entry: e, originalIndex: i }))
+        .filter(({ entry }) => verbose || entry.kind !== 'hidden'),
     [entries, verbose],
   )
   const hiddenCount = useMemo(() => entries.filter((e) => e.kind === 'hidden').length, [entries])
@@ -221,8 +224,8 @@ export default function WorkerLogModal({ worker, onClose }: WorkerLogModalProps)
             </div>
           ) : (
             <div className="flex flex-col gap-3 px-4 py-3">
-              {visible.map((entry, i) => (
-                <TranscriptRow key={i} entry={entry} />
+              {visible.map(({ entry, originalIndex }) => (
+                <TranscriptRow key={originalIndex} entry={entry} />
               ))}
             </div>
           )}
@@ -304,8 +307,13 @@ function TranscriptRow({ entry }: { entry: TranscriptEntry }) {
 }
 
 function ToolRow({ entry }: { entry: ToolEntry }) {
-  // Errors expand by default so failures are immediately visible.
   const [expanded, setExpanded] = useState(!!entry.isError)
+
+  // Sync expanded state when a streaming tool_result arrives with an error
+  // after the row has already mounted in its collapsed (non-error) state.
+  useEffect(() => {
+    if (entry.isError) setExpanded(true)
+  }, [entry.isError])
 
   const resultLines = entry.result ? entry.result.split('\n') : []
   const truncated = resultLines.length > RESULT_PREVIEW_LINES
