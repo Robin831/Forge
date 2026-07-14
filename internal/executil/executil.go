@@ -122,6 +122,29 @@ func SetProcessGroup(cmd *exec.Cmd) *exec.Cmd {
 	return cmd
 }
 
+// ContainProcess assigns an already-started process to a mechanism that
+// guarantees it (and its descendants) are terminated if this daemon exits
+// without cleaning up — preventing orphaned worker processes after a crash.
+//
+// It must be called AFTER cmd.Start(). On Windows it assigns the child to a
+// shared Job Object created with JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE: because the
+// daemon holds the only handle to that job, the OS closes the handle when the
+// daemon process dies and every process still in the job is killed. This is the
+// primary Windows orphan-prevention layer; the shutdown orphan sweep only has to
+// reap pre-crash strays. On Unix it is a no-op — process-group signalling
+// (SetProcessGroup + KillProcessTree) and the /proc-based orphan sweep already
+// cover the same ground.
+//
+// Errors are returned so callers can log them, but failure is non-fatal: the
+// worker still runs, it just loses the extra containment guarantee. Returns nil
+// when there is nothing to contain (cmd or cmd.Process is nil).
+func ContainProcess(cmd *exec.Cmd) error {
+	if cmd == nil || cmd.Process == nil {
+		return nil
+	}
+	return containProcess(cmd)
+}
+
 // KillProcessTree forcibly terminates cmd's root process and every descendant.
 // It is best-effort: callers should not rely on complete cleanup in all
 // scenarios, but it covers the common cases that cause worktree lock issues.
