@@ -231,7 +231,16 @@ describe('WorkersPane persistence', () => {
     // proves they compose — the unmount/remount cycle doesn't drop one because
     // the other was also touched, and the first paint after pop carries both.
     vi.useFakeTimers()
-    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+    // delay: null disables userEvent's internal inter-event setTimeout. Under
+    // fake timers those delay timers are never auto-flushed (advanceTimers is
+    // unreliable with the synchronous vi.advanceTimersByTime), so click/type
+    // would hang until the 5s per-test timeout. With delay: null the
+    // interactions dispatch synchronously and only our own rAF + 150ms debounce
+    // timers remain for vi.runAllTimers() to flush.
+    const user = userEvent.setup({
+      advanceTimers: vi.advanceTimersByTime,
+      delay: null,
+    })
 
     const { router } = renderApp(TEST_WORKERS)
 
