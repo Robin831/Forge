@@ -47,12 +47,21 @@ func (d *Daemon) startWebServer(ctx context.Context) error {
 		sessionTTL = 0
 	}
 
+	// Networks whose direct connections may set a trusted X-Forwarded-For
+	// (e.g. the Caddy/Cloudflare hops in front of the daemon). Unset means
+	// "trust the direct peer only" — clientIP ignores forwarding headers.
+	trustedProxies, err := web.ParseTrustedProxies(os.Getenv("FORGE_WEB_TRUSTED_PROXIES"))
+	if err != nil {
+		return fmt.Errorf("FORGE_WEB_TRUSTED_PROXIES: %w", err)
+	}
+
 	srv, err := web.New(web.Config{
 		Addr:               addr,
 		Users:              users,
 		CookieSecure:       cookieSecureEnv(),
 		SessionTTL:         sessionTTL,
 		SessionAbsoluteTTL: d.sessionDurationEnv("FORGE_WEB_SESSION_ABSOLUTE_TTL"),
+		TrustedProxies:     trustedProxies,
 	}, d.db, d.handleIPC, d.logger)
 	if err != nil {
 		return fmt.Errorf("constructing web server: %w", err)

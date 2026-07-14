@@ -140,6 +140,13 @@ The Hearth web UI itself is gated by these environment variables:
 | `FORGE_WEB_COOKIE_SECURE` | off | Force the `Secure` cookie attribute (set behind HTTPS). |
 | `FORGE_WEB_SESSION_TTL` | `720h` (30d) | Sliding session lifetime (Go duration). |
 | `FORGE_WEB_SESSION_ABSOLUTE_TTL` | `168h` (7d) | Absolute session lifetime cap, measured from creation, regardless of activity. |
+| `FORGE_WEB_TRUSTED_PROXIES` | — | Comma-separated IPs/CIDRs of reverse proxies (e.g. Caddy/Cloudflare) allowed to set a trusted `X-Forwarded-For`. Unset means audit logs use the direct peer and ignore forwarding headers. |
+
+The audit log's `remote` field is derived from the direct peer address unless
+that peer is listed in `FORGE_WEB_TRUSTED_PROXIES`, in which case the rightmost
+untrusted hop in `X-Forwarded-For` is used. Each web session may hold at most
+20 concurrent Server-Sent Events streams; further stream opens receive a `429`
+until a slot frees up.
 
 Failed logins are progressively throttled per username and per client IP
 (five free attempts, then 1s, 2s, 4s … up to 60s), and the session token is

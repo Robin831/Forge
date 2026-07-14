@@ -54,9 +54,9 @@ func (s *Server) routes() http.Handler {
 		r.Get("/queue", s.handleQueue)
 		r.Get("/workers", s.handleWorkers)
 		r.Get("/events", s.handleEvents)
-		r.Get("/activity/stream", s.handleActivityStream)
+		r.Get("/activity/stream", s.sseCapped(s.handleActivityStream))
 		r.Get("/worker/{id}/log", s.handleWorkerLogTail)
-		r.Get("/worker/{id}/stream", s.handleWorkerLogStream)
+		r.Get("/worker/{id}/stream", s.sseCapped(s.handleWorkerLogStream))
 		r.Get("/crucibles", s.handleCrucibles)
 		r.Get("/ingots", s.handleIngots)
 		r.Get("/ingots/{bead_id}", s.handleIngot)
@@ -67,7 +67,7 @@ func (s *Server) routes() http.Handler {
 		// findings/run snapshot whenever it changes so the PR detail panel
 		// updates without a manual refresh.
 		r.Get("/prs/{id}/findings", s.handlePRFindings)
-		r.Get("/prs/{id}/findings/stream", s.handlePRFindingsStream)
+		r.Get("/prs/{id}/findings/stream", s.sseCapped(s.handlePRFindingsStream))
 		r.Get("/bead/{bead_id}", s.handleBeadDetail)
 		r.Get("/bead/{bead_id}/deps", s.handleBeadDeps)
 		// Per-bead transcript view (Forge-xggc). List preserved + live stage
@@ -127,7 +127,7 @@ func (s *Server) routes() http.Handler {
 		r.Post("/forge/sessions/{id}/messages", s.handleForgeSessionAppend)
 		r.Post("/forge/sessions/{id}/turn", s.handleForgeSessionTurn)
 		r.Get("/forge/sessions/{id}/turn/{turn_id}", s.handleForgeSessionTurnGet)
-		r.Get("/forge/sessions/{id}/turn/{turn_id}/stream", s.handleForgeSessionTurnStream)
+		r.Get("/forge/sessions/{id}/turn/{turn_id}/stream", s.sseCapped(s.handleForgeSessionTurnStream))
 		r.Post("/forge/sessions/{id}/create-beads", s.handleForgeSessionCreateBeads)
 
 		// Hearth 2.0 resolve-needs-attention page. The POST endpoint is a

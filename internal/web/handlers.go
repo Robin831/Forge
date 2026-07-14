@@ -80,7 +80,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "user and password are required")
 		return
 	}
-	ip := clientIP(r)
+	ip := s.clientIP(r)
 	// Throttle before verifying: a run of recent failures for this username
 	// or IP delays the response, slowing online guessing. The delay is
 	// applied regardless of whether these particular credentials are valid so
