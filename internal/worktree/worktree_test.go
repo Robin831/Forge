@@ -30,6 +30,34 @@ func TestSanitizePath(t *testing.T) {
 	}
 }
 
+func TestWorktreePath(t *testing.T) {
+	m := NewManager()
+	anvil := filepath.Join("home", "user", "repo")
+
+	// A clean bead ID lands under <anvil>/.workers/<id>.
+	got := m.WorktreePath(anvil, "Forge-abc1")
+	want := filepath.Join(anvil, ".workers", "Forge-abc1")
+	if got != want {
+		t.Errorf("WorktreePath(%q, %q) = %q; want %q", anvil, "Forge-abc1", got, want)
+	}
+
+	// The path must match what CreateWithOptions derives (sanitised), so a
+	// resume recreation lands exactly where the original worktree lived.
+	got = m.WorktreePath(anvil, "feat/fix bug")
+	want = filepath.Join(anvil, ".workers", sanitizePath("feat/fix bug"))
+	if got != want {
+		t.Errorf("WorktreePath sanitisation = %q; want %q", got, want)
+	}
+
+	// A custom WorkersDir is honoured.
+	m2 := &Manager{WorkersDir: "wt"}
+	got = m2.WorktreePath(anvil, "Forge-abc1")
+	want = filepath.Join(anvil, "wt", "Forge-abc1")
+	if got != want {
+		t.Errorf("WorktreePath with custom WorkersDir = %q; want %q", got, want)
+	}
+}
+
 func TestBeadIDFromBranch(t *testing.T) {
 	tests := []struct {
 		branch string

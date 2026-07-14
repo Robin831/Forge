@@ -177,6 +177,58 @@ func (u *StreamUsage) effectiveOutputTokens() int {
 	return u.CompletionTokens
 }
 
+// resumeUnavailableMarkers are lowercased substrings that indicate a
+// `claude --resume <id>` attempt could not attach to its session — the
+// transcript for that session id is missing, or the CLI rejected the resume.
+// They are matched case-insensitively against the combined result text so a
+// caller can fall back to a fresh session instead of failing the worker.
+var resumeUnavailableMarkers = []string{
+	"no conversation found",
+	"no conversation with session",
+	"conversation not found",
+	"session not found",
+	"no session found",
+	"could not find session",
+	"could not find conversation",
+	"unable to resume",
+	"failed to resume",
+	"transcript not found",
+	"no transcript",
+	"invalid session id",
+	"unknown session",
+}
+
+// ResumeUnavailable reports whether a resumed Smith result indicates the prior
+// session could not be continued — the transcript is missing or the provider
+// rejected the `--resume` — as opposed to a genuine session that ran (and, say,
+// ran out of turns). Callers use it to decide whether to fall back to a fresh
+// session seeded with full context instead of failing the worker.
+//
+// A nil result (the resume produced nothing at all) is treated as unavailable.
+// A genuine success (subtype "success", not is_error) is never unavailable.
+// Rate-limit and auth failures have dedicated handling upstream and are NOT
+// reported here so a quota block is not mistaken for a missing transcript.
+func ResumeUnavailable(r *Result) bool {
+	if r == nil {
+		return true
+	}
+	if r.ResultSubtype == "success" && !r.IsError {
+		return false
+	}
+	if r.RateLimited || r.AuthFailed {
+		return false
+	}
+	combined := strings.ToLower(strings.Join([]string{
+		r.FullOutput, r.Summary, r.Output, r.ErrorOutput,
+	}, "\n"))
+	for _, m := range resumeUnavailableMarkers {
+		if strings.Contains(combined, m) {
+			return true
+		}
+	}
+	return false
+}
+
 // SessionModel returns the model to record for a spawn: the model reported
 // in-band by the provider stream when present (Claude reports it on the system
 // init event), otherwise the provider's configured model.

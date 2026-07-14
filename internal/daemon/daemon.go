@@ -6822,6 +6822,105 @@ func (d *Daemon) coldResumePausedWorker(beadID, message string) ipc.Response {
 	return ipc.Response{Type: "ok", Payload: data}
 }
 
+// ResumeBeadWithMessage resumes a bead whose worktree was torn down but whose
+// forge/<bead> branch survives — the needs-attention resume-with-message case.
+// It locates the bead's most recent resumable worker row (branch + session_id),
+// validates the resume preconditions via state.Worker.ResumeState, and
+// re-dispatches the bead into a fresh pipeline seeded (pipeline.ResumeSession
+// with RecreateFromBranch) to recreate the worktree at its exact original path
+// from the surviving branch (worktree.CreateFromBranch) and resume the recorded
+// Claude session with message. If the transcript is missing / the resume errors,
+// or the branch is gone, the pipeline falls back to a fresh session seeded with
+// bd context + message.
+//
+// It is the callable entrypoint the resume-with-message IPC verb invokes. The
+// bead is left in_progress (a needs-attention bead is not released), so no
+// re-claim is performed. message may be empty (defaults to DefaultResumeMessage).
+// Returns the reused worker ID on success.
+func (d *Daemon) ResumeBeadWithMessage(beadID, message string) (string, error) {
+	beadID = strings.TrimSpace(beadID)
+	if beadID == "" {
+		return "", fmt.Errorf("bead_id is required")
+	}
+	message = strings.TrimSpace(message)
+	if message == "" {
+		message = DefaultResumeMessage
+	}
+
+	// A live pipeline is already running/parked for this bead: its worktree is
+	// intact, so this recreate-from-branch path does not apply. The warm/cold
+	// resume path (handleResumeBead) owns that case.
+	if _, ok := d.lookupControlHandle(beadID); ok {
+		return "", fmt.Errorf("bead %s already has a live pipeline; use resume, not resume-with-message", beadID)
+	}
+
+	w, err := d.db.ResumableWorkerByBeadID(beadID)
+	if err != nil {
+		return "", fmt.Errorf("looking up resumable worker for bead %s: %w", beadID, err)
+	}
+	if w == nil {
+		return "", fmt.Errorf("bead %s has no resumable worker row (no recorded branch + session)", beadID)
+	}
+	rs, err := w.ResumeState()
+	if err != nil {
+		return "", fmt.Errorf("bead %s cannot be resumed: %w", beadID, err)
+	}
+
+	anvilCfg, ok := d.cfg.Load().Anvils[rs.Anvil]
+	if !ok || anvilCfg.Path == "" {
+		return "", fmt.Errorf("anvil %q for bead %s not found or has no path", rs.Anvil, beadID)
+	}
+
+	// Reserve the in-flight slot so a concurrent poll / run_bead cannot double
+	// dispatch this bead while we set up the resume goroutine.
+	if _, inFlight := d.activeBeads.LoadOrStore(beadID, true); inFlight {
+		return "", fmt.Errorf("bead %s is already in flight", beadID)
+	}
+
+	// Reconstruct the bead from bd so the pipeline has full context for any
+	// post-resume iterations and for the fresh-session fallback prompt.
+	fetchCtx, cancel := context.WithTimeout(d.runCtx, executil.DefaultBdTimeout)
+	defer cancel()
+	bead, err := crucible.FetchBead(fetchCtx, beadID, anvilCfg.Path)
+	if err != nil {
+		d.releaseBeadSlot(beadID)
+		return "", fmt.Errorf("failed to fetch bead %s for resume: %w", beadID, err)
+	}
+	bead.Anvil = rs.Anvil
+
+	// The session_id is Claude's (only Claude reports one), so resume with Claude
+	// and the recorded model. RecreateFromBranch tells the pipeline to rebuild the
+	// worktree from the surviving branch before resuming.
+	resume := &pipeline.ResumeSession{
+		SessionID:          rs.SessionID,
+		Provider:           provider.Provider{Kind: provider.Claude, Model: w.Model},
+		Message:            message,
+		RecreateFromBranch: true,
+		Branch:             rs.Branch,
+		WorktreePath:       d.worktreeMgr.WorktreePath(anvilCfg.Path, beadID),
+	}
+
+	// Re-register a control handle reusing the existing worker ID so the resumed
+	// pipeline can be paused/steered again, and the pipeline's InsertWorker
+	// overwrites the stale row rather than creating a duplicate.
+	ctrl := newControlHandle(w.ID)
+	d.registerControlHandle(beadID, ctrl)
+
+	_ = d.db.LogEvent(state.EventBeadResumed,
+		fmt.Sprintf("Resume-with-message for bead %s: recreating worktree from branch %s (session %s)", beadID, rs.Branch, rs.SessionID),
+		beadID, rs.Anvil)
+	d.logger.Info("resuming bead with message (recreating worktree from surviving branch)",
+		"bead", beadID, "anvil", rs.Anvil, "worker", w.ID, "branch", rs.Branch, "session", rs.SessionID)
+
+	// Reserve in-flight spend for the resumed worker so it counts against the
+	// daily_cost_limit gate like any other active worker.
+	resumeReservation := d.reserveWorkerCost(d.perWorkerCostEstimate(d.cfg.Load()))
+	d.wg.Add(1)
+	go d.dispatchBead(context.Background(), bead, anvilCfg, w.ID, ctrl, resume, resumeReservation)
+
+	return w.ID, nil
+}
+
 // handleQueueClarify implements the "queue_clarify" IPC verb: marks a bead
 // as needing human clarification. Required: bead_id, anvil_name, note.
 // Optional: forge_id (multi-forge safety; rejected if mismatched).
