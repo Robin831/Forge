@@ -9,6 +9,10 @@ import (
 
 func hideWindow(cmd *exec.Cmd) {}
 
+// containProcess is a no-op on Unix: worker containment is provided by
+// SetProcessGroup (Setpgid) + KillProcessTree and the /proc-based orphan sweep.
+func containProcess(cmd *exec.Cmd) error { return nil }
+
 func setProcessGroup(cmd *exec.Cmd) {
 	if cmd.SysProcAttr == nil {
 		cmd.SysProcAttr = &syscall.SysProcAttr{}

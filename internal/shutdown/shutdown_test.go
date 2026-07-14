@@ -131,14 +131,62 @@ func discardLogger() *slog.Logger {
 }
 
 // ownedPIDs is a test helper that returns the set of PIDs identified as
-// Forge-owned by identifyForgeOwnedProcesses.
+// Forge-owned by identifyForgeOwnedProcesses, exercising the cwd-required (Unix)
+// verification path.
 func ownedPIDs(workers []state.Worker, procs []procInfo, roots []string) map[int]bool {
-	owned := identifyForgeOwnedProcesses(workers, procs, roots, discardLogger())
+	return ownedPIDsWithCwd(workers, procs, roots, true)
+}
+
+// ownedPIDsWithCwd lets a test choose whether the cwd-in-worktree check is
+// required, mirroring the platformSupportsProcessCwd flag (true on Unix, false
+// on Windows).
+func ownedPIDsWithCwd(workers []state.Worker, procs []procInfo, roots []string, requireWorktreeCwd bool) map[int]bool {
+	owned := identifyForgeOwnedProcesses(workers, procs, roots, requireWorktreeCwd, discardLogger())
 	set := make(map[int]bool, len(owned))
 	for _, op := range owned {
 		set[op.pid] = true
 	}
 	return set
+}
+
+// TestIdentifyForgeOwnedProcessesNoCwd covers the Windows verification path,
+// where process working directories are unavailable (requireWorktreeCwd=false).
+// Ownership rests solely on a PID + creation-time match against a recorded
+// worker row; the unrecorded-PID secondary sweep is disabled so a stray process
+// whose exe basename is "claude.exe" is never reaped on that basis alone.
+func TestIdentifyForgeOwnedProcessesNoCwd(t *testing.T) {
+	base := time.Date(2026, 7, 13, 12, 0, 0, 0, time.UTC)
+
+	workers := []state.Worker{
+		// Tracked worker: PID 1001 recorded, spawned ~5s after the row.
+		{ID: "w-tracked", BeadID: "Forge-abc1", PID: 1001, StartedAt: base},
+		// A worker row whose PID was recycled by an unrelated process.
+		{ID: "w-recycled", BeadID: "Forge-def2", PID: 1002, StartedAt: base},
+	}
+
+	procs := []procInfo{
+		// Tracked worker: PID + creation time match the row. No cwd available.
+		{pid: 1001, argv: []string{"claude.exe"}, startTime: base.Add(5 * time.Second)},
+		// Recycled PID: same PID as w-recycled but started 3h later — inconsistent.
+		{pid: 1002, argv: []string{"deploy.exe"}, startTime: base.Add(3 * time.Hour)},
+		// Operator's own Claude session: exe basename matches a worker binary but
+		// its PID was never recorded. Without a cwd check, it must NOT be reaped.
+		{pid: 2001, argv: []string{"claude.exe"}, startTime: base.Add(-time.Hour)},
+	}
+
+	got := ownedPIDsWithCwd(workers, procs, nil, false)
+
+	if !got[1001] {
+		t.Errorf("tracked worker PID 1001 should be reaped via PID + creation-time match")
+	}
+	for _, pid := range []int{1002, 2001} {
+		if got[pid] {
+			t.Errorf("PID %d must NOT be reaped on Windows (recycled PID / unrecorded operator session)", pid)
+		}
+	}
+	if len(got) != 1 {
+		t.Errorf("identified %d processes, want 1: %v", len(got), got)
+	}
 }
 
 // TestIdentifyForgeOwnedProcesses covers the four canonical scenarios from the
@@ -308,20 +356,6 @@ func TestArgvBasename(t *testing.T) {
 		if got := argvBasename(tc.argv); got != tc.want {
 			t.Errorf("argvBasename(%v) = %q, want %q", tc.argv, got, tc.want)
 		}
-	}
-}
-
-func TestParseStat(t *testing.T) {
-	// comm contains spaces and parentheses to exercise the last-')' logic.
-	// Fields after comm: state ppid pgrp(=5) ... starttime(=22).
-	// index within post-')' fields: pgrp=2, starttime=19.
-	line := "1234 (weird )name) S 1 4321 4321 0 -1 0 0 0 0 0 0 0 0 0 20 0 1 0 987654 0 0"
-	pgid, start := parseStat([]byte(line))
-	if pgid != 4321 {
-		t.Errorf("pgid = %d, want 4321", pgid)
-	}
-	if start != 987654 {
-		t.Errorf("starttime = %d, want 987654", start)
 	}
 }
 

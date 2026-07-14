@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -363,6 +364,15 @@ func SpawnWithOptions(ctx context.Context, worktreePath, promptText, logDir stri
 	if err := cmd.Start(); err != nil {
 		logFile.Close()
 		return nil, fmt.Errorf("starting %s process: %w", pv.Cmd(), err)
+	}
+
+	// Contain the worker so it is reaped if the daemon exits without cleanup.
+	// On Windows this assigns the process to a kill-on-close Job Object; on Unix
+	// it is a no-op (process-group signalling handles this). Non-fatal: log and
+	// continue so a containment failure never blocks the worker.
+	if err := executil.ContainProcess(cmd); err != nil {
+		slog.Warn("failed to contain worker process; orphan prevention degraded",
+			"pid", cmd.Process.Pid, "error", err)
 	}
 
 	p := &Process{

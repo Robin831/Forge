@@ -25,8 +25,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
-	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -225,11 +223,14 @@ func (m *Manager) CleanupOrphans() (cleaned int) {
 	}
 
 	// 2. Kill any orphaned Forge worker processes. Ownership is verified from
-	// the workers table and the process working directory — a process is never
-	// killed on the basis of a cmdline substring, so the operator's own Claude
-	// Code session (and unrelated tools whose argv merely mentions "claude") are
-	// left untouched. The `workers` snapshot taken above carries the recorded
-	// PIDs and start times used for verification.
+	// the workers table plus, on Unix, the process working directory; on Windows
+	// (where a process cwd is unavailable) it rests on the PID + creation-time
+	// match alone, with the Job Object assigned at spawn as the primary
+	// containment layer. A process is never killed on the basis of a cmdline
+	// substring, so the operator's own Claude Code session (and unrelated tools
+	// whose argv merely mentions "claude") are left untouched. The `workers`
+	// snapshot taken above carries the recorded PIDs and start times used for
+	// verification.
 	for _, op := range m.findOrphanedClaude(workers) {
 		m.logger.Warn("killing orphaned worker process", "pid", op.pid, "evidence", op.evidence)
 		m.killProcess(op.pid)
@@ -664,14 +665,14 @@ type ownedProc struct {
 
 // procInfo is a snapshot of one running process used for ownership
 // verification. Identity is established from the recorded worker PID, the
-// process start time, and the working directory — never from a cmdline
-// substring.
+// process start time, and (where the platform exposes it) the working
+// directory — never from a cmdline substring.
 type procInfo struct {
 	pid       int
-	pgid      int      // process group id (equals pid for a group leader)
-	argv      []string // argv[0..n] from /proc/<pid>/cmdline
+	pgid      int      // process group id (equals pid for a group leader); 0 when unavailable (Windows)
+	argv      []string // argv[0..n] from /proc/<pid>/cmdline (Unix) or the exe basename (Windows)
 	startTime time.Time
-	cwd       string // resolved target of /proc/<pid>/cwd
+	cwd       string // resolved target of /proc/<pid>/cwd (Unix); empty on Windows
 }
 
 const (
@@ -702,16 +703,10 @@ var forgeWorkerBasenames = map[string]bool{
 }
 
 // listProcesses enumerates running processes for ownership verification. It is
-// a package-level var so tests can inject a fake process table. The default
-// implementation reads /proc on Unix and is a no-op on other platforms.
-var listProcesses = listProcessesDefault
-
-func listProcessesDefault() ([]procInfo, error) {
-	if runtime.GOOS == "windows" {
-		return listProcessesWindows()
-	}
-	return listProcessesUnix()
-}
+// a package-level var so tests can inject a fake process table. listProcessesPlatform
+// is build-tagged: it walks /proc on Unix (procInfo with cwd) and uses a
+// toolhelp snapshot on Windows (procInfo with creation time, no cwd).
+var listProcesses = listProcessesPlatform
 
 // findOrphanedClaude returns processes positively identified as Forge-owned
 // worker processes left behind by a previous daemon — safe to reap on startup.
@@ -725,7 +720,7 @@ func (m *Manager) findOrphanedClaude(workers []state.Worker) []ownedProc {
 		m.logger.Warn("failed to list processes for orphan sweep; skipping", "error", err)
 		return nil
 	}
-	return identifyForgeOwnedProcesses(workers, procs, m.worktreeRoots(), m.logger)
+	return identifyForgeOwnedProcesses(workers, procs, m.worktreeRoots(), platformSupportsProcessCwd, m.logger)
 }
 
 // worktreeRoots returns the absolute .workers directories for every configured
@@ -749,20 +744,30 @@ func (m *Manager) worktreeRoots() []string {
 // identifyForgeOwnedProcesses returns the subset of procs that are positively
 // identified as Forge-owned worker processes, with per-process evidence.
 //
-// Two sources of positive evidence are used, and every kill requires the
-// process (or its process-group leader) to be running inside a Forge worktree:
+// Two sources of positive evidence are used:
 //
 //  1. Primary — the workers table: a live process whose PID matches a recorded
-//     worker, whose start time is consistent with the worker row (guards PID
-//     recycling), and which is running inside a worktree.
+//     worker and whose start time is consistent with the worker row (guards PID
+//     recycling). On platforms that expose a process working directory
+//     (requireWorktreeCwd=true, i.e. Unix), the process (or its process-group
+//     leader) must additionally be running inside a Forge worktree.
 //  2. Secondary — lost workers: a process whose PID was never recorded but whose
 //     argv[0] basename is an EXACT match for a Forge worker binary AND which is
-//     running inside a worktree.
+//     running inside a worktree. This sweep relies entirely on the cwd check for
+//     safety, so it only runs when requireWorktreeCwd is true.
+//
+// requireWorktreeCwd is true on platforms where /proc-style per-process working
+// directories are available (Unix). On Windows a process cwd cannot be resolved
+// cheaply, so it is false: ownership rests on the strong PID + creation-time
+// match against a recorded worker row (Windows worker containment is handled
+// primarily by the Job Object assigned at spawn — see executil.ContainProcess),
+// and the unrecorded-PID secondary sweep is skipped to avoid ever killing the
+// operator's own Claude Code session.
 //
 // A process is never matched on a cmdline substring, so the operator's own
-// Claude Code session (cwd outside any worktree) and unrelated tools whose argv
-// merely contains ".claude" are always spared.
-func identifyForgeOwnedProcesses(workers []state.Worker, procs []procInfo, worktreeRoots []string, logger *slog.Logger) []ownedProc {
+// Claude Code session and unrelated tools whose argv merely contains ".claude"
+// are always spared.
+func identifyForgeOwnedProcesses(workers []state.Worker, procs []procInfo, worktreeRoots []string, requireWorktreeCwd bool, logger *slog.Logger) []ownedProc {
 	byPID := make(map[int]procInfo, len(procs))
 	for _, p := range procs {
 		byPID[p.pid] = p
@@ -807,20 +812,30 @@ func identifyForgeOwnedProcesses(workers []state.Worker, procs []procInfo, workt
 				"proc_start", p.startTime, "worker_started_at", w.StartedAt)
 			continue
 		}
-		cwd, in := cwdEvidence(p)
-		if !in {
-			logger.Warn("skipping PID matching a worker row but not running inside a worktree; cannot confirm ownership",
-				"pid", w.PID, "worker", w.ID, "bead", w.BeadID, "cwd", p.cwd)
-			continue
+		evidence := fmt.Sprintf("worker=%s start-time-ok", w.ID)
+		if requireWorktreeCwd {
+			cwd, in := cwdEvidence(p)
+			if !in {
+				logger.Warn("skipping PID matching a worker row but not running inside a worktree; cannot confirm ownership",
+					"pid", w.PID, "worker", w.ID, "bead", w.BeadID, "cwd", p.cwd)
+				continue
+			}
+			evidence += " " + cwd
 		}
 		owned = append(owned, ownedProc{
 			pid:      p.pid,
-			evidence: fmt.Sprintf("worker=%s start-time-ok %s", w.ID, cwd),
+			evidence: evidence,
 		})
 		seen[p.pid] = true
 	}
 
 	// Secondary sweep: genuinely lost workers whose PID was never recorded.
+	// This relies entirely on the cwd-in-worktree check for safety (argv[0]
+	// basename alone would match the operator's own Claude session), so it is
+	// skipped on platforms that cannot resolve a process working directory.
+	if !requireWorktreeCwd {
+		return owned
+	}
 	for _, p := range procs {
 		if seen[p.pid] {
 			continue
@@ -897,108 +912,3 @@ func argvBasename(argv []string) string {
 	return a0
 }
 
-// listProcessesWindows is a no-op: process enumeration on Windows is not
-// implemented, so the orphan sweep reaps nothing there (preserving the prior
-// findClaudeProcessesWindows behavior). If implemented, it MUST apply the same
-// ownership contract as identifyForgeOwnedProcesses — never selecting a process
-// on a cmdline substring alone.
-func listProcessesWindows() ([]procInfo, error) {
-	return nil, nil
-}
-
-// listProcessesUnix walks /proc to build a process table for ownership
-// verification. Best-effort: unreadable entries are skipped.
-func listProcessesUnix() ([]procInfo, error) {
-	entries, err := os.ReadDir("/proc")
-	if err != nil {
-		return nil, err
-	}
-	boot, clk := bootTimeSeconds(), clockTicks()
-	procs := make([]procInfo, 0, len(entries))
-	for _, entry := range entries {
-		pid, err := strconv.Atoi(entry.Name())
-		if err != nil {
-			continue
-		}
-		p := procInfo{pid: pid}
-
-		if data, err := os.ReadFile(fmt.Sprintf("/proc/%d/cmdline", pid)); err == nil {
-			p.argv = splitCmdline(data)
-		}
-		if data, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid)); err == nil {
-			pgid, start := parseStat(data)
-			p.pgid = pgid
-			if start > 0 && boot > 0 && clk > 0 {
-				p.startTime = time.Unix(boot+int64(start/uint64(clk)), 0)
-			}
-		}
-		if target, err := os.Readlink(fmt.Sprintf("/proc/%d/cwd", pid)); err == nil {
-			p.cwd = target
-		}
-		procs = append(procs, p)
-	}
-	return procs, nil
-}
-
-// splitCmdline splits a NUL-delimited /proc/<pid>/cmdline into argv.
-func splitCmdline(data []byte) []string {
-	data = bytes.TrimRight(data, "\x00")
-	if len(data) == 0 {
-		return nil
-	}
-	parts := bytes.Split(data, []byte{0})
-	argv := make([]string, 0, len(parts))
-	for _, part := range parts {
-		argv = append(argv, string(part))
-	}
-	return argv
-}
-
-// parseStat extracts the process group id (field 5) and the start time in clock
-// ticks since boot (field 22) from /proc/<pid>/stat. The comm field (field 2)
-// is wrapped in parentheses and may itself contain spaces and parentheses, so
-// parsing of the space-delimited fields resumes after the final ')'.
-func parseStat(data []byte) (pgid int, starttime uint64) {
-	s := string(data)
-	rparen := strings.LastIndexByte(s, ')')
-	if rparen < 0 || rparen+1 >= len(s) {
-		return 0, 0
-	}
-	fields := strings.Fields(s[rparen+1:])
-	// fields[0] is field 3 (state); field N maps to index N-3.
-	// pgrp = field 5 -> index 2; starttime = field 22 -> index 19.
-	if len(fields) > 2 {
-		pgid, _ = strconv.Atoi(fields[2])
-	}
-	if len(fields) > 19 {
-		starttime, _ = strconv.ParseUint(fields[19], 10, 64)
-	}
-	return pgid, starttime
-}
-
-// bootTimeSeconds returns the system boot time in seconds since the Unix epoch,
-// read from /proc/stat's "btime" line. Returns 0 when unavailable.
-func bootTimeSeconds() int64 {
-	data, err := os.ReadFile("/proc/stat")
-	if err != nil {
-		return 0
-	}
-	for _, line := range strings.Split(string(data), "\n") {
-		if rest, ok := strings.CutPrefix(line, "btime "); ok {
-			v, err := strconv.ParseInt(strings.TrimSpace(rest), 10, 64)
-			if err != nil {
-				return 0
-			}
-			return v
-		}
-	}
-	return 0
-}
-
-// clockTicks returns the number of clock ticks per second (USER_HZ), used to
-// convert a process start time from ticks to seconds. Linux fixes USER_HZ at
-// 100 on effectively all supported architectures, and there is no cgo-free way
-// to read sysconf(_SC_CLK_TCK), so 100 is assumed.
-func clockTicks() int64 {
-	return 100
-}
