@@ -1,0 +1,2 @@
+category: Added
+- **Worktree resume from surviving branch** - Added `worktree.CreateFromBranch`, which recreates a worker's worktree from its existing `forge/<bead>` branch at the original `.workers/<bead>` path so `claude --resume` continues the session in place, with a clear error when the branch has been deleted. Exposed a `state.Worker.ResumeState` reader that validates the branch, anvil, and session_id preconditions a resume depends on. (Forge-x38b)

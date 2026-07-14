@@ -688,6 +688,35 @@ type Worker struct {
 	Model string
 }
 
+// ResumeState carries the minimal per-worker state needed to recreate a
+// worktree and resume a Claude session in place after a restart or teardown:
+// the anvil the bead belongs to, the branch to check out, and the provider
+// session_id that `claude --resume` keys on. All three must be present for a
+// resume to succeed.
+type ResumeState struct {
+	BeadID    string
+	Anvil     string
+	Branch    string
+	SessionID string
+}
+
+// ResumeState returns the resume preconditions for worker w, or an error naming
+// the first missing field when branch, anvil, or session_id was never recorded.
+// A resume cannot proceed without all three: the branch and anvil locate the
+// worktree to recreate, and the session_id is what `claude --resume` continues.
+func (w *Worker) ResumeState() (ResumeState, error) {
+	rs := ResumeState{BeadID: w.BeadID, Anvil: w.Anvil, Branch: w.Branch, SessionID: w.SessionID}
+	switch {
+	case rs.Branch == "":
+		return rs, fmt.Errorf("worker %s has no recorded branch", w.ID)
+	case rs.Anvil == "":
+		return rs, fmt.Errorf("worker %s has no recorded anvil", w.ID)
+	case rs.SessionID == "":
+		return rs, fmt.Errorf("worker %s has no recorded session_id (Claude session not captured)", w.ID)
+	}
+	return rs, nil
+}
+
 // InsertWorker adds a new worker record.
 func (db *DB) InsertWorker(w *Worker) error {
 	// INSERT OR REPLACE so that a pending claim row (inserted at claim time to

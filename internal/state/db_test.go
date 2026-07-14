@@ -59,6 +59,33 @@ func TestDB_UpdateWorkerSession(t *testing.T) {
 	}
 }
 
+func TestWorker_ResumeState(t *testing.T) {
+	full := &Worker{ID: "w1", BeadID: "bd-1", Anvil: "anvil-1", Branch: "forge/bd-1", SessionID: "sess-abc"}
+	rs, err := full.ResumeState()
+	if err != nil {
+		t.Fatalf("ResumeState on complete worker: %v", err)
+	}
+	if rs.BeadID != "bd-1" || rs.Anvil != "anvil-1" || rs.Branch != "forge/bd-1" || rs.SessionID != "sess-abc" {
+		t.Errorf("ResumeState = %+v; fields not carried through", rs)
+	}
+
+	cases := []struct {
+		name   string
+		worker *Worker
+	}{
+		{"missing branch", &Worker{ID: "w2", Anvil: "anvil-1", SessionID: "sess"}},
+		{"missing anvil", &Worker{ID: "w3", Branch: "forge/bd", SessionID: "sess"}},
+		{"missing session_id", &Worker{ID: "w4", Anvil: "anvil-1", Branch: "forge/bd"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := tc.worker.ResumeState(); err == nil {
+				t.Errorf("ResumeState should fail for %s", tc.name)
+			}
+		})
+	}
+}
+
 // TestDB_MigrationIdempotent verifies that running the column migrations twice
 // on the same database is safe (session_id/model migrations must not fail if
 // the columns already exist).

@@ -322,6 +322,128 @@ func (m *Manager) CreateWithOptions(ctx context.Context, anvilPath, beadID strin
 	}, nil
 }
 
+// ErrBranchDeleted is returned by CreateFromBranch when the branch a resume
+// depends on exists neither locally nor on origin (deleted, or merged and
+// pruned). Callers should treat this as "cannot resume" and fall back to a
+// fresh dispatch instead of silently starting from main.
+var ErrBranchDeleted = fmt.Errorf("worktree: branch no longer exists")
+
+// CreateFromBranch recreates a worktree from an existing forge/<bead> branch,
+// checking out that exact branch at the exact targetPath. This is the core
+// resume mechanism: after a worktree directory has been torn down but the
+// branch survives (locally, on origin, or both), it reconstructs the worktree
+// so `claude --resume` can continue the session in place.
+//
+// targetPath MUST be the ORIGINAL worktree path (<anvil>/.workers/<bead-id>).
+// claude keys its transcript on the cwd it recorded under ~/.claude/projects,
+// so resuming requires the worktree to live at the identical absolute path.
+// The caller passes targetPath explicitly (rather than having it derived) so
+// the exact-match requirement stays the caller's responsibility.
+//
+// It fetches the branch from origin first so the local ref reflects any work a
+// previous worker force-pushed. The fetch is best-effort: a branch that was
+// never pushed (local-only) makes a targeted fetch fail, which is expected and
+// non-fatal. If, after the fetch, the branch exists neither locally nor on
+// origin, it returns an error wrapping ErrBranchDeleted.
+//
+// Unlike CreateWithOptions' reset paths, this method never rewinds the branch
+// to a base ref or a remote tip — the branch IS the prior Smith's committed
+// work and must be preserved verbatim for the resume to be meaningful.
+func (m *Manager) CreateFromBranch(ctx context.Context, anvilPath, beadID, branchName, targetPath string) (*Worktree, error) {
+	// Validate branchName before passing it to git. Branch names derive from
+	// bead IDs / labels, so a name starting with "-" could be parsed as a flag.
+	if err := validateBranchName(ctx, anvilPath, branchName); err != nil {
+		return nil, err
+	}
+
+	// Ensure the parent (.workers) directory exists.
+	if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
+		return nil, fmt.Errorf("creating workers directory: %w", err)
+	}
+
+	// Self-heal any stale core.worktree on the main repo before running git
+	// commands that would trip over it (see CleanStaleCoreWorktree).
+	if err := CleanStaleCoreWorktree(ctx, anvilPath); err != nil {
+		slog.Warn("worktree: failed to clean stale core.worktree", "anvil", anvilPath, "error", err)
+	}
+
+	// Safety: refuse to operate if the main repo is on a feature branch (a prior
+	// stray checkout in the parent would otherwise corrupt the environment).
+	if err := assertOnMainBranch(ctx, anvilPath); err != nil {
+		return nil, fmt.Errorf("anvil branch safety check: %w", err)
+	}
+
+	// Fetch the branch so the local remote-tracking ref reflects any commits a
+	// previous worker force-pushed. Best-effort: a local-only branch (never
+	// pushed) makes this targeted fetch fail, which we tolerate and fall back to
+	// the local ref below.
+	if err := gitCmd(ctx, anvilPath, "fetch", "origin", "--", branchName); err != nil {
+		slog.Debug("worktree: fetch of resume branch failed (may be local-only)",
+			"anvil", anvilPath, "branch", branchName, "error", err)
+	}
+
+	// The branch must exist somewhere for a resume to be possible.
+	if !branchExists(ctx, anvilPath, branchName) {
+		return nil, fmt.Errorf("cannot resume bead %s: branch %q not found locally or on origin: %w",
+			beadID, branchName, ErrBranchDeleted)
+	}
+
+	// If the target directory already exists, reuse a valid worktree as-is so a
+	// repeated resume is idempotent; otherwise remove the stale directory so we
+	// can recreate cleanly.
+	if _, err := os.Stat(targetPath); err == nil {
+		unlinkReparsePoints(targetPath)
+		if isValidWorktree(ctx, targetPath) {
+			if err := linkNodeModules(anvilPath, targetPath); err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: failed to link node_modules: %v\n", err)
+			}
+			return &Worktree{BeadID: beadID, AnvilPath: anvilPath, Path: targetPath, Branch: branchName}, nil
+		}
+		if err := removeWithRetry(ctx, targetPath); err != nil {
+			return nil, fmt.Errorf("removing stale worktree directory %s: %w", targetPath, err)
+		}
+	}
+
+	// Check out the surviving branch at the exact target path. Prefer the local
+	// ref (which carries the Smith's committed work verbatim); fall back to a
+	// tracking branch from origin when only the remote ref survives.
+	localRef := "refs/heads/" + branchName
+	if gitCmd(ctx, anvilPath, "show-ref", "--verify", "--quiet", localRef) == nil {
+		if err := gitCmd(ctx, anvilPath, "worktree", "add", "-f", targetPath, branchName); err != nil {
+			return nil, fmt.Errorf("git worktree add (resume from local branch %q): %w", branchName, err)
+		}
+	} else {
+		remoteRef := "origin/" + branchName
+		if err := gitCmd(ctx, anvilPath, "worktree", "add", "-f", "-b", branchName, targetPath, remoteRef); err != nil {
+			return nil, fmt.Errorf("git worktree add (resume from remote branch %q): %w", branchName, err)
+		}
+	}
+
+	// Post-creation safety: verify the new worktree has a valid .git pointer so
+	// git operations resolve to the worktree, not the parent repo.
+	if err := verifyWorktreeGitFile(targetPath); err != nil {
+		_ = removeWithRetry(ctx, targetPath)
+		return nil, fmt.Errorf("post-creation worktree verification failed: %w", err)
+	}
+
+	// Install .beads/redirect so bd resolves the beads database.
+	if err := installBeadsRedirect(anvilPath, targetPath); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: failed to install .beads/redirect: %v\n", err)
+	}
+
+	// Link node_modules from the main checkout so Node temper steps work.
+	if err := linkNodeModules(anvilPath, targetPath); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: failed to link node_modules: %v\n", err)
+	}
+
+	return &Worktree{
+		BeadID:    beadID,
+		AnvilPath: anvilPath,
+		Path:      targetPath,
+		Branch:    branchName,
+	}, nil
+}
+
 // CreateEpicBranch creates or verifies an epic feature branch from main and
 // pushes it to origin. This is used when an epic bead is first picked up —
 // the branch is created without any code changes so child beads can branch
