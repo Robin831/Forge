@@ -80,17 +80,32 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "user and password are required")
 		return
 	}
+	ip := clientIP(r)
+	// Throttle before verifying: a run of recent failures for this username
+	// or IP delays the response, slowing online guessing. The delay is
+	// applied regardless of whether these particular credentials are valid so
+	// timing does not leak the outcome.
+	if delay := s.throttle.delay(username, ip); delay > 0 {
+		s.logger.Info("web login throttled", "user", username, "remote", ip, "delay", delay.String())
+		s.throttleSleep(delay)
+	}
 	if err := VerifyCredentials(s.cfg.Users, username, password); err != nil {
-		s.logger.Info("web login failed", "user", username, "remote", clientIP(r))
+		s.throttle.recordFailure(username, ip)
+		s.logger.Info("web login failed", "user", username, "remote", ip)
 		writeError(w, http.StatusUnauthorized, "invalid credentials")
 		return
 	}
+	// Rotate: invalidate any session token presented on this request so a
+	// pre-login (potentially fixated or captured) token cannot survive a
+	// successful sign-in.
+	s.deleteSessionFromRequest(r)
 	if _, err := s.createSession(w, username); err != nil {
 		s.logger.Error("web login session create failed", "user", username, "error", err)
 		writeError(w, http.StatusInternalServerError, "session creation failed")
 		return
 	}
-	s.logger.Info("web login ok", "user", username, "remote", clientIP(r))
+	s.throttle.recordSuccess(username)
+	s.logger.Info("web login ok", "user", username, "remote", ip)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"authenticated": true,
 		"user":          username,

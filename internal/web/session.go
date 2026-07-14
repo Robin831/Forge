@@ -54,7 +54,32 @@ func (s *Server) loadSession(r *http.Request) *state.WebSession {
 	if err != nil || sess == nil {
 		return nil
 	}
+	// Absolute lifetime cap: a session cannot outlive created_at +
+	// SessionAbsoluteTTL no matter how recently it was used, so a stolen
+	// cookie kept warm by sliding renewals still dies on schedule. A
+	// non-positive cap disables this check (sliding expiry only).
+	if s.cfg.SessionAbsoluteTTL > 0 &&
+		time.Now().After(sess.CreatedAt.Add(s.cfg.SessionAbsoluteTTL)) {
+		if err := s.db.DeleteWebSession(sess.TokenHash); err != nil {
+			s.logger.Warn("delete absolutely-expired web session failed", "error", err)
+		}
+		return nil
+	}
 	return sess
+}
+
+// deleteSessionFromRequest removes whatever session the request's cookie
+// points at, if any. Used to rotate the token on login: the pre-login token
+// is invalidated before a fresh one is issued. Best-effort — a missing cookie
+// or delete error is not fatal to the login.
+func (s *Server) deleteSessionFromRequest(r *http.Request) {
+	cookie, err := r.Cookie(s.cfg.CookieName)
+	if err != nil || cookie.Value == "" {
+		return
+	}
+	if err := s.db.DeleteWebSession(hashSessionToken(cookie.Value)); err != nil {
+		s.logger.Warn("rotate: delete prior web session failed", "error", err)
+	}
 }
 
 // touchSession slides the session expiry forward. Best-effort: errors are

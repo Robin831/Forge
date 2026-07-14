@@ -4328,6 +4328,17 @@ func (db *DB) PurgeExpiredWebSessions() (int64, error) {
 	return res.RowsAffected()
 }
 
+// DeleteAllWebSessions removes every web session row, forcing all signed-in
+// users to re-authenticate. It backs the "revoke all sessions" incident
+// response escape hatch. Returns the number of rows removed.
+func (db *DB) DeleteAllWebSessions() (int64, error) {
+	res, err := db.conn.Exec(`DELETE FROM web_sessions`)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
 // scanWicketIssueRow scans a *sql.Rows cursor into a WicketIssue.
 func scanWicketIssueRow(rows *sql.Rows) (*WicketIssue, error) {
 	var w WicketIssue

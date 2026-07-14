@@ -105,7 +105,9 @@ export default function LoginPage() {
         </form>
 
         <p className="mt-6 text-center text-xs text-slate-500">
-          Sessions last 30 days. Configure users via <code className="text-slate-400">FORGE_USERS</code>.
+          Sessions expire after a period of inactivity and are capped at an
+          absolute lifetime. Configure users via{' '}
+          <code className="text-slate-400">FORGE_USERS</code>.
         </p>
       </div>
     </div>
