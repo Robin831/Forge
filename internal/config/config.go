@@ -633,6 +633,21 @@ type SettingsConfig struct {
 	// stable (e.g. ephemeral pods that may share a hostname).
 	ForgeID string `mapstructure:"forge_id" yaml:"forge_id,omitempty"`
 
+	// BusEnabled toggles the in-process event Bus. When true, the daemon
+	// constructs a state.Bus (buffered to BusBufferSize) and wires it into the
+	// state DB so every logged event is fanned out to real-time subscribers
+	// (SSE/IPC). When false (the default, for safe rollout), no Bus is
+	// constructed and the DB's Publish path no-ops, retaining the legacy
+	// polling behaviour where consumers re-read events via EventsSince.
+	// This is the single switch sibling SSE/IPC consumers gate on.
+	BusEnabled bool `mapstructure:"bus_enabled" yaml:"bus_enabled"`
+	// BusBufferSize is the per-subscriber channel buffer for the in-process
+	// event Bus. It bounds how many events a slow consumer can fall behind
+	// before the Bus drops the oldest and delivers a gap marker prompting a
+	// re-sync. Only relevant when BusEnabled is true. A value <= 0 falls back
+	// to DefaultBusBufferSize. Default: 256.
+	BusBufferSize int `mapstructure:"bus_buffer_size" yaml:"bus_buffer_size,omitempty"`
+
 	// Warden holds review-time rule filtering settings. These control how many
 	// learned warden rules are injected into the Warden review prompt and
 	// which filter passes are applied.
@@ -693,6 +708,23 @@ const DefaultMaxLifecycleWorkers = 2
 // worker from the very first dispatch, preventing the "N concurrent workers blow
 // past the limit by ~N × per-bead cost" overshoot (Forge-s3w7).
 const DefaultPerWorkerCostEstimate = 2.0
+
+// DefaultBusBufferSize is the fallback per-subscriber buffer for the in-process
+// event Bus, used when settings.bus_buffer_size is unset or <= 0. It mirrors the
+// historical daemon default so enabling the Bus without tuning the buffer keeps
+// the previously-hardcoded behaviour.
+const DefaultBusBufferSize = 256
+
+// ResolvedBusBufferSize returns the effective event-Bus per-subscriber buffer
+// size, applying DefaultBusBufferSize when BusBufferSize is unset or <= 0.
+// Callers wiring the Bus should use this rather than reading BusBufferSize
+// directly so an omitted value never collapses to state.NewBus's minimum of 1.
+func (s SettingsConfig) ResolvedBusBufferSize() int {
+	if s.BusBufferSize <= 0 {
+		return DefaultBusBufferSize
+	}
+	return s.BusBufferSize
+}
 
 // DefaultTemperOutputCap is the fallback per-step combined-output byte cap
 // (256 KiB) used when settings.temper_output_cap is unset or <= 0. It mirrors
@@ -1403,6 +1435,10 @@ func Defaults() Config {
 			WicketTriggerLabel:     "",
 			BdReadyLimit:           100,
 			CruciblePollInterval:   3 * time.Minute,
+			// Event Bus disabled by default for safe rollout; buffer sized to
+			// the historical daemon default so enabling it needs no tuning.
+			BusEnabled:    false,
+			BusBufferSize: DefaultBusBufferSize,
 			Warden: WardenSettings{
 				MaxRulesPerReview: 30,
 				UseAllRules:       false,
@@ -1491,6 +1527,8 @@ func Load(configFile string) (*Config, error) {
 	v.SetDefault("settings.wicket_trigger_label", "")
 	v.SetDefault("settings.bd_ready_limit", 100)
 	v.SetDefault("settings.crucible_poll_interval", "3m")
+	v.SetDefault("settings.bus_enabled", false)
+	v.SetDefault("settings.bus_buffer_size", DefaultBusBufferSize)
 	v.SetDefault("settings.warden.max_rules_per_review", 30)
 	v.SetDefault("settings.warden.use_all_rules", false)
 	v.SetDefault("settings.warden.filter_path_glob", true)

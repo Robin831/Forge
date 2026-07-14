@@ -509,6 +509,8 @@ anvils:
 | `crucible_poll_interval` | duration | `3m` | `30s` or `0` | Interval for the slow unfiltered poll that rebuilds the Crucible parent-child (Blocks) graph. The fast path polls with a label filter every `poll_interval`; the slow path runs every `crucible_poll_interval` to discover parent-child relationships. `0` disables two-tier polling (all polls are unfiltered). |
 | `auto_merge_crucible_children` | bool | `true` | | Auto-merge child PRs targeting a Crucible feature branch after the pipeline succeeds. Set to `false` to require manual merge of child PRs. |
 | `forge_id` | string | `""` (hostname) | | Per-instance identifier embedded in the forge-managed marker on every PR Forge creates (`<!-- forge-managed: <id> -->`). When multiple Forge instances target the same anvil, this ID ensures each instance only manages the PRs it created. When empty, `os.Hostname()` is used; falls back to `"default"`. Set this explicitly in environments where the hostname is not stable (e.g. ephemeral pods). |
+| `bus_enabled` | bool | `false` | | Enable the in-process event Bus that fans logged events out to real-time SSE/IPC consumers. Disabled by default for safe rollout: when off, no Bus is constructed and consumers fall back to legacy polling (re-reading events via `EventsSince`). Also settable at daemon startup with `--enable-bus`. |
+| `bus_buffer_size` | int | `256` | `1024` | Per-subscriber channel buffer for the event Bus. Bounds how many events a slow consumer can fall behind before the Bus drops the oldest and delivers a gap marker prompting a re-sync. Only relevant when `bus_enabled` is true; a value `<= 0` falls back to `256`. Also settable at daemon startup with `--bus-buffer-size`. |
 | `questgiver_enabled` | bool | `false` | | Enable the QuestGiver E2E quest monitor globally. When false, no quest scanning occurs. |
 | `questgiver_interval` | duration | `24h` | `0` | How often the QuestGiver polls anvils for quests. `0` disables. |
 | `wicket_enabled` | bool | `false` | | Enable the Wicket GitHub issue triage monitor globally. When false, no issue scanning occurs. |
@@ -840,6 +842,8 @@ Environment variables with the `FORGE_` prefix override YAML values. Nested keys
 | `FORGE_SETTINGS_GO_RACE_DETECTION` | `settings.go_race_detection` |
 | `FORGE_SETTINGS_CRUCIBLE_ENABLED` | `settings.crucible_enabled` |
 | `FORGE_SETTINGS_CRUCIBLE_POLL_INTERVAL` | `settings.crucible_poll_interval` |
+| `FORGE_SETTINGS_BUS_ENABLED` | `settings.bus_enabled` |
+| `FORGE_SETTINGS_BUS_BUFFER_SIZE` | `settings.bus_buffer_size` |
 | `FORGE_SETTINGS_AUTO_MERGE_CRUCIBLE_CHILDREN` | `settings.auto_merge_crucible_children` |
 | `FORGE_SETTINGS_QUESTGIVER_ENABLED` | `settings.questgiver_enabled` |
 | `FORGE_SETTINGS_QUESTGIVER_INTERVAL` | `settings.questgiver_interval` |

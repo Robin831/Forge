@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 
 	"github.com/Robin831/Forge/internal/daemon"
@@ -15,6 +16,8 @@ import (
 func init() {
 	upCmd.Flags().Bool("foreground", false, "Run daemon in foreground (for debugging or containers)")
 	upCmd.Flags().Bool("all-rules", false, "Inject every learned warden rule into the review prompt (bypass diff-aware filtering). Overrides settings.warden.use_all_rules when set.")
+	upCmd.Flags().Bool("enable-bus", false, "Enable the in-process event Bus for real-time SSE/IPC consumers. Overrides settings.bus_enabled when set.")
+	upCmd.Flags().Int("bus-buffer-size", 0, "Per-subscriber buffer for the in-process event Bus. Overrides settings.bus_buffer_size when set (>0).")
 
 	rootCmd.AddCommand(upCmd)
 	rootCmd.AddCommand(downCmd)
@@ -70,6 +73,20 @@ var upCmd = &cobra.Command{
 			cfg.Settings.Warden.UseAllRules = true
 		}
 
+		// Resolve --enable-bus: flag OR settings.bus_enabled (OR semantics).
+		// Setting the flag forces the daemon to construct the in-process event
+		// Bus and wire it into the state DB, gating the SSE/IPC real-time path.
+		enableBusFlag, _ := cmd.Flags().GetBool("enable-bus")
+		if enableBusFlag {
+			cfg.Settings.BusEnabled = true
+		}
+		// Resolve --bus-buffer-size: an explicit positive value overrides
+		// settings.bus_buffer_size. Only relevant when the Bus is enabled.
+		busBufferSizeFlag, _ := cmd.Flags().GetInt("bus-buffer-size")
+		if cmd.Flags().Changed("bus-buffer-size") && busBufferSizeFlag > 0 {
+			cfg.Settings.BusBufferSize = busBufferSizeFlag
+		}
+
 		if foreground {
 			// Run in foreground (used by the background spawn and for debugging)
 			d, err := daemon.New(cfg, configFile)
@@ -97,6 +114,12 @@ var upCmd = &cobra.Command{
 		}
 		if allRulesFlag {
 			spawnArgs = append(spawnArgs, "--all-rules")
+		}
+		if enableBusFlag {
+			spawnArgs = append(spawnArgs, "--enable-bus")
+		}
+		if cmd.Flags().Changed("bus-buffer-size") && busBufferSizeFlag > 0 {
+			spawnArgs = append(spawnArgs, "--bus-buffer-size", strconv.Itoa(busBufferSizeFlag))
 		}
 
 		bgCmd := exec.Command(exe, spawnArgs...)

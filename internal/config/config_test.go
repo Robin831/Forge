@@ -470,6 +470,61 @@ settings:
 	assert.Equal(t, 2*time.Minute, cfg.Settings.BellowsInterval)
 }
 
+func TestLoad_Bus_Default(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "forge.yaml")
+	content := `
+settings:
+  max_total_smiths: 2
+`
+	require.NoError(t, os.WriteFile(cfgPath, []byte(content), 0o644))
+
+	cfg, err := Load(cfgPath)
+	require.NoError(t, err)
+	// Bus is disabled by default for safe rollout, with the buffer sized to the
+	// package default.
+	assert.False(t, cfg.Settings.BusEnabled)
+	assert.Equal(t, DefaultBusBufferSize, cfg.Settings.BusBufferSize)
+	assert.Equal(t, DefaultBusBufferSize, cfg.Settings.ResolvedBusBufferSize())
+}
+
+func TestLoad_Bus_EnabledWithBufferSize(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "forge.yaml")
+	content := `
+settings:
+  bus_enabled: true
+  bus_buffer_size: 1024
+`
+	require.NoError(t, os.WriteFile(cfgPath, []byte(content), 0o644))
+
+	cfg, err := Load(cfgPath)
+	require.NoError(t, err)
+	assert.True(t, cfg.Settings.BusEnabled)
+	assert.Equal(t, 1024, cfg.Settings.BusBufferSize)
+	assert.Equal(t, 1024, cfg.Settings.ResolvedBusBufferSize())
+}
+
+func TestLoad_Bus_EnvOverride(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "forge.yaml")
+	require.NoError(t, os.WriteFile(cfgPath, []byte("settings:\n  max_total_smiths: 2\n"), 0o644))
+
+	t.Setenv("FORGE_SETTINGS_BUS_ENABLED", "true")
+	t.Setenv("FORGE_SETTINGS_BUS_BUFFER_SIZE", "42")
+
+	cfg, err := Load(cfgPath)
+	require.NoError(t, err)
+	assert.True(t, cfg.Settings.BusEnabled)
+	assert.Equal(t, 42, cfg.Settings.BusBufferSize)
+}
+
+func TestResolvedBusBufferSize_FallsBackForNonPositive(t *testing.T) {
+	assert.Equal(t, DefaultBusBufferSize, SettingsConfig{BusBufferSize: 0}.ResolvedBusBufferSize())
+	assert.Equal(t, DefaultBusBufferSize, SettingsConfig{BusBufferSize: -5}.ResolvedBusBufferSize())
+	assert.Equal(t, 16, SettingsConfig{BusBufferSize: 16}.ResolvedBusBufferSize())
+}
+
 func TestLoad_InvalidBellowsInterval(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "forge.yaml")
