@@ -940,6 +940,121 @@ func TestActivityStream_PollFallbackDisabledUsesBus(t *testing.T) {
 	}
 }
 
+// TestActivityStream_BusDeliversUnder100ms is the SSE-level integration test
+// design point 5 calls for: a live event published after the handler has entered
+// the Bus live loop must reach a connected SSE client in well under 100ms — the
+// whole point of the Bus over the legacy 2s poll. The DB starts empty so replay
+// emits nothing and the measurement isolates the live publish→flush→client path.
+func TestActivityStream_BusDeliversUnder100ms(t *testing.T) {
+	srv := busServer(t)
+
+	resp, cancel := authedSSEClient(t, srv, "/api/activity/stream", "")
+	defer cancel()
+	defer resp.Body.Close()
+
+	type stamped struct {
+		msg string
+		at  time.Time
+	}
+	got := make(chan stamped, 8)
+	go func() {
+		scanner := bufio.NewScanner(resp.Body)
+		scanner.Buffer(make([]byte, 64*1024), 1<<20)
+		for scanner.Scan() {
+			line := scanner.Text()
+			if !strings.HasPrefix(line, "data: ") {
+				continue
+			}
+			var ev activityEvent
+			if err := json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &ev); err == nil {
+				got <- stamped{msg: ev.Message, at: time.Now()}
+			}
+		}
+	}()
+
+	// Let the handler subscribe and finish the (empty) replay so it is parked in
+	// the live select loop before we publish and start the clock.
+	time.Sleep(300 * time.Millisecond)
+
+	start := time.Now()
+	if err := srv.db.LogEvent(state.EventBeadClaimed, "live", "", ""); err != nil {
+		t.Fatalf("LogEvent: %v", err)
+	}
+
+	deadline := time.After(2 * time.Second)
+	for {
+		select {
+		case s := <-got:
+			if s.msg != "live" {
+				// Ignore any residual replay/backlog delivery.
+				continue
+			}
+			if latency := s.at.Sub(start); latency > 100*time.Millisecond {
+				t.Fatalf("live event delivered in %s, want < 100ms", latency)
+			}
+			return
+		case <-deadline:
+			t.Fatal("live event not delivered within 2s")
+		}
+	}
+}
+
+// TestActivityStream_BusFanOutToNClients confirms the fan-out property holds at
+// the SSE layer, not just in the Bus unit tests: N concurrent EventSource
+// clients each receive the same live event over their own subscription.
+func TestActivityStream_BusFanOutToNClients(t *testing.T) {
+	srv := busServer(t)
+
+	const nClients = 4
+	bodies := make([]io.ReadCloser, 0, nClients)
+	// Each goroutine ships the raw payload back; parsing/assertion stays on the
+	// main test goroutine (t.Fatal must not be called from a spawned one).
+	results := make(chan string, nClients)
+
+	for i := 0; i < nClients; i++ {
+		resp, cancel := authedSSEClient(t, srv, "/api/activity/stream", "")
+		defer cancel()
+		bodies = append(bodies, resp.Body)
+		go func(body io.ReadCloser) {
+			raw := readSSEData(t, body, 1, 5*time.Second)
+			if len(raw) == 1 {
+				results <- raw[0]
+			} else {
+				results <- ""
+			}
+		}(resp.Body)
+	}
+	defer func() {
+		for _, b := range bodies {
+			b.Close()
+		}
+	}()
+
+	// Ensure every handler has subscribed before the single live publish.
+	time.Sleep(300 * time.Millisecond)
+	if err := srv.db.LogEvent(state.EventBeadClaimed, "broadcast", "", ""); err != nil {
+		t.Fatalf("LogEvent: %v", err)
+	}
+
+	for i := 0; i < nClients; i++ {
+		select {
+		case raw := <-results:
+			if raw == "" {
+				t.Fatalf("client %d received no event", i)
+			}
+			var ev activityEvent
+			if err := json.Unmarshal([]byte(raw), &ev); err != nil {
+				t.Fatalf("client %d: unmarshal %q: %v", i, raw, err)
+			}
+			if ev.Message != "broadcast" {
+				t.Fatalf("client %d received %q, want \"broadcast\"", i, ev.Message)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatalf("timed out waiting for client %d to receive the broadcast", i)
+		}
+	}
+}
+
 func TestActivityStream_BusClientDisconnectEndsStream(t *testing.T) {
 	srv := busServer(t)
 

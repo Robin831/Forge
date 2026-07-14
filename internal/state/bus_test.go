@@ -86,6 +86,95 @@ func TestBusOverflowInsertsGapMarker(t *testing.T) {
 	}
 }
 
+// TestBusFanOutToNSubscribers exercises design point 5's fan-out requirement:
+// every one of N independent subscribers receives the full ordered event stream
+// with no duplicates and no loss. Buffers are sized to hold the whole batch so
+// nobody overflows and the assertion is purely about fan-out correctness.
+func TestBusFanOutToNSubscribers(t *testing.T) {
+	const (
+		nSubs   = 5
+		nEvents = 20
+	)
+	b := NewBus(nEvents + 1)
+
+	chans := make([]<-chan BusEvent, nSubs)
+	for i := 0; i < nSubs; i++ {
+		ch, unsub := b.Subscribe()
+		defer unsub()
+		chans[i] = ch
+	}
+
+	for i := 1; i <= nEvents; i++ {
+		b.Publish(BusEvent{Seq: int64(i), Event: Event{ID: i, Message: "e"}})
+	}
+
+	for si, ch := range chans {
+		for i := 1; i <= nEvents; i++ {
+			ev := recv(t, ch)
+			if ev.GapMarker {
+				t.Fatalf("sub %d: unexpected gap marker at event %d", si, i)
+			}
+			if ev.Seq != int64(i) {
+				t.Fatalf("sub %d: got Seq %d want %d (event lost or out of order)", si, ev.Seq, i)
+			}
+		}
+		// After the exact batch there must be nothing left buffered — no dupes.
+		select {
+		case extra := <-ch:
+			t.Fatalf("sub %d: unexpected extra event %+v (duplicate delivery)", si, extra)
+		default:
+		}
+	}
+}
+
+// TestBusSlowSubscriberDoesNotStallFastDelivery covers the slow-subscriber half
+// of design point 5 at the bus level: a subscriber that never drains overflows
+// and receives a gap marker (drop-oldest), yet its full buffer neither blocks
+// Publish nor perturbs a fast subscriber's ordered, gap-free stream. The DB
+// re-sync that follows a gap marker is exercised end-to-end in the web package's
+// SSE gap-resync test.
+func TestBusSlowSubscriberDoesNotStallFastDelivery(t *testing.T) {
+	const nEvents = 12
+	b := NewBus(2) // tiny buffer so the undrained subscriber overflows quickly
+
+	slow, unsubSlow := b.Subscribe() // deliberately never drained until the end
+	defer unsubSlow()
+
+	fast, unsubFast := b.Subscribe()
+	defer unsubFast()
+
+	// Publish then immediately drain the fast subscriber after each event so it
+	// never overflows. If the slow subscriber's full buffer stalled Publish this
+	// loop would block on recv and the test would time out.
+	for i := 1; i <= nEvents; i++ {
+		b.Publish(BusEvent{Seq: int64(i), Event: Event{ID: i}})
+		ev := recv(t, fast)
+		if ev.GapMarker {
+			t.Fatalf("fast subscriber saw an unexpected gap marker at event %d", i)
+		}
+		if ev.Seq != int64(i) {
+			t.Fatalf("fast subscriber got Seq %d want %d", ev.Seq, i)
+		}
+	}
+
+	// The slow subscriber's bounded buffer must have overflowed into at least one
+	// gap marker, proving drop-oldest + gap-marker fired without blocking anyone.
+	sawGap := false
+	for {
+		select {
+		case ev := <-slow:
+			if ev.GapMarker {
+				sawGap = true
+			}
+		default:
+			if !sawGap {
+				t.Fatal("expected the never-drained subscriber to receive a gap marker")
+			}
+			return
+		}
+	}
+}
+
 func TestBusUnsubscribeStopsDeliveryAndClosesChannel(t *testing.T) {
 	b := NewBus(4)
 	ch, unsub := b.Subscribe()
