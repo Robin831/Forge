@@ -389,6 +389,12 @@ func configureEventBus(cfg *config.Config, db *state.DB, logger *slog.Logger) *s
 	bufSize := cfg.Settings.ResolvedBusBufferSize()
 	bus := state.NewBus(bufSize)
 	db.SetBus(bus)
+	// Wire a dedicated findings-changed Bus alongside the event bus, gated on the
+	// same bus_enabled flag. Keeping it separate keeps the PR-findings SSE stream
+	// from receiving every logged event (and the activity stream from receiving
+	// findings signals). The daemon does not retain a reference: the only consumer
+	// is the web PR-findings stream, which reaches it via db.FindingsBus().
+	db.SetFindingsBus(state.NewBus(bufSize))
 	if logger != nil {
 		logger.Info("event bus enabled", "buffer_size", bufSize)
 	}
