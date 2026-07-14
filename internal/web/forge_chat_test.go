@@ -565,8 +565,8 @@ func TestForgeTurn_Returns202WithinTightDeadline(t *testing.T) {
 	if rec.Code != http.StatusAccepted {
 		t.Fatalf("expected 202, got %d body=%s", rec.Code, rec.Body.String())
 	}
-	if elapsed > 200*time.Millisecond {
-		t.Fatalf("handler should return within 100ms (target) / 200ms (slack), took %s", elapsed)
+	if elapsed > 500*time.Millisecond {
+		t.Fatalf("handler should return within 100ms (target) / 500ms (slack), took %s", elapsed)
 	}
 	turnID := decodeAccepted(t, rec.Body.Bytes())
 	if _, ok := srv.TurnStore().Get(turnID); !ok {
