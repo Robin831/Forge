@@ -49,9 +49,19 @@ type activityEvent struct {
 //
 // On connect (without a Last-Event-ID header) it ships the 50 most recent
 // events oldest-first so the client can render a populated timeline before
-// the first poll fires. Every 2s the daemon polls events.id > lastID and
-// emits any new rows. A 30s keep-alive comment keeps the connection warm
+// live delivery begins. A 30s keep-alive comment keeps the connection warm
 // through the skybert nginx ingress (proxy-read-timeout 3600).
+//
+// Delivery has two modes, selected by whether the in-process event Bus is
+// wired into the state DB (settings.bus_enabled):
+//
+//   - Bus enabled: replay-then-live. We subscribe to the Bus BEFORE replaying
+//     the backlog so events published mid-replay queue on the bounded channel
+//     rather than being lost, replay via EventsSince, then hand over to the
+//     live channel dropping any event whose Seq was already emitted during
+//     replay. See streamActivityBus.
+//   - Bus nil (legacy): the 2s poll loop re-reading EventsSince. See
+//     streamActivityPolling.
 func (s *Server) handleActivityStream(w http.ResponseWriter, r *http.Request) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
@@ -66,6 +76,8 @@ func (s *Server) handleActivityStream(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprint(w, "retry: 3000\n\n")
 	flusher.Flush()
 
+	// Seed the replay start point from the Last-Event-ID header (the standard
+	// EventSource resume mechanism); fall back to 0, meaning "no prior cursor".
 	var lastID int
 	if s := r.Header.Get("Last-Event-ID"); s != "" {
 		if n, err := strconv.Atoi(s); err == nil && n > 0 {
@@ -73,6 +85,20 @@ func (s *Server) handleActivityStream(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// The config-flag branch shared with the fallback sub-task: when the Bus
+	// is enabled take the real-time replay-then-live path, otherwise retain
+	// legacy polling.
+	if bus := s.db.Bus(); bus != nil {
+		s.streamActivityBus(w, r, flusher, lastID, bus)
+		return
+	}
+	s.streamActivityPolling(w, r, flusher, lastID)
+}
+
+// streamActivityPolling is the legacy delivery path used when no event Bus is
+// wired: it primes the timeline (for a fresh connection) then polls
+// events.id > lastID every 2s, emitting any new rows.
+func (s *Server) streamActivityPolling(w http.ResponseWriter, r *http.Request, flusher http.Flusher, lastID int) {
 	if lastID == 0 {
 		// RecentEvents returns newest-first; reverse so the client sees the
 		// timeline in chronological order.
@@ -117,6 +143,110 @@ func (s *Server) handleActivityStream(w http.ResponseWriter, r *http.Request) {
 			if len(newEvents) > 0 {
 				flusher.Flush()
 			}
+		}
+	}
+}
+
+// activityReplayPageSize bounds each EventsSince page during backlog replay
+// and gap re-sync so a large backlog is drained in order rather than truncated
+// to a single page.
+const activityReplayPageSize = 100
+
+// streamActivityBus implements the replay-then-live handover against the
+// in-process event Bus.
+//
+// Ordering is the crux: we subscribe BEFORE replaying the backlog so any event
+// published between the replay snapshot and the live handover is buffered on
+// the bounded channel instead of being lost. After replay we range over the
+// live channel and drop any event whose Seq was already emitted during replay
+// (or a prior gap re-sync), guaranteeing each event is delivered exactly once
+// across the seam — no dupes, no loss.
+//
+// lastEmittedSeq tracks the highest Seq written to the client and drives the
+// dedup. Seq mirrors the event row ID, so it doubles as the SSE `id:` and as
+// lastDeliveredID — the cursor shared with the gap-resync sibling sub-task.
+func (s *Server) streamActivityBus(w http.ResponseWriter, r *http.Request, flusher http.Flusher, lastID int, bus *state.Bus) {
+	// Subscribe first: from here on every published event is buffered on our
+	// channel, closing the window between the replay snapshot and live
+	// handover. defer Unsubscribe so a client disconnect (or any return) drops
+	// us from the fan-out and closes the channel.
+	ch, unsubscribe := bus.Subscribe()
+	defer unsubscribe()
+
+	var lastEmittedSeq int64
+	lastDeliveredID := lastID
+
+	emit := func(e state.Event) {
+		data, _ := json.Marshal(toActivityEvent(e))
+		fmt.Fprintf(w, "id: %d\ndata: %s\n\n", e.ID, data)
+		if int64(e.ID) > lastEmittedSeq {
+			lastEmittedSeq = int64(e.ID)
+		}
+		lastDeliveredID = e.ID
+	}
+
+	// resyncFrom drains EventsSince from the shared cursor in pages, emitting
+	// each event and advancing lastDeliveredID/lastEmittedSeq. Used both for
+	// the initial backlog replay and to close an overflow gap.
+	resyncFrom := func() {
+		for {
+			batch, err := s.db.EventsSince(lastDeliveredID, activityReplayPageSize)
+			if err != nil {
+				return
+			}
+			for _, e := range batch {
+				emit(e)
+			}
+			if len(batch) < activityReplayPageSize {
+				return
+			}
+		}
+	}
+
+	// Replay phase. A fresh connection (no Last-Event-ID) primes the timeline
+	// with the 50 most recent events oldest-first; then EventsSince drains any
+	// remaining backlog past the cursor (also covering a resuming connection).
+	if lastDeliveredID == 0 {
+		if initial, err := s.db.RecentEvents(50); err == nil {
+			for i := len(initial) - 1; i >= 0; i-- {
+				emit(initial[i])
+			}
+		}
+	}
+	resyncFrom()
+	flusher.Flush()
+
+	// Live phase: hand over to the Bus channel.
+	keepalive := time.NewTicker(30 * time.Second)
+	defer keepalive.Stop()
+
+	for {
+		select {
+		case <-r.Context().Done():
+			return
+		case <-keepalive.C:
+			fmt.Fprint(w, ": keepalive\n\n")
+			flusher.Flush()
+		case ev, ok := <-ch:
+			if !ok {
+				// The Bus closed our subscription (unsubscribe / shutdown).
+				return
+			}
+			if ev.GapMarker {
+				// Our bounded buffer overflowed and the Bus dropped events.
+				// Re-sync the gap from the DB via the shared lastDeliveredID
+				// cursor so no events are lost, then resume the live stream.
+				resyncFrom()
+				flusher.Flush()
+				continue
+			}
+			if ev.Seq <= lastEmittedSeq {
+				// Already delivered during replay (or a gap re-sync). Skipping
+				// here is what makes the replay→live boundary exactly-once.
+				continue
+			}
+			emit(ev.Event)
+			flusher.Flush()
 		}
 	}
 }
