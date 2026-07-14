@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useState } from 'react'
 import { AlertTriangle, ExternalLink, X } from 'lucide-react'
 import type { EscalationDetail, EscalationType, ResolveVerb } from '../api/forge'
+import { resumeWithMessageEligible } from '../api/forge'
 import ConfirmModal from './ConfirmModal'
+import ResumeWithMessageComposer from './ResumeWithMessageComposer'
 import {
   resolveKey,
   useEscalation,
@@ -257,6 +259,16 @@ export default function ResolveNeedsAttentionPanel({
 
   const verbSpecs = useMemo(() => verbSpecsFor(escalationType), [escalationType])
 
+  // canResumeWithMessage gates the resume-with-message affordance on the
+  // escalation type (branch-less classes like clarification are excluded) and
+  // the presence of a recorded worker branch — the surviving forge/<bead>
+  // branch the daemon recreates the worktree from. The daemon validates the full
+  // precondition (a resumable Claude session) and surfaces an error if absent.
+  const canResumeWithMessage = useMemo(
+    () => resumeWithMessageEligible(escalationType, detail),
+    [escalationType, detail],
+  )
+
   // The resolve-store entry is keyed on (anvil, beadID). When the
   // escalation detail hasn't loaded yet we fall back to a placeholder key
   // so the hook still has a stable string; the action buttons themselves
@@ -472,6 +484,15 @@ export default function ResolveNeedsAttentionPanel({
             )}
           </div>
 
+          {canResumeWithMessage && !anvilMissing && (
+            <div className="border-t border-slate-800/60 pt-4">
+              <ResumeWithMessageComposer
+                beadID={escalationId}
+                branch={detail.branch}
+                onResumed={onClose}
+              />
+            </div>
+          )}
         </>
       )}
       <ConfirmModal

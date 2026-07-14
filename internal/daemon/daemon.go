@@ -6479,6 +6479,8 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 		return d.handlePauseBead(cmd)
 	case "resume_bead":
 		return d.handleResumeBead(cmd)
+	case "resume_bead_with_message":
+		return d.handleResumeBeadWithMessage(cmd)
 
 	case "revoke_web_sessions":
 		// Incident-response escape hatch: drop every web session so all
@@ -6818,6 +6820,40 @@ func (d *Daemon) coldResumePausedWorker(beadID, message string) ipc.Response {
 		BeadID:  beadID,
 		Status:  string(state.WorkerRunning),
 		Message: fmt.Sprintf("resuming paused bead %s after restart", beadID),
+	})
+	return ipc.Response{Type: "ok", Payload: data}
+}
+
+// handleResumeBeadWithMessage implements the "resume_bead_with_message" IPC
+// verb: it resumes a needs-attention bead whose worktree was torn down but whose
+// forge/<bead> branch survives, seeding the resumed (or fresh-fallback) session
+// with an operator message. It mirrors handleSteerBead's shape — keyed purely by
+// bead id, message optional — and delegates the heavy lifting (resumable-worker
+// lookup, precondition validation, worktree recreation, dispatch) to the
+// ResumeBeadWithMessage entrypoint. The daemon returns an actionable error when
+// the bead already has a live pipeline (callers should use resume_bead), has no
+// resumable worker row, or its resume preconditions are unmet.
+func (d *Daemon) handleResumeBeadWithMessage(cmd ipc.Command) ipc.Response {
+	var rp ipc.ResumeBeadWithMessagePayload
+	if err := json.Unmarshal(cmd.Payload, &rp); err != nil {
+		return steerErrorResponse("invalid resume_bead_with_message payload")
+	}
+	beadID := strings.TrimSpace(rp.BeadID)
+	if beadID == "" {
+		return steerErrorResponse("bead_id is required")
+	}
+	message := strings.TrimSpace(rp.Message)
+
+	workerID, err := d.ResumeBeadWithMessage(beadID, message)
+	if err != nil {
+		return steerErrorResponse(err.Error())
+	}
+
+	d.logger.Info("resume-with-message delivered", "bead", beadID, "worker", workerID)
+	data, _ := json.Marshal(ipc.ResumeBeadWithMessageResponse{
+		BeadID:   beadID,
+		WorkerID: workerID,
+		Message:  fmt.Sprintf("resume-with-message dispatched for bead %s (worker %s)", beadID, workerID),
 	})
 	return ipc.Response{Type: "ok", Payload: data}
 }

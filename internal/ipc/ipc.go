@@ -31,7 +31,7 @@ import (
 
 // Command is a message sent from a client to the daemon.
 type Command struct {
-	Type    string          `json:"type"`    // "status", "kill_worker", "refresh", "queue", "run_bead", "create_pr", "set_clarification", "clear_clarification", "assay_rerun", "pause_dispatch", "resume_dispatch", "steer_bead", "pause_bead", "resume_bead"
+	Type    string          `json:"type"`    // "status", "kill_worker", "refresh", "queue", "run_bead", "create_pr", "set_clarification", "clear_clarification", "assay_rerun", "pause_dispatch", "resume_dispatch", "steer_bead", "pause_bead", "resume_bead", "resume_bead_with_message"
 	Payload json.RawMessage `json:"payload"` // Type-specific data
 	// ReadTimeout is an optional client-side timeout for reading the response.
 	// Zero uses DefaultReadTimeout. Long-running commands that go through bd or
@@ -338,6 +338,34 @@ type ResumeBeadResponse struct {
 	BeadID  string `json:"bead_id"`
 	Status  string `json:"status"`
 	Message string `json:"message,omitempty"`
+}
+
+// ResumeBeadWithMessagePayload is the payload for a "resume_bead_with_message"
+// command. Unlike "resume_bead" (which resumes a paused, still-parked pipeline),
+// this verb resumes a needs-attention bead whose worktree was torn down but
+// whose forge/<bead> branch survives: the daemon recreates the worktree from the
+// surviving branch and resumes the recorded Claude session (falling back to a
+// fresh session seeded with the operator message when the transcript or branch
+// is gone). Like "steer_bead" it is keyed purely by bead id — the daemon
+// resolves the resumable worker row from state — so no anvil is required.
+//
+// Message is the operator message the resumed (or fresh-fallback) session
+// continues with. It is optional; when empty (or whitespace) the daemon
+// substitutes DefaultResumeMessage. The daemon rejects the command when the
+// bead already has a live pipeline (use "resume_bead"), has no resumable worker
+// row (no recorded branch + session), or its resume preconditions are unmet.
+type ResumeBeadWithMessagePayload struct {
+	BeadID  string `json:"bead_id"`
+	Message string `json:"message,omitempty"`
+}
+
+// ResumeBeadWithMessageResponse is the response payload for a successful
+// "resume_bead_with_message" command. WorkerID is the reused worker id the
+// resumed pipeline runs under; Message is a human-readable confirmation.
+type ResumeBeadWithMessageResponse struct {
+	BeadID   string `json:"bead_id"`
+	WorkerID string `json:"worker_id"`
+	Message  string `json:"message,omitempty"`
 }
 
 // ResolveOrphanPayload is the payload for a "resolve_orphan" command.

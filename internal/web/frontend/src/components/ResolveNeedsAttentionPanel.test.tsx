@@ -385,6 +385,107 @@ describe('ResolveNeedsAttentionPanel — clarification', () => {
   })
 })
 
+describe('ResolveNeedsAttentionPanel — resume with message', () => {
+  it('offers the resume-with-message affordance for a branched worker escalation', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(DETAIL))
+
+    render(
+      <Wrapper>
+        <ResolveNeedsAttentionPanel
+          escalationId="Forge-aaaa"
+          escalationType="smith_failed"
+        />
+      </Wrapper>,
+    )
+
+    await waitFor(() => {
+      expect(
+        screen.getByLabelText('Resume with message'),
+      ).toBeInTheDocument()
+    })
+    // The surviving branch is surfaced so the operator knows the resume target.
+    expect(screen.getAllByText('forge/Forge-aaaa').length).toBeGreaterThan(0)
+  })
+
+  it('hides the affordance for a clarification escalation (no branch to resume)', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(DETAIL))
+
+    render(
+      <Wrapper>
+        <ResolveNeedsAttentionPanel
+          escalationId="Forge-aaaa"
+          escalationType="clarification"
+        />
+      </Wrapper>,
+    )
+
+    await waitFor(() => {
+      expect(screen.getByText('Needs clarification')).toBeInTheDocument()
+    })
+    expect(screen.queryByLabelText('Resume with message')).not.toBeInTheDocument()
+  })
+
+  it('hides the affordance when no branch was recorded', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({ ...DETAIL, branch: undefined }),
+    )
+
+    render(
+      <Wrapper>
+        <ResolveNeedsAttentionPanel
+          escalationId="Forge-aaaa"
+          escalationType="smith_failed"
+        />
+      </Wrapper>,
+    )
+
+    await waitFor(() => {
+      expect(screen.getByText('Resolve actions')).toBeInTheDocument()
+    })
+    expect(screen.queryByLabelText('Resume with message')).not.toBeInTheDocument()
+  })
+
+  it('POSTs the operator message to the resume-with-message endpoint', async () => {
+    const user = userEvent.setup()
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse(DETAIL))
+      .mockResolvedValueOnce(jsonResponse({ worker_id: 'w-1', message: 'ok' }))
+
+    render(
+      <Wrapper>
+        <ResolveNeedsAttentionPanel
+          escalationId="Forge-aaaa"
+          escalationType="smith_failed"
+        />
+      </Wrapper>,
+    )
+
+    const input = (await screen.findByLabelText(
+      'Resume with message',
+    )) as HTMLTextAreaElement
+    await user.type(input, 'focus on the failing test first')
+    await user.click(
+      screen.getByRole('button', { name: /resume with message/i }),
+    )
+
+    await waitFor(() => {
+      expect(
+        fetchMock.mock.calls.some(
+          ([url]) => url === '/api/bead/Forge-aaaa/resume-with-message',
+        ),
+      ).toBe(true)
+    })
+    const call = fetchMock.mock.calls.find(
+      ([url]) => url === '/api/bead/Forge-aaaa/resume-with-message',
+    )
+    const init = call?.[1] as RequestInit
+    expect(init.method).toBe('POST')
+    expect(JSON.parse(init.body as string)).toEqual({
+      message: 'focus on the failing test first',
+    })
+  })
+})
+
 describe('ResolveNeedsAttentionPanel — anvil hint', () => {
   it('passes the anvil hint to the escalation fetch', async () => {
     fetchMock.mockResolvedValueOnce(jsonResponse(DETAIL))

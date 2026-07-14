@@ -97,6 +97,7 @@ func (s *Server) routes() http.Handler {
 		r.Post("/bead/{bead_id}/steer", s.handleBeadSteer)
 		r.Post("/bead/{bead_id}/pause", s.handleBeadPause)
 		r.Post("/bead/{bead_id}/resume", s.handleBeadResume)
+		r.Post("/bead/{bead_id}/resume-with-message", s.handleBeadResumeWithMessage)
 
 		// Per-PR actions on the /prs tab. Each route resolves the PR row
 		// from state.db and dispatches an in-process IPC command. External
