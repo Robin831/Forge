@@ -1,0 +1,2 @@
+category: Changed
+- **Dependency updates (07.07.2026)** - Bumped Go modules (golang.org/x/crypto v0.53.0→v0.54.0, golang.org/x/sys v0.46.0→v0.47.0, github.com/go-chi/chi/v5 v5.3.0→v5.3.1) and frontend npm packages (lucide-react 1.22.0→1.24.0, vite 8.0.16→8.1.4, @tailwindcss/vite 4.3.1→4.3.2, @vitejs/plugin-react 6.0.2→6.0.3, react-router-dom 7.18.0→7.18.1, tailwindcss 4.3.1→4.3.2, vitest 4.1.9→4.1.10). Major updates (@types/node, typescript) deferred for manual review. (Forge-kr97)
