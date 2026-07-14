@@ -274,7 +274,16 @@ describe('PRsPage persistence', () => {
     // compose — touching multiple keys in one session doesn't cause any to be
     // dropped on the unmount/remount cycle and they all land before paint.
     vi.useFakeTimers()
-    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+    // delay: null disables userEvent's internal inter-event setTimeout. Under
+    // fake timers those delay timers are never auto-flushed (advanceTimers is
+    // unreliable with the synchronous vi.advanceTimersByTime), so type/click/
+    // selectOptions would hang until the 5s per-test timeout. With delay: null
+    // the interactions dispatch synchronously and only our own rAF + 150ms
+    // debounce timers remain for vi.runAllTimers() to flush.
+    const user = userEvent.setup({
+      advanceTimers: vi.advanceTimersByTime,
+      delay: null,
+    })
 
     const { router } = renderApp()
 
