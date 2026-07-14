@@ -642,6 +642,41 @@ type SettingsConfig struct {
 	// plan, emit). Currently exposes turn_timeout so operators can lift the
 	// per-turn budget without recompiling.
 	ForgeChat ForgeChatSettings `mapstructure:"forgechat" yaml:"forgechat,omitempty"`
+
+	// Pricing maps a model key to its per-million-token USD rates, used as the
+	// fallback cost estimate for providers that do not self-report a cost
+	// (Copilot, Gemini, OpenAI/Codex). Claude self-reports total_cost_usd and
+	// is unaffected. Each entry overrides the built-in default for that model;
+	// models not listed keep their default rates. Hot-reloadable. See
+	// cost.DefaultPricingTable for the default keys (claude-sonnet,
+	// claude-haiku, claude-opus, gemini, openai) and values.
+	//
+	// mapstructure:"-" excludes this from viper decoding — model keys often
+	// contain dots (e.g. "claude-opus-4.6"), which viper treats as nested-key
+	// delimiters and would mangle. Load() populates it directly from the raw
+	// YAML instead; see loadPricingTablesFromYAML.
+	Pricing map[string]ModelPricing `mapstructure:"-" yaml:"pricing,omitempty"`
+
+	// CopilotPremiumMultipliers maps a Copilot model name to its premium-request
+	// multiplier (e.g. claude-opus-4.6 = 3x). Each entry overrides the built-in
+	// default for that model; models not listed keep their default multiplier.
+	// Hot-reloadable. See cost.DefaultCopilotPremiumMultipliers for defaults.
+	//
+	// mapstructure:"-" excludes this from viper decoding — see the note on
+	// Pricing above; keys like "claude-opus-4.6" would otherwise be mangled by
+	// viper's "." key delimiter. Load() populates it from the raw YAML.
+	CopilotPremiumMultipliers map[string]float64 `mapstructure:"-" yaml:"copilot_premium_multipliers,omitempty"`
+}
+
+// ModelPricing defines per-million-token USD rates for a single model, used by
+// the fallback cost estimator when a provider does not self-report its cost.
+// It mirrors cost.Pricing; the daemon converts between the two when pushing
+// settings.pricing into the cost package.
+type ModelPricing struct {
+	InputPerM      float64 `mapstructure:"input_per_m" yaml:"input_per_m"`
+	OutputPerM     float64 `mapstructure:"output_per_m" yaml:"output_per_m"`
+	CacheReadPerM  float64 `mapstructure:"cache_read_per_m" yaml:"cache_read_per_m,omitempty"`
+	CacheWritePerM float64 `mapstructure:"cache_write_per_m" yaml:"cache_write_per_m,omitempty"`
 }
 
 // DefaultMaxLifecycleWorkers is the fallback concurrency cap for lifecycle/bellows
@@ -863,20 +898,22 @@ func (s SettingsConfig) MarshalYAML() (interface{}, error) {
 		QuestgiverInterval          string  `yaml:"questgiver_interval,omitempty"`
 		AdventurerTimeout           string  `yaml:"adventurer_timeout,omitempty"`
 
-		WicketEnabled          bool            `yaml:"wicket_enabled"`
-		WicketInterval         string          `yaml:"wicket_interval"`
-		WicketProvider         string          `yaml:"wicket_provider,omitempty"`
-		WicketBatchSize        int             `yaml:"wicket_batch_size,omitempty"`
-		WicketProcessedLabel   string          `yaml:"wicket_processed_label,omitempty"`
-		WicketNeedsHumanLabel  string          `yaml:"wicket_needs_human_label,omitempty"`
-		WicketBeadCreatedLabel string          `yaml:"wicket_bead_created_label,omitempty"`
-		WicketTriggerLabel     string          `yaml:"wicket_trigger_label,omitempty"`
-		WicketStaleDays        int             `yaml:"wicket_stale_days,omitempty"`
-		BdReadyLimit           int             `yaml:"bd_ready_limit,omitempty"`
-		CruciblePollInterval   string          `yaml:"crucible_poll_interval,omitempty"`
-		ForgeID                string          `yaml:"forge_id,omitempty"`
-		Warden                 WardenSettings  `yaml:"warden,omitempty"`
-		ForgeChat              forgeChatShadow `yaml:"forgechat,omitempty"`
+		WicketEnabled             bool                    `yaml:"wicket_enabled"`
+		WicketInterval            string                  `yaml:"wicket_interval"`
+		WicketProvider            string                  `yaml:"wicket_provider,omitempty"`
+		WicketBatchSize           int                     `yaml:"wicket_batch_size,omitempty"`
+		WicketProcessedLabel      string                  `yaml:"wicket_processed_label,omitempty"`
+		WicketNeedsHumanLabel     string                  `yaml:"wicket_needs_human_label,omitempty"`
+		WicketBeadCreatedLabel    string                  `yaml:"wicket_bead_created_label,omitempty"`
+		WicketTriggerLabel        string                  `yaml:"wicket_trigger_label,omitempty"`
+		WicketStaleDays           int                     `yaml:"wicket_stale_days,omitempty"`
+		BdReadyLimit              int                     `yaml:"bd_ready_limit,omitempty"`
+		CruciblePollInterval      string                  `yaml:"crucible_poll_interval,omitempty"`
+		ForgeID                   string                  `yaml:"forge_id,omitempty"`
+		Warden                    WardenSettings          `yaml:"warden,omitempty"`
+		ForgeChat                 forgeChatShadow         `yaml:"forgechat,omitempty"`
+		Pricing                   map[string]ModelPricing `yaml:"pricing,omitempty"`
+		CopilotPremiumMultipliers map[string]float64      `yaml:"copilot_premium_multipliers,omitempty"`
 	}
 
 	sh := shadow{
@@ -927,17 +964,19 @@ func (s SettingsConfig) MarshalYAML() (interface{}, error) {
 		SmelterEnabled:              s.SmelterEnabled,
 		QuestgiverEnabled:           s.QuestgiverEnabled,
 
-		WicketEnabled:          s.WicketEnabled,
-		WicketProvider:         s.WicketProvider,
-		WicketBatchSize:        s.WicketBatchSize,
-		WicketProcessedLabel:   s.WicketProcessedLabel,
-		WicketNeedsHumanLabel:  s.WicketNeedsHumanLabel,
-		WicketBeadCreatedLabel: s.WicketBeadCreatedLabel,
-		WicketTriggerLabel:     s.WicketTriggerLabel,
-		WicketStaleDays:        s.WicketStaleDays,
-		BdReadyLimit:           s.BdReadyLimit,
-		ForgeID:                s.ForgeID,
-		Warden:                 s.Warden,
+		WicketEnabled:             s.WicketEnabled,
+		WicketProvider:            s.WicketProvider,
+		WicketBatchSize:           s.WicketBatchSize,
+		WicketProcessedLabel:      s.WicketProcessedLabel,
+		WicketNeedsHumanLabel:     s.WicketNeedsHumanLabel,
+		WicketBeadCreatedLabel:    s.WicketBeadCreatedLabel,
+		WicketTriggerLabel:        s.WicketTriggerLabel,
+		WicketStaleDays:           s.WicketStaleDays,
+		BdReadyLimit:              s.BdReadyLimit,
+		ForgeID:                   s.ForgeID,
+		Warden:                    s.Warden,
+		Pricing:                   s.Pricing,
+		CopilotPremiumMultipliers: s.CopilotPremiumMultipliers,
 		ForgeChat: forgeChatShadow{
 			TurnTimeout: func() string {
 				if s.ForgeChat.TurnTimeout > 0 && s.ForgeChat.TurnTimeout != DefaultForgeChatTurnTimeout {
@@ -1649,10 +1688,50 @@ func Load(configFile string) (*Config, error) {
 		cfg.Settings.ForgeChat.TurnTimeout = MaxForgeChatTurnTimeout
 	}
 
+	// Pricing tables carry mapstructure:"-" so viper skips them (their model
+	// keys frequently contain dots, which viper's "." delimiter would mangle).
+	// Load them directly from the raw YAML instead.
+	if used := v.ConfigFileUsed(); used != "" {
+		if err := loadPricingTablesFromYAML(used, &cfg.Settings); err != nil {
+			return nil, err
+		}
+	}
+
 	// Decrypt any enc:-prefixed webhook URLs written by Hytte.
 	decryptWebhookURLs(&cfg)
 
 	return &cfg, nil
+}
+
+// loadPricingTablesFromYAML reads settings.pricing and
+// settings.copilot_premium_multipliers directly from the config file, bypassing
+// viper. Their keys are model identifiers that frequently contain dots (e.g.
+// "claude-opus-4.6"); viper treats "." as a nested-key delimiter and would
+// mangle "claude-opus-4.6: 3" into {"claude-opus-4": {"6": 3}}, failing to
+// decode into float64/ModelPricing. gopkg.in/yaml.v3 preserves dotted keys
+// verbatim. A nil map (key absent from the file) leaves the existing value
+// untouched.
+func loadPricingTablesFromYAML(path string, settings *SettingsConfig) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("reading config for pricing tables: %w", err)
+	}
+	var shadow struct {
+		Settings struct {
+			Pricing                   map[string]ModelPricing `yaml:"pricing"`
+			CopilotPremiumMultipliers map[string]float64      `yaml:"copilot_premium_multipliers"`
+		} `yaml:"settings"`
+	}
+	if err := yaml.Unmarshal(data, &shadow); err != nil {
+		return fmt.Errorf("parsing pricing tables: %w", err)
+	}
+	if shadow.Settings.Pricing != nil {
+		settings.Pricing = shadow.Settings.Pricing
+	}
+	if shadow.Settings.CopilotPremiumMultipliers != nil {
+		settings.CopilotPremiumMultipliers = shadow.Settings.CopilotPremiumMultipliers
+	}
+	return nil
 }
 
 // ConfigFilePath returns the path of the config file that was loaded,

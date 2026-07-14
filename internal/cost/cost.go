@@ -1,23 +1,40 @@
-// Package cost tracks token usage and estimated costs from Claude CLI output.
+// Package cost tracks token usage and estimated costs from AI CLI output.
 //
-// Claude's --output-format stream-json emits usage events with token counts.
-// This package parses those events, stores per-bead and per-day aggregates
-// in state.db, and optionally enforces a daily cost limit.
+// Claude self-reports total_cost_usd in its stream-json result event, so its
+// cost is exact. Other providers (Copilot, Gemini, OpenAI/Codex) usually emit
+// zero or no cost, so this package estimates their spend from token counts and
+// a configurable per-model pricing table (see DefaultPricingTable). The
+// estimate is a fallback only — Claude's self-reported figure always wins.
 //
-// Token pricing (Claude Sonnet 4, approximate):
+// Default token pricing (Claude Sonnet 4-class, USD per 1M tokens):
 //
-//	Input:  $3.00 per 1M tokens
-//	Output: $15.00 per 1M tokens
-//	Cache read: $0.30 per 1M tokens
-//	Cache write: $3.75 per 1M tokens
+//	Input:       $3.00
+//	Output:      $15.00
+//	Cache read:  $0.30
+//	Cache write: $3.75
+//
+// Operators can override any model's rates via settings.pricing and the
+// Copilot premium multipliers via settings.copilot_premium_multipliers; the
+// daemon pushes those into this package on load and on every hot-reload.
 package cost
 
 import (
-	"bufio"
-	"encoding/json"
-	"io"
+	"log/slog"
 	"strings"
+	"sync"
 	"time"
+
+	"github.com/Robin831/Forge/internal/provider"
+)
+
+// Model pricing keys used by the default pricing table and the provider
+// fallback resolver. Operators reference these keys in settings.pricing.
+const (
+	ModelClaudeSonnet = "claude-sonnet"
+	ModelClaudeHaiku  = "claude-haiku"
+	ModelClaudeOpus   = "claude-opus"
+	ModelGemini       = "gemini"
+	ModelOpenAI       = "openai"
 )
 
 // Pricing defines per-token costs in USD per million tokens.
@@ -28,73 +45,190 @@ type Pricing struct {
 	CacheWritePerM float64 `json:"cache_write_per_m"`
 }
 
-// DefaultPricing returns approximate Claude Sonnet 3.5 pricing.
-func DefaultPricing() Pricing {
-	return Pricing{
-		InputPerM:      3.00,
-		OutputPerM:     15.00,
-		CacheReadPerM:  0.30,
-		CacheWritePerM: 3.75,
+// DefaultPricingTable returns a fresh copy of the built-in per-model pricing
+// table. These values are the single source of truth for the defaults that
+// reproduce Forge's historical hardcoded rates; settings.pricing overrides
+// individual entries on top of this table. Callers may freely mutate the
+// returned map.
+func DefaultPricingTable() map[string]Pricing {
+	return map[string]Pricing{
+		// Claude Sonnet 4-class (also used as the Copilot fallback, since
+		// Copilot runs Claude models under the hood).
+		ModelClaudeSonnet: {InputPerM: 3.00, OutputPerM: 15.00, CacheReadPerM: 0.30, CacheWritePerM: 3.75},
+		ModelClaudeHaiku:  {InputPerM: 1.00, OutputPerM: 5.00, CacheReadPerM: 0.10, CacheWritePerM: 1.25},
+		ModelClaudeOpus:   {InputPerM: 15.00, OutputPerM: 75.00, CacheReadPerM: 1.50, CacheWritePerM: 18.75},
+		// Gemini 1.5 Pro-class. Gemini caching pricing differs and is not
+		// modelled here.
+		ModelGemini: {InputPerM: 3.50, OutputPerM: 10.50},
+		// Generic GPT-5.x-class placeholder for all OpenAI/Codex models. The
+		// OpenAI provider supports several model IDs with varying prices, so
+		// this is an approximate estimate only.
+		ModelOpenAI: {InputPerM: 2.50, OutputPerM: 10.00},
 	}
 }
 
-// CopilotPricing returns approximate GitHub Copilot pricing.
-// Copilot runs Claude models under the hood; we use Claude's pricing as a
-// reasonable cost estimate for token-level tracking.
-func CopilotPricing() Pricing {
-	return DefaultPricing()
+var (
+	pricingMu     sync.RWMutex
+	activePricing = DefaultPricingTable()
+)
+
+// SetPricingTable overlays the given per-model overrides on top of the built-in
+// defaults and installs the result as the active pricing table. Passing a nil
+// or empty map resets the table to the built-in defaults. The overlay design
+// means an operator can override a single model's rates without having to
+// restate every other model. Safe for concurrent use; called at daemon startup
+// and on every config hot-reload.
+func SetPricingTable(overrides map[string]Pricing) {
+	table := DefaultPricingTable()
+	for model, p := range overrides {
+		table[model] = p
+	}
+	pricingMu.Lock()
+	activePricing = table
+	pricingMu.Unlock()
 }
 
-// GeminiPricing returns approximate Gemini 1.5 Pro pricing.
-func GeminiPricing() Pricing {
-	return Pricing{
-		InputPerM:      3.50,
-		OutputPerM:     10.50,
-		CacheReadPerM:  0.00, // Gemini caching pricing is different
-		CacheWritePerM: 0.00,
+// lookupPricing returns the active rates for a known model key, falling back to
+// the Claude Sonnet defaults if the key is somehow absent (it never is under
+// SetPricingTable's overlay semantics, but the guard keeps callers total).
+func lookupPricing(model string) Pricing {
+	pricingMu.RLock()
+	defer pricingMu.RUnlock()
+	if p, ok := activePricing[model]; ok {
+		return p
 	}
+	return Pricing{InputPerM: 3.00, OutputPerM: 15.00, CacheReadPerM: 0.30, CacheWritePerM: 3.75}
 }
 
-// OpenAIPricing returns a generic placeholder pricing estimate used for all
-// OpenAI models (based on GPT-5.x class rates). Because the OpenAI provider
-// supports multiple model IDs (e.g. o3, gpt-5.1-codex) with varying prices,
-// this function produces approximate estimates only and may be inaccurate for
-// non-GPT-5.x models. Cost figures are shown as estimates, not billing values.
-func OpenAIPricing() Pricing {
-	return Pricing{
-		InputPerM:      2.50,
-		OutputPerM:     10.00,
-		CacheReadPerM:  0.00,
-		CacheWritePerM: 0.00,
-	}
-}
+// DefaultPricing returns the active Claude Sonnet 4-class pricing.
+func DefaultPricing() Pricing { return lookupPricing(ModelClaudeSonnet) }
+
+// CopilotPricing returns the active fallback pricing for GitHub Copilot.
+// Copilot runs Claude models under the hood, so the Claude Sonnet rates are a
+// reasonable estimate for token-level tracking.
+func CopilotPricing() Pricing { return lookupPricing(ModelClaudeSonnet) }
+
+// GeminiPricing returns the active fallback pricing for Gemini.
+func GeminiPricing() Pricing { return lookupPricing(ModelGemini) }
+
+// OpenAIPricing returns the active fallback pricing for OpenAI/Codex models.
+func OpenAIPricing() Pricing { return lookupPricing(ModelOpenAI) }
 
 // PricingForTier returns the Assay stage cost classification for a given model
 // tier. Assay estimates its review cost from the model_tier configured in its
 // settings ("haiku", "sonnet", or "opus"); the tier string is matched
 // case-insensitively after trimming surrounding whitespace. Unknown or empty
-// tiers fall back to DefaultPricing().
+// tiers fall back to the Claude Sonnet defaults.
 func PricingForTier(tier string) Pricing {
 	switch strings.ToLower(strings.TrimSpace(tier)) {
 	case "haiku":
-		return Pricing{
-			InputPerM:      1.00,
-			OutputPerM:     5.00,
-			CacheReadPerM:  0.10,
-			CacheWritePerM: 1.25,
-		}
+		return lookupPricing(ModelClaudeHaiku)
 	case "opus":
-		return Pricing{
-			InputPerM:      15.00,
-			OutputPerM:     75.00,
-			CacheReadPerM:  1.50,
-			CacheWritePerM: 18.75,
-		}
+		return lookupPricing(ModelClaudeOpus)
 	case "sonnet":
-		return DefaultPricing()
+		return lookupPricing(ModelClaudeSonnet)
 	default:
-		return DefaultPricing()
+		return lookupPricing(ModelClaudeSonnet)
 	}
+}
+
+// FallbackPricing returns the estimated pricing for a provider/model pair that
+// did not self-report a cost, consulting the configured pricing table. It is
+// the single entry point used by smith.go's fallback cost computation for
+// Copilot, Gemini, and OpenAI/Codex.
+//
+// Resolution order: an exact model-key match in the table, then a family
+// inference from the model name (e.g. the versioned Copilot id
+// "claude-opus-4.6" maps to the claude-opus row), then the provider's default
+// key. To make table drift visible, it logs at info level the first time a
+// fallback estimate is applied for a given provider/model each calendar day.
+func FallbackPricing(kind provider.Kind, model string) Pricing {
+	p := resolvePricing(kind, model)
+	logFallbackOncePerDay(kind, model, p)
+	return p
+}
+
+// resolvePricing looks up the active pricing for a provider/model pair without
+// any logging side effect.
+func resolvePricing(kind provider.Kind, model string) Pricing {
+	pricingMu.RLock()
+	defer pricingMu.RUnlock()
+
+	if model != "" {
+		if p, ok := activePricing[model]; ok {
+			return p
+		}
+		// Family inference from the model name so versioned provider model
+		// ids (e.g. "claude-opus-4.6") resolve to the right row.
+		lower := strings.ToLower(model)
+		switch {
+		case strings.Contains(lower, "opus"):
+			if p, ok := activePricing[ModelClaudeOpus]; ok {
+				return p
+			}
+		case strings.Contains(lower, "haiku"):
+			if p, ok := activePricing[ModelClaudeHaiku]; ok {
+				return p
+			}
+		case strings.Contains(lower, "sonnet"):
+			if p, ok := activePricing[ModelClaudeSonnet]; ok {
+				return p
+			}
+		}
+	}
+
+	if p, ok := activePricing[defaultModelKeyForKind(kind)]; ok {
+		return p
+	}
+	return Pricing{InputPerM: 3.00, OutputPerM: 15.00, CacheReadPerM: 0.30, CacheWritePerM: 3.75}
+}
+
+// defaultModelKeyForKind returns the default pricing key for a provider kind
+// when the specific model is unknown. Copilot maps to the Claude Sonnet key
+// because it runs Claude models under the hood.
+func defaultModelKeyForKind(kind provider.Kind) string {
+	switch kind {
+	case provider.Gemini:
+		return ModelGemini
+	case provider.OpenAI:
+		return ModelOpenAI
+	default: // Claude, Copilot
+		return ModelClaudeSonnet
+	}
+}
+
+var (
+	fallbackLogMu  sync.Mutex
+	fallbackLogged = map[string]string{} // "kind/model" -> YYYY-MM-DD last logged
+)
+
+// logFallbackOncePerDay emits an info log the first time a fallback pricing
+// estimate is applied for a given provider/model on the current calendar day,
+// suppressing repeats so a busy day produces at most one line per model.
+func logFallbackOncePerDay(kind provider.Kind, model string, p Pricing) {
+	key := string(kind) + "/" + model
+	if !firstFallbackToday(key, Today()) {
+		return
+	}
+	slog.Info("cost: applying fallback pricing estimate (provider did not self-report cost); adjust settings.pricing if this drifts from real billing",
+		"provider", string(kind),
+		"model", model,
+		"input_per_m", p.InputPerM,
+		"output_per_m", p.OutputPerM,
+	)
+}
+
+// firstFallbackToday records that a fallback estimate was logged for key on the
+// given date and reports whether this is the first time for that date. It is
+// the testable core of the once-per-day-per-model guard.
+func firstFallbackToday(key, date string) bool {
+	fallbackLogMu.Lock()
+	defer fallbackLogMu.Unlock()
+	if fallbackLogged[key] == date {
+		return false
+	}
+	fallbackLogged[key] = date
+	return true
 }
 
 // Usage tracks token usage for a single Claude invocation.
@@ -136,79 +270,6 @@ type DailyCost struct {
 	Date  string  `json:"date"` // YYYY-MM-DD
 	Usage Usage   `json:"usage"`
 	Limit float64 `json:"limit,omitempty"` // 0 = no limit
-}
-
-// claudeStreamEvent is a partial parse of Claude's stream-json output.
-type claudeStreamEvent struct {
-	Type  string             `json:"type"`
-	Usage *claudeStreamUsage `json:"usage,omitempty"`
-}
-
-type claudeStreamUsage struct {
-	InputTokens      int `json:"input_tokens"`
-	OutputTokens     int `json:"output_tokens"`
-	CacheReadTokens  int `json:"cache_read_input_tokens"`
-	CacheWriteTokens int `json:"cache_creation_input_tokens"`
-}
-
-// ParseStreamJSON reads Claude stream-json output and extracts total usage.
-// It scans for events with "type": "result" or usage fields.
-func ParseStreamJSON(r io.Reader) Usage {
-	var total Usage
-	pricing := DefaultPricing()
-
-	scanner := bufio.NewScanner(r)
-	scanner.Buffer(make([]byte, 256*1024), 256*1024)
-
-	for scanner.Scan() {
-		line := scanner.Bytes()
-		if len(line) == 0 {
-			continue
-		}
-
-		var evt claudeStreamEvent
-		if err := json.Unmarshal(line, &evt); err != nil {
-			continue
-		}
-
-		if evt.Usage != nil {
-			// Take the highest values seen (Claude reports cumulative in some events)
-			if evt.Usage.InputTokens > total.InputTokens {
-				total.InputTokens = evt.Usage.InputTokens
-			}
-			if evt.Usage.OutputTokens > total.OutputTokens {
-				total.OutputTokens = evt.Usage.OutputTokens
-			}
-			if evt.Usage.CacheReadTokens > total.CacheReadTokens {
-				total.CacheReadTokens = evt.Usage.CacheReadTokens
-			}
-			if evt.Usage.CacheWriteTokens > total.CacheWriteTokens {
-				total.CacheWriteTokens = evt.Usage.CacheWriteTokens
-			}
-		}
-	}
-
-	total.Calculate(pricing)
-	return total
-}
-
-// ParseResultJSON parses a single Claude result JSON (non-streaming).
-func ParseResultJSON(data []byte) Usage {
-	var result struct {
-		Usage *claudeStreamUsage `json:"usage"`
-	}
-	if err := json.Unmarshal(data, &result); err != nil || result.Usage == nil {
-		return Usage{}
-	}
-
-	u := Usage{
-		InputTokens:      result.Usage.InputTokens,
-		OutputTokens:     result.Usage.OutputTokens,
-		CacheReadTokens:  result.Usage.CacheReadTokens,
-		CacheWriteTokens: result.Usage.CacheWriteTokens,
-	}
-	u.Calculate(DefaultPricing())
-	return u
 }
 
 // Today returns today's date string in YYYY-MM-DD format.
