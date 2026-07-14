@@ -650,13 +650,22 @@ type SettingsConfig struct {
 	// models not listed keep their default rates. Hot-reloadable. See
 	// cost.DefaultPricingTable for the default keys (claude-sonnet,
 	// claude-haiku, claude-opus, gemini, openai) and values.
-	Pricing map[string]ModelPricing `mapstructure:"pricing" yaml:"pricing,omitempty"`
+	//
+	// mapstructure:"-" excludes this from viper decoding — model keys often
+	// contain dots (e.g. "claude-opus-4.6"), which viper treats as nested-key
+	// delimiters and would mangle. Load() populates it directly from the raw
+	// YAML instead; see loadPricingTablesFromYAML.
+	Pricing map[string]ModelPricing `mapstructure:"-" yaml:"pricing,omitempty"`
 
 	// CopilotPremiumMultipliers maps a Copilot model name to its premium-request
 	// multiplier (e.g. claude-opus-4.6 = 3x). Each entry overrides the built-in
 	// default for that model; models not listed keep their default multiplier.
 	// Hot-reloadable. See cost.DefaultCopilotPremiumMultipliers for defaults.
-	CopilotPremiumMultipliers map[string]float64 `mapstructure:"copilot_premium_multipliers" yaml:"copilot_premium_multipliers,omitempty"`
+	//
+	// mapstructure:"-" excludes this from viper decoding — see the note on
+	// Pricing above; keys like "claude-opus-4.6" would otherwise be mangled by
+	// viper's "." key delimiter. Load() populates it from the raw YAML.
+	CopilotPremiumMultipliers map[string]float64 `mapstructure:"-" yaml:"copilot_premium_multipliers,omitempty"`
 }
 
 // ModelPricing defines per-million-token USD rates for a single model, used by
@@ -1679,10 +1688,50 @@ func Load(configFile string) (*Config, error) {
 		cfg.Settings.ForgeChat.TurnTimeout = MaxForgeChatTurnTimeout
 	}
 
+	// Pricing tables carry mapstructure:"-" so viper skips them (their model
+	// keys frequently contain dots, which viper's "." delimiter would mangle).
+	// Load them directly from the raw YAML instead.
+	if used := v.ConfigFileUsed(); used != "" {
+		if err := loadPricingTablesFromYAML(used, &cfg.Settings); err != nil {
+			return nil, err
+		}
+	}
+
 	// Decrypt any enc:-prefixed webhook URLs written by Hytte.
 	decryptWebhookURLs(&cfg)
 
 	return &cfg, nil
+}
+
+// loadPricingTablesFromYAML reads settings.pricing and
+// settings.copilot_premium_multipliers directly from the config file, bypassing
+// viper. Their keys are model identifiers that frequently contain dots (e.g.
+// "claude-opus-4.6"); viper treats "." as a nested-key delimiter and would
+// mangle "claude-opus-4.6: 3" into {"claude-opus-4": {"6": 3}}, failing to
+// decode into float64/ModelPricing. gopkg.in/yaml.v3 preserves dotted keys
+// verbatim. A nil map (key absent from the file) leaves the existing value
+// untouched.
+func loadPricingTablesFromYAML(path string, settings *SettingsConfig) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("reading config for pricing tables: %w", err)
+	}
+	var shadow struct {
+		Settings struct {
+			Pricing                   map[string]ModelPricing `yaml:"pricing"`
+			CopilotPremiumMultipliers map[string]float64      `yaml:"copilot_premium_multipliers"`
+		} `yaml:"settings"`
+	}
+	if err := yaml.Unmarshal(data, &shadow); err != nil {
+		return fmt.Errorf("parsing pricing tables: %w", err)
+	}
+	if shadow.Settings.Pricing != nil {
+		settings.Pricing = shadow.Settings.Pricing
+	}
+	if shadow.Settings.CopilotPremiumMultipliers != nil {
+		settings.CopilotPremiumMultipliers = shadow.Settings.CopilotPremiumMultipliers
+	}
+	return nil
 }
 
 // ConfigFilePath returns the path of the config file that was loaded,
