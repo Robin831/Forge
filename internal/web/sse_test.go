@@ -860,6 +860,86 @@ func TestActivityStream_BusGapMarkerResyncs(t *testing.T) {
 	}
 }
 
+// TestActivityStream_PollFallbackIgnoresBus verifies the one-release safety
+// valve: with the Bus wired but settings.sse_poll_fallback engaged, the handler
+// takes the legacy polling path. Polling reads from the DB, so a DB-logged event
+// is delivered while a Bus-only publish (never persisted) is never seen.
+func TestActivityStream_PollFallbackIgnoresBus(t *testing.T) {
+	srv := busServer(t)
+	srv.SetSSEPollFallback(func() bool { return true })
+
+	if err := srv.db.LogEvent(state.EventBeadClaimed, "seed", "", ""); err != nil {
+		t.Fatalf("LogEvent: %v", err)
+	}
+
+	resp, cancel := authedSSEClient(t, srv, "/api/activity/stream", "")
+	defer cancel()
+	defer resp.Body.Close()
+
+	// Let the initial replay flush, then emit a Bus-only event (not in the DB)
+	// that the polling path must ignore, and a DB-logged event the 2s poll
+	// tick must pick up.
+	time.Sleep(300 * time.Millisecond)
+	srv.db.Bus().Publish(state.BusEvent{
+		Seq:   1 << 30,
+		Event: state.Event{ID: 1 << 30, Type: state.EventBeadClaimed, Message: "busonly"},
+	})
+	if err := srv.db.LogEvent(state.EventBeadClaimed, "polled", "", ""); err != nil {
+		t.Fatalf("LogEvent polled: %v", err)
+	}
+
+	got := collectMessages(t, readSSEData(t, resp.Body, 2, 5*time.Second))
+	want := []string{"seed", "polled"}
+	if len(got) != len(want) {
+		t.Fatalf("poll fallback: got %v want %v (busonly must not appear)", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("got %v want %v", got, want)
+		}
+	}
+}
+
+// TestActivityStream_PollFallbackDisabledUsesBus confirms that when the fallback
+// callback reports false the handler stays on the Bus path — a Bus-only publish
+// (never persisted to the DB) is delivered, which the polling path could not do.
+func TestActivityStream_PollFallbackDisabledUsesBus(t *testing.T) {
+	srv := busServer(t)
+	srv.SetSSEPollFallback(func() bool { return false })
+
+	if err := srv.db.LogEvent(state.EventBeadClaimed, "seed", "", ""); err != nil {
+		t.Fatalf("LogEvent: %v", err)
+	}
+	all, err := srv.db.RecentEvents(10)
+	if err != nil {
+		t.Fatalf("RecentEvents: %v", err)
+	}
+	maxID := all[0].ID
+
+	resp, cancel := authedSSEClient(t, srv, "/api/activity/stream", "")
+	defer cancel()
+	defer resp.Body.Close()
+
+	time.Sleep(300 * time.Millisecond)
+	// A Bus-only event with a fresh Seq must be delivered over the live channel,
+	// proving the Bus path is active despite the (false) fallback override.
+	srv.db.Bus().Publish(state.BusEvent{
+		Seq:   int64(maxID + 1),
+		Event: state.Event{ID: maxID + 1, Type: state.EventBeadClaimed, Message: "busonly"},
+	})
+
+	got := collectMessages(t, readSSEData(t, resp.Body, 2, 5*time.Second))
+	want := []string{"seed", "busonly"}
+	if len(got) != len(want) {
+		t.Fatalf("bus path: got %v want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("got %v want %v", got, want)
+		}
+	}
+}
+
 func TestActivityStream_BusClientDisconnectEndsStream(t *testing.T) {
 	srv := busServer(t)
 

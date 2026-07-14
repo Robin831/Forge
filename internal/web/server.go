@@ -155,6 +155,17 @@ type Server struct {
 	// override it to point at a temp fixture.
 	configPath func() string
 
+	// ssePollFallback reports whether the /api/activity/stream endpoint must
+	// use the legacy 2s polling loop instead of the in-process event Bus, even
+	// when a Bus is wired. The daemon installs a closure reading the live
+	// settings.sse_poll_fallback value so hot-reloads take effect on the next
+	// SSE connect. nil (the default, and in tests) means "no fallback" — the
+	// Bus path is used whenever s.db.Bus() is non-nil.
+	//
+	// DEPRECATED: the polling fallback is a one-release safety valve slated for
+	// removal once the bus-based activity stream is proven stable.
+	ssePollFallback func() bool
+
 	// throttle rate-limits failed login attempts per username and per IP so
 	// online password guessing is slowed at the application layer (fail2ban
 	// cannot see Cloudflare-routed clients). Always non-nil after New.
@@ -209,6 +220,23 @@ func (s *Server) SetBdRunner(r BdRunnerFn) {
 // GET/PATCH /api/forge/config target the same file the daemon hot-reloads.
 func (s *Server) SetConfigFile(path string) {
 	s.configFile = path
+}
+
+// SetSSEPollFallback installs the callback that gates the activity SSE stream
+// onto legacy polling. The daemon supplies a closure reading the live
+// settings.sse_poll_fallback value so the choice honours hot-reloads. Passing
+// nil clears the override, restoring the default (use the Bus when wired).
+//
+// DEPRECATED: this exists only to support the one-release poll fallback and
+// will be removed alongside streamActivityPolling.
+func (s *Server) SetSSEPollFallback(fn func() bool) {
+	s.ssePollFallback = fn
+}
+
+// pollFallbackEnabled reports whether the activity SSE stream must use the
+// legacy polling loop. It is false (use the Bus) when no override is installed.
+func (s *Server) pollFallbackEnabled() bool {
+	return s.ssePollFallback != nil && s.ssePollFallback()
 }
 
 // TurnStore exposes the in-flight turn registry for the SSE / polling

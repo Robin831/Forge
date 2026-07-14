@@ -63,6 +63,15 @@ func (d *Daemon) startWebServer(ctx context.Context) error {
 	// watches (honours --config).
 	srv.SetConfigFile(d.configFile)
 
+	// Gate the activity SSE stream onto legacy polling when
+	// settings.sse_poll_fallback is set. The closure reads d.cfg each connect
+	// so hot-reloads of the flag take effect without restarting the server.
+	// This is a one-release safety valve; the polling path is slated for
+	// removal next release.
+	srv.SetSSEPollFallback(func() bool {
+		return d.cfg.Load().Settings.SSEPollFallback
+	})
+
 	// Plug in the Beads-Forge AI runner using the daemon's configured
 	// providers. We pick the head of the resolved list — fallbacks are not
 	// needed here because a turn is interactive and should fail fast.

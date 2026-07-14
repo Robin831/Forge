@@ -53,15 +53,17 @@ type activityEvent struct {
 // through the skybert nginx ingress (proxy-read-timeout 3600).
 //
 // Delivery has two modes, selected by whether the in-process event Bus is
-// wired into the state DB (settings.bus_enabled):
+// wired into the state DB (settings.bus_enabled) and whether the poll fallback
+// is engaged (settings.sse_poll_fallback):
 //
-//   - Bus enabled: replay-then-live. We subscribe to the Bus BEFORE replaying
-//     the backlog so events published mid-replay queue on the bounded channel
-//     rather than being lost, replay via EventsSince, then hand over to the
-//     live channel dropping any event whose Seq was already emitted during
-//     replay. See streamActivityBus.
-//   - Bus nil (legacy): the 2s poll loop re-reading EventsSince. See
-//     streamActivityPolling.
+//   - Bus enabled AND fallback off: replay-then-live. We subscribe to the Bus
+//     BEFORE replaying the backlog so events published mid-replay queue on the
+//     bounded channel rather than being lost, replay via EventsSince, then hand
+//     over to the live channel dropping any event whose Seq was already emitted
+//     during replay. See streamActivityBus.
+//   - Bus nil (legacy) OR settings.sse_poll_fallback=true: the 2s poll loop
+//     re-reading EventsSince. See streamActivityPolling. The fallback flag is a
+//     one-release safety valve slated for removal next release.
 func (s *Server) handleActivityStream(w http.ResponseWriter, r *http.Request) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
@@ -85,10 +87,13 @@ func (s *Server) handleActivityStream(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// The config-flag branch shared with the fallback sub-task: when the Bus
-	// is enabled take the real-time replay-then-live path, otherwise retain
-	// legacy polling.
-	if bus := s.db.Bus(); bus != nil {
+	// Path selection: take the real-time replay-then-live Bus path when a Bus
+	// is wired, UNLESS settings.sse_poll_fallback forces the legacy 2s poll
+	// loop. The fallback flag is a one-release safety valve (see
+	// pollFallbackEnabled / SetSSEPollFallback) that reverts just this endpoint
+	// to polling without disabling the Bus for other consumers. When the Bus is
+	// nil (bus disabled) polling is used regardless.
+	if bus := s.db.Bus(); bus != nil && !s.pollFallbackEnabled() {
 		s.streamActivityBus(w, r, flusher, lastID, bus)
 		return
 	}
