@@ -262,10 +262,18 @@ func (s *Server) runTurnAsync(st *TurnState, req forgechat.TurnRequest) {
 
 	st.setStatus(TurnStatusRunning)
 
+	// Persist throttled mid-turn snapshots so an in-flight turn survives a
+	// client reconnect or a daemon restart. Update is called as text
+	// accumulates (rate-limited internally); a final Finalize below records the
+	// terminal status. Persistence is best-effort — a missing snapshots table
+	// (migration not yet applied) disables the writer without breaking the turn.
+	snap := newTurnSnapshotWriter(s.db, st.SessionID, st.ID, s.logger)
+
 	if s.chatRunner == nil {
 		err := errors.New("AI runner not configured")
 		st.SetError(err)
 		st.Emit(TurnEvent{Type: TurnEventError, Data: err.Error()})
+		snap.Finalize(st.Text(), state.ForgeTurnStatusExpired)
 		return
 	}
 
@@ -293,6 +301,7 @@ func (s *Server) runTurnAsync(st *TurnState, req forgechat.TurnRequest) {
 			streamedText = true
 			st.AppendText(c.Text)
 			st.Emit(TurnEvent{Type: TurnEventTextDelta, Data: c.Text})
+			snap.Update(st.Text())
 		case forgechat.StreamChunkToolUse:
 			ev := TurnEvent{Type: TurnEventToolUse, Data: TurnToolEvent{Name: c.ToolName, ID: c.ToolID}}
 			st.RecordToolEvent(ev)
@@ -317,12 +326,14 @@ func (s *Server) runTurnAsync(st *TurnState, req forgechat.TurnRequest) {
 		}
 		st.SetError(err)
 		st.Emit(TurnEvent{Type: TurnEventError, Data: err.Error()})
+		snap.Finalize(st.Text(), state.ForgeTurnStatusExpired)
 		return
 	}
 	if turnResp == nil {
 		err := errors.New("AI runner returned nil response")
 		st.SetError(err)
 		st.Emit(TurnEvent{Type: TurnEventError, Data: err.Error()})
+		snap.Finalize(st.Text(), state.ForgeTurnStatusExpired)
 		return
 	}
 
@@ -342,6 +353,7 @@ func (s *Server) runTurnAsync(st *TurnState, req forgechat.TurnRequest) {
 		if err != nil {
 			st.SetError(err)
 			st.Emit(TurnEvent{Type: TurnEventError, Data: err.Error()})
+			snap.Finalize(st.Text(), state.ForgeTurnStatusExpired)
 			return
 		}
 		emitted = append(emitted, m)
@@ -354,6 +366,7 @@ func (s *Server) runTurnAsync(st *TurnState, req forgechat.TurnRequest) {
 		if !streamedText {
 			st.AppendText(em.Content)
 			st.Emit(TurnEvent{Type: TurnEventTextDelta, Data: em.Content})
+			snap.Update(st.Text())
 		}
 		st.Emit(TurnEvent{Type: TurnEventMessage, Data: m})
 	}
@@ -371,6 +384,7 @@ func (s *Server) runTurnAsync(st *TurnState, req forgechat.TurnRequest) {
 		if _, err := s.db.UpdateForgeSessionStageAndPlan(req.SessionID, stagePtr, planPtr); err != nil {
 			st.SetError(err)
 			st.Emit(TurnEvent{Type: TurnEventError, Data: err.Error()})
+			snap.Finalize(st.Text(), state.ForgeTurnStatusExpired)
 			return
 		}
 	}
@@ -379,6 +393,9 @@ func (s *Server) runTurnAsync(st *TurnState, req forgechat.TurnRequest) {
 		st.SetFinalMessageID(emitted[len(emitted)-1].ID)
 	}
 	st.setStatus(TurnStatusComplete)
+	// Final snapshot write: persist the completed text with the terminal
+	// status, bypassing the throttle so the last delta is never lost.
+	snap.Finalize(st.Text(), state.ForgeTurnStatusComplete)
 	st.Emit(TurnEvent{Type: TurnEventComplete, Data: st.FinalMessageID()})
 }
 
