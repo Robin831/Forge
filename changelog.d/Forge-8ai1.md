@@ -1,0 +1,3 @@
+category: Added
+- **Forge self-deploy** - Config-gated `self_deploy` flow rebuilds and restarts the daemon binary when a PR merges on Forge's own repository: it pauses dispatch and drains workers, verifies the freshly built binary (`forge version` + `--help`), atomically swaps it into place while keeping the previous binary at `<binary>.prev` for rollback, and restarts the systemd unit. Emits `self_deploy_started`/`success`/`rollback`/`failed`/`skipped` events. Disabled by default. (Forge-8ai1)
+- **restart.sh PATH fix** - `scripts/restart.sh` now exports `PATH` with the Go toolchain (`/usr/local/go/bin`) plus `~/go/bin` and `~/bin` so the manual rebuild works from bare `systemd-run`/cron contexts that previously failed with `go: command not found`. (Forge-8ai1)

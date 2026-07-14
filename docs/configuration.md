@@ -642,6 +642,62 @@ Forge keeps its own logs bounded with two independent mechanisms under `~/.forge
   Set `log_retention_days: 0` to disable the sweep. The sweep never touches the live
   `daemon.log` file — the two mechanisms are independent.
 
+## Self-Deploy — Automatic Daemon Rebuild on Merge
+
+When Forge orchestrates its own repository, daemon-side fixes only take effect
+once someone rebuilds the production binary (`~/bin/forge`) by hand — a step
+that is easy to forget, causing "phantom" regressions where a fix is merged but
+the running binary is weeks behind `main`. Self-deploy closes that gap: when a
+PR merges on Forge's own anvil, the daemon drains its workers, rebuilds the
+binary from source, verifies it, atomically swaps it into place (keeping the
+previous binary for rollback), and restarts the systemd unit.
+
+**Disabled by default.** The entire flow is inert unless `self_deploy.enabled`
+is `true` and `self_deploy.anvil` names the anvil that is Forge's own repo.
+
+```yaml
+self_deploy:
+  enabled: true             # default false — nothing happens while unset
+  anvil: forge              # required: the registered anvil that is Forge's repo
+  repo_path: ~/source/Forge # optional: source to pull+build (default: the anvil's path)
+  binary_path: ~/bin/forge  # optional: live binary to replace (default ~/bin/forge)
+  unit_name: forge          # optional: systemd unit to restart (default "forge")
+  branch: main              # optional: base branch a merge must target (default "main")
+  build_target: ./cmd/forge # optional: go build target (default "./cmd/forge")
+  drain_timeout: 30m        # optional: max wait for workers to finish (default 30m)
+```
+
+**How it behaves:**
+
+- Triggered only by a `pr_merged` event whose anvil matches `self_deploy.anvil`
+  and whose base branch matches `self_deploy.branch`.
+- **Drain guardrail** — dispatch is paused and the daemon waits until no worker
+  is active (including operator-paused workers, which still hold a worktree).
+  If workers do not drain within `drain_timeout`, the deploy is deferred (a
+  `self_deploy_skipped` event is logged) and any pause it introduced is undone.
+- **Verify before swap** — the freshly built binary must pass `forge version`
+  and `forge --help` (exit 0). If verification fails, the live binary is left
+  untouched.
+- **Rollback** — the outgoing binary is preserved at `<binary_path>.prev`. If
+  the restart fails, the previous binary is restored automatically.
+- **Events** — `self_deploy_started`, `self_deploy_success`,
+  `self_deploy_rollback`, `self_deploy_failed`, and `self_deploy_skipped` are
+  written to the event log.
+- **Single-flight** — a second merge while a deploy is in progress is ignored;
+  the in-flight deploy already pulls the latest tip.
+
+The systemd unit should use `Restart=always` (or an equivalent) so the daemon
+comes back after the restart terminates the running process.
+
+### Manual fallback — `restart.sh`
+
+`scripts/restart.sh` (deployed to `~/.forge/restart.sh`) remains the manual
+rebuild-and-restart path and is what Hytte's "Rebuild & Restart" button invokes.
+It exports `PATH` to include the Go toolchain (`/usr/local/go/bin`) plus
+`~/go/bin` and `~/bin`, so it works when run from a bare `systemd-run`/cron
+context that does not inherit the login `PATH` (which previously failed with
+`go: command not found`).
+
 ## Wicket — GitHub Issue Triage
 
 **Wicket** is a background monitor that polls GitHub repositories for new issues, classifies them using an AI provider, and automatically creates beads, requests clarification from the issue author, or flags the issue for human review.
@@ -928,6 +984,8 @@ The config is validated at load time. Errors are reported as a list:
 - `auto_dispatch` must be one of: `all`, `tagged`, `priority`, `off`
 - If `auto_dispatch: tagged`, then `auto_dispatch_tag` must be non-empty
 - If `auto_dispatch: priority`, then `auto_dispatch_min_priority` must be 0-4
+- If `self_deploy.enabled` is true, `self_deploy.anvil` must be non-empty and match a configured anvil
+- `self_deploy.drain_timeout` must not be negative (omit or set to 0 to use the 30m default)
 
 ## Hot Reload
 

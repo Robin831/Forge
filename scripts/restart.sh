@@ -13,6 +13,13 @@
 
 set -euo pipefail
 
+# Ensure the Go toolchain and common user bin dirs are on PATH. When this script
+# runs from a bare systemd/cron context (e.g. `systemd-run` for the Mezzanine
+# "Rebuild & Restart" button) the login PATH is not inherited, so `go` resolves
+# to "command not found" and the build step fails. Prepend the standard Go
+# install location plus ~/go/bin and ~/bin so the script works headless.
+export PATH="/usr/local/go/bin:${HOME}/go/bin:${HOME}/bin:${PATH}"
+
 echo "==> Pulling latest..."
 cd ~/source/Forge
 

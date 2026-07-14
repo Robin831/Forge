@@ -2370,6 +2370,15 @@ const (
 	// Web session events.
 	EventWebSessionsRevoked EventType = "web_sessions_revoked"
 
+	// Self-deploy events — automatic rebuild/restart of the Forge daemon binary
+	// after a merge lands on Forge's own repository. String values match the
+	// selfdeploy package's Event* constants.
+	EventSelfDeployStarted  EventType = "self_deploy_started"
+	EventSelfDeploySuccess  EventType = "self_deploy_success"
+	EventSelfDeployRollback EventType = "self_deploy_rollback"
+	EventSelfDeployFailed   EventType = "self_deploy_failed"
+	EventSelfDeploySkipped  EventType = "self_deploy_skipped"
+
 	// EventFindingsChanged signals that a PR's Assay findings snapshot has been
 	// recomputed. It is published ONLY to the dedicated findings Bus (never
 	// persisted to the events table), so it drives the PR-findings SSE stream in

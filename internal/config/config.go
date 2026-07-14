@@ -36,6 +36,110 @@ type Config struct {
 	// and unmarshalled by viper — rather than on SettingsConfig, whose custom
 	// MarshalYAML shadow struct would silently drop new fields.
 	Assay AssayConfig `mapstructure:"assay" yaml:"assay,omitempty"`
+	// SelfDeploy configures Forge's automatic rebuild-and-restart of its own
+	// daemon binary after a merge lands on its repository. Disabled by default.
+	// Top-level (like Assay) so it survives the SettingsConfig MarshalYAML
+	// shadow struct.
+	SelfDeploy SelfDeployConfig `mapstructure:"self_deploy" yaml:"self_deploy,omitempty"`
+}
+
+// SelfDeployConfig gates and parameterises Forge self-deploy: rebuilding and
+// restarting the daemon's own binary when a PR merges on Forge's repository.
+// Disabled by default — the whole flow is inert unless Enabled is true and an
+// Anvil is named.
+type SelfDeployConfig struct {
+	// Enabled turns the feature on. Default false: no pull/build/restart ever
+	// happens while this is unset.
+	Enabled bool `mapstructure:"enabled" yaml:"enabled,omitempty"`
+	// Anvil is the name of the registered anvil that is Forge's own repository.
+	// A merge is only acted on when its event anvil matches this. Required when
+	// Enabled — an empty value leaves the feature inert.
+	Anvil string `mapstructure:"anvil" yaml:"anvil,omitempty"`
+	// RepoPath is the source checkout to `git pull` and build from. When empty
+	// the daemon falls back to the configured anvil's path.
+	RepoPath string `mapstructure:"repo_path" yaml:"repo_path,omitempty"`
+	// BinaryPath is the live binary replaced on deploy. Defaults to ~/bin/forge.
+	BinaryPath string `mapstructure:"binary_path" yaml:"binary_path,omitempty"`
+	// UnitName is the systemd unit restarted after the swap. Defaults to "forge".
+	UnitName string `mapstructure:"unit_name" yaml:"unit_name,omitempty"`
+	// Branch is the base branch a merge must target to trigger a deploy, and the
+	// branch pulled before building. Defaults to "main".
+	Branch string `mapstructure:"branch" yaml:"branch,omitempty"`
+	// BuildTarget is the `go build` package target. Defaults to "./cmd/forge".
+	BuildTarget string `mapstructure:"build_target" yaml:"build_target,omitempty"`
+	// DrainTimeout bounds how long the daemon waits for active workers to finish
+	// after pausing dispatch before giving up on this deploy. Defaults to 30m.
+	DrainTimeout time.Duration `mapstructure:"drain_timeout" yaml:"drain_timeout,omitempty"`
+}
+
+// DefaultSelfDeployDrainTimeout is the fallback used when DrainTimeout is unset.
+const DefaultSelfDeployDrainTimeout = 30 * time.Minute
+
+// ResolvedBinaryPath returns the configured binary path with a leading "~"
+// expanded to the user's home directory, defaulting to ~/bin/forge.
+func (s SelfDeployConfig) ResolvedBinaryPath() string {
+	p := s.BinaryPath
+	if p == "" {
+		p = filepath.Join("~", "bin", "forge")
+	}
+	return expandHomePath(p)
+}
+
+// ResolvedRepoPath returns the source checkout to build from. When RepoPath is
+// unset it falls back to the given anvil path (typically the self_deploy anvil).
+func (s SelfDeployConfig) ResolvedRepoPath(anvilPath string) string {
+	p := s.RepoPath
+	if p == "" {
+		p = anvilPath
+	}
+	return expandHomePath(p)
+}
+
+// ResolvedUnitName returns the systemd unit name, defaulting to "forge".
+func (s SelfDeployConfig) ResolvedUnitName() string {
+	if s.UnitName == "" {
+		return "forge"
+	}
+	return s.UnitName
+}
+
+// ResolvedBranch returns the branch a merge must target, defaulting to "main".
+func (s SelfDeployConfig) ResolvedBranch() string {
+	if s.Branch == "" {
+		return "main"
+	}
+	return s.Branch
+}
+
+// ResolvedBuildTarget returns the go build target, defaulting to "./cmd/forge".
+func (s SelfDeployConfig) ResolvedBuildTarget() string {
+	if s.BuildTarget == "" {
+		return "./cmd/forge"
+	}
+	return s.BuildTarget
+}
+
+// ResolvedDrainTimeout returns DrainTimeout, or the package default when unset.
+func (s SelfDeployConfig) ResolvedDrainTimeout() time.Duration {
+	if s.DrainTimeout <= 0 {
+		return DefaultSelfDeployDrainTimeout
+	}
+	return s.DrainTimeout
+}
+
+// expandHomePath expands a leading "~" (or "~/") in p to the current user's
+// home directory. It is a best-effort helper: if the home directory cannot be
+// resolved the original path is returned unchanged.
+func expandHomePath(p string) string {
+	if p == "~" || strings.HasPrefix(p, "~/") {
+		if home, err := os.UserHomeDir(); err == nil {
+			if p == "~" {
+				return home
+			}
+			return filepath.Join(home, p[2:])
+		}
+	}
+	return p
 }
 
 // AnvilConfig defines a registered repository (anvil).
@@ -2032,6 +2136,17 @@ func (c *Config) Validate() []string {
 				}
 			}
 		}
+	}
+
+	if c.SelfDeploy.Enabled {
+		if c.SelfDeploy.Anvil == "" {
+			errs = append(errs, "self_deploy.anvil is required when self_deploy.enabled is true")
+		} else if _, ok := c.Anvils[c.SelfDeploy.Anvil]; !ok {
+			errs = append(errs, fmt.Sprintf("self_deploy.anvil %q does not match any configured anvil", c.SelfDeploy.Anvil))
+		}
+	}
+	if c.SelfDeploy.DrainTimeout < 0 {
+		errs = append(errs, "self_deploy.drain_timeout must not be negative (omit or set to 0 to use the default)")
 	}
 
 	return errs
