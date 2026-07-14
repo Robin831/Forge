@@ -736,6 +736,18 @@ func FetchEvents(db *state.DB, limit int) tea.Cmd {
 	}
 }
 
+// formatEventTimestamp renders an event timestamp for the feed. Events pushed
+// over the IPC subscribe stream carry an RFC3339 timestamp string; the feed
+// shows the wall-clock "15:04:05" form used by the polled FetchEvents path so
+// streamed and polled rows render identically. A value that does not parse as
+// RFC3339 is returned unchanged as a best-effort fallback.
+func formatEventTimestamp(ts string) string {
+	if t, err := time.Parse(time.RFC3339, ts); err == nil {
+		return t.Format("15:04:05")
+	}
+	return ts
+}
+
 // FetchEventsMatching searches the entire event log for events matching the
 // filter and returns them as an UpdateFilteredEventsMsg. The search runs at the
 // SQL level (via RecentEventsMatching) so events older than the EventFetchLimit
@@ -1231,13 +1243,15 @@ func FetchWicketSummary(db *state.DB) tea.Cmd {
 // FetchAll returns a batch command that refreshes all panels.
 // Daemon health is NOT included here; it is fetched on a slower cadence
 // controlled by healthTickDivisor in the TickMsg handler.
+// The event feed is likewise NOT fetched here: it rides the IPC subscribe
+// stream once active, and the TickMsg handler only falls back to FetchEvents
+// while streaming is inactive (see Model.eventStreamActive).
 func FetchAll(ds *DataSource, logCache *LogTailerCache) tea.Cmd {
 	return tea.Batch(
 		FetchQueue(ds),
 		FetchNeedsAttention(ds),
 		FetchReadyToMerge(*ds),
 		FetchWorkers(ds.DB, logCache),
-		FetchEvents(ds.DB, EventFetchLimit),
 		FetchCrucibles(),
 		FetchUsage(ds),
 		FetchPendingOrphans(ds.DB),

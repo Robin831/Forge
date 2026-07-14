@@ -1,6 +1,7 @@
 package ipc
 
 import (
+	"bufio"
 	"encoding/json"
 	"net"
 	"strings"
@@ -370,5 +371,63 @@ func TestCreatePRPayload_RoundTrip(t *testing.T) {
 	}
 	if p.Anvil != "heimdall" {
 		t.Errorf("Anvil = %q; want heimdall", p.Anvil)
+	}
+}
+
+// TestBroadcast_TargetsSubscribersOnly verifies that Broadcast pushes events
+// only to connections registered as subscribers, never to connected-but-
+// unsubscribed clients (e.g. a transient request/response command). This keeps
+// a high-volume event stream from racing an unsolicited line into a client
+// awaiting a single command response.
+func TestBroadcast_TargetsSubscribersOnly(t *testing.T) {
+	s := NewServer()
+
+	subServer, subClient := net.Pipe()
+	plainServer, plainClient := net.Pipe()
+	defer subServer.Close()
+	defer subClient.Close()
+	defer plainServer.Close()
+	defer plainClient.Close()
+
+	// subServer is a subscriber; plainServer is connected but not subscribed.
+	s.mu.Lock()
+	s.clients[subServer] = true
+	s.subscribers[subServer] = true
+	s.clients[plainServer] = true
+	s.mu.Unlock()
+
+	// Reader on the subscriber end — expects to receive the broadcast line.
+	subGot := make(chan string, 1)
+	go func() {
+		line, _ := bufio.NewReader(subClient).ReadString('\n')
+		subGot <- line
+	}()
+
+	// Reader on the non-subscriber end — expects nothing before its deadline.
+	plainGot := make(chan string, 1)
+	go func() {
+		_ = plainClient.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
+		line, _ := bufio.NewReader(plainClient).ReadString('\n')
+		plainGot <- line
+	}()
+
+	s.Broadcast(Event{Type: "event_logged", Timestamp: time.Now()})
+
+	select {
+	case line := <-subGot:
+		if !strings.Contains(line, "event_logged") {
+			t.Fatalf("subscriber received %q; want an event_logged frame", line)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("subscriber did not receive the broadcast")
+	}
+
+	select {
+	case line := <-plainGot:
+		if line != "" {
+			t.Fatalf("non-subscriber received %q; want nothing", line)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("non-subscriber reader did not return")
 	}
 }
