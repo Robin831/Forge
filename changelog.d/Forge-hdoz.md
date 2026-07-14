@@ -1,0 +1,2 @@
+category: Added
+- **Mid-turn snapshot persistence** - The Beads-Forge streaming turn loop now checkpoints its accumulated text to the turn-snapshot store as it streams (throttled by a min interval and byte delta to avoid DB churn), with a final write recording the terminal status, so an in-flight turn survives a client reconnect or daemon restart. Persistence is best-effort and degrades gracefully if the snapshots table is not yet present. (Forge-hdoz)
