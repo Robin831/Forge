@@ -430,6 +430,52 @@ func (s *Server) handleBeadResume(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// resumeWithMessageRequest is the optional JSON body for
+// POST /api/bead/{bead_id}/resume-with-message. Message is the operator message
+// the resumed (or fresh-fallback) Claude session continues with; when empty (or
+// whitespace) the daemon substitutes its default resume prompt. Like the steer
+// and resume endpoints, this action is keyed purely by bead id.
+type resumeWithMessageRequest struct {
+	Message string `json:"message"`
+}
+
+// handleBeadResumeWithMessage proxies POST /api/bead/{bead_id}/resume-with-message
+// to the daemon's resume_bead_with_message IPC. Unlike /resume (which resumes a
+// paused, still-parked pipeline), this endpoint resumes a needs-attention bead
+// whose worktree was torn down but whose forge/<bead> branch survives — the
+// daemon recreates the worktree from the surviving branch and resumes the
+// recorded Claude session, falling back to a fresh session seeded with the
+// operator message when the transcript or branch is gone. It mirrors the steer
+// endpoint: keyed purely by bead id, so no anvil is required. The daemon returns
+// an actionable error (surfaced by writeIPCResponse) when the bead already has a
+// live pipeline, has no resumable worker row, or its resume preconditions are
+// unmet. The action is recorded in the actor audit trail here; the bead_resumed
+// event is emitted by the resuming pipeline.
+func (s *Server) handleBeadResumeWithMessage(w http.ResponseWriter, r *http.Request) {
+	beadID := chi.URLParam(r, "bead_id")
+	if !isValidBeadID(beadID) {
+		writeError(w, http.StatusBadRequest, "invalid bead id")
+		return
+	}
+	var req resumeWithMessageRequest
+	body, err := io.ReadAll(io.LimitReader(r.Body, 32*1024))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
+		return
+	}
+	if len(body) > 0 {
+		if err := json.Unmarshal(body, &req); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+			return
+		}
+	}
+	s.logActor(r, "resume_bead_with_message", "bead", beadID)
+	s.dispatchAction(w, "resume_bead_with_message", ipc.ResumeBeadWithMessagePayload{
+		BeadID:  beadID,
+		Message: strings.TrimSpace(req.Message),
+	})
+}
+
 // maxCommentBodyBytes caps the payload size on POST /api/bead/{id}/comment.
 // The body is forwarded to bd as a single argv entry, and Windows caps the
 // entire CreateProcess command line at 32,767 characters — so the 32 KiB

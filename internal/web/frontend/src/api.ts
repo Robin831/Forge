@@ -589,6 +589,19 @@ export const actions = {
       `/api/bead/${encodeURIComponent(beadID)}/resume`,
       message ? { message } : undefined,
     ),
+  // resumeWithMessage resumes a needs-attention bead whose worktree was torn
+  // down but whose forge/<bead> branch survives, seeding the resumed (or
+  // fresh-fallback) Claude session with an operator message. Unlike `resume`
+  // (which continues a paused, still-parked pipeline), this recreates the
+  // worktree from the surviving branch before resuming. Like steer it is keyed
+  // purely by bead id — no anvil is sent. The daemon returns an actionable error
+  // (surfaced by apiPost) when the bead has a live pipeline, has no resumable
+  // worker row, or its resume preconditions are unmet.
+  resumeWithMessage: (beadID: string, message?: string) =>
+    apiPost<{ worker_id?: string; message?: string }>(
+      `/api/bead/${encodeURIComponent(beadID)}/resume-with-message`,
+      message ? { message } : undefined,
+    ),
 }
 
 // Steerable is the minimal worker shape steerDisabledReason inspects — a subset

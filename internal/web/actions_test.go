@@ -663,6 +663,80 @@ func TestActions_BeadResume_InvalidID(t *testing.T) {
 	}
 }
 
+func TestActions_BeadResumeWithMessage_OK(t *testing.T) {
+	rh := &recordingHandler{}
+	srv := newServerWithDefaults(t, rh.handle)
+	cookie := loginAndGetCookie(t, srv)
+
+	rec := postAction(t, srv, cookie, "/api/bead/Forge-abc1/resume-with-message", map[string]any{
+		"message": "focus on the failing test first",
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	cmd, _ := rh.lastCommand()
+	if cmd.Type != "resume_bead_with_message" {
+		t.Fatalf("expected resume_bead_with_message, got %s", cmd.Type)
+	}
+	var p ipc.ResumeBeadWithMessagePayload
+	_ = json.Unmarshal(cmd.Payload, &p)
+	if p.BeadID != "Forge-abc1" || p.Message != "focus on the failing test first" {
+		t.Errorf("payload mismatch: %+v", p)
+	}
+}
+
+func TestActions_BeadResumeWithMessage_OmittedMessageDispatchesEmpty(t *testing.T) {
+	// An empty body is valid — the daemon substitutes its default resume prompt.
+	rh := &recordingHandler{}
+	srv := newServerWithDefaults(t, rh.handle)
+	cookie := loginAndGetCookie(t, srv)
+
+	rec := postAction(t, srv, cookie, "/api/bead/Forge-abc1/resume-with-message", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	cmd, _ := rh.lastCommand()
+	if cmd.Type != "resume_bead_with_message" {
+		t.Fatalf("expected resume_bead_with_message, got %s", cmd.Type)
+	}
+	var p ipc.ResumeBeadWithMessagePayload
+	_ = json.Unmarshal(cmd.Payload, &p)
+	if p.BeadID != "Forge-abc1" || p.Message != "" {
+		t.Errorf("expected empty message, got %+v", p)
+	}
+}
+
+func TestActions_BeadResumeWithMessage_InvalidID(t *testing.T) {
+	srv := newServerWithDefaults(t, nil)
+	cookie := loginAndGetCookie(t, srv)
+
+	rec := postAction(t, srv, cookie, "/api/bead/not%20a%20bead/resume-with-message", nil)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", rec.Code)
+	}
+}
+
+func TestActions_BeadResumeWithMessage_PropagatesDaemonError(t *testing.T) {
+	rh := &recordingHandler{
+		resp: ipc.Response{
+			Type:    "error",
+			Payload: []byte(`{"message":"bead Forge-abc1 has no resumable worker row (no recorded branch + session)"}`),
+		},
+	}
+	srv := newServerWithDefaults(t, rh.handle)
+	cookie := loginAndGetCookie(t, srv)
+
+	rec := postAction(t, srv, cookie, "/api/bead/Forge-abc1/resume-with-message", map[string]any{
+		"message": "keep going",
+	})
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "no resumable worker row") {
+		t.Errorf("expected daemon error surfaced, got %s", rec.Body.String())
+	}
+}
+
 func TestActions_QueuedResponseTranslatesTo202(t *testing.T) {
 	rh := &recordingHandler{
 		resp: ipc.Response{

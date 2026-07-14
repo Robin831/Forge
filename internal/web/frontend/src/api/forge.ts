@@ -120,6 +120,32 @@ export interface EscalationDetail {
   errors?: string[]
 }
 
+// RESUME_WITH_MESSAGE_EXCLUDED_TYPES lists the escalation types for which a
+// resume-with-message never applies. 'clarification' beads have no worker branch
+// or recorded Claude session to resume (the bead is merely awaiting operator
+// input), so offering a resume affordance would be misleading. Every other
+// escalation class implies a Smith worker ran and recorded a branch, so the
+// action is offered whenever a branch is present.
+const RESUME_WITH_MESSAGE_EXCLUDED_TYPES: ReadonlySet<EscalationType> =
+  new Set<EscalationType>(['clarification'])
+
+// resumeWithMessageEligible reports whether a needs-attention bead can be
+// resumed with an operator message. It approximates the daemon's precondition
+// (a resumable worker row = recorded branch + Claude session) from the
+// escalation detail the panel already has: the escalation type must not be an
+// excluded (branch-less) class, and the bead must have a recorded branch. The
+// worktree itself may already be gone — that is exactly the case this flow
+// recreates it from the surviving branch — so worktree existence is NOT part of
+// the gate. The daemon still validates the full precondition and returns an
+// actionable error if no resumable session exists.
+export function resumeWithMessageEligible(
+  type: EscalationType,
+  detail: Pick<EscalationDetail, 'branch'> | null | undefined,
+): boolean {
+  if (RESUME_WITH_MESSAGE_EXCLUDED_TYPES.has(type)) return false
+  return Boolean(detail?.branch && detail.branch.trim() !== '')
+}
+
 // ResolveRequest is the body of POST /api/forge/resolve. anvil is required
 // by the backend even though the JSON field is optional; the helper
 // surfaces it as required so callers cannot forget to thread it through.
