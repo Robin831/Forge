@@ -47,6 +47,15 @@ type TurnEvent struct {
 	Data any           `json:"data,omitempty"`
 }
 
+// TurnToolEvent is the Data payload for TurnEventToolUse / TurnEventToolResult.
+// Name identifies the invoked tool (empty for a bare tool_result) and ID is the
+// provider-assigned tool_use id so an SSE consumer can correlate a result back
+// to the invocation that produced it.
+type TurnToolEvent struct {
+	Name string `json:"name,omitempty"`
+	ID   string `json:"id,omitempty"`
+}
+
 // turnBroadcaster fans out events to per-client subscriber channels so
 // multiple concurrent SSE consumers each receive a complete, independent
 // copy of the event stream rather than competing for a single shared channel.

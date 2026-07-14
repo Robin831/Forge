@@ -269,7 +269,48 @@ func (s *Server) runTurnAsync(st *TurnState, req forgechat.TurnRequest) {
 		return
 	}
 
-	turnResp, err := s.chatRunner.Turn(ctx, req)
+	// Prefer incremental streaming when the runner supports it: text deltas and
+	// tool events are forwarded to the broadcaster as they arrive, so SSE
+	// consumers see genuinely incremental output instead of a single batched
+	// text_delta at the end. Runners without streaming fall back to the blocking
+	// Turn call and the batched emission below — the final/complete semantics
+	// are identical in both paths.
+	//
+	// Only prose turns (drafting chat + plan) stream text incrementally: a
+	// grilling turn emits one structured JSON envelope that is meaningless as a
+	// partial preview, so its user-facing question messages are still produced
+	// by the batched emission below (keeping the persisted rows and the snapshot
+	// text identical to the pre-streaming behaviour). Tool events stream in
+	// every mode.
+	proseStream := req.Mode == forgechat.ModeChat || req.Mode == forgechat.ModePlan
+	streamedText := false
+	onChunk := func(c forgechat.StreamChunk) {
+		switch c.Kind {
+		case forgechat.StreamChunkText:
+			if !proseStream || c.Text == "" {
+				return
+			}
+			streamedText = true
+			st.AppendText(c.Text)
+			st.Emit(TurnEvent{Type: TurnEventTextDelta, Data: c.Text})
+		case forgechat.StreamChunkToolUse:
+			ev := TurnEvent{Type: TurnEventToolUse, Data: TurnToolEvent{Name: c.ToolName, ID: c.ToolID}}
+			st.RecordToolEvent(ev)
+			st.Emit(ev)
+		case forgechat.StreamChunkToolResult:
+			ev := TurnEvent{Type: TurnEventToolResult, Data: TurnToolEvent{Name: c.ToolName, ID: c.ToolID}}
+			st.RecordToolEvent(ev)
+			st.Emit(ev)
+		}
+	}
+
+	var turnResp *forgechat.TurnResponse
+	var err error
+	if sr, ok := s.chatRunner.(forgechat.StreamingRunner); ok {
+		turnResp, err = sr.TurnStream(ctx, req, onChunk)
+	} else {
+		turnResp, err = s.chatRunner.Turn(ctx, req)
+	}
 	if err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			err = ctxErr
@@ -304,8 +345,16 @@ func (s *Server) runTurnAsync(st *TurnState, req forgechat.TurnRequest) {
 			return
 		}
 		emitted = append(emitted, m)
-		st.AppendText(em.Content)
-		st.Emit(TurnEvent{Type: TurnEventTextDelta, Data: em.Content})
+		// When the turn already streamed its text incrementally, the deltas were
+		// broadcast (and accumulated into the snapshot) as they arrived — emitting
+		// the whole content again as one text_delta would duplicate it. Skip the
+		// batched delta in that case and just publish the canonical message row.
+		// Non-streaming runners (and grilling turns) fall through to the original
+		// batched behaviour.
+		if !streamedText {
+			st.AppendText(em.Content)
+			st.Emit(TurnEvent{Type: TurnEventTextDelta, Data: em.Content})
+		}
 		st.Emit(TurnEvent{Type: TurnEventMessage, Data: m})
 	}
 
