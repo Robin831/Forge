@@ -526,6 +526,41 @@ anvils:
 
 Duration values use Go syntax: `30s`, `5m`, `1h30m`, `168h`, etc.
 
+### Event Bus vs Legacy Polling
+
+Real-time consumers — the web UI's activity and PR-findings SSE streams and the
+Hearth TUI's IPC event feed — can be driven one of two ways:
+
+- **Event Bus (real-time):** the daemon runs an in-process publish/subscribe Bus.
+  Every logged event is fanned out to subscribers immediately, so a new event
+  reaches a connected client in well under 100 ms instead of on the next poll
+  tick. Enable it with `bus_enabled: true` (or the `--enable-bus` daemon flag).
+- **Legacy polling (default):** with `bus_enabled: false` no Bus is constructed
+  and consumers re-read events from the state DB via `EventsSince` on a ~2 s
+  timer. This is the safe rollout default.
+
+Three settings control the behaviour (all in the `settings:` block):
+
+| Setting | Purpose |
+|---------|---------|
+| `bus_enabled` | Master switch. `true` wires the Bus into the state DB; `false` (default) keeps every consumer on legacy polling. Also settable at startup with `--enable-bus`. |
+| `bus_buffer_size` | Per-subscriber channel buffer (default `256`). When a slow consumer falls this many events behind, the Bus drops the oldest buffered event and delivers a **gap marker**, prompting the consumer to re-sync missed events from the DB via `EventsSince`. A publisher is never blocked by a slow subscriber. Also settable with `--bus-buffer-size`. |
+| `sse_poll_fallback` | **Deprecated, one-release safety valve.** Forces the `/api/activity/stream` SSE endpoint back onto the 2 s poll loop even when `bus_enabled` is true, without disabling the Bus for other consumers. Hot-reloadable — takes effect on the next SSE connect. Scheduled for removal once the bus-based stream has proven stable; do not build new behaviour on it. |
+
+```yaml
+settings:
+  bus_enabled: true       # real-time SSE/IPC delivery
+  bus_buffer_size: 256    # per-subscriber buffer before a gap marker fires
+  sse_poll_fallback: false  # deprecated escape hatch; leave false
+```
+
+When the Bus is enabled the SSE activity stream uses a **replay-then-live**
+handover: it subscribes to the Bus *before* replaying the recent-event backlog
+(so nothing published mid-replay is lost), replays via `EventsSince`, then hands
+over to the live channel while de-duplicating any event already emitted during
+replay. A resuming client's `Last-Event-ID` header seeds the replay cursor so it
+receives exactly the events it missed — no duplicates, no gaps.
+
 ## Pricing Tables
 
 Forge tracks token spend per bead and per day. **Claude self-reports an exact
