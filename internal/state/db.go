@@ -30,6 +30,14 @@ type DB struct {
 	// Bus (tests, migrations, CLI subcommands), in which case LogEvent simply
 	// skips publishing. The Bus is owned by the daemon and shared by reference.
 	bus *Bus
+	// findingsBus is a dedicated in-process Bus carrying only "findings changed"
+	// notifications (one BusEvent per completed Assay pass). Keeping it separate
+	// from the event bus above means the PR-findings SSE stream can subscribe to
+	// findings-only signals without receiving — and having to filter out — every
+	// logged daemon event, and vice versa for the activity stream. Nil when no
+	// Bus is wired (see SetFindingsBus), in which case PublishFindingsChanged is
+	// a no-op and the findings stream falls back to polling.
+	findingsBus *Bus
 }
 
 // SetBus wires the daemon-owned event Bus into the DB so LogEvent can fan out
@@ -46,6 +54,22 @@ func (db *DB) SetBus(bus *Bus) {
 // instead of polling.
 func (db *DB) Bus() *Bus {
 	return db.bus
+}
+
+// SetFindingsBus wires the daemon-owned findings-changed Bus into the DB so
+// RecordAssayRun can notify subscribers whenever a PR's findings snapshot is
+// recomputed. Like SetBus it uses field injection (the DB predates the daemon's
+// Bus construction). Passing nil detaches the Bus, reverting the PR-findings SSE
+// stream to its polling fallback.
+func (db *DB) SetFindingsBus(bus *Bus) {
+	db.findingsBus = bus
+}
+
+// FindingsBus returns the findings-changed Bus wired into the DB, or nil if none
+// has been set. The PR-findings SSE stream uses it to re-emit a PR's findings
+// snapshot on change instead of re-reading on a fixed timer.
+func (db *DB) FindingsBus() *Bus {
+	return db.findingsBus
 }
 
 // DefaultPath returns ~/.forge/state.db.
@@ -2324,6 +2348,14 @@ const (
 
 	// Web session events.
 	EventWebSessionsRevoked EventType = "web_sessions_revoked"
+
+	// EventFindingsChanged signals that a PR's Assay findings snapshot has been
+	// recomputed. It is published ONLY to the dedicated findings Bus (never
+	// persisted to the events table), so it drives the PR-findings SSE stream in
+	// real time without appearing in the activity timeline. On this bus the
+	// BusEvent carries the anvil in Event.Anvil and the PR number in Event.ID
+	// (repurposed here — there is no event-log row behind it).
+	EventFindingsChanged EventType = "findings_changed"
 )
 
 // Event represents a logged event.
@@ -4815,7 +4847,33 @@ func (db *DB) RecordAssayRun(r *AssayRun) error {
 	}
 	id, _ := res.LastInsertId()
 	r.ID = int(id)
+
+	// A completed pass is the single choke point at which a PR's findings
+	// snapshot (findings set + latest run) can change: findings are inserted,
+	// posted and resolution-tracked earlier in the same pass, then the run is
+	// recorded here. Notify the findings Bus so the PR-findings SSE stream
+	// re-emits the fresh snapshot instead of polling for it.
+	db.publishFindingsChanged(r.Anvil, r.PRNumber)
 	return nil
+}
+
+// publishFindingsChanged fans a findings-changed notification out to the
+// dedicated findings Bus (if one is wired via SetFindingsBus). The BusEvent
+// carries the anvil and PR number so subscribers can filter to their own PR;
+// there is no persisted event-log row behind it, so this never touches the
+// activity timeline. Publishing is non-blocking (the Bus drops the oldest
+// buffered event for slow consumers), so it never delays RecordAssayRun.
+func (db *DB) publishFindingsChanged(anvil string, prNumber int) {
+	if db.findingsBus == nil {
+		return
+	}
+	db.findingsBus.Publish(BusEvent{
+		Event: Event{
+			ID:    prNumber,
+			Type:  EventFindingsChanged,
+			Anvil: anvil,
+		},
+	})
 }
 
 // LastAssayRunAt returns the started_at timestamp of the most recent assay_runs

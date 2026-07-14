@@ -258,11 +258,20 @@ func (s *Server) streamActivityBus(w http.ResponseWriter, r *http.Request, flush
 
 // handlePRFindingsStream serves GET /api/prs/{id}/findings/stream as Server-Sent
 // Events. It resolves the PR from state.db, emits the current findings/run
-// snapshot immediately, then polls every 2s and re-emits only when the snapshot
-// changes (findings set or latest run status). Each update is delivered as a
-// named `findings` event whose data payload is a prFindingsResponse — the same
-// shape GET /api/prs/{id}/findings returns — so the frontend can apply it
-// directly. A 30s keep-alive comment keeps the connection warm behind proxies.
+// snapshot immediately, then re-emits whenever the snapshot changes (findings
+// set or latest run status). Each update is delivered as a named `findings`
+// event whose data payload is a prFindingsResponse — the same shape GET
+// /api/prs/{id}/findings returns — so the frontend can apply it directly. A 30s
+// keep-alive comment keeps the connection warm behind proxies.
+//
+// Delivery has two modes, mirroring the activity stream:
+//
+//   - Findings Bus wired (settings.bus_enabled) AND poll fallback off: subscribe
+//     to the dedicated findings-changed Bus and re-emit the snapshot on each
+//     matching notification — new findings reach the client in <100ms instead of
+//     up to 2s late. See streamPRFindingsBus.
+//   - Bus nil (legacy) OR settings.sse_poll_fallback=true: the 2s poll loop
+//     re-reading the snapshot. See streamPRFindingsPolling.
 func (s *Server) handlePRFindingsStream(w http.ResponseWriter, r *http.Request) {
 	ctx, ok := s.requirePR(w, r)
 	if !ok {
@@ -285,8 +294,9 @@ func (s *Server) handlePRFindingsStream(w http.ResponseWriter, r *http.Request) 
 	flusher.Flush()
 
 	// lastFingerprint is the JSON of the last snapshot we emitted. Comparing
-	// the marshalled payload lets us suppress no-op ticks (no new findings, no
-	// run-status change) so the client only re-renders on real updates.
+	// the marshalled payload lets us suppress no-op re-emits (no new findings, no
+	// run-status change) so the client only re-renders on real updates. The
+	// closure is shared by both the bus and polling paths.
 	var lastFingerprint string
 	emit := func() {
 		resp, err := s.collectPRFindings(anvil, prNumber)
@@ -305,6 +315,23 @@ func (s *Server) handlePRFindingsStream(w http.ResponseWriter, r *http.Request) 
 		fmt.Fprintf(w, "event: findings\ndata: %s\n\n", data)
 		flusher.Flush()
 	}
+
+	// Path selection mirrors the activity stream: take the findings Bus when one
+	// is wired, UNLESS settings.sse_poll_fallback forces the legacy 2s poll loop.
+	// When the Bus is nil (bus disabled) polling is used regardless. Each path
+	// owns the initial snapshot emit so the bus path can subscribe FIRST, closing
+	// the window between the snapshot and live handover.
+	if bus := s.db.FindingsBus(); bus != nil && !s.pollFallbackEnabled() {
+		s.streamPRFindingsBus(w, r, flusher, anvil, prNumber, bus, emit)
+		return
+	}
+	s.streamPRFindingsPolling(w, r, flusher, emit)
+}
+
+// streamPRFindingsPolling is the legacy delivery path used when no findings Bus
+// is wired: it emits the current snapshot, then re-runs emit every 2s, which
+// suppresses no-op ticks internally.
+func (s *Server) streamPRFindingsPolling(w http.ResponseWriter, r *http.Request, flusher http.Flusher, emit func()) {
 	emit()
 
 	ticker := time.NewTicker(2 * time.Second)
@@ -321,6 +348,50 @@ func (s *Server) handlePRFindingsStream(w http.ResponseWriter, r *http.Request) 
 			flusher.Flush()
 		case <-ticker.C:
 			emit()
+		}
+	}
+}
+
+// streamPRFindingsBus is the real-time delivery path: it subscribes to the
+// findings-changed Bus and re-emits the PR's snapshot whenever a notification
+// for this anvil/PR arrives. A gap marker (the Bus dropped events under load)
+// also triggers a re-emit — we cannot tell which PR changed, so we re-read our
+// own snapshot; emit's fingerprint guard suppresses it when nothing changed.
+//
+// Ordering matters: we Subscribe BEFORE the initial snapshot emit so a
+// notification published between the snapshot read and the live loop is buffered
+// on our channel rather than lost. The fingerprint guard in emit then dedupes
+// the buffered event against the snapshot we just sent.
+func (s *Server) streamPRFindingsBus(w http.ResponseWriter, r *http.Request, flusher http.Flusher, anvil string, prNumber int, bus *state.Bus, emit func()) {
+	ch, unsubscribe := bus.Subscribe()
+	defer unsubscribe()
+
+	// Emit the current snapshot immediately so the client renders before any
+	// live update arrives. Subscription is already active, so no change is lost.
+	emit()
+
+	keepalive := time.NewTicker(30 * time.Second)
+	defer keepalive.Stop()
+
+	for {
+		select {
+		case <-r.Context().Done():
+			return
+		case <-keepalive.C:
+			fmt.Fprint(w, ": keepalive\n\n")
+			flusher.Flush()
+		case ev, ok := <-ch:
+			if !ok {
+				// The Bus closed our subscription (unsubscribe / shutdown).
+				return
+			}
+			// Re-emit on a gap marker (unknown which PR changed) or a
+			// notification targeting this PR; ignore signals for other PRs.
+			// On the findings Bus the anvil rides Event.Anvil and the PR number
+			// rides Event.ID (see EventFindingsChanged).
+			if ev.GapMarker || (ev.Anvil == anvil && ev.ID == prNumber) {
+				emit()
+			}
 		}
 	}
 }

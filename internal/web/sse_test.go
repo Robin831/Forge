@@ -970,3 +970,108 @@ func TestActivityStream_BusClientDisconnectEndsStream(t *testing.T) {
 		t.Fatal("stream did not end after client disconnect")
 	}
 }
+
+// findingsBusServer returns a default test server with the dedicated findings
+// Bus wired into its DB, selecting the bus-driven PR-findings SSE path.
+func findingsBusServer(t *testing.T) *Server {
+	t.Helper()
+	srv := newServerWithDefaults(t, nil)
+	srv.db.SetFindingsBus(state.NewBus(256))
+	return srv
+}
+
+func TestPRFindingsStream_BusReEmitsOnRecordedRun(t *testing.T) {
+	srv := findingsBusServer(t)
+
+	pr := &state.PR{
+		Number: 11, Anvil: "anvil-a", BeadID: "Forge-cccc",
+		Branch: "x", Status: state.PROpen, CreatedAt: time.Now().UTC(),
+	}
+	if err := srv.db.InsertPR(pr); err != nil {
+		t.Fatalf("insert PR: %v", err)
+	}
+
+	resp, cancel := authedSSEClient(t, srv, fmt.Sprintf("/api/prs/%d/findings/stream", pr.ID), "")
+	defer cancel()
+	defer resp.Body.Close()
+
+	// A completed Assay pass persists a finding then records the run; recording
+	// the run publishes findings-changed. Trigger it from a goroutine after the
+	// handler has subscribed so a single reader observes both the initial (empty)
+	// snapshot and the re-emitted one.
+	go func() {
+		time.Sleep(300 * time.Millisecond)
+		if err := srv.db.InsertFinding(state.Finding{
+			Anvil: "anvil-a", PRNumber: 11, FindingHash: "fh1",
+			Severity: "Important", Title: "Bus-driven finding",
+		}); err != nil {
+			t.Errorf("insert finding: %v", err)
+			return
+		}
+		finished := time.Now().UTC()
+		if err := srv.db.RecordAssayRun(&state.AssayRun{
+			Anvil: "anvil-a", PRNumber: 11, HeadSHA: "abc",
+			StartedAt: finished, FinishedAt: &finished, FindingsCount: 1,
+		}); err != nil {
+			t.Errorf("record assay run: %v", err)
+		}
+	}()
+
+	got := readSSEData(t, resp.Body, 2, 5*time.Second)
+	if len(got) != 2 {
+		t.Fatalf("expected initial + re-emitted snapshot, got %d (%v)", len(got), got)
+	}
+	var snap prFindingsResponse
+	if err := json.Unmarshal([]byte(got[1]), &snap); err != nil {
+		t.Fatalf("unmarshal snapshot: %v", err)
+	}
+	if len(snap.Findings) != 1 || snap.Findings[0].Message != "Bus-driven finding" {
+		t.Errorf("unexpected re-emitted findings: %+v", snap.Findings)
+	}
+	if snap.Run == nil {
+		t.Errorf("expected run to be present after RecordAssayRun, got nil")
+	}
+}
+
+func TestPRFindingsStream_BusGapMarkerResyncs(t *testing.T) {
+	srv := findingsBusServer(t)
+
+	pr := &state.PR{
+		Number: 7, Anvil: "anvil-b", BeadID: "Forge-dddd",
+		Branch: "x", Status: state.PROpen, CreatedAt: time.Now().UTC(),
+	}
+	if err := srv.db.InsertPR(pr); err != nil {
+		t.Fatalf("insert PR: %v", err)
+	}
+
+	resp, cancel := authedSSEClient(t, srv, fmt.Sprintf("/api/prs/%d/findings/stream", pr.ID), "")
+	defer cancel()
+	defer resp.Body.Close()
+
+	// Change the snapshot in the DB WITHOUT a targeted notification, then deliver
+	// a gap marker (the Bus dropped events under load). The handler cannot know
+	// which PR changed, so it must re-read its own snapshot and pick up the change.
+	go func() {
+		time.Sleep(300 * time.Millisecond)
+		if err := srv.db.InsertFinding(state.Finding{
+			Anvil: "anvil-b", PRNumber: 7, FindingHash: "fh-gap",
+			Severity: "Important", Title: "Recovered after gap",
+		}); err != nil {
+			t.Errorf("insert finding: %v", err)
+			return
+		}
+		srv.db.FindingsBus().Publish(state.BusEvent{GapMarker: true})
+	}()
+
+	got := readSSEData(t, resp.Body, 2, 5*time.Second)
+	if len(got) != 2 {
+		t.Fatalf("expected initial + re-synced snapshot, got %d (%v)", len(got), got)
+	}
+	var snap prFindingsResponse
+	if err := json.Unmarshal([]byte(got[1]), &snap); err != nil {
+		t.Fatalf("unmarshal snapshot: %v", err)
+	}
+	if len(snap.Findings) != 1 || snap.Findings[0].Message != "Recovered after gap" {
+		t.Errorf("unexpected re-synced findings: %+v", snap.Findings)
+	}
+}
