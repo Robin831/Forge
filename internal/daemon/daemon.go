@@ -87,11 +87,6 @@ const (
 	// DaemonLogMaxBackups is the number of compressed daemon.log backups kept.
 	DaemonLogMaxBackups = 3
 
-	// eventBusBufSize is the per-subscriber buffer for the in-process event
-	// Bus. It bounds how many events a slow consumer can fall behind before the
-	// Bus drops the oldest and delivers a gap marker prompting a re-sync.
-	eventBusBufSize = 256
-
 	// DefaultLogSweepInterval is how often the preserved bead-log retention
 	// sweep runs.
 	DefaultLogSweepInterval = 24 * time.Hour
@@ -146,7 +141,9 @@ type Daemon struct {
 	cfg atomic.Pointer[config.Config]
 	db  *state.DB
 	// eventBus is the daemon-owned in-process event Bus, shared by reference
-	// with db so that every logged event is fanned out to subscribers.
+	// with db so that every logged event is fanned out to subscribers. It is
+	// nil when settings.bus_enabled is false (legacy polling); consumers must
+	// nil-check before subscribing.
 	eventBus      *state.Bus
 	logger        *slog.Logger
 	ipc           *ipc.Server
@@ -375,6 +372,29 @@ type queueTimestamp struct {
 	UpdatedAt string
 }
 
+// configureEventBus constructs the in-process event Bus and wires it into the
+// state DB when settings.bus_enabled is true, returning the Bus so the daemon
+// can share it (by reference) with real-time SSE/IPC consumers. The Bus is
+// non-blocking (drop-oldest), so publishing never stalls LogEvent.
+//
+// Construction is gated for safe rollout: when the flag is off it returns nil
+// and never calls db.SetBus, so LogEvent's Publish path no-ops (see
+// DB.logEventAt) and the legacy polling behaviour (consumers re-read via
+// EventsSince) is retained. When on, the per-subscriber buffer is sized from
+// settings.bus_buffer_size (falling back to config.DefaultBusBufferSize).
+func configureEventBus(cfg *config.Config, db *state.DB, logger *slog.Logger) *state.Bus {
+	if !cfg.Settings.BusEnabled {
+		return nil
+	}
+	bufSize := cfg.Settings.ResolvedBusBufferSize()
+	bus := state.NewBus(bufSize)
+	db.SetBus(bus)
+	if logger != nil {
+		logger.Info("event bus enabled", "buffer_size", bufSize)
+	}
+	return bus
+}
+
 // New creates a new daemon instance. configPath is the resolved config file the
 // daemon was started with (honouring --config); it is used for the hot-reload
 // watcher and the web settings API so both read/write the SAME file the daemon
@@ -422,10 +442,9 @@ func New(cfg *config.Config, configPath string) (*Daemon, error) {
 	}
 
 	// Own the in-process event Bus here and share it (by reference) with the
-	// state DB so every logged event is fanned out to subscribers. The Bus is
-	// non-blocking (drop-oldest), so publishing never stalls LogEvent.
-	eventBus := state.NewBus(eventBusBufSize)
-	db.SetBus(eventBus)
+	// state DB so every logged event is fanned out to subscribers. See
+	// configureEventBus for the bus_enabled gating and nil-safety contract.
+	eventBus := configureEventBus(cfg, db, logger)
 
 	// One-time reconciliation: repair worker rows whose log_path dangles at a
 	// removed worktree but whose preserved copy still exists under ~/.forge/logs.
