@@ -24,6 +24,28 @@ import (
 type DB struct {
 	conn *sql.DB
 	path string
+	// bus is the daemon-owned in-process event Bus. When set (via SetBus),
+	// every successfully persisted event is also published to subscribers so
+	// they can fan out in real time. It is nil in contexts that do not wire a
+	// Bus (tests, migrations, CLI subcommands), in which case LogEvent simply
+	// skips publishing. The Bus is owned by the daemon and shared by reference.
+	bus *Bus
+}
+
+// SetBus wires the daemon-owned event Bus into the DB so LogEvent can fan out
+// every persisted event to subscribers. It uses field injection because the DB
+// is typically constructed (via Open) before the daemon builds its Bus. Call it
+// once during startup, before events begin flowing; the Bus itself is
+// concurrency-safe. Passing nil detaches the Bus.
+func (db *DB) SetBus(bus *Bus) {
+	db.bus = bus
+}
+
+// Bus returns the event Bus wired into the DB, or nil if none has been set.
+// Callers (e.g. the web SSE stream) can use it to subscribe to live events
+// instead of polling.
+func (db *DB) Bus() *Bus {
+	return db.bus
 }
 
 // DefaultPath returns ~/.forge/state.db.
@@ -2206,49 +2228,49 @@ const (
 	// EventAuthFailed fires when a provider rejects the credentials (invalid API
 	// key, unauthorized, expired token). Unlike a rate limit, this is escalated
 	// for human attention rather than retried/failed-over (Forge-d5ns).
-	EventAuthFailed                      EventType = "auth_failed"
-	EventCostLimitHit                    EventType = "cost_limit_hit"
+	EventAuthFailed   EventType = "auth_failed"
+	EventCostLimitHit EventType = "cost_limit_hit"
 	// EventCopilotLimitHit fires when the copilot daily request cap is reached but
 	// copilot is the only configured provider, so the daemon proceeds with copilot
 	// anyway rather than handing the pipeline zero providers (Forge-d5ns).
-	EventCopilotLimitHit                 EventType = "copilot_limit_hit"
-	EventDispatchPaused                  EventType = "dispatch_paused"
-	EventDispatchResumed                 EventType = "dispatch_resumed"
-	EventSchematicSubBead                EventType = "schematic_sub_bead"
-	EventWorkerStalled                   EventType = "worker_stalled"
-	EventWorkerRecovered                 EventType = "worker_recovered"
-	EventBeadTagged                      EventType = "bead_tagged"
-	EventBeadClosed                      EventType = "bead_closed"
-	EventPRReadyToMerge                  EventType = "pr_ready_to_merge"
-	EventPRReviewNeeded                  EventType = "pr_review_needed"
-	EventPRMergeRequested                EventType = "pr_merge_requested"
-	EventPRMergeFailed                   EventType = "pr_merge_failed"
-	EventPRAutoMerged                    EventType = "pr_auto_merged"
-	EventError                           EventType = "error"
-	EventBeadRecovered                   EventType = "bead_recovered"
-	EventBeadStopped                     EventType = "bead_stopped"
-	EventDepcheckStarted                 EventType = "depcheck_started"
-	EventDepcheckPassed                  EventType = "depcheck_passed"
-	EventDepcheckFound                   EventType = "depcheck_found"
-	EventDepcheckFailed                  EventType = "depcheck_failed"
-	EventDepcheckBeadCreated             EventType = "depcheck_bead_created"
-	EventDepcheckDedup                   EventType = "depcheck_dedup"
-	EventVulnScanStarted                 EventType = "vuln_scan_started"
-	EventVulnScanDone                    EventType = "vuln_scan_done"
-	EventVulnScanFailed                  EventType = "vuln_scan_failed"
-	EventVulnScanCycleDone               EventType = "vuln_scan_cycle_done"
-	EventVulnBeadCreated                 EventType = "vuln_bead_created"
-	EventWardenRerun                     EventType = "warden_rerun"
-	EventApproveAsIs                     EventType = "approve_as_is"
-	EventForceSmith                      EventType = "force_smith"
-	EventAutoLearnError                  EventType = "auto_learn_error"
-	EventAutoLearnSkipped                EventType = "auto_learn_skipped"
-	EventAutoLearnRules                  EventType = "auto_learn_rules"
-	EventWardenRuleLearned               EventType = "warden_rule_learned"
-	EventBeadAutoClosed                  EventType = "bead_auto_closed"
-	EventNoChangesNeeded                 EventType = "no_changes_needed"
-	EventPRCreationFailed                EventType = "pr_creation_failed"
-	EventPRAlreadyExists                 EventType = "pr_already_exists"
+	EventCopilotLimitHit     EventType = "copilot_limit_hit"
+	EventDispatchPaused      EventType = "dispatch_paused"
+	EventDispatchResumed     EventType = "dispatch_resumed"
+	EventSchematicSubBead    EventType = "schematic_sub_bead"
+	EventWorkerStalled       EventType = "worker_stalled"
+	EventWorkerRecovered     EventType = "worker_recovered"
+	EventBeadTagged          EventType = "bead_tagged"
+	EventBeadClosed          EventType = "bead_closed"
+	EventPRReadyToMerge      EventType = "pr_ready_to_merge"
+	EventPRReviewNeeded      EventType = "pr_review_needed"
+	EventPRMergeRequested    EventType = "pr_merge_requested"
+	EventPRMergeFailed       EventType = "pr_merge_failed"
+	EventPRAutoMerged        EventType = "pr_auto_merged"
+	EventError               EventType = "error"
+	EventBeadRecovered       EventType = "bead_recovered"
+	EventBeadStopped         EventType = "bead_stopped"
+	EventDepcheckStarted     EventType = "depcheck_started"
+	EventDepcheckPassed      EventType = "depcheck_passed"
+	EventDepcheckFound       EventType = "depcheck_found"
+	EventDepcheckFailed      EventType = "depcheck_failed"
+	EventDepcheckBeadCreated EventType = "depcheck_bead_created"
+	EventDepcheckDedup       EventType = "depcheck_dedup"
+	EventVulnScanStarted     EventType = "vuln_scan_started"
+	EventVulnScanDone        EventType = "vuln_scan_done"
+	EventVulnScanFailed      EventType = "vuln_scan_failed"
+	EventVulnScanCycleDone   EventType = "vuln_scan_cycle_done"
+	EventVulnBeadCreated     EventType = "vuln_bead_created"
+	EventWardenRerun         EventType = "warden_rerun"
+	EventApproveAsIs         EventType = "approve_as_is"
+	EventForceSmith          EventType = "force_smith"
+	EventAutoLearnError      EventType = "auto_learn_error"
+	EventAutoLearnSkipped    EventType = "auto_learn_skipped"
+	EventAutoLearnRules      EventType = "auto_learn_rules"
+	EventWardenRuleLearned   EventType = "warden_rule_learned"
+	EventBeadAutoClosed      EventType = "bead_auto_closed"
+	EventNoChangesNeeded     EventType = "no_changes_needed"
+	EventPRCreationFailed    EventType = "pr_creation_failed"
+	EventPRAlreadyExists     EventType = "pr_already_exists"
 	// EventPRCreateRecovered fires when the manual create-PR-from-existing-branch
 	// recovery opens (or registers) a PR for an already-pushed forge branch
 	// without re-running Smith, clearing the needs_human escalation.
@@ -2314,14 +2336,12 @@ type Event struct {
 	Anvil     string
 }
 
-// LogEvent records an event in the database.
+// LogEvent records an event in the database. After the row is persisted it is
+// also published to the event Bus (if one is wired via SetBus) so subscribers
+// receive it in real time. Publishing is non-blocking (the Bus drops the oldest
+// buffered event for slow consumers), so it never delays LogEvent.
 func (db *DB) LogEvent(typ EventType, message, beadID, anvil string) error {
-	_, err := db.conn.Exec(
-		`INSERT INTO events (timestamp, type, message, bead_id, anvil)
-		 VALUES (?, ?, ?, ?, ?)`,
-		time.Now().Format(dbTimeLayout), string(typ), message, beadID, anvil,
-	)
-	return err
+	return db.logEventAt(typ, message, beadID, anvil, time.Now())
 }
 
 // HasEventForDate reports whether any event of the given type was logged on
@@ -2380,14 +2400,55 @@ func (db *DB) HasEventWithin(eventType EventType, d time.Duration) (bool, error)
 }
 
 // LogEventAt records an event with an explicit timestamp. It is intended for
-// use in tests where deterministic timestamps are required.
+// use in tests where deterministic timestamps are required. Like LogEvent, it
+// publishes the persisted event to the Bus (if wired).
 func (db *DB) LogEventAt(typ EventType, message, beadID, anvil string, at time.Time) error {
-	_, err := db.conn.Exec(
+	return db.logEventAt(typ, message, beadID, anvil, at)
+}
+
+// logEventAt inserts one event row and, on success, publishes it to the event
+// Bus. It is the shared implementation behind LogEvent and LogEventAt.
+//
+// The BusEvent carries the auto-assigned row ID as both Event.ID and Seq — the
+// latter mirrors the SSE Last-Event-ID so subscribers can re-sync via
+// EventsSince after an overflow. Publishing happens only after the write
+// succeeds and outside any transaction, and relies on Bus.Publish being
+// non-blocking, so a slow or absent subscriber can never stall LogEvent.
+func (db *DB) logEventAt(typ EventType, message, beadID, anvil string, at time.Time) error {
+	res, err := db.conn.Exec(
 		`INSERT INTO events (timestamp, type, message, bead_id, anvil)
 		 VALUES (?, ?, ?, ?, ?)`,
 		at.Format(dbTimeLayout), string(typ), message, beadID, anvil,
 	)
-	return err
+	if err != nil {
+		return err
+	}
+
+	// Fan out to subscribers only on the success path. Guard against a nil Bus
+	// so LogEvent still works when none is wired (tests, migrations, CLI).
+	if db.bus == nil {
+		return nil
+	}
+	id, idErr := res.LastInsertId()
+	if idErr != nil {
+		// The row is persisted; only the fan-out is skipped. Don't fail the
+		// log write just because we couldn't recover the assigned ID.
+		return nil
+	}
+	db.bus.Publish(BusEvent{
+		Seq: id,
+		Event: Event{
+			ID: int(id),
+			// Round-trip the timestamp through the stored layout so the
+			// published Event matches exactly what EventsSince would return.
+			Timestamp: parseTime(at.Format(dbTimeLayout)),
+			Type:      typ,
+			Message:   message,
+			BeadID:    beadID,
+			Anvil:     anvil,
+		},
+	})
+	return nil
 }
 
 // RecentEvents returns the most recent n events.
