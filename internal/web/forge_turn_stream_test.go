@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/Robin831/Forge/internal/forgechat"
+	"github.com/Robin831/Forge/internal/state"
 )
 
 // sseFrame is one decoded `event:`/`data:` block emitted by the turn stream.
@@ -244,6 +245,108 @@ func TestForgeTurnStream_ExpiredAfterCompletionEmitsTurnExpired(t *testing.T) {
 	frames := readSSEFrames(t, resp, 1, 2*time.Second)
 	if len(frames) == 0 || frames[0].Event != string(TurnEventTurnExpired) {
 		t.Fatalf("expected turn_expired event, got frames=%+v", frames)
+	}
+}
+
+// On reconnect after the live TurnState is gone (daemon restart / GC eviction
+// mid-stream), a persisted in-progress snapshot must be surfaced: the handler
+// replays the accumulated partial text as a text_delta before the graceful
+// turn_expired event, so the reconnecting client recovers the mid-turn output
+// instead of an empty bubble.
+func TestForgeTurnStream_PartialSnapshotReplayedBeforeExpiry(t *testing.T) {
+	srv := newServerWithDefaults(t, nil)
+	srv.SetChatRunner(&stubRunner{})
+	cookie := loginAndGetCookie(t, srv)
+	id := createForgeSessionHelper(t, srv, cookie, `{"initial_message":"start"}`)
+
+	// Persist a partial, in-progress snapshot for a turn that is NOT in the
+	// live store, simulating a turn lost on a restart while still streaming.
+	const turnID = "reconnect-partial"
+	const partial = "partial streamed answer so far"
+	if _, err := srv.db.UpsertTurnSnapshot(id, turnID, state.ForgeTurnStatusInProgress, partial); err != nil {
+		t.Fatalf("seed snapshot: %v", err)
+	}
+
+	resp, cancel := turnStreamRequest(t, srv, id, turnID)
+	defer cancel()
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 SSE stream, got %d", resp.StatusCode)
+	}
+
+	frames := readSSEFrames(t, resp, 2, 2*time.Second)
+	if len(frames) < 2 {
+		t.Fatalf("expected text_delta + turn_expired frames, got %+v", frames)
+	}
+	if frames[0].Event != string(TurnEventTextDelta) {
+		t.Fatalf("expected first frame text_delta, got %q (frames=%+v)", frames[0].Event, frames)
+	}
+	// text_delta data is the JSON-encoded accumulated text (a quoted string).
+	var gotText string
+	if err := json.Unmarshal([]byte(frames[0].Data), &gotText); err != nil {
+		t.Fatalf("decode text_delta payload %q: %v", frames[0].Data, err)
+	}
+	if gotText != partial {
+		t.Fatalf("partial text mismatch: got %q want %q", gotText, partial)
+	}
+	if frames[1].Event != string(TurnEventTurnExpired) {
+		t.Fatalf("expected second frame turn_expired, got %q (frames=%+v)", frames[1].Event, frames)
+	}
+}
+
+// A completed-then-evicted turn must not replay partial text — the canonical
+// assistant message is already persisted and the client refetches it on the
+// turn_expired event. Only the turn_expired frame is emitted.
+func TestForgeTurnStream_CompletedSnapshotNotReplayed(t *testing.T) {
+	srv := newServerWithDefaults(t, nil)
+	srv.SetChatRunner(&stubRunner{})
+	cookie := loginAndGetCookie(t, srv)
+	id := createForgeSessionHelper(t, srv, cookie, `{"initial_message":"start"}`)
+
+	const turnID = "reconnect-complete"
+	if _, err := srv.db.UpsertTurnSnapshot(id, turnID, state.ForgeTurnStatusComplete, "final answer"); err != nil {
+		t.Fatalf("seed snapshot: %v", err)
+	}
+
+	resp, cancel := turnStreamRequest(t, srv, id, turnID)
+	defer cancel()
+	defer resp.Body.Close()
+
+	frames := readSSEFrames(t, resp, 1, 2*time.Second)
+	if len(frames) == 0 {
+		t.Fatal("expected a turn_expired frame, got none")
+	}
+	if frames[0].Event != string(TurnEventTurnExpired) {
+		t.Fatalf("completed snapshot must not replay text; got %q first (frames=%+v)", frames[0].Event, frames)
+	}
+}
+
+// A persisted snapshot belonging to a different turn than the one requested on
+// reconnect must not be replayed — only the exact turn's partial output is
+// surfaced, otherwise the client would see stale text from an unrelated turn.
+func TestForgeTurnStream_MismatchedSnapshotNotReplayed(t *testing.T) {
+	srv := newServerWithDefaults(t, nil)
+	srv.SetChatRunner(&stubRunner{})
+	cookie := loginAndGetCookie(t, srv)
+	id := createForgeSessionHelper(t, srv, cookie, `{"initial_message":"start"}`)
+
+	// Latest snapshot is for a newer turn; the client reconnects to an older
+	// turn id that has no snapshot of its own.
+	if _, err := srv.db.UpsertTurnSnapshot(id, "newer-turn", state.ForgeTurnStatusInProgress, "unrelated text"); err != nil {
+		t.Fatalf("seed snapshot: %v", err)
+	}
+
+	resp, cancel := turnStreamRequest(t, srv, id, "older-turn")
+	defer cancel()
+	defer resp.Body.Close()
+
+	frames := readSSEFrames(t, resp, 1, 2*time.Second)
+	if len(frames) == 0 {
+		t.Fatal("expected a turn_expired frame, got none")
+	}
+	if frames[0].Event != string(TurnEventTurnExpired) {
+		t.Fatalf("mismatched snapshot must not replay text; got %q first (frames=%+v)", frames[0].Event, frames)
 	}
 }
 

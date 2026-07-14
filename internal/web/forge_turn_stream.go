@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/Robin831/Forge/internal/state"
 	"github.com/go-chi/chi/v5"
 )
 
@@ -61,13 +62,12 @@ func (s *Server) handleForgeSessionTurnStream(w http.ResponseWriter, r *http.Req
 	// retention cap, or lost on a daemon restart) is reported as a graceful
 	// turn_expired event on the 200 stream rather than a 404 — the SPA reuses
 	// its complete-path refetch, so the spinner clears and the canonical
-	// messages reload instead of the client hanging on a dead stream.
+	// messages reload instead of the client hanging on a dead stream. Before
+	// that fallback, a persisted mid-turn snapshot (if any) is replayed so the
+	// client recovers the partial output instead of an empty bubble.
 	st, ok := s.turnStore.Get(turnID)
 	if !ok || st.SessionID != sessionID {
-		writeTurnSSEEvent(w, flusher, TurnEvent{
-			Type: TurnEventTurnExpired,
-			Data: turnExpiredData{Message: turnExpiredMessage},
-		})
+		s.emitReconnectFallback(w, flusher, sessionID, turnID)
 		return
 	}
 
@@ -117,6 +117,45 @@ func (s *Server) handleForgeSessionTurnStream(w http.ResponseWriter, r *http.Req
 			writeTurnSSEEvent(w, flusher, ev)
 		}
 	}
+}
+
+// emitReconnectFallback handles the reconnect/startup path where the live
+// TurnState for turnID is no longer in the store (expired by GC, evicted past
+// the retention cap, or lost on a daemon restart). Before falling back to a
+// bare turn_expired event — which would leave the reconnecting client with an
+// empty assistant bubble — it queries the persisted turn snapshot written by
+// the streaming loop. When a matching, still-partial snapshot carries
+// accumulated text, that text is replayed as a text_delta so the client
+// recovers the mid-turn output. The graceful turn_expired event always follows
+// so the SPA refetches its canonical messages and clears the spinner (no
+// completion is streamed live from a turn that is already gone).
+func (s *Server) emitReconnectFallback(w http.ResponseWriter, flusher http.Flusher, sessionID int64, turnID string) {
+	if text := s.partialTurnText(sessionID, turnID); text != "" {
+		writeTurnSSEEvent(w, flusher, TurnEvent{Type: TurnEventTextDelta, Data: text})
+	}
+	writeTurnSSEEvent(w, flusher, TurnEvent{
+		Type: TurnEventTurnExpired,
+		Data: turnExpiredData{Message: turnExpiredMessage},
+	})
+}
+
+// partialTurnText returns the accumulated text of the session's latest
+// persisted turn snapshot when it belongs to turnID and has not completed, or
+// "" when there is nothing worth replaying: no snapshot, a best-effort lookup
+// error, a snapshot for a different turn, an empty snapshot, or a completed
+// turn whose canonical assistant message the client will refetch on
+// turn_expired anyway. Snapshot persistence is best-effort, so a query error
+// (e.g. the forge_turn_snapshots table predates the migration) degrades
+// silently to the plain turn_expired behaviour.
+func (s *Server) partialTurnText(sessionID int64, turnID string) string {
+	snap, err := s.db.GetLatestTurnSnapshot(sessionID)
+	if err != nil || snap == nil {
+		return ""
+	}
+	if snap.TurnID != turnID || snap.Status == state.ForgeTurnStatusComplete {
+		return ""
+	}
+	return snap.AccumulatedText
 }
 
 // handleForgeSessionTurnGet serves a JSON snapshot of the TurnState. The
