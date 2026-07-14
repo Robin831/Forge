@@ -198,7 +198,99 @@ vulncheck.Monitor (background, daily by default)
 
 ### IPC Protocol
 
-The daemon exposes a named pipe (Windows: `\\.\pipe\forge`) or Unix socket. Messages are newline-delimited JSON `Command`/`Response` structs. Supported commands: `status`, `kill_worker`, `refresh`, `queue`, `subscribe` (event stream).
+The daemon exposes a named pipe (Windows: `\\.\pipe\forge`) or Unix socket. Messages are newline-delimited JSON `Command`/`Response` structs.
+
+**Supported commands** (generated from the `handleIPC` switch in `internal/daemon/daemon.go` — enumerate every top-level `case` there by hand, or with `grep -nP '^\tcase ' internal/daemon/daemon.go`, when this list drifts). Grouped by functional area:
+
+**Liveness & status (read-only queries)**
+| Command | Description |
+|---------|-------------|
+| `ping` | Lightweight liveness probe; answers `pong` without touching the DB. |
+| `status` | Daemon status: workers, queue size, open PRs, quotas, daily cost, pause state. |
+| `subscribe` | Subscribe to the event stream. |
+| `refresh` | Trigger an immediate poll + Bellows refresh. |
+| `queue` | Return the cached queue of ready beads. |
+| `workers` | List active workers with phase/kind/PR info. |
+| `events` | Return recent events (default 50, max 500). |
+| `crucibles` | List active crucible (epic) statuses. |
+| `get_ingots` | List ingot records (bead lifecycle snapshots). |
+| `get_ingot` | Fetch a single ingot with test results. |
+| `wicket_status` | Wicket issue-triage monitor status and effective interval. |
+
+**Daemon control**
+| Command | Description |
+|---------|-------------|
+| `shutdown` | Cancel the run context and shut the daemon down. |
+| `pause_dispatch` | Pause auto-dispatch (idempotent); persists the pause + timestamp. |
+| `resume_dispatch` | Resume auto-dispatch (idempotent) and kick a poll. |
+| `reconcile_prs` | Reconcile open PR state from the VCS provider. |
+| `wicket_scan` | Trigger an immediate Wicket issue scan. |
+
+**Bead dispatch & lifecycle**
+| Command | Description |
+|---------|-------------|
+| `run_bead` | Manually dispatch a bead. |
+| `close_bead` | Close a bead via `bd close`. |
+| `stop_bead` | Kill the worker and release the bd claim (shares impl with `queue_stop`). |
+| `retry_bead` | Reset the circuit breaker and re-dispatch on next poll. |
+| `clear_bead` | Clear needs-attention flags without re-dispatching. |
+| `dismiss_bead` | Dismiss a bead/exhausted PR from the needs-attention list. |
+| `force_smith` | Force a Smith run on a bead. |
+| `approve_as_is` | Approve the current diff and proceed to PR without further review. |
+
+**Bead metadata**
+| Command | Description |
+|---------|-------------|
+| `set_clarification` | Mark a bead as needing clarification. |
+| `clear_clarification` | Clear the clarification flag. |
+| `append_notes` | Append notes to a bead. |
+| `tag_bead` | Add a tag to a bead. |
+| `update_label` | Add/update a label on a bead. |
+
+**Queue actions** (delegated to `handleQueue*`)
+| Command | Description |
+|---------|-------------|
+| `queue_clarify` | Mark a queued bead as needing clarification. |
+| `queue_unclarify` | Clear the clarification flag on a queued bead. |
+| `queue_retry` | Reset circuit breaker and re-dispatch a queued bead. |
+| `queue_clear` | Clear needs-attention flags on a queued bead. |
+| `queue_stop` | Kill the worker and prevent re-dispatch. |
+
+**Steering** (delegated to `handle*Bead`)
+| Command | Description |
+|---------|-------------|
+| `steer_bead` | Inject a steering message into a running worker. |
+| `pause_bead` | Pause a running worker mid-turn. |
+| `resume_bead` | Resume a paused worker. |
+| `resume_bead_with_message` | Resume a paused worker with an accompanying message. |
+
+**PR & review**
+| Command | Description |
+|---------|-------------|
+| `create_pr` | Create a PR for a bead's branch. |
+| `merge_pr` | Merge a PR (by PR id or number). |
+| `pr_action` | Multiplexed PR action; `pa.Action` ∈ `close`, `discard`, `recover`, `open_browser`, `merge`, `quench`/`cifix`, `burnish`/`reviewfix`, `rebase`, `assign_bellows`, `unassign_bellows`, `approve`. |
+| `warden_rerun` | Re-run Warden review on a bead. |
+| `assay_rerun` | Re-run the assay (E2E) checks on a PR. |
+| `resolve_orphan` | Resolve an orphaned bead/worktree via the given action. |
+
+**Crucible**
+| Command | Description |
+|---------|-------------|
+| `crucible_action` | Multiplexed crucible action; `ca.Action` ∈ `resume`, `stop`. |
+
+**Worker & logs**
+| Command | Description |
+|---------|-------------|
+| `kill_worker` | Kill a worker process (PID looked up from state.db). |
+| `view_logs` | Return the log path/contents for a bead's worker. |
+
+**Security**
+| Command | Description |
+|---------|-------------|
+| `revoke_web_sessions` | Drop every web session so all users must re-authenticate. |
+
+Unrecognized command types return an error (`unknown command: <type>`).
 
 ### Configuration
 
