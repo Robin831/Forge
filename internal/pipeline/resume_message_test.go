@@ -151,6 +151,86 @@ func TestResumeWithMessage_RecreatesWorktreeFromBranch(t *testing.T) {
 	assert.True(t, worktreeHadWork, "the recreated worktree must be a checkout of the surviving branch (work.txt present)")
 }
 
+// TestResumeWithMessage_RecreatedWorktreeFallsBackOnMissingTranscript exercises
+// the combination of sub-task 1 (recreate-from-branch) and sub-task 2
+// (fresh-session fallback): the surviving branch IS present, so the pipeline
+// rebuilds the worktree at its original path, but the recorded Claude session
+// can no longer be resumed (transcript missing). The pipeline must NOT fail —
+// it downgrades to a fresh bd-context session seeded with the operator message,
+// running that fresh session inside the RECREATED worktree (with the branch's
+// committed work present), not a fresh-from-base checkout.
+func TestResumeWithMessage_RecreatedWorktreeFallsBackOnMissingTranscript(t *testing.T) {
+	const beadID = "test-bead"
+	anvil := newResumeAnvil(t, beadID)
+	mgr := worktree.NewManager()
+	wantPath := mgr.WorktreePath(anvil, beadID)
+
+	db := newTestDB(t)
+	params, _, _ := baseParams(t, db)
+	params.WorkerID = "test-worker"
+	params.Bead = poller.Bead{ID: beadID, Title: "Resumable bead"}
+	params.AnvilConfig = config.AnvilConfig{Path: anvil}
+	// Real worktree manager so recreate-from-branch actually runs.
+	params.WorktreeCreator = nil
+	params.WorktreeRemover = nil
+	params.WorktreeManager = mgr
+
+	// The resume attempt reports a missing transcript (ResumeUnavailable).
+	var resumeCalls int32
+	params.SmithResumeRunner = func(_ context.Context, _, _, _ string, _ provider.Provider, _ string, _ []string) (*smith.Process, error) {
+		atomic.AddInt32(&resumeCalls, 1)
+		return smith.NewProcessForTest(&smith.Result{
+			ExitCode:      1,
+			ResultSubtype: "error",
+			ErrorOutput:   "No conversation found with session ID: sess-parked",
+		}), nil
+	}
+
+	// The fresh fallback spawn succeeds; capture the worktree it runs in and the
+	// prompt it receives. Observe the branch's committed work WHILE the worktree
+	// exists — the pipeline tears it down on the way out.
+	var mu sync.Mutex
+	var freshWtPath, freshPrompt string
+	var freshWorktreeHadWork bool
+	var freshSpawns int32
+	params.SmithRunner = func(_ context.Context, wtPath, promptText, _ string, _ provider.Provider, _ []string) (*smith.Process, error) {
+		atomic.AddInt32(&freshSpawns, 1)
+		_, statErr := os.Stat(filepath.Join(wtPath, "work.txt"))
+		mu.Lock()
+		freshWtPath = wtPath
+		freshPrompt = promptText
+		freshWorktreeHadWork = statErr == nil
+		mu.Unlock()
+		return smith.NewProcessForTest(&smith.Result{ExitCode: 0, SessionID: "sess-fresh", ResultSubtype: "success"}), nil
+	}
+	params.EmptyDiffChecker = func(_, _ string) bool { return false }
+	params.WardenReviewer = func(_ context.Context, _, _, _, _, _ string, _ *state.DB, _ string, _ ...provider.Provider) (*warden.ReviewResult, error) {
+		return &warden.ReviewResult{Verdict: warden.VerdictApprove, Summary: "LGTM"}, nil
+	}
+
+	params.ResumeSession = &ResumeSession{
+		SessionID:          "sess-parked",
+		Provider:           provider.Provider{Kind: provider.Claude},
+		Message:            "continue from where you left off",
+		RecreateFromBranch: true,
+		Branch:             worktree.BranchName(beadID),
+		WorktreePath:       wantPath,
+	}
+
+	outcome := Run(context.Background(), params)
+
+	require.NoError(t, outcome.Error)
+	assert.True(t, outcome.Success, "a recreated worktree with a dead transcript must fall back to fresh, not fail")
+	assert.EqualValues(t, 1, atomic.LoadInt32(&resumeCalls), "the recorded session must be attempted once")
+	assert.EqualValues(t, 1, atomic.LoadInt32(&freshSpawns), "the fresh fallback must run exactly once")
+
+	mu.Lock()
+	defer mu.Unlock()
+	assert.Equal(t, wantPath, freshWtPath, "the fresh fallback must run in the worktree recreated from the branch")
+	assert.True(t, freshWorktreeHadWork, "the recreated worktree must carry the surviving branch's work (work.txt), not a fresh-from-base checkout")
+	assert.Contains(t, freshPrompt, "continue from where you left off", "the fresh fallback prompt must be seeded with the operator message")
+}
+
 // TestResumeWithMessage_BranchGoneDowngradesToFresh verifies that when the
 // surviving branch is gone, the pipeline recreates a fresh worktree from base
 // and downgrades to a fresh Smith session seeded with the operator message,

@@ -1178,6 +1178,88 @@ func TestCreateFromBranch_BranchDeleted(t *testing.T) {
 	}
 }
 
+// TestCreateFromBranch_IdempotentRepeat verifies that a second CreateFromBranch
+// call for a bead whose worktree already exists as a valid checkout reuses that
+// directory as-is rather than tearing it down and recreating it. A repeated
+// resume (e.g. the operator clicks twice, or the daemon retries) must not
+// discard uncommitted state in the worktree.
+func TestCreateFromBranch_IdempotentRepeat(t *testing.T) {
+	_, anvilDir := initBareRemoteCloneWithInitialCommit(t)
+
+	mgr := NewManager()
+	ctx := context.Background()
+
+	wt, err := mgr.CreateWithOptions(ctx, anvilDir, "idem-bead", CreateOptions{})
+	if err != nil {
+		t.Fatalf("CreateWithOptions: %v", err)
+	}
+	origPath := wt.Path
+	branch := wt.Branch
+	runGit(t, wt.Path, "commit", "--allow-empty", "-m", "smith work")
+	runGit(t, wt.Path, "push", "origin", branch)
+
+	if err := mgr.Remove(ctx, anvilDir, wt); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+
+	// First resume reconstructs the worktree from the branch.
+	first, err := mgr.CreateFromBranch(ctx, anvilDir, "idem-bead", branch, origPath)
+	if err != nil {
+		t.Fatalf("CreateFromBranch (first): %v", err)
+	}
+
+	// Write an uncommitted scratch file: if the second call were to remove and
+	// recreate the directory, this file would be lost. Reuse preserves it.
+	scratch := filepath.Join(first.Path, "uncommitted.txt")
+	if err := os.WriteFile(scratch, []byte("in-progress\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Second resume must reuse the existing valid worktree.
+	second, err := mgr.CreateFromBranch(ctx, anvilDir, "idem-bead", branch, origPath)
+	if err != nil {
+		t.Fatalf("CreateFromBranch (repeat): %v", err)
+	}
+	if second.Path != origPath {
+		t.Errorf("repeat resume path = %q; want %q", second.Path, origPath)
+	}
+	if second.Branch != branch {
+		t.Errorf("repeat resume branch = %q; want %q", second.Branch, branch)
+	}
+	if _, err := os.Stat(scratch); err != nil {
+		t.Errorf("uncommitted file should survive an idempotent repeat resume: %v", err)
+	}
+	if !isValidWorktree(ctx, second.Path) {
+		t.Error("reused directory should remain a valid worktree")
+	}
+}
+
+// TestCreateFromBranch_RejectsInvalidBranchName verifies that a flag-like branch
+// name is rejected up front (before any git worktree mutation) rather than being
+// passed to git where it could be parsed as an option. Branch names derive from
+// bead IDs / labels, so this guard prevents argument injection.
+func TestCreateFromBranch_RejectsInvalidBranchName(t *testing.T) {
+	_, anvilDir := initBareRemoteCloneWithInitialCommit(t)
+
+	mgr := NewManager()
+	ctx := context.Background()
+	targetPath := filepath.Join(anvilDir, ".workers", "bad-bead")
+
+	_, err := mgr.CreateFromBranch(ctx, anvilDir, "bad-bead", "--upload-pack=evil", targetPath)
+	if err == nil {
+		t.Fatal("CreateFromBranch should reject a flag-like branch name")
+	}
+	// The rejection must not wrap ErrBranchDeleted — this is a validation
+	// failure, not a "branch is gone, fall back to fresh" signal.
+	if errors.Is(err, ErrBranchDeleted) {
+		t.Errorf("invalid branch name should not be reported as a deleted branch: %v", err)
+	}
+	// No worktree directory should have been created for an invalid name.
+	if _, statErr := os.Stat(targetPath); !os.IsNotExist(statErr) {
+		t.Errorf("no worktree dir should exist after rejection, stat err = %v", statErr)
+	}
+}
+
 // gitOutput runs a git command and returns trimmed stdout.
 func gitOutput(t *testing.T, dir string, args ...string) string {
 	t.Helper()
