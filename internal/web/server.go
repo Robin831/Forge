@@ -164,6 +164,10 @@ type Server struct {
 	// time.Sleep; tests inject a recorder to assert the schedule without
 	// actually waiting.
 	throttleSleep func(time.Duration)
+
+	// throttleSem caps concurrent throttled (sleeping) login goroutines so
+	// an attacker cannot park unlimited connections in the sleep path.
+	throttleSem chan struct{}
 }
 
 // SetChatRunner installs the AI runner used by the Beads-Forge page. The
@@ -262,6 +266,7 @@ func New(cfg Config, db *state.DB, handler CommandHandler, logger *slog.Logger) 
 		serverCtx:     context.Background(),
 		throttle:      newLoginThrottle(),
 		throttleSleep: time.Sleep,
+		throttleSem:   make(chan struct{}, 10),
 	}
 	s.httpServer = &http.Server{
 		Addr:              cfg.Addr,

@@ -86,8 +86,15 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	// applied regardless of whether these particular credentials are valid so
 	// timing does not leak the outcome.
 	if delay := s.throttle.delay(username, ip); delay > 0 {
-		s.logger.Info("web login throttled", "user", username, "remote", ip, "delay", delay.String())
-		s.throttleSleep(delay)
+		select {
+		case s.throttleSem <- struct{}{}:
+			s.logger.Info("web login throttled", "user", username, "remote", ip, "delay", delay.String())
+			s.throttleSleep(delay)
+			<-s.throttleSem
+		default:
+			writeError(w, http.StatusTooManyRequests, "too many login attempts")
+			return
+		}
 	}
 	if err := VerifyCredentials(s.cfg.Users, username, password); err != nil {
 		s.throttle.recordFailure(username, ip)

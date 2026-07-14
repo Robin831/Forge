@@ -6486,10 +6486,14 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 			d.logger.Error("revoke web sessions failed", "error", err)
 			return errorResponse("failed to revoke web sessions: " + err.Error())
 		}
+		msg := fmt.Sprintf("revoked %d web session(s)", n)
 		d.logger.Info("web sessions revoked", "count", n)
+		if logErr := d.db.LogEvent(state.EventWebSessionsRevoked, msg, "", ""); logErr != nil {
+			d.logger.Warn("failed to log web session revocation event", "error", logErr)
+		}
 		return okResponse(map[string]any{
 			"revoked": n,
-			"message": fmt.Sprintf("revoked %d web session(s)", n),
+			"message": msg,
 		})
 
 	default:

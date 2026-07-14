@@ -41,12 +41,18 @@ func (d *Daemon) startWebServer(ctx context.Context) error {
 		d.logger.Warn("FORGE_WEB_ENABLED set but FORGE_USERS is empty — login will reject all attempts")
 	}
 
+	sessionTTL := d.sessionDurationEnv("FORGE_WEB_SESSION_TTL")
+	if sessionTTL < 0 {
+		d.logger.Warn("negative session TTL, using default", "var", "FORGE_WEB_SESSION_TTL", "value", sessionTTL)
+		sessionTTL = 0
+	}
+
 	srv, err := web.New(web.Config{
 		Addr:               addr,
 		Users:              users,
 		CookieSecure:       cookieSecureEnv(),
-		SessionTTL:         sessionDurationEnv("FORGE_WEB_SESSION_TTL"),
-		SessionAbsoluteTTL: sessionDurationEnv("FORGE_WEB_SESSION_ABSOLUTE_TTL"),
+		SessionTTL:         sessionTTL,
+		SessionAbsoluteTTL: d.sessionDurationEnv("FORGE_WEB_SESSION_ABSOLUTE_TTL"),
 	}, d.db, d.handleIPC, d.logger)
 	if err != nil {
 		return fmt.Errorf("constructing web server: %w", err)
@@ -156,16 +162,20 @@ func webEnabled() bool {
 // sessionDurationEnv parses a Go duration (e.g. "168h", "7d" is NOT valid —
 // use "168h") from the named environment variable. Returns 0 when the
 // variable is unset or unparseable, letting web.New apply its default.
-func sessionDurationEnv(name string) time.Duration {
+// Negative values are preserved so callers like SessionAbsoluteTTL can use
+// them as a "disable" sentinel; callers that require positive durations
+// (e.g. SessionTTL) must clamp at the call site.
+func (d *Daemon) sessionDurationEnv(name string) time.Duration {
 	raw := strings.TrimSpace(os.Getenv(name))
 	if raw == "" {
 		return 0
 	}
-	d, err := time.ParseDuration(raw)
-	if err != nil || d < 0 {
+	dur, err := time.ParseDuration(raw)
+	if err != nil {
+		d.logger.Warn("invalid duration in env var, using default", "var", name, "value", raw, "error", err)
 		return 0
 	}
-	return d
+	return dur
 }
 
 // cookieSecureEnv reports whether FORGE_WEB_COOKIE_SECURE forces the

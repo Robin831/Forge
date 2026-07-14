@@ -2248,6 +2248,9 @@ const (
 	// EventLogSweepDone fires once per log-retention sweep with a summary of how
 	// many preserved bead-log directories were removed and how many bytes freed.
 	EventLogSweepDone EventType = "log_sweep_done"
+
+	// Web session events.
+	EventWebSessionsRevoked EventType = "web_sessions_revoked"
 )
 
 // Event represents a logged event.

@@ -14,14 +14,7 @@ import (
 
 // postLoginNoCSRF submits a login without the X-Forge-Action header.
 func postLoginNoCSRF(srv *Server, user, pass string) *httptest.ResponseRecorder {
-	form := url.Values{}
-	form.Set("user", user)
-	form.Set("password", pass)
-	req := httptest.NewRequest("POST", "/login", strings.NewReader(form.Encode()))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	rec := httptest.NewRecorder()
-	srv.routes().ServeHTTP(rec, req)
-	return rec
+	return postLoginOpt(srv, user, pass, false)
 }
 
 func TestLogin_CSRFRejectedWithoutHeader(t *testing.T) {

@@ -62,11 +62,7 @@ emptied).`,
 			Message string `json:"message"`
 		}
 		_ = json.Unmarshal(resp.Payload, &body)
-		if body.Message != "" {
-			fmt.Println(body.Message)
-		} else {
-			fmt.Printf("revoked %d web session(s)\n", body.Revoked)
-		}
+		fmt.Println(body.Message)
 		return nil
 	},
 }

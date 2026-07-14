@@ -540,12 +540,18 @@ func newServerWithDefaults(t *testing.T, handler CommandHandler) *Server {
 }
 
 func postLogin(srv *Server, user, pass string) *httptest.ResponseRecorder {
+	return postLoginOpt(srv, user, pass, true)
+}
+
+func postLoginOpt(srv *Server, user, pass string, csrf bool) *httptest.ResponseRecorder {
 	form := url.Values{}
 	form.Set("user", user)
 	form.Set("password", pass)
 	req := httptest.NewRequest("POST", "/login", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.Header.Set("X-Forge-Action", "1")
+	if csrf {
+		req.Header.Set("X-Forge-Action", "1")
+	}
 	rec := httptest.NewRecorder()
 	srv.routes().ServeHTTP(rec, req)
 	return rec
