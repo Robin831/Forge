@@ -511,6 +511,7 @@ anvils:
 | `forge_id` | string | `""` (hostname) | | Per-instance identifier embedded in the forge-managed marker on every PR Forge creates (`<!-- forge-managed: <id> -->`). When multiple Forge instances target the same anvil, this ID ensures each instance only manages the PRs it created. When empty, `os.Hostname()` is used; falls back to `"default"`. Set this explicitly in environments where the hostname is not stable (e.g. ephemeral pods). |
 | `bus_enabled` | bool | `false` | | Enable the in-process event Bus that fans logged events out to real-time SSE/IPC consumers. Disabled by default for safe rollout: when off, no Bus is constructed and consumers fall back to legacy polling (re-reading events via `EventsSince`). Also settable at daemon startup with `--enable-bus`. |
 | `bus_buffer_size` | int | `256` | `1024` | Per-subscriber channel buffer for the event Bus. Bounds how many events a slow consumer can fall behind before the Bus drops the oldest and delivers a gap marker prompting a re-sync. Only relevant when `bus_enabled` is true; a value `<= 0` falls back to `256`. Also settable at daemon startup with `--bus-buffer-size`. |
+| `sse_poll_fallback` | bool | `false` | `true` | **Deprecated (removal planned next release).** Force the `/api/activity/stream` SSE endpoint back onto the legacy 2s polling loop even when `bus_enabled` is true. A one-release safety valve: if the bus-based replay-then-live activity stream misbehaves, set this to `true` to revert just that endpoint to polling without disabling the Bus for other consumers. Hot-reloadable — takes effect on the next SSE connect. |
 | `questgiver_enabled` | bool | `false` | | Enable the QuestGiver E2E quest monitor globally. When false, no quest scanning occurs. |
 | `questgiver_interval` | duration | `24h` | `0` | How often the QuestGiver polls anvils for quests. `0` disables. |
 | `wicket_enabled` | bool | `false` | | Enable the Wicket GitHub issue triage monitor globally. When false, no issue scanning occurs. |
@@ -844,6 +845,7 @@ Environment variables with the `FORGE_` prefix override YAML values. Nested keys
 | `FORGE_SETTINGS_CRUCIBLE_POLL_INTERVAL` | `settings.crucible_poll_interval` |
 | `FORGE_SETTINGS_BUS_ENABLED` | `settings.bus_enabled` |
 | `FORGE_SETTINGS_BUS_BUFFER_SIZE` | `settings.bus_buffer_size` |
+| `FORGE_SETTINGS_SSE_POLL_FALLBACK` | `settings.sse_poll_fallback` |
 | `FORGE_SETTINGS_AUTO_MERGE_CRUCIBLE_CHILDREN` | `settings.auto_merge_crucible_children` |
 | `FORGE_SETTINGS_QUESTGIVER_ENABLED` | `settings.questgiver_enabled` |
 | `FORGE_SETTINGS_QUESTGIVER_INTERVAL` | `settings.questgiver_interval` |

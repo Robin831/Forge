@@ -648,6 +648,18 @@ type SettingsConfig struct {
 	// to DefaultBusBufferSize. Default: 256.
 	BusBufferSize int `mapstructure:"bus_buffer_size" yaml:"bus_buffer_size,omitempty"`
 
+	// SSEPollFallback forces the /api/activity/stream SSE endpoint back onto
+	// the legacy 2s polling loop even when the in-process event Bus is enabled.
+	// It is a one-release safety valve: if the bus-based replay-then-live path
+	// misbehaves in production, set this to true to revert just the activity
+	// stream to polling without disabling the Bus for other consumers. When
+	// false (the default) the endpoint uses the Bus whenever one is wired.
+	//
+	// DEPRECATED: this fallback path is scheduled for removal in the next
+	// release once the bus-based activity stream has proven stable. Do not
+	// build new behaviour on top of it.
+	SSEPollFallback bool `mapstructure:"sse_poll_fallback" yaml:"sse_poll_fallback,omitempty"`
+
 	// Warden holds review-time rule filtering settings. These control how many
 	// learned warden rules are injected into the Warden review prompt and
 	// which filter passes are applied.
@@ -1439,6 +1451,9 @@ func Defaults() Config {
 			// the historical daemon default so enabling it needs no tuning.
 			BusEnabled:    false,
 			BusBufferSize: DefaultBusBufferSize,
+			// Activity SSE stream uses the Bus (when enabled) by default; the
+			// poll fallback is an opt-in one-release safety valve.
+			SSEPollFallback: false,
 			Warden: WardenSettings{
 				MaxRulesPerReview: 30,
 				UseAllRules:       false,
@@ -1529,6 +1544,7 @@ func Load(configFile string) (*Config, error) {
 	v.SetDefault("settings.crucible_poll_interval", "3m")
 	v.SetDefault("settings.bus_enabled", false)
 	v.SetDefault("settings.bus_buffer_size", DefaultBusBufferSize)
+	v.SetDefault("settings.sse_poll_fallback", false)
 	v.SetDefault("settings.warden.max_rules_per_review", 30)
 	v.SetDefault("settings.warden.use_all_rules", false)
 	v.SetDefault("settings.warden.filter_path_glob", true)

@@ -525,6 +525,44 @@ func TestResolvedBusBufferSize_FallsBackForNonPositive(t *testing.T) {
 	assert.Equal(t, 16, SettingsConfig{BusBufferSize: 16}.ResolvedBusBufferSize())
 }
 
+func TestLoad_SSEPollFallback_Default(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "forge.yaml")
+	require.NoError(t, os.WriteFile(cfgPath, []byte("settings:\n  max_total_smiths: 2\n"), 0o644))
+
+	cfg, err := Load(cfgPath)
+	require.NoError(t, err)
+	// The activity SSE stream uses the Bus (when enabled) by default; the poll
+	// fallback is opt-in.
+	assert.False(t, cfg.Settings.SSEPollFallback)
+}
+
+func TestLoad_SSEPollFallback_Enabled(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "forge.yaml")
+	content := `
+settings:
+  sse_poll_fallback: true
+`
+	require.NoError(t, os.WriteFile(cfgPath, []byte(content), 0o644))
+
+	cfg, err := Load(cfgPath)
+	require.NoError(t, err)
+	assert.True(t, cfg.Settings.SSEPollFallback)
+}
+
+func TestLoad_SSEPollFallback_EnvOverride(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "forge.yaml")
+	require.NoError(t, os.WriteFile(cfgPath, []byte("settings:\n  max_total_smiths: 2\n"), 0o644))
+
+	t.Setenv("FORGE_SETTINGS_SSE_POLL_FALLBACK", "true")
+
+	cfg, err := Load(cfgPath)
+	require.NoError(t, err)
+	assert.True(t, cfg.Settings.SSEPollFallback)
+}
+
 func TestLoad_InvalidBellowsInterval(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "forge.yaml")
