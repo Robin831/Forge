@@ -86,6 +86,83 @@ func TestWorker_ResumeState(t *testing.T) {
 	}
 }
 
+// TestDB_ResumableWorkerByBeadID verifies the DB-side gate that selects the
+// worker row a resume-with-message can act on: a row is resumable only when it
+// records BOTH a branch and a session_id, and when several qualify the most
+// recently started one wins. This is the backend counterpart of the UI's
+// "resume only when a branch exists" gating.
+func TestDB_ResumableWorkerByBeadID(t *testing.T) {
+	db, err := Open(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	// insert stamps the session_id after the row exists (InsertWorker does not
+	// persist session_id; UpdateWorkerSession does), mirroring the real flow.
+	insert := func(id, beadID, anvil, branch, session string, started time.Time) {
+		t.Helper()
+		if err := db.InsertWorker(&Worker{
+			ID: id, BeadID: beadID, Anvil: anvil, Branch: branch,
+			Status: WorkerPaused, StartedAt: started,
+		}); err != nil {
+			t.Fatalf("InsertWorker %s: %v", id, err)
+		}
+		if session != "" {
+			if err := db.UpdateWorkerSession(id, session, "opus"); err != nil {
+				t.Fatalf("UpdateWorkerSession %s: %v", id, err)
+			}
+		}
+	}
+
+	// No worker at all → (nil, nil), not an error.
+	got, err := db.ResumableWorkerByBeadID("bd-missing")
+	if err != nil {
+		t.Fatalf("ResumableWorkerByBeadID (missing): %v", err)
+	}
+	if got != nil {
+		t.Errorf("expected nil for a bead with no worker, got %+v", got)
+	}
+
+	// A row with a branch but no session_id is filtered out (nothing to resume).
+	insert("w-nosess", "bd-nosess", "anvil-1", "forge/bd-nosess", "", time.Now())
+	got, err = db.ResumableWorkerByBeadID("bd-nosess")
+	if err != nil {
+		t.Fatalf("ResumableWorkerByBeadID (no session): %v", err)
+	}
+	if got != nil {
+		t.Errorf("a worker without session_id must not be resumable, got %+v", got)
+	}
+
+	// A row with a session_id but no branch is filtered out too.
+	insert("w-nobranch", "bd-nobranch", "anvil-1", "", "sess-x", time.Now())
+	got, err = db.ResumableWorkerByBeadID("bd-nobranch")
+	if err != nil {
+		t.Fatalf("ResumableWorkerByBeadID (no branch): %v", err)
+	}
+	if got != nil {
+		t.Errorf("a worker without a branch must not be resumable, got %+v", got)
+	}
+
+	// Two qualifying rows for one bead: the most recently started one wins.
+	base := time.Now()
+	insert("w-old", "bd-multi", "anvil-1", "forge/bd-multi", "sess-old", base.Add(-2*time.Hour))
+	insert("w-new", "bd-multi", "anvil-2", "forge/bd-multi", "sess-new", base.Add(-1*time.Minute))
+	got, err = db.ResumableWorkerByBeadID("bd-multi")
+	if err != nil {
+		t.Fatalf("ResumableWorkerByBeadID (multi): %v", err)
+	}
+	if got == nil {
+		t.Fatal("expected a resumable worker for bd-multi, got nil")
+	}
+	if got.ID != "w-new" {
+		t.Errorf("expected the most recent row w-new, got %s", got.ID)
+	}
+	if got.SessionID != "sess-new" || got.Branch != "forge/bd-multi" {
+		t.Errorf("resumable worker fields not carried through: %+v", got)
+	}
+}
+
 // TestDB_MigrationIdempotent verifies that running the column migrations twice
 // on the same database is safe (session_id/model migrations must not fail if
 // the columns already exist).
