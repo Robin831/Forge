@@ -87,6 +87,11 @@ const (
 	// DaemonLogMaxBackups is the number of compressed daemon.log backups kept.
 	DaemonLogMaxBackups = 3
 
+	// eventBusBufSize is the per-subscriber buffer for the in-process event
+	// Bus. It bounds how many events a slow consumer can fall behind before the
+	// Bus drops the oldest and delivers a gap marker prompting a re-sync.
+	eventBusBufSize = 256
+
 	// DefaultLogSweepInterval is how often the preserved bead-log retention
 	// sweep runs.
 	DefaultLogSweepInterval = 24 * time.Hour
@@ -138,8 +143,11 @@ type anvilPollSnapshot struct {
 
 // Daemon is the main Forge orchestration daemon.
 type Daemon struct {
-	cfg           atomic.Pointer[config.Config]
-	db            *state.DB
+	cfg atomic.Pointer[config.Config]
+	db  *state.DB
+	// eventBus is the daemon-owned in-process event Bus, shared by reference
+	// with db so that every logged event is fanned out to subscribers.
+	eventBus      *state.Bus
 	logger        *slog.Logger
 	ipc           *ipc.Server
 	shutdownMgr   *shutdown.Manager
@@ -413,6 +421,12 @@ func New(cfg *config.Config, configPath string) (*Daemon, error) {
 		return nil, fmt.Errorf("opening state database: %w", err)
 	}
 
+	// Own the in-process event Bus here and share it (by reference) with the
+	// state DB so every logged event is fanned out to subscribers. The Bus is
+	// non-blocking (drop-oldest), so publishing never stalls LogEvent.
+	eventBus := state.NewBus(eventBusBufSize)
+	db.SetBus(eventBus)
+
 	// One-time reconciliation: repair worker rows whose log_path dangles at a
 	// removed worktree but whose preserved copy still exists under ~/.forge/logs.
 	// Only dangling rows are touched, so this is cheap on subsequent starts.
@@ -465,6 +479,7 @@ func New(cfg *config.Config, configPath string) (*Daemon, error) {
 
 	d := &Daemon{
 		db:                    db,
+		eventBus:              eventBus,
 		logger:                logger,
 		forgeDir:              forgeDir,
 		pidFile:               filepath.Join(forgeDir, PIDFileName),
