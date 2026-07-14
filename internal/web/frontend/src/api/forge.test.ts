@@ -26,6 +26,7 @@ describe('RESOLVE_VERBS', () => {
       'stop',
       'approve-as-is',
       'warden-rerun',
+      'create-pr',
     ])
   })
 
