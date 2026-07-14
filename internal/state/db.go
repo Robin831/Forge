@@ -499,6 +499,27 @@ CREATE TABLE IF NOT EXISTS forge_session_messages (
 CREATE INDEX IF NOT EXISTS idx_forge_session_messages_session_id
     ON forge_session_messages(session_id, id);
 
+-- forge_turn_snapshots persists the mid-turn state of an in-flight Beads-Forge
+-- AI turn so a reconnecting client (or a restarted daemon) can recover the
+-- accumulated assistant text and turn status that would otherwise live only in
+-- the in-memory TurnStore. One row per (session_id, turn_id): the turn UUID is
+-- the client-facing handle, so the snapshot is keyed on it rather than on a
+-- message row. status is stored as open-ended TEXT (in_progress | complete |
+-- expired) to avoid an enum migration if later beads add states.
+CREATE TABLE IF NOT EXISTS forge_turn_snapshots (
+    session_id        INTEGER NOT NULL,
+    turn_id           TEXT NOT NULL,
+    status            TEXT NOT NULL DEFAULT 'in_progress',
+    accumulated_text  TEXT NOT NULL DEFAULT '',
+    updated_at        TEXT NOT NULL,
+    PRIMARY KEY (session_id, turn_id),
+    FOREIGN KEY (session_id) REFERENCES forge_sessions(id) ON DELETE CASCADE
+);
+
+-- Ordered lookup of the newest snapshot for a session (getLatestTurnSnapshot).
+CREATE INDEX IF NOT EXISTS idx_forge_turn_snapshots_session_updated
+    ON forge_turn_snapshots(session_id, updated_at DESC, turn_id DESC);
+
 -- pr_findings stores individual code-review findings discovered by Assay on a
 -- PR. finding_hash is the dedup key (UNIQUE) so the same finding across repeat
 -- reviews is recorded once; consecutive_misses tracks how many reviews in a row
