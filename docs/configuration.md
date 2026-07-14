@@ -523,6 +523,8 @@ anvils:
 | `wicket_bead_created_label` | string | `"forge-bead-created"` | | GitHub label applied to issues for which a bead was created. |
 | `wicket_trigger_label` | string | `""` | | When non-empty, only issues carrying this label are processed (pull model). When empty (default), Wicket processes all issues without a trigger-label gate (push model). |
 | `forgechat.turn_timeout` | duration | `5m` | (cap `15m`) | Wall-clock budget for a single Beads-Forge AI turn (drafter, grilling, plan, emit). When the budget is exceeded, the runner returns a sentinel chat message instead of the truncated streamed preamble and logs a warning. Values above `15m` are clamped on load. |
+| `forgechat.turn_expiry` | duration | `30m` | | How long a completed Beads-Forge turn is retained in the in-memory TurnStore before garbage collection removes it. Once dropped, a reconnecting SSE client receives a graceful `turn_expired` event (and refetches the canonical messages) instead of a 404. A non-positive value disables expiry. |
+| `forgechat.turn_retention_cap` | int | `1000` | | Maximum number of Beads-Forge turns retained in the TurnStore. When exceeded, the oldest completed turns are evicted first (in-flight turns are never evicted). A negative value disables the cap. |
 
 Duration values use Go syntax: `30s`, `5m`, `1h30m`, `168h`, etc.
 
