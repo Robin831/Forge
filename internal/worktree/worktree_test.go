@@ -2,6 +2,7 @@ package worktree
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -1033,6 +1034,119 @@ func TestRemove_UnsetsStaleCoreWorktree(t *testing.T) {
 	cmd.Env = envWithoutGitVars()
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Errorf("git status --porcelain on main repo failed after worker remove: %v\n%s", err, out)
+	}
+}
+
+// TestCreateFromBranch_ReconstructsAtExactPath verifies that CreateFromBranch
+// recreates a removed worktree at the identical path with the surviving branch
+// and its committed work intact.
+func TestCreateFromBranch_ReconstructsAtExactPath(t *testing.T) {
+	_, anvilDir := initBareRemoteCloneWithInitialCommit(t)
+
+	mgr := NewManager()
+	ctx := context.Background()
+
+	// Original worker: create the worktree, commit and push some work.
+	wt, err := mgr.CreateWithOptions(ctx, anvilDir, "resume-bead", CreateOptions{})
+	if err != nil {
+		t.Fatalf("CreateWithOptions: %v", err)
+	}
+	origPath := wt.Path
+	work := filepath.Join(wt.Path, "smith-work.txt")
+	if err := os.WriteFile(work, []byte("progress\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, wt.Path, "add", "smith-work.txt")
+	runGit(t, wt.Path, "commit", "-m", "smith work")
+	runGit(t, wt.Path, "push", "origin", wt.Branch)
+	workHash := gitOutput(t, wt.Path, "rev-parse", "HEAD")
+
+	// Tear the worktree down as a restart/teardown would.
+	if err := mgr.Remove(ctx, anvilDir, wt); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+	if _, err := os.Stat(origPath); !os.IsNotExist(err) {
+		t.Fatalf("worktree dir should be gone after Remove, stat err = %v", err)
+	}
+
+	// Resume: recreate from the surviving branch at the exact original path.
+	got, err := mgr.CreateFromBranch(ctx, anvilDir, "resume-bead", wt.Branch, origPath)
+	if err != nil {
+		t.Fatalf("CreateFromBranch: %v", err)
+	}
+	if got.Path != origPath {
+		t.Errorf("CreateFromBranch path = %q; want original %q", got.Path, origPath)
+	}
+	if got.Branch != wt.Branch {
+		t.Errorf("CreateFromBranch branch = %q; want %q", got.Branch, wt.Branch)
+	}
+	if h := gitOutput(t, got.Path, "rev-parse", "HEAD"); h != workHash {
+		t.Errorf("resumed HEAD = %s; want %s (smith work preserved)", h, workHash)
+	}
+	if _, err := os.Stat(filepath.Join(got.Path, "smith-work.txt")); err != nil {
+		t.Errorf("smith-work.txt should be present after resume: %v", err)
+	}
+	if !isValidWorktree(ctx, got.Path) {
+		t.Error("resumed directory should be a valid worktree")
+	}
+}
+
+// TestCreateFromBranch_RemoteOnly verifies resume works when only the remote
+// branch survives (the local ref was pruned, e.g. after a daemon restart on a
+// fresh checkout).
+func TestCreateFromBranch_RemoteOnly(t *testing.T) {
+	_, anvilDir := initBareRemoteCloneWithInitialCommit(t)
+
+	mgr := NewManager()
+	ctx := context.Background()
+
+	wt, err := mgr.CreateWithOptions(ctx, anvilDir, "remote-only-bead", CreateOptions{})
+	if err != nil {
+		t.Fatalf("CreateWithOptions: %v", err)
+	}
+	origPath := wt.Path
+	branch := wt.Branch
+	if err := os.WriteFile(filepath.Join(wt.Path, "f.txt"), []byte("x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, wt.Path, "add", "f.txt")
+	runGit(t, wt.Path, "commit", "-m", "work")
+	runGit(t, wt.Path, "push", "origin", branch)
+	workHash := gitOutput(t, wt.Path, "rev-parse", "HEAD")
+
+	// Remove worktree, then delete the local branch so only origin/<branch>
+	// remains.
+	if err := mgr.Remove(ctx, anvilDir, wt); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+	// Remove leaves the local branch (best-effort delete), so force-delete to
+	// simulate the remote-only case regardless.
+	_ = exec.Command("git", "-C", anvilDir, "branch", "-D", branch).Run()
+
+	got, err := mgr.CreateFromBranch(ctx, anvilDir, "remote-only-bead", branch, origPath)
+	if err != nil {
+		t.Fatalf("CreateFromBranch (remote-only): %v", err)
+	}
+	if h := gitOutput(t, got.Path, "rev-parse", "HEAD"); h != workHash {
+		t.Errorf("resumed HEAD = %s; want %s", h, workHash)
+	}
+}
+
+// TestCreateFromBranch_BranchDeleted verifies that a missing branch yields a
+// clear error wrapping ErrBranchDeleted rather than silently basing off main.
+func TestCreateFromBranch_BranchDeleted(t *testing.T) {
+	_, anvilDir := initBareRemoteCloneWithInitialCommit(t)
+
+	mgr := NewManager()
+	ctx := context.Background()
+	targetPath := filepath.Join(anvilDir, ".workers", "gone-bead")
+
+	_, err := mgr.CreateFromBranch(ctx, anvilDir, "gone-bead", "forge/gone-bead", targetPath)
+	if err == nil {
+		t.Fatal("CreateFromBranch should fail when branch does not exist")
+	}
+	if !errors.Is(err, ErrBranchDeleted) {
+		t.Errorf("error should wrap ErrBranchDeleted; got %v", err)
 	}
 }
 
