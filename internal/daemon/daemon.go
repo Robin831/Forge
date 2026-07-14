@@ -56,6 +56,7 @@ import (
 	"github.com/Robin831/Forge/internal/queueactions"
 	"github.com/Robin831/Forge/internal/rebase"
 	"github.com/Robin831/Forge/internal/schematic"
+	"github.com/Robin831/Forge/internal/selfdeploy"
 	"github.com/Robin831/Forge/internal/shutdown"
 	"github.com/Robin831/Forge/internal/smelter"
 	"github.com/Robin831/Forge/internal/smith"
@@ -321,6 +322,11 @@ type Daemon struct {
 	// stored as a time.Time (zero when not manually paused) and surfaced in
 	// StatusPayload.PausedSince so UIs can show "paused since <time>".
 	pausedSince atomic.Value
+
+	// selfDeployInFlight guards the self-deploy flow so overlapping merge events
+	// (or a re-fired EventPRMerged) cannot launch two concurrent
+	// pull/build/restart cycles. Set true while a deploy is draining or running.
+	selfDeployInFlight atomic.Bool
 
 	// Per-anvil VCS providers for PR operations (GitHub, GitLab, etc.).
 	vcsProviders   map[string]vcs.Provider
@@ -1257,6 +1263,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 	d.bellowsMonitor.OnEvent(d.handleBellowsNotifications)
 	d.bellowsMonitor.OnEvent(d.handleBeadCloseOnMerge)
 	d.bellowsMonitor.OnEvent(d.handleWicketPRMerged)
+	d.bellowsMonitor.OnEvent(d.handleSelfDeploy)
 
 	// Reconcile: register any open PRs not yet tracked in the state DB.
 	// This handles PRs created before the current DB or after a DB reset.
@@ -2241,6 +2248,191 @@ func (d *Daemon) handleWicketPRMerged(ctx context.Context, event bellows.PREvent
 		defer cancel()
 		wm.HandlePRMerged(lCtx, event.BeadID, event.PRURL, baseBranch, event.PRNumber)
 	}()
+}
+
+// handleSelfDeploy triggers Forge's self-deploy flow when a PR merges on Forge's
+// own repository. It is gated behind self_deploy.enabled (default off) and only
+// fires for the configured self_deploy anvil and base branch. When it accepts an
+// event it launches runSelfDeploy in the background so the bellows handler chain
+// is never blocked by a drain-and-rebuild that can take many minutes.
+func (d *Daemon) handleSelfDeploy(_ context.Context, event bellows.PREvent) {
+	if !d.selfDeployAccepts(event) {
+		return
+	}
+
+	// Single-flight: a second merge event while a deploy is already draining or
+	// running is a no-op — the in-flight deploy already pulls the latest tip.
+	if !d.selfDeployInFlight.CompareAndSwap(false, true) {
+		d.logger.Info("self-deploy already in flight; ignoring merge event",
+			"anvil", event.Anvil, "pr", event.PRNumber)
+		return
+	}
+
+	sd := d.config().SelfDeploy
+	go func() {
+		defer d.selfDeployInFlight.Store(false)
+		d.runSelfDeploy(sd)
+	}()
+}
+
+// selfDeployAccepts reports whether a bellows event qualifies to trigger a
+// self-deploy: it must be a PR-merged event, the feature must be enabled with a
+// configured anvil, the event anvil must match, and the merged PR's recorded
+// base branch must equal the watched branch.
+//
+// The base-branch check is deliberately conservative. The bellows PREvent does
+// not carry the base branch, so it is read from the PR record. A missing record,
+// a lookup error, OR an empty recorded base branch all disqualify the event:
+// an empty base branch is ambiguous (it may not be the watched branch at all),
+// and silently treating "unknown" as "matches" would let a merge to some other
+// branch trigger a production restart. When in doubt, do not deploy.
+func (d *Daemon) selfDeployAccepts(event bellows.PREvent) bool {
+	if event.EventType != bellows.EventPRMerged {
+		return false
+	}
+	sd := d.config().SelfDeploy
+	if !sd.Enabled || sd.Anvil == "" {
+		return false
+	}
+	if event.Anvil != sd.Anvil {
+		return false
+	}
+	pr, err := d.db.GetPRByNumber(event.Anvil, event.PRNumber)
+	if err != nil || pr == nil {
+		d.logger.Warn("self-deploy: could not resolve merged PR record; skipping",
+			"anvil", event.Anvil, "pr", event.PRNumber, "error", err)
+		return false
+	}
+	if pr.BaseBranch == "" {
+		d.logger.Warn("self-deploy: merged PR has no recorded base branch; skipping to avoid an unintended restart",
+			"anvil", event.Anvil, "pr", event.PRNumber)
+		return false
+	}
+	if pr.BaseBranch != sd.ResolvedBranch() {
+		return false
+	}
+	return true
+}
+
+// runSelfDeploy pauses dispatch, drains active workers, then rebuilds and
+// restarts the daemon binary. It runs on its own goroutine and uses the daemon's
+// root context so a graceful shutdown cancels the build/restart cleanly. On a
+// successful restart the process is typically terminated by systemd and this
+// function never returns.
+func (d *Daemon) runSelfDeploy(sd config.SelfDeployConfig) {
+	anvilCfg, ok := d.config().Anvils[sd.Anvil]
+	if !ok || anvilCfg.Path == "" {
+		d.logger.Warn("self-deploy: configured anvil not found or missing path; aborting", "anvil", sd.Anvil)
+		_ = d.db.LogEvent(state.EventSelfDeployFailed,
+			fmt.Sprintf("self-deploy aborted: anvil %q not found or has no path", sd.Anvil), "", sd.Anvil)
+		return
+	}
+
+	ctx := d.runCtx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	// Pause dispatch so no new workers start while we drain. Preserve the prior
+	// pause state so a deploy that never restarts (drain timeout / build failure)
+	// does not silently resume a user's manual pause.
+	wasPaused := d.dispatchPaused.Load()
+	d.dispatchPaused.Store(true)
+	restorePause := func() {
+		if !wasPaused {
+			d.dispatchPaused.Store(false)
+		}
+	}
+
+	d.logger.Info("self-deploy: dispatch paused; draining workers before rebuild", "anvil", sd.Anvil)
+
+	if !d.waitForDrain(ctx, sd.ResolvedDrainTimeout()) {
+		d.logger.Warn("self-deploy: drain did not complete before timeout; deferring deploy",
+			"anvil", sd.Anvil, "timeout", sd.ResolvedDrainTimeout())
+		_ = d.db.LogEvent(state.EventSelfDeploySkipped,
+			fmt.Sprintf("self-deploy deferred: workers did not drain within %s", sd.ResolvedDrainTimeout()), "", sd.Anvil)
+		restorePause()
+		return
+	}
+
+	deployer := selfdeploy.New(
+		selfdeploy.Config{
+			RepoPath:    sd.ResolvedRepoPath(anvilCfg.Path),
+			BinaryPath:  sd.ResolvedBinaryPath(),
+			UnitName:    sd.ResolvedUnitName(),
+			Branch:      sd.ResolvedBranch(),
+			BuildTarget: sd.ResolvedBuildTarget(),
+		},
+		selfdeploy.ExecCommander{},
+		selfdeploy.SystemctlRestarter{
+			Cmd:         sd.ResolvedRestartCommand(),
+			PrependArgs: sd.RestartArgs,
+		},
+		selfDeployEventSink{db: d.db, anvil: sd.Anvil},
+		d.activeWorkerCount,
+	)
+
+	if err := deployer.Deploy(ctx); err != nil {
+		d.logger.Warn("self-deploy failed", "anvil", sd.Anvil, "error", err)
+		// Deploy leaves the live binary intact (or rolled back) on failure, so it
+		// is safe to resume normal operation.
+		restorePause()
+		return
+	}
+	// On success the restart typically terminates this process; if it returned
+	// nil without doing so we still leave dispatch paused pending the restart.
+	d.logger.Info("self-deploy: new binary installed and restart requested", "anvil", sd.Anvil)
+}
+
+// activeWorkerCount returns the number of workers that would be disrupted by a
+// restart: all non-terminal dispatch/lifecycle workers plus operator-paused
+// workers (which still hold a worktree and would resume into a running Smith).
+func (d *Daemon) activeWorkerCount() (int, error) {
+	active, err := d.db.ActiveWorkers()
+	if err != nil {
+		return 0, err
+	}
+	paused, err := d.db.PausedWorkers()
+	if err != nil {
+		return 0, err
+	}
+	return len(active) + len(paused), nil
+}
+
+// waitForDrain blocks until activeWorkerCount reports zero, the timeout elapses,
+// or ctx is cancelled. It returns true only when the workers fully drained.
+func (d *Daemon) waitForDrain(ctx context.Context, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+	for {
+		n, err := d.activeWorkerCount()
+		if err != nil {
+			d.logger.Warn("self-deploy: worker drain check failed", "error", err)
+		} else if n == 0 {
+			return true
+		}
+		if time.Now().After(deadline) {
+			return false
+		}
+		select {
+		case <-ctx.Done():
+			return false
+		case <-ticker.C:
+		}
+	}
+}
+
+// selfDeployEventSink adapts state.DB.LogEvent to the selfdeploy.EventSink
+// interface, mapping the package's string event names to state.EventType and
+// recording them against the self_deploy anvil.
+type selfDeployEventSink struct {
+	db    *state.DB
+	anvil string
+}
+
+func (s selfDeployEventSink) Emit(event, message string) {
+	_ = s.db.LogEvent(state.EventType(event), message, "", s.anvil)
 }
 
 // reconcileMergedBeads is a startup catch-up pass that closes beads whose PRs
