@@ -129,6 +129,31 @@ describe('startTurn — 202 streaming branch', () => {
     expect(es.closed).toBe(true)
   })
 
+  it('treats a turn_expired event as a terminal complete with no final id', async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce(acceptedResponse('turn-x'))
+    const { handlers, calls } = makeHandlers()
+
+    await startTurn(
+      7,
+      { content: 'hi' },
+      handlers,
+      {
+        fetchImpl: fetchMock as unknown as typeof fetch,
+        eventSourceImpl: FakeEventSource as unknown as typeof EventSource,
+      },
+    )
+
+    const es = FakeEventSource.instances[0]
+    es.emit('open', undefined)
+    es.emit('turn_expired', { message: 'turn expired — refresh session' })
+
+    // The SPA refetches canonical messages on complete; a null final id and a
+    // closed stream mean the spinner clears with no dangling error state.
+    expect(calls.complete).toEqual([null])
+    expect(calls.error).toHaveLength(0)
+    expect(es.closed).toBe(true)
+  })
+
   it('forwards tool_use and tool_result events as chips', async () => {
     const fetchMock = vi.fn().mockResolvedValueOnce(acceptedResponse('t1'))
     const { handlers, calls } = makeHandlers()

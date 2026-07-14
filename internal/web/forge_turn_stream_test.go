@@ -168,6 +168,85 @@ func TestForgeTurnGet_WrongSessionReturns404(t *testing.T) {
 	}
 }
 
+// After a daemon restart (or GC expiry / retention-cap eviction) the turn is
+// gone from the store. A reconnecting SSE client must receive a graceful
+// turn_expired event on a 200 stream — not a 404 — so the SPA refetches
+// canonical messages and clears its spinner instead of hanging on a dead
+// stream. The stream must also close cleanly right after (no dangling frames).
+func TestForgeTurnStream_MissingTurnEmitsTurnExpired(t *testing.T) {
+	srv := newServerWithDefaults(t, nil)
+	srv.SetChatRunner(&stubRunner{})
+	cookie := loginAndGetCookie(t, srv)
+	id := createForgeSessionHelper(t, srv, cookie, `{"initial_message":"start"}`)
+
+	// No turn was ever registered under this id — simulates a turn lost on a
+	// daemon restart / already garbage-collected.
+	resp, cancel := turnStreamRequest(t, srv, id, "lost-on-restart")
+	defer cancel()
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 SSE stream, got %d", resp.StatusCode)
+	}
+	if got := resp.Header.Get("Content-Type"); !strings.Contains(got, "text/event-stream") {
+		t.Fatalf("Content-Type: got %q want text/event-stream", got)
+	}
+
+	frames := readSSEFrames(t, resp, 1, 2*time.Second)
+	if len(frames) == 0 {
+		t.Fatal("expected a turn_expired frame, got none")
+	}
+	if frames[0].Event != string(TurnEventTurnExpired) {
+		t.Fatalf("expected turn_expired event, got %q (frames=%+v)", frames[0].Event, frames)
+	}
+	var payload struct {
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal([]byte(frames[0].Data), &payload); err != nil {
+		t.Fatalf("decode turn_expired payload %q: %v", frames[0].Data, err)
+	}
+	if payload.Message == "" {
+		t.Fatalf("turn_expired payload should carry a message, got %q", frames[0].Data)
+	}
+}
+
+// A turn evicted from the store after it completed (e.g. GC/expiry between the
+// initial load and a reconnect) must also degrade to turn_expired rather than
+// 404 on the stream path.
+func TestForgeTurnStream_ExpiredAfterCompletionEmitsTurnExpired(t *testing.T) {
+	srv := newServerWithDefaults(t, nil)
+	runner := &stubRunner{
+		response: &forgechat.TurnResponse{
+			Messages: []forgechat.EmittedMessage{{Kind: "text", Content: "done"}},
+		},
+	}
+	srv.SetChatRunner(runner)
+	cookie := loginAndGetCookie(t, srv)
+	id := createForgeSessionHelper(t, srv, cookie, `{"initial_message":"start"}`)
+
+	rec := forgeRequest(t, srv, http.MethodPost, "/api/forge/sessions/"+itoa(id)+"/turn", `{"content":"hi"}`, cookie)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("turn: %d body=%s", rec.Code, rec.Body.String())
+	}
+	turnID := decodeAccepted(t, rec.Body.Bytes())
+	waitForTurn(t, srv, turnID)
+
+	// Simulate the completed turn being reclaimed by GC before the reconnect.
+	srv.TurnStore().Delete(turnID)
+
+	resp, cancel := turnStreamRequest(t, srv, id, turnID)
+	defer cancel()
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 SSE stream, got %d", resp.StatusCode)
+	}
+	frames := readSSEFrames(t, resp, 1, 2*time.Second)
+	if len(frames) == 0 || frames[0].Event != string(TurnEventTurnExpired) {
+		t.Fatalf("expected turn_expired event, got frames=%+v", frames)
+	}
+}
+
 func TestForgeTurnGet_RequiresAuth(t *testing.T) {
 	srv := newServerWithDefaults(t, nil)
 	rec := forgeRequest(t, srv, http.MethodGet, "/api/forge/sessions/1/turn/abc", "", "")
@@ -328,22 +407,29 @@ func TestForgeTurnStream_RunnerErrorEmitsErrorFrame(t *testing.T) {
 	}
 }
 
-// Unknown turn ids on the stream endpoint return 404 instead of opening a
-// half-broken SSE connection.
-func TestForgeTurnStream_UnknownTurnReturns404(t *testing.T) {
+// Unknown turn ids on the stream endpoint degrade to a graceful turn_expired
+// event on a 200 stream (rather than a 404) so a reconnecting client refetches
+// its canonical messages instead of hanging on a dead stream.
+func TestForgeTurnStream_UnknownTurnEmitsTurnExpired(t *testing.T) {
 	srv := newServerWithDefaults(t, nil)
 	srv.SetChatRunner(&stubRunner{})
 	cookie := loginAndGetCookie(t, srv)
 	id := createForgeSessionHelper(t, srv, cookie, `{"initial_message":"start"}`)
 
 	rec := forgeRequest(t, srv, http.MethodGet, "/api/forge/sessions/"+itoa(id)+"/turn/does-not-exist/stream", "", cookie)
-	if rec.Code != http.StatusNotFound {
-		t.Fatalf("expected 404, got %d body=%s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 SSE stream, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "event: "+string(TurnEventTurnExpired)) {
+		t.Fatalf("expected a turn_expired event, got body=%s", rec.Body.String())
 	}
 }
 
-// Cross-session reads must 404 — same rule as the polling endpoint.
-func TestForgeTurnStream_WrongSessionReturns404(t *testing.T) {
+// Cross-session reads must not leak another session's turn. Since the SSE
+// headers are already committed, the handler degrades to the same graceful
+// turn_expired event rather than exposing the foreign turn — the client only
+// learns to refetch its own session's messages.
+func TestForgeTurnStream_WrongSessionEmitsTurnExpired(t *testing.T) {
 	srv := newServerWithDefaults(t, nil)
 	srv.SetChatRunner(&stubRunner{})
 	cookie := loginAndGetCookie(t, srv)
@@ -358,8 +444,11 @@ func TestForgeTurnStream_WrongSessionReturns404(t *testing.T) {
 	waitForTurn(t, srv, turnID)
 
 	get := forgeRequest(t, srv, http.MethodGet, "/api/forge/sessions/"+itoa(idB)+"/turn/"+turnID+"/stream", "", cookie)
-	if get.Code != http.StatusNotFound {
-		t.Fatalf("expected 404 for cross-session stream, got %d body=%s", get.Code, get.Body.String())
+	if get.Code != http.StatusOK {
+		t.Fatalf("expected 200 SSE stream for cross-session stream, got %d body=%s", get.Code, get.Body.String())
+	}
+	if !strings.Contains(get.Body.String(), "event: "+string(TurnEventTurnExpired)) {
+		t.Fatalf("cross-session stream must degrade to turn_expired, got body=%s", get.Body.String())
 	}
 }
 

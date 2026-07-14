@@ -35,7 +35,9 @@ import (
 // synthesise a terminal frame from the snapshot so they observe a
 // deterministic complete/error event before the connection ends.
 func (s *Server) handleForgeSessionTurnStream(w http.ResponseWriter, r *http.Request) {
-	st, ok := s.lookupTurn(w, r)
+	// Validate the session up front (auth + ownership) so genuine 401/404
+	// failures are still surfaced as JSON before we commit to the SSE stream.
+	sessionID, ok := s.lookupSession(w, r)
 	if !ok {
 		return
 	}
@@ -46,12 +48,28 @@ func (s *Server) handleForgeSessionTurnStream(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
-	w.Header().Set("X-Accel-Buffering", "no")
-	fmt.Fprint(w, "retry: 3000\n\n")
-	flusher.Flush()
+	turnID := chi.URLParam(r, "turn_id")
+	if turnID == "" {
+		writeError(w, http.StatusBadRequest, "turn_id is required")
+		return
+	}
+
+	writeSSEHeaders(w, flusher)
+
+	// Resolve the turn only after the SSE headers are committed. A missing or
+	// foreign turn on the reconnect path (expired by GC, evicted past the
+	// retention cap, or lost on a daemon restart) is reported as a graceful
+	// turn_expired event on the 200 stream rather than a 404 — the SPA reuses
+	// its complete-path refetch, so the spinner clears and the canonical
+	// messages reload instead of the client hanging on a dead stream.
+	st, ok := s.turnStore.Get(turnID)
+	if !ok || st.SessionID != sessionID {
+		writeTurnSSEEvent(w, flusher, TurnEvent{
+			Type: TurnEventTurnExpired,
+			Data: turnExpiredData{Message: turnExpiredMessage},
+		})
+		return
+	}
 
 	// Subscribe before checking Done to avoid the race where the turn
 	// completes between the Done check and the subscribe call. If the turn
@@ -113,27 +131,40 @@ func (s *Server) handleForgeSessionTurnGet(w http.ResponseWriter, r *http.Reques
 	writeJSON(w, http.StatusOK, st.Snapshot())
 }
 
-// lookupTurn resolves the {id, turn_id} URL params, validates that the
-// signed-in user owns the session, and returns the registered TurnState.
-// Writes the appropriate 4xx/5xx response and returns ok=false on any
-// failure so callers can return immediately.
-func (s *Server) lookupTurn(w http.ResponseWriter, r *http.Request) (*TurnState, bool) {
+// lookupSession resolves the {id} URL param and validates that the signed-in
+// user owns the session. Writes the appropriate 4xx/5xx response and returns
+// ok=false on any failure so callers can return immediately.
+func (s *Server) lookupSession(w http.ResponseWriter, r *http.Request) (int64, bool) {
 	sess := SessionFromContext(r.Context())
 	if sess == nil {
 		writeError(w, http.StatusUnauthorized, "unauthorized")
-		return nil, false
+		return 0, false
 	}
 	id, ok := parseForgeSessionID(w, r)
 	if !ok {
-		return nil, false
+		return 0, false
 	}
 	row, err := s.db.GetForgeSession(id)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to load session: "+err.Error())
-		return nil, false
+		return 0, false
 	}
 	if row == nil || !forgeSessionVisibleTo(row, sess.Username) {
 		writeError(w, http.StatusNotFound, "session not found")
+		return 0, false
+	}
+	return id, true
+}
+
+// lookupTurn resolves the {id, turn_id} URL params, validates that the
+// signed-in user owns the session, and returns the registered TurnState.
+// Writes the appropriate 4xx/5xx response and returns ok=false on any
+// failure so callers can return immediately. Used by the JSON snapshot
+// endpoint, where a missing turn is a plain 404; the SSE stream handler
+// instead reports a missing turn as a graceful turn_expired event.
+func (s *Server) lookupTurn(w http.ResponseWriter, r *http.Request) (*TurnState, bool) {
+	id, ok := s.lookupSession(w, r)
+	if !ok {
 		return nil, false
 	}
 	turnID := chi.URLParam(r, "turn_id")
@@ -147,6 +178,18 @@ func (s *Server) lookupTurn(w http.ResponseWriter, r *http.Request) (*TurnState,
 		return nil, false
 	}
 	return st, true
+}
+
+// writeSSEHeaders writes the standard text/event-stream headers plus an
+// initial retry hint and flushes so reverse proxies don't buffer the
+// response before the first event arrives.
+func writeSSEHeaders(w http.ResponseWriter, flusher http.Flusher) {
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no")
+	fmt.Fprint(w, "retry: 3000\n\n")
+	flusher.Flush()
 }
 
 // writeTurnSSEEvent encodes one TurnEvent as `event: <type>\ndata: <json>\n\n`

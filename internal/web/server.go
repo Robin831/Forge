@@ -322,6 +322,10 @@ func (s *Server) Start(ctx context.Context) error {
 		go s.purgeLoop(ctx)
 	}
 
+	// Reclaim expired / over-cap turns from the in-memory TurnStore until
+	// shutdown cancels ctx.
+	go s.turnStore.StartSweeper(ctx, 0)
+
 	go func() {
 		<-ctx.Done()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

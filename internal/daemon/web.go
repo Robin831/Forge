@@ -63,6 +63,13 @@ func (d *Daemon) startWebServer(ctx context.Context) error {
 	// watches (honours --config).
 	srv.SetConfigFile(d.configFile)
 
+	// Apply the TurnStore garbage-collection bounds from config so completed
+	// turns expire (default 30m) and the total retained count stays capped.
+	{
+		fc := d.cfg.Load().Settings.ForgeChat
+		srv.TurnStore().Configure(fc.ResolvedTurnExpiry(), fc.ResolvedTurnRetentionCap())
+	}
+
 	// Gate the activity SSE stream onto legacy polling when
 	// settings.sse_poll_fallback is set. The closure reads d.cfg each connect
 	// so hot-reloads of the flag take effect without restarting the server.

@@ -208,6 +208,17 @@ function startEventSource(
     handlers.onComplete?.(finalId)
   })
 
+  // turn_expired fires when the server no longer has this turn (GC expiry,
+  // retention-cap eviction, or a daemon restart). Treat it like a terminal
+  // complete with no final id: close the stream and let the caller refetch
+  // the canonical messages, which clears the spinner without a dangling
+  // "reconnecting…" state.
+  es.addEventListener('turn_expired', () => {
+    if (cancelled) return
+    close()
+    handlers.onComplete?.(null)
+  })
+
   es.addEventListener('error', (ev: MessageEvent | Event) => {
     if (cancelled) return
     // Two failure modes share onerror:
@@ -281,6 +292,15 @@ function startPollingFallback(
       if (res.status === 401) {
         stop()
         handlers.onError?.('unauthorized')
+        return
+      }
+      if (res.status === 404) {
+        // The turn is gone (GC expiry, retention-cap eviction, or a daemon
+        // restart). Mirror the SSE turn_expired path: stop polling and let the
+        // caller refetch canonical messages so the spinner clears instead of
+        // polling a dead turn forever.
+        stop()
+        handlers.onComplete?.(null)
         return
       }
       if (!res.ok) {

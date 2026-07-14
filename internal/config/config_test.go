@@ -1569,3 +1569,63 @@ func TestForgeChatSettings_ResolvedTurnTimeout(t *testing.T) {
 		})
 	}
 }
+
+// TestForgeChatSettings_ResolvedTurnExpiry covers the default fallback used by
+// the TurnStore GC: unset/negative resolve to the 30m default, positive values
+// pass through verbatim.
+func TestForgeChatSettings_ResolvedTurnExpiry(t *testing.T) {
+	cases := []struct {
+		name  string
+		input time.Duration
+		want  time.Duration
+	}{
+		{"zero falls back to default", 0, DefaultForgeChatTurnExpiry},
+		{"negative falls back to default", -5 * time.Minute, DefaultForgeChatTurnExpiry},
+		{"positive preserved", 10 * time.Minute, 10 * time.Minute},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := ForgeChatSettings{TurnExpiry: tc.input}
+			assert.Equal(t, tc.want, f.ResolvedTurnExpiry())
+		})
+	}
+}
+
+// TestForgeChatSettings_ResolvedTurnRetentionCap covers the retention-cap
+// resolver: unset (0) resolves to the default, negative disables the cap and is
+// returned as-is, positive values pass through.
+func TestForgeChatSettings_ResolvedTurnRetentionCap(t *testing.T) {
+	cases := []struct {
+		name  string
+		input int
+		want  int
+	}{
+		{"zero falls back to default", 0, DefaultForgeChatTurnRetentionCap},
+		{"negative disables cap and is preserved", -1, -1},
+		{"positive preserved", 250, 250},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := ForgeChatSettings{TurnRetentionCap: tc.input}
+			assert.Equal(t, tc.want, f.ResolvedTurnRetentionCap())
+		})
+	}
+}
+
+// TestLoad_ForgeChatTurnExpiry_ParsedFromFile verifies the turn_expiry duration
+// string is parsed off the config file into the settings struct.
+func TestLoad_ForgeChatTurnExpiry_ParsedFromFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "forge.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(`
+settings:
+  forgechat:
+    turn_expiry: 45m
+    turn_retention_cap: 500
+`), 0o644))
+
+	cfg, err := Load(path)
+	require.NoError(t, err)
+	assert.Equal(t, 45*time.Minute, cfg.Settings.ForgeChat.TurnExpiry)
+	assert.Equal(t, 500, cfg.Settings.ForgeChat.TurnRetentionCap)
+}

@@ -754,6 +754,17 @@ const MaxForgeChatTurnTimeout = 15 * time.Minute
 // sync if either is changed.
 const DefaultForgeChatTurnTimeout = 5 * time.Minute
 
+// DefaultForgeChatTurnExpiry is how long a completed (or errored) turn is
+// retained in the process-local TurnStore before garbage collection drops it.
+// Once dropped, a reconnecting SSE client receives a graceful "turn expired"
+// event and refetches the canonical messages rather than seeing a 404.
+const DefaultForgeChatTurnExpiry = 30 * time.Minute
+
+// DefaultForgeChatTurnRetentionCap is the maximum number of turns retained in
+// the TurnStore. When exceeded, the oldest completed turns are evicted first.
+// A non-positive configured value disables the cap.
+const DefaultForgeChatTurnRetentionCap = 1000
+
 // ForgeChatSettings configures the Beads-Forge per-turn AI loop.
 type ForgeChatSettings struct {
 	// TurnTimeout caps the wall-clock duration of a single forgechat turn.
@@ -761,6 +772,15 @@ type ForgeChatSettings struct {
 	// MaxForgeChatTurnTimeout (15m) are clamped on load with a slog.Warn.
 	// Zero/unset falls back to the default at runtime.
 	TurnTimeout time.Duration `mapstructure:"turn_timeout" yaml:"turn_timeout,omitempty"`
+	// TurnExpiry is how long a completed turn stays in the in-memory
+	// TurnStore before garbage collection removes it. Zero/unset falls back
+	// to DefaultForgeChatTurnExpiry (30m).
+	TurnExpiry time.Duration `mapstructure:"turn_expiry" yaml:"turn_expiry,omitempty"`
+	// TurnRetentionCap caps the number of turns retained in the TurnStore;
+	// the oldest completed turns are evicted once the cap is exceeded. Zero
+	// falls back to DefaultForgeChatTurnRetentionCap (1000); a negative value
+	// disables the cap entirely.
+	TurnRetentionCap int `mapstructure:"turn_retention_cap" yaml:"turn_retention_cap,omitempty"`
 }
 
 // ResolvedTurnTimeout returns the effective per-turn timeout after applying
@@ -774,6 +794,26 @@ func (f ForgeChatSettings) ResolvedTurnTimeout() time.Duration {
 		return MaxForgeChatTurnTimeout
 	}
 	return f.TurnTimeout
+}
+
+// ResolvedTurnExpiry returns the effective TurnStore expiry after applying the
+// default. Zero/unset (and negative) values fall back to
+// DefaultForgeChatTurnExpiry.
+func (f ForgeChatSettings) ResolvedTurnExpiry() time.Duration {
+	if f.TurnExpiry <= 0 {
+		return DefaultForgeChatTurnExpiry
+	}
+	return f.TurnExpiry
+}
+
+// ResolvedTurnRetentionCap returns the effective TurnStore retention cap. Zero
+// (unset) falls back to DefaultForgeChatTurnRetentionCap; a negative value is
+// returned as-is so callers can treat it as "unlimited / cap disabled".
+func (f ForgeChatSettings) ResolvedTurnRetentionCap() int {
+	if f.TurnRetentionCap == 0 {
+		return DefaultForgeChatTurnRetentionCap
+	}
+	return f.TurnRetentionCap
 }
 
 // WardenSettings configures the review-time rule filter applied to the
@@ -882,7 +922,9 @@ func durationString(d time.Duration) string {
 // omitted when it equals the default so the file stays clean unless the
 // operator has explicitly changed it.
 type forgeChatShadow struct {
-	TurnTimeout string `yaml:"turn_timeout,omitempty"`
+	TurnTimeout      string `yaml:"turn_timeout,omitempty"`
+	TurnExpiry       string `yaml:"turn_expiry,omitempty"`
+	TurnRetentionCap int    `yaml:"turn_retention_cap,omitempty"`
 }
 
 // MarshalYAML serialises SettingsConfig with time.Duration fields as
@@ -1027,6 +1069,18 @@ func (s SettingsConfig) MarshalYAML() (interface{}, error) {
 					return durationString(s.ForgeChat.TurnTimeout)
 				}
 				return ""
+			}(),
+			TurnExpiry: func() string {
+				if s.ForgeChat.TurnExpiry > 0 && s.ForgeChat.TurnExpiry != DefaultForgeChatTurnExpiry {
+					return durationString(s.ForgeChat.TurnExpiry)
+				}
+				return ""
+			}(),
+			TurnRetentionCap: func() int {
+				if s.ForgeChat.TurnRetentionCap != 0 && s.ForgeChat.TurnRetentionCap != DefaultForgeChatTurnRetentionCap {
+					return s.ForgeChat.TurnRetentionCap
+				}
+				return 0
 			}(),
 		},
 	}
@@ -1740,6 +1794,13 @@ func Load(configFile string) (*Config, error) {
 			"clamped", MaxForgeChatTurnTimeout,
 		)
 		cfg.Settings.ForgeChat.TurnTimeout = MaxForgeChatTurnTimeout
+	}
+	if raw := v.GetString("settings.forgechat.turn_expiry"); raw != "" {
+		d, err := time.ParseDuration(raw)
+		if err != nil {
+			return nil, fmt.Errorf("invalid forgechat.turn_expiry %q: %w", raw, err)
+		}
+		cfg.Settings.ForgeChat.TurnExpiry = d
 	}
 
 	// Pricing tables carry mapstructure:"-" so viper skips them (their model
