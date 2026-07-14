@@ -15,6 +15,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/Robin831/Forge/internal/config"
@@ -60,6 +61,14 @@ type Config struct {
 	// PurgeInterval controls how often expired session rows are purged from
 	// the DB. Defaults to 1 hour. Set to a negative value to disable.
 	PurgeInterval time.Duration
+
+	// TrustedProxies is the set of networks whose direct connections may
+	// supply an X-Forwarded-For header we honour for audit logging. When the
+	// daemon runs behind Caddy/Cloudflare this should list those hops (as bare
+	// IPs or CIDRs). Empty (the default) means "trust no forwarding headers" —
+	// clientIP then always reports the direct peer. Parse from a config string
+	// with ParseTrustedProxies.
+	TrustedProxies []*net.IPNet
 }
 
 // AnvilLister returns the registered anvils as a map of name -> on-disk
@@ -179,6 +188,18 @@ type Server struct {
 	// throttleSem caps concurrent throttled (sleeping) login goroutines so
 	// an attacker cannot park unlimited connections in the sleep path.
 	throttleSem chan struct{}
+
+	// trustedProxies are the networks whose direct connections may set an
+	// X-Forwarded-For header that clientIP will honour. Copied from
+	// cfg.TrustedProxies in New so the middleware reads a stable slice.
+	trustedProxies []*net.IPNet
+
+	// sseMu guards sseConns. sseConns counts the live SSE streams held open by
+	// each web session (keyed by session token hash) so a single session
+	// opening many browser tabs cannot spin up an unbounded number of DB/file
+	// pollers. See acquireSSESlot / maxSSEPerSession.
+	sseMu    sync.Mutex
+	sseConns map[string]int
 }
 
 // SetChatRunner installs the AI runner used by the Beads-Forge page. The
@@ -285,16 +306,18 @@ func New(cfg Config, db *state.DB, handler CommandHandler, logger *slog.Logger) 
 	}
 
 	s := &Server{
-		cfg:           cfg,
-		db:            db,
-		handler:       handler,
-		logger:        logger,
-		turnStore:     NewTurnStore(),
-		turnTimeout:   config.MaxForgeChatTurnTimeout,
-		serverCtx:     context.Background(),
-		throttle:      newLoginThrottle(),
-		throttleSleep: time.Sleep,
-		throttleSem:   make(chan struct{}, 10),
+		cfg:            cfg,
+		db:             db,
+		handler:        handler,
+		logger:         logger,
+		turnStore:      NewTurnStore(),
+		turnTimeout:    config.MaxForgeChatTurnTimeout,
+		serverCtx:      context.Background(),
+		throttle:       newLoginThrottle(),
+		throttleSleep:  time.Sleep,
+		throttleSem:    make(chan struct{}, 10),
+		trustedProxies: cfg.TrustedProxies,
+		sseConns:       make(map[string]int),
 	}
 	s.httpServer = &http.Server{
 		Addr:              cfg.Addr,

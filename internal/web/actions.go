@@ -601,6 +601,6 @@ func (s *Server) logActor(r *http.Request, action string, kv ...any) {
 	if sess := SessionFromContext(r.Context()); sess != nil {
 		user = sess.Username
 	}
-	all := append([]any{"action", action, "user", user, "remote", clientIP(r)}, kv...)
+	all := append([]any{"action", action, "user", user, "remote", s.clientIP(r)}, kv...)
 	s.logger.Info("web action", all...)
 }
