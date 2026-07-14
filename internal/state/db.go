@@ -2248,6 +2248,9 @@ const (
 	// EventLogSweepDone fires once per log-retention sweep with a summary of how
 	// many preserved bead-log directories were removed and how many bytes freed.
 	EventLogSweepDone EventType = "log_sweep_done"
+
+	// Web session events.
+	EventWebSessionsRevoked EventType = "web_sessions_revoked"
 )
 
 // Event represents a logged event.
@@ -4322,6 +4325,17 @@ func (db *DB) DeleteWebSession(tokenHash string) error {
 func (db *DB) PurgeExpiredWebSessions() (int64, error) {
 	now := time.Now().UTC().Format(dbTimeLayout)
 	res, err := db.conn.Exec(`DELETE FROM web_sessions WHERE expires_at <= ?`, now)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
+// DeleteAllWebSessions removes every web session row, forcing all signed-in
+// users to re-authenticate. It backs the "revoke all sessions" incident
+// response escape hatch. Returns the number of rows removed.
+func (db *DB) DeleteAllWebSessions() (int64, error) {
+	res, err := db.conn.Exec(`DELETE FROM web_sessions`)
 	if err != nil {
 		return 0, err
 	}

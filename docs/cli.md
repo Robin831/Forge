@@ -118,6 +118,33 @@ forge version
 # Output: forge v0.1.0 (build abc1234)
 ```
 
+### `forge web revoke-sessions`
+
+Revoke every active Hearth web-UI session, forcing all signed-in browsers to
+re-authenticate. Use this as an incident-response escape hatch when a session
+cookie may have been compromised. Talks to the running daemon over IPC; the
+web server does not need to be enabled for the revocation to succeed.
+
+```bash
+forge web revoke-sessions
+# Output: revoked 3 web session(s)
+```
+
+The Hearth web UI itself is gated by these environment variables:
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `FORGE_WEB_ENABLED` | off | Enable the web UI when truthy (`1`/`true`/`yes`/`on`). |
+| `FORGE_WEB_ADDR` | `:8080` | TCP listen address. |
+| `FORGE_USERS` | — | `user:bcrypt-hash` pairs, comma-separated. |
+| `FORGE_WEB_COOKIE_SECURE` | off | Force the `Secure` cookie attribute (set behind HTTPS). |
+| `FORGE_WEB_SESSION_TTL` | `720h` (30d) | Sliding session lifetime (Go duration). |
+| `FORGE_WEB_SESSION_ABSOLUTE_TTL` | `168h` (7d) | Absolute session lifetime cap, measured from creation, regardless of activity. |
+
+Failed logins are progressively throttled per username and per client IP
+(five free attempts, then 1s, 2s, 4s … up to 60s), and the session token is
+rotated on every successful login.
+
 ## Repository Management
 
 ### `forge anvil add <name> <path>`

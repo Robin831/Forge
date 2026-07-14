@@ -42,6 +42,13 @@ type Config struct {
 	// zero.
 	SessionTTL time.Duration
 
+	// SessionAbsoluteTTL is the hard cap on a session's lifetime, measured
+	// from when it was created, regardless of how recently it was used. Once
+	// exceeded the session is rejected and deleted even if the sliding expiry
+	// has not lapsed. Defaults to 7 days when zero; set negative to disable
+	// the absolute cap (sliding expiry only).
+	SessionAbsoluteTTL time.Duration
+
 	// CookieName is the session cookie name. Defaults to "forge_session".
 	CookieName string
 
@@ -147,6 +154,20 @@ type Server struct {
 	// config path, or ~/.forge/config.yaml when none exists yet). Tests
 	// override it to point at a temp fixture.
 	configPath func() string
+
+	// throttle rate-limits failed login attempts per username and per IP so
+	// online password guessing is slowed at the application layer (fail2ban
+	// cannot see Cloudflare-routed clients). Always non-nil after New.
+	throttle *loginThrottle
+
+	// throttleSleep applies the throttle's computed delay. Defaults to
+	// time.Sleep; tests inject a recorder to assert the schedule without
+	// actually waiting.
+	throttleSleep func(time.Duration)
+
+	// throttleSem caps concurrent throttled (sleeping) login goroutines so
+	// an attacker cannot park unlimited connections in the sleep path.
+	throttleSem chan struct{}
 }
 
 // SetChatRunner installs the AI runner used by the Beads-Forge page. The
@@ -225,6 +246,9 @@ func New(cfg Config, db *state.DB, handler CommandHandler, logger *slog.Logger) 
 	if cfg.SessionTTL == 0 {
 		cfg.SessionTTL = 30 * 24 * time.Hour
 	}
+	if cfg.SessionAbsoluteTTL == 0 {
+		cfg.SessionAbsoluteTTL = 7 * 24 * time.Hour
+	}
 	if cfg.CookieName == "" {
 		cfg.CookieName = "forge_session"
 	}
@@ -233,13 +257,16 @@ func New(cfg Config, db *state.DB, handler CommandHandler, logger *slog.Logger) 
 	}
 
 	s := &Server{
-		cfg:         cfg,
-		db:          db,
-		handler:     handler,
-		logger:      logger,
-		turnStore:   NewTurnStore(),
-		turnTimeout: config.MaxForgeChatTurnTimeout,
-		serverCtx:   context.Background(),
+		cfg:           cfg,
+		db:            db,
+		handler:       handler,
+		logger:        logger,
+		turnStore:     NewTurnStore(),
+		turnTimeout:   config.MaxForgeChatTurnTimeout,
+		serverCtx:     context.Background(),
+		throttle:      newLoginThrottle(),
+		throttleSleep: time.Sleep,
+		throttleSem:   make(chan struct{}, 10),
 	}
 	s.httpServer = &http.Server{
 		Addr:              cfg.Addr,
@@ -292,6 +319,9 @@ func (s *Server) purgeLoop(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-t.C:
+			// Drop stale login-throttle counters so the maps don't grow
+			// without bound between restarts.
+			s.throttle.purge()
 			n, err := s.db.PurgeExpiredWebSessions()
 			if err != nil {
 				s.logger.Warn("web session purge failed", "error", err)

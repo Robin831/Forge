@@ -168,6 +168,7 @@ func TestLogout_ClearsSession(t *testing.T) {
 	cookie := extractSessionCookie(t, loginRec.Result(), "forge_session")
 
 	logoutReq := httptest.NewRequest("POST", "/logout", nil)
+	logoutReq.Header.Set("X-Forge-Action", "1")
 	logoutReq.AddCookie(&http.Cookie{Name: "forge_session", Value: cookie})
 	logoutRec := httptest.NewRecorder()
 	srv.routes().ServeHTTP(logoutRec, logoutReq)
@@ -539,11 +540,18 @@ func newServerWithDefaults(t *testing.T, handler CommandHandler) *Server {
 }
 
 func postLogin(srv *Server, user, pass string) *httptest.ResponseRecorder {
+	return postLoginOpt(srv, user, pass, true)
+}
+
+func postLoginOpt(srv *Server, user, pass string, csrf bool) *httptest.ResponseRecorder {
 	form := url.Values{}
 	form.Set("user", user)
 	form.Set("password", pass)
 	req := httptest.NewRequest("POST", "/login", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	if csrf {
+		req.Header.Set("X-Forge-Action", "1")
+	}
 	rec := httptest.NewRecorder()
 	srv.routes().ServeHTTP(rec, req)
 	return rec

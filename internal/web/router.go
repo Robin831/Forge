@@ -20,16 +20,22 @@ func (s *Server) routes() http.Handler {
 	// Public endpoints — no authentication.
 	r.Get("/healthz", s.handleHealthz)
 
-	// Login: optional auth so the page can detect an existing session.
+	// Login: optional auth so the page can detect an existing session. The
+	// csrfCheck guards the POST (rejecting cross-site form submits that lack
+	// the X-Forge-Action header) to prevent login-CSRF / session fixation;
+	// csrfCheck is a no-op for the safe GET that renders the page.
 	r.Group(func(r chi.Router) {
 		r.Use(s.optionalAuth)
+		r.Use(s.csrfCheck)
 		r.Post("/login", s.handleLogin)
 		r.Get("/login", s.handleLoginPage)
 	})
 
-	// Logout requires a valid session — otherwise it is a no-op.
+	// Logout requires a valid session — otherwise it is a no-op. csrfCheck
+	// blocks cross-site logout POSTs (a nuisance-level CSRF).
 	r.Group(func(r chi.Router) {
 		r.Use(s.requireAuth)
+		r.Use(s.csrfCheck)
 		r.Post("/logout", s.handleLogout)
 	})
 
@@ -214,7 +220,7 @@ code { background: #f4f4f4; padding: 0 0.25rem; border-radius: 3px; }
 <body>
 <h1>Hearth 2.0 backend is running</h1>
 <p>The forge daemon is serving the Hearth web API. The frontend bundle has not been embedded yet.</p>
-<p>Try <code>POST /login</code> with a form-encoded <code>user</code> and <code>password</code>, then <code>GET /api/status</code>.</p>
+<p>Try <code>POST /login</code> (with header <code>X-Forge-Action: 1</code>) with a form-encoded <code>user</code> and <code>password</code>, then <code>GET /api/status</code>.</p>
 </body>
 </html>
 `

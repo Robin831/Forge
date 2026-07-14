@@ -62,7 +62,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         const res = await fetch('/login', {
           method: 'POST',
           credentials: 'include',
-          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          headers: {
+            'Content-Type': 'application/x-www-form-urlencoded',
+            // CSRF defence: the server rejects cross-site login POSTs that
+            // lack this custom header (which cross-origin forms cannot set).
+            'X-Forge-Action': '1',
+          },
           body: body.toString(),
         })
         if (!res.ok) {
@@ -82,7 +87,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const logout = useCallback(async () => {
     try {
-      await fetch('/logout', { method: 'POST', credentials: 'include' })
+      await fetch('/logout', {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'X-Forge-Action': '1' },
+      })
     } catch {
       // Ignore — clearing local state below is the important part.
     }

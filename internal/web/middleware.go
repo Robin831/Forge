@@ -2,6 +2,7 @@ package web
 
 import (
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -96,12 +97,16 @@ func (s *Server) csrfCheck(next http.Handler) http.Handler {
 	})
 }
 
-// clientIP returns the request's client IP, preferring X-Forwarded-For when
-// present (the daemon is expected to run behind a reverse proxy in
-// Kubernetes).
+// clientIP returns the request's client IP. When an X-Forwarded-For header
+// is present (e.g. behind a reverse proxy), the rightmost entry is used —
+// that is the hop appended by the last trusted proxy, which the client
+// cannot spoof. Falls back to RemoteAddr when XFF is absent.
 func clientIP(r *http.Request) string {
 	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		return xff
+		parts := strings.Split(xff, ",")
+		if ip := strings.TrimSpace(parts[len(parts)-1]); ip != "" {
+			return ip
+		}
 	}
 	return r.RemoteAddr
 }

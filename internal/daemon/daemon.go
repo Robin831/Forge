@@ -6477,6 +6477,25 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 	case "resume_bead":
 		return d.handleResumeBead(cmd)
 
+	case "revoke_web_sessions":
+		// Incident-response escape hatch: drop every web session so all
+		// signed-in users must re-authenticate. Safe when the web server is
+		// disabled — the table simply has no rows.
+		n, err := d.db.DeleteAllWebSessions()
+		if err != nil {
+			d.logger.Error("revoke web sessions failed", "error", err)
+			return errorResponse("failed to revoke web sessions: " + err.Error())
+		}
+		msg := fmt.Sprintf("revoked %d web session(s)", n)
+		d.logger.Info("web sessions revoked", "count", n)
+		if logErr := d.db.LogEvent(state.EventWebSessionsRevoked, msg, "", ""); logErr != nil {
+			d.logger.Warn("failed to log web session revocation event", "error", logErr)
+		}
+		return okResponse(map[string]any{
+			"revoked": n,
+			"message": msg,
+		})
+
 	default:
 		return errorResponse("unknown command: " + cmd.Type)
 	}
