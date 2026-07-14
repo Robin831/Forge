@@ -107,6 +107,41 @@ func newTestLogFile(t *testing.T) *os.File {
 	return f
 }
 
+// TestReadStreamJSONEvents_CallbackFiresPerEventInOrder verifies the streaming
+// callback added for the Beads-Forge chat SSE stream: every successfully-parsed
+// event is delivered to onEvent in arrival order, before the aggregate Result
+// is finalised, so a consumer can forward text deltas and tool events live.
+func TestReadStreamJSONEvents_CallbackFiresPerEventInOrder(t *testing.T) {
+	input := `{"type":"system","subtype":"init"}
+{"type":"assistant","message":{"content":[{"type":"text","text":"a"}]}}
+not-json-should-be-skipped
+{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Read","id":"t1"}]}}
+{"type":"result","subtype":"success","result":"a"}
+`
+	var seen []string
+	var buf strings.Builder
+	result := &Result{}
+	readStreamJSONEvents(strings.NewReader(input), &buf, newTestLogFile(t), result, func(ev StreamEvent) {
+		seen = append(seen, ev.Type)
+	})
+
+	// The non-JSON line is skipped; only the four parseable events fire.
+	assert.Equal(t, []string{"system", "assistant", "assistant", "result"}, seen)
+	// The aggregate Result is still populated as before.
+	assert.Equal(t, "success", result.ResultSubtype)
+	assert.Equal(t, "a", result.FullOutput)
+}
+
+// TestReadStreamJSON_NilCallbackUnchanged confirms the nil-callback wrapper is
+// a pure passthrough to the historical aggregation behaviour.
+func TestReadStreamJSON_NilCallbackUnchanged(t *testing.T) {
+	input := `{"type":"result","subtype":"success","result":"done"}`
+	var buf strings.Builder
+	result := &Result{}
+	readStreamJSONEvents(strings.NewReader(input), &buf, newTestLogFile(t), result, nil)
+	assert.Equal(t, "done", result.FullOutput)
+}
+
 func TestReadStreamJSON_ResultEvent(t *testing.T) {
 	input := `{"type":"result","subtype":"success","result":"All done.","total_cost_usd":0.0123,"usage":{"input_tokens":100,"output_tokens":50}}`
 

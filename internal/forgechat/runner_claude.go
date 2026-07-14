@@ -2,6 +2,7 @@ package forgechat
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -74,8 +75,25 @@ func turnStageLabel(req TurnRequest) string {
 	}
 }
 
-// Turn implements Runner.
+// Turn implements Runner. It runs the session to completion and returns the
+// aggregate TurnResponse without surfacing intermediate events.
 func (r *ClaudeRunner) Turn(ctx context.Context, req TurnRequest) (*TurnResponse, error) {
+	return r.run(ctx, req, nil)
+}
+
+// TurnStream implements StreamingRunner: it drives the same session as Turn but
+// forwards each incremental text delta and tool event to onChunk as the
+// provider streams, then returns the identical final TurnResponse. Passing a
+// nil onChunk is equivalent to Turn.
+func (r *ClaudeRunner) TurnStream(ctx context.Context, req TurnRequest, onChunk StreamFunc) (*TurnResponse, error) {
+	return r.run(ctx, req, onChunk)
+}
+
+// run is the shared implementation behind Turn and TurnStream. When onChunk is
+// non-nil the provider's stream-json events are decoded into StreamChunks and
+// delivered live; the parsed-in-full TurnResponse is produced identically
+// either way so the completion contract does not depend on streaming.
+func (r *ClaudeRunner) run(ctx context.Context, req TurnRequest, onChunk StreamFunc) (*TurnResponse, error) {
 	if r == nil {
 		return nil, errors.New("forgechat: nil runner")
 	}
@@ -113,7 +131,16 @@ func (r *ClaudeRunner) Turn(ctx context.Context, req TurnRequest) (*TurnResponse
 
 	prompt := BuildPrompt(req)
 	flags := append([]string{"--max-turns", fmt.Sprintf("%d", maxTurns)}, r.ExtraFlags...)
-	proc, err := smith.SpawnWithProvider(turnCtx, workDir, prompt, logDir, r.Provider, flags)
+	var spawnOpts smith.SpawnOptions
+	if onChunk != nil {
+		// Decode each stream-json event into consumer-facing chunks as it
+		// arrives, preserving the provider's interleaving of assistant text and
+		// tool activity.
+		spawnOpts.OnStreamEvent = func(ev smith.StreamEvent) {
+			decodeStreamEvent(ev, onChunk)
+		}
+	}
+	proc, err := smith.SpawnWithOptions(turnCtx, workDir, prompt, logDir, r.Provider, flags, spawnOpts)
 	if err != nil {
 		if timedOut := timeoutResponse(turnCtx, req, stage, turnStart, timeout); timedOut != nil {
 			return timedOut, nil
@@ -220,6 +247,76 @@ func interpretResponse(req TurnRequest, output string, costUSD float64) (*TurnRe
 	}
 
 	return resp, nil
+}
+
+// streamContentBlock is one entry in a provider message's content array. A
+// single struct covers every block kind we care about: text blocks carry Text,
+// tool_use blocks carry Name/ID, and tool_result blocks carry ToolUseID.
+type streamContentBlock struct {
+	Type      string `json:"type"`
+	Text      string `json:"text"`
+	Name      string `json:"name"`
+	ID        string `json:"id"`
+	ToolUseID string `json:"tool_use_id"`
+}
+
+// streamMessage is the minimal shape of the "message" object embedded in
+// Claude's assistant / user stream events.
+type streamMessage struct {
+	Content []streamContentBlock `json:"content"`
+}
+
+// decodeStreamEvent translates one raw provider stream event into zero or more
+// consumer-facing StreamChunks and forwards them to onChunk in block order.
+//
+// Claude stream-json carries assistant text and tool_use blocks inside an
+// "assistant" event's message.content array, and tool_result blocks inside a
+// "user" event's message.content array. Gemini instead emits incremental
+// "message" delta events with a flat content string. Events that carry no
+// consumer-facing payload (system init, result, rate_limit_event) yield
+// nothing.
+func decodeStreamEvent(ev smith.StreamEvent, onChunk StreamFunc) {
+	if onChunk == nil {
+		return
+	}
+	switch ev.Type {
+	case "assistant":
+		for _, b := range decodeStreamBlocks(ev.Message) {
+			switch b.Type {
+			case "text":
+				if b.Text != "" {
+					onChunk(StreamChunk{Kind: StreamChunkText, Text: b.Text})
+				}
+			case "tool_use":
+				onChunk(StreamChunk{Kind: StreamChunkToolUse, ToolName: b.Name, ToolID: b.ID})
+			}
+		}
+	case "user":
+		for _, b := range decodeStreamBlocks(ev.Message) {
+			if b.Type == "tool_result" {
+				onChunk(StreamChunk{Kind: StreamChunkToolResult, ToolID: b.ToolUseID})
+			}
+		}
+	case "message":
+		// Gemini-style incremental delta: {type:"message",role:"assistant",content:"..."}.
+		if ev.Role == "assistant" && ev.Content != "" {
+			onChunk(StreamChunk{Kind: StreamChunkText, Text: ev.Content})
+		}
+	}
+}
+
+// decodeStreamBlocks unmarshals the content array of a provider message event,
+// returning nil when the payload is empty or malformed (a garbled event is
+// skipped rather than aborting the stream).
+func decodeStreamBlocks(raw json.RawMessage) []streamContentBlock {
+	if len(raw) == 0 {
+		return nil
+	}
+	var msg streamMessage
+	if err := json.Unmarshal(raw, &msg); err != nil {
+		return nil
+	}
+	return msg.Content
 }
 
 // truncate returns at most n runes of s, appending an ellipsis when the

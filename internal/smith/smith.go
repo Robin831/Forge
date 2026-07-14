@@ -262,6 +262,16 @@ type SpawnOptions struct {
 	// resumption ignore it. Used by steer mode to continue an interrupted
 	// Claude session with a new steering message delivered on stdin.
 	ResumeSessionID string
+
+	// OnStreamEvent, when non-nil, is invoked for each parsed stream-json event
+	// as it arrives from the provider's stdout, before the process exits. It
+	// lets incremental consumers (e.g. the Beads-Forge chat SSE stream) forward
+	// text deltas and tool events live instead of waiting for the final Result.
+	// It is called synchronously from the single stdout reader goroutine in
+	// provider arrival order, so callbacks must return promptly and must not
+	// block on the process. Only fires for StreamJSON-format providers; plain
+	// text providers never emit structured events. Nil disables streaming.
+	OnStreamEvent func(StreamEvent)
 }
 
 // logFileName builds the session log filename for the given stage prefix and
@@ -383,7 +393,7 @@ func SpawnWithOptions(ctx context.Context, worktreePath, promptText, logDir stri
 		go func() {
 			defer wg.Done()
 			if pvFormat == provider.StreamJSON {
-				readStreamJSON(stdoutPipe, &stdoutBuf, logFile, result)
+				readStreamJSONEvents(stdoutPipe, &stdoutBuf, logFile, result, opts.OnStreamEvent)
 			} else {
 				// PlainText (Copilot CLI --silent): raw response in stdout.
 				readAll(stdoutPipe, &stdoutBuf, logFile)
@@ -600,6 +610,15 @@ type assistantMessage struct {
 // readStreamJSON reads Claude's stream-json output line by line,
 // writing to both the buffer and log file, extracting result metadata.
 func readStreamJSON(r io.Reader, buf *strings.Builder, logFile *os.File, result *Result) {
+	readStreamJSONEvents(r, buf, logFile, result, nil)
+}
+
+// readStreamJSONEvents is readStreamJSON with an optional per-event callback.
+// When onEvent is non-nil it is invoked for every successfully-parsed stream
+// event, in arrival order, before the aggregate Result is finalised — this is
+// what lets streaming consumers forward text deltas and tool events live. A
+// nil callback reduces to the historical batch-only behaviour.
+func readStreamJSONEvents(r io.Reader, buf *strings.Builder, logFile *os.File, result *Result, onEvent func(StreamEvent)) {
 	scanner := bufio.NewScanner(r)
 	// Claude can produce long lines
 	scanner.Buffer(make([]byte, 0, 1024*1024), 10*1024*1024)
@@ -626,6 +645,14 @@ func readStreamJSON(r io.Reader, buf *strings.Builder, logFile *os.File, result 
 				result.RateLimited = true
 			}
 		} else {
+			// Forward the parsed event to a streaming consumer (if any) before
+			// aggregating it into the Result. Deliver it in arrival order so the
+			// consumer sees text deltas and tool events interleaved exactly as
+			// the provider emitted them.
+			if onEvent != nil {
+				onEvent(event)
+			}
+
 			// Extract content for summary
 			if event.Content != "" {
 				lastContent = event.Content
