@@ -695,3 +695,198 @@ func writeWorkerLog(t *testing.T, db *state.DB, workerID string, lines []string)
 	return logPath
 }
 
+
+// busServer returns a default test server with the in-process event Bus wired
+// into its DB, selecting the replay-then-live SSE path.
+func busServer(t *testing.T) *Server {
+	t.Helper()
+	srv := newServerWithDefaults(t, nil)
+	srv.db.SetBus(state.NewBus(256))
+	return srv
+}
+
+// collectMessages unmarshals raw activity-event JSON payloads to their Message
+// fields, preserving delivery order.
+func collectMessages(t *testing.T, raw []string) []string {
+	t.Helper()
+	msgs := make([]string, 0, len(raw))
+	for _, r := range raw {
+		var ev activityEvent
+		if err := json.Unmarshal([]byte(r), &ev); err != nil {
+			t.Fatalf("unmarshal %q: %v", r, err)
+		}
+		msgs = append(msgs, ev.Message)
+	}
+	return msgs
+}
+
+func TestActivityStream_BusReplayThenLive(t *testing.T) {
+	srv := busServer(t)
+
+	// Backlog replayed on connect (published before any subscriber exists, so
+	// these land only in the DB).
+	for _, m := range []string{"r0", "r1", "r2"} {
+		if err := srv.db.LogEvent(state.EventBeadClaimed, m, "", ""); err != nil {
+			t.Fatalf("LogEvent: %v", err)
+		}
+	}
+
+	resp, cancel := authedSSEClient(t, srv, "/api/activity/stream", "")
+	defer cancel()
+	defer resp.Body.Close()
+
+	// Give the handler time to subscribe and drain the replay, then publish
+	// live events that must arrive over the Bus channel.
+	time.Sleep(300 * time.Millisecond)
+	for _, m := range []string{"l3", "l4"} {
+		if err := srv.db.LogEvent(state.EventBeadClaimed, m, "", ""); err != nil {
+			t.Fatalf("LogEvent live: %v", err)
+		}
+	}
+
+	got := collectMessages(t, readSSEData(t, resp.Body, 5, 5*time.Second))
+	want := []string{"r0", "r1", "r2", "l3", "l4"}
+	if len(got) != len(want) {
+		t.Fatalf("expected %v, got %v", want, got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("delivery order mismatch: got %v want %v", got, want)
+		}
+	}
+}
+
+func TestActivityStream_BusDedupSkipsAlreadyEmitted(t *testing.T) {
+	srv := busServer(t)
+
+	for _, m := range []string{"a", "b", "c"} {
+		if err := srv.db.LogEvent(state.EventBeadClaimed, m, "", ""); err != nil {
+			t.Fatalf("LogEvent: %v", err)
+		}
+	}
+	all, err := srv.db.RecentEvents(10)
+	if err != nil {
+		t.Fatalf("RecentEvents: %v", err)
+	}
+	maxID := all[0].ID // newest-first
+
+	resp, cancel := authedSSEClient(t, srv, "/api/activity/stream", "")
+	defer cancel()
+	defer resp.Body.Close()
+
+	// Let the handler finish replay (lastEmittedSeq == maxID).
+	time.Sleep(300 * time.Millisecond)
+
+	// A live event whose Seq was already emitted during replay must be dropped.
+	srv.db.Bus().Publish(state.BusEvent{
+		Seq:   int64(maxID),
+		Event: state.Event{ID: maxID, Type: state.EventBeadClaimed, Message: "dup"},
+	})
+	// A genuinely new event must be delivered.
+	srv.db.Bus().Publish(state.BusEvent{
+		Seq:   int64(maxID + 1),
+		Event: state.Event{ID: maxID + 1, Type: state.EventBeadClaimed, Message: "fresh"},
+	})
+
+	got := collectMessages(t, readSSEData(t, resp.Body, 4, 5*time.Second))
+	want := []string{"a", "b", "c", "fresh"}
+	if len(got) != len(want) {
+		t.Fatalf("expected dedup to drop 'dup'; got %v", got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("got %v want %v", got, want)
+		}
+	}
+}
+
+func TestActivityStream_BusLastEventIDSeedsReplay(t *testing.T) {
+	srv := busServer(t)
+
+	for _, m := range []string{"e0", "e1", "e2"} {
+		if err := srv.db.LogEvent(state.EventBeadClaimed, m, "", ""); err != nil {
+			t.Fatalf("LogEvent: %v", err)
+		}
+	}
+	all, err := srv.db.RecentEvents(10)
+	if err != nil {
+		t.Fatalf("RecentEvents: %v", err)
+	}
+	// all is newest-first: [e2, e1, e0]. Resume from e1's ID so replay should
+	// only contain e2.
+	resumeID := all[1].ID
+	e2ID := all[0].ID
+
+	resp, cancel := authedSSEClient(t, srv, "/api/activity/stream", fmt.Sprintf("%d", resumeID))
+	defer cancel()
+	defer resp.Body.Close()
+
+	got := collectMessages(t, readSSEData(t, resp.Body, 1, 5*time.Second))
+	if len(got) != 1 || got[0] != "e2" {
+		t.Fatalf("Last-Event-ID replay: got %v want [e2] (e2 id=%d)", got, e2ID)
+	}
+}
+
+func TestActivityStream_BusGapMarkerResyncs(t *testing.T) {
+	srv := busServer(t)
+
+	if err := srv.db.LogEvent(state.EventBeadClaimed, "seed", "", ""); err != nil {
+		t.Fatalf("LogEvent: %v", err)
+	}
+
+	resp, cancel := authedSSEClient(t, srv, "/api/activity/stream", "")
+	defer cancel()
+	defer resp.Body.Close()
+
+	time.Sleep(300 * time.Millisecond)
+
+	// Persist an event the subscriber "missed" (as if it had been dropped on
+	// overflow), then deliver a gap marker: the handler must re-sync it from
+	// the DB via EventsSince rather than losing it.
+	if err := srv.db.LogEvent(state.EventBeadClaimed, "missed", "", ""); err != nil {
+		t.Fatalf("LogEvent missed: %v", err)
+	}
+	srv.db.Bus().Publish(state.BusEvent{GapMarker: true})
+
+	got := collectMessages(t, readSSEData(t, resp.Body, 2, 5*time.Second))
+	want := []string{"seed", "missed"}
+	if len(got) != len(want) {
+		t.Fatalf("gap re-sync: got %v want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("got %v want %v", got, want)
+		}
+	}
+}
+
+func TestActivityStream_BusClientDisconnectEndsStream(t *testing.T) {
+	srv := busServer(t)
+
+	if err := srv.db.LogEvent(state.EventBeadClaimed, "only", "", ""); err != nil {
+		t.Fatalf("LogEvent: %v", err)
+	}
+
+	resp, cancel := authedSSEClient(t, srv, "/api/activity/stream", "")
+	defer resp.Body.Close()
+
+	// Read the replay event to confirm the subscription is active.
+	got := collectMessages(t, readSSEData(t, resp.Body, 1, 5*time.Second))
+	if len(got) != 1 || got[0] != "only" {
+		t.Fatalf("expected replay [only], got %v", got)
+	}
+
+	// Cancel the request context; the handler must return (running the
+	// deferred Unsubscribe) and the stream must end at EOF.
+	cancel()
+	done := make(chan struct{})
+	go func() {
+		io.Copy(io.Discard, resp.Body) //nolint:errcheck
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("stream did not end after client disconnect")
+	}
+}
