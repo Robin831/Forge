@@ -89,8 +89,10 @@ Forge is a **Go orchestrator daemon** that autonomously drives Claude Code agent
 | `internal/smith` | Spawns `claude` CLI as a subprocess in a worktree |
 | `internal/temper` | Runs build/lint/test checks; auto-detects Go, .NET, Node |
 | `internal/warden` | Code review agent — validates Smith's diff, learns rules from Copilot comments |
+| `internal/assay` | AI pull-request review engine ("Assay") — multi-pass PR diff review (Triage + Logic/Security/Conventions/Tests/Repo passes) with deduped, idempotent findings; triggered by Bellows on open PRs |
+| `internal/diff` | Shared unified-diff parsing/shaping primitives (size cap, generated-file filtering, changed-file extraction) used by both Warden and Assay |
 | `internal/hooks` | Pipeline hook execution — shell commands before/after each stage |
-| `internal/bellows` | Monitors open PRs for CI failures, review comments, and merge conflicts |
+| `internal/bellows` | Monitors open PRs for CI failures, review comments, and merge conflicts; gates Assay review runs |
 | `internal/crucible` | Orchestrates parent beads with children on feature branches — auto-detects, sequences, merges |
 | `internal/depcheck` | Multi-language dependency update scanner (Go, .NET, Node) — creates beads for outdated deps |
 | `internal/vulncheck` | Vulnerability scanning via `govulncheck` — creates prioritized beads |
@@ -107,7 +109,13 @@ Forge is a **Go orchestrator daemon** that autonomously drives Claude Code agent
 | `internal/ingot` | Data model and persistence for ingots (bead lifecycle snapshots) |
 | `internal/ledger` | Interactive bead management TUI |
 | `internal/ipc` | Named pipe (Windows) / Unix socket daemon↔CLI protocol; newline-delimited JSON |
-| `internal/hearth` | Bubbletea TUI: three-column layout (Queue+Crucibles(when active)+ReadyToMerge+NeedsAttention / Workers / LiveActivity+Events) |
+| `internal/hearth` | **Hearth (TUI)** — Bubbletea terminal dashboard (`forge hearth`): three-column layout (Queue+Crucibles(when active)+ReadyToMerge+NeedsAttention / Workers / LiveActivity+Events) |
+| `internal/web` | **Hearth 2.0 (web GUI)** — chi-based HTTP server run in-process inside the daemon (gated by `FORGE_WEB_ENABLED`). Serves the browser dashboard: bcrypt session login, JSON/SSE endpoints mirroring IPC (status, queue, workers, events, crucibles, ingots, costs, PRs), per-worker log tail/stream, per-bead log browsing, PR actions (merge/close/approve/fix), queue actions, worker steering/pause/resume, and the Beads-Forge session pages |
+| `internal/forgechat` | Backs the per-turn AI loop for the Hearth 2.0 "Beads-Forge" page — drafting → grilling → ready stages, one claude round-trip per turn via a pluggable `Runner` |
+| `internal/queueactions` | Shared business logic behind the queue resolution verbs (clarify, unclarify, retry, clear, stop) — single source of truth for the state mutations/audit entries used by both the CLI verbs and the IPC handlers; enforces multi-forge safety |
+| `internal/logsweep` | Daily retention sweep for preserved per-bead log directories under `~/.forge/logs/<beadID>/`; deletes stale dirs with no running worker |
+| `internal/logrotate` | Minimal size-based `io.Writer` log rotator used as the sink for the daemon's slog handler so `~/.forge/logs/daemon.log` cannot grow unbounded |
+| `internal/selfdeploy` | Rebuilds and restarts the Forge daemon from source after a merge lands on Forge's own repository (config-gated) |
 | `internal/config` | Viper config loading — `forge.yaml` in cwd or `~/.forge/config.yaml` |
 | `internal/prompt` | Builds the Smith prompt from bead metadata + AGENTS.md/CLAUDE.md/README.md |
 | `internal/provider` | AI provider fallback chain (Claude, Gemini, Copilot) with rate limit handling |
@@ -167,6 +175,9 @@ bd ready (poller) → pipeline.Run()
   → if request_changes: loop back to Smith (max max_review_attempts iterations)
   → if approved: vcs.Provider.CreatePR (gh pr create)
   → bellows monitors open PRs (CI fix, review fix, rebase)
+    → Assay trigger gate → assay.Review (multi-pass AI PR review)
+      → diff.* shapes the PR diff → Triage + parallel deep passes
+      → dedupe/cap findings → post as PR review comments (idempotent per head SHA)
   → worktree.Remove
 
 Crucible path (parent beads with children):
@@ -185,6 +196,43 @@ depcheck.Monitor (background, weekly by default)
 vulncheck.Monitor (background, daily by default)
   → runs govulncheck on Go anvils
   → creates prioritized beads for discovered vulnerabilities
+
+logsweep.Monitor (background, daily by default)
+  → deletes stale per-bead log dirs under ~/.forge/logs/<beadID>/
+  → skips beads with a running worker; never touches the live daemon.log
+```
+
+### Two Front Ends: Hearth (TUI) vs Hearth 2.0 (web GUI)
+
+Forge exposes the same daemon state through two independent front ends:
+
+- **Hearth (TUI)** — `internal/hearth`, launched with `forge hearth`. A Bubbletea
+  terminal dashboard that talks to the daemon over the IPC socket.
+- **Hearth 2.0 (web GUI)** — `internal/web`, a chi HTTP server run **in-process**
+  inside the daemon (no extra socket hop) and gated by `FORGE_WEB_ENABLED`. It
+  dispatches to the same daemon command handlers the IPC layer uses, plus its own
+  bcrypt-validated session login and SSE streams.
+
+```
+browser → internal/web (Hearth 2.0, in-process HTTP server, gated by FORGE_WEB_ENABLED)
+  → session login (bcrypt) → chi router → in-process CommandHandler (daemon.handleIPC)
+  → read views: status / queue / workers / events / crucibles / ingots / costs / PRs
+  → live streams (SSE, capped per session): activity, worker-log tail/stream,
+      PR findings, per-turn Beads-Forge stream
+  → worker panels: per-worker log tail + kill
+  → bead logs: browse/read preserved logs under ~/.forge/logs/<beadID>/
+  → steering: POST /bead/{id}/steer          → steer_bead (inject a message mid-turn)
+  → pause/resume: POST /bead/{id}/pause|resume|resume-with-message
+                                              → pause_bead / resume_bead[_with_message]
+  → PR + queue actions: merge/close/approve/fix-ci/fix-comments/fix-conflicts,
+      queue retry/dispatch/clarify/stop, bead close/label/note/comment
+
+Beads-Forge sessions (session capture, forgechat):
+  browser → POST /forge/sessions → state persists a Beads-Forge session
+    → POST /forge/sessions/{id}/turn → forgechat.Runner (one claude round-trip)
+      → drafting (markdown/plan) → grilling (structured questions) → ready
+    → turn output streamed to the browser via SSE; turn snapshots persisted so a
+      reconnecting client replays captured partial output before catching up live
 ```
 
 ### State Database
