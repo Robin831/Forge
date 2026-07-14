@@ -56,6 +56,7 @@ settings:
   max_review_fix_attempts: 5
   max_rebase_attempts: 3
   max_lifecycle_workers: 2          # Concurrent quench/burnish/rebase/assay fix workers
+  burnish_verify_timeout: 5m        # Verify (Temper) deadline within one review-fix attempt
   merge_strategy: squash
   daily_cost_limit: 50.00
   per_worker_cost_estimate: 2.00    # In-flight spend reserved per active worker for the cost gate
@@ -105,9 +106,20 @@ settings:
   smelter_interval: 8h
   questgiver_enabled: false
   questgiver_interval: 24h
+  adventurer_timeout: 5m            # Max time for a single quest execution
   crucible_enabled: true
   crucible_poll_interval: 3m
   auto_merge_crucible_children: true
+  warden:                          # review-time rule filtering (see Warden Rule Filtering)
+    max_rules_per_review: 30
+    archive_after_days: 180
+    dedup_threshold: 0.6
+
+# AI pull-request review (top-level, sibling of settings). See the Assay section.
+assay:
+  enabled: false
+  shadow_mode: true
+  nit_cap: 5
 
 notifications:
   enabled: true
@@ -157,6 +169,8 @@ Each key under `anvils` is the anvil name. The name is used in CLI output, logs,
 | `wicket_ignore_users` | []string | `[]` | GitHub logins to skip entirely when triaging issues for this anvil. In addition to this list, a built-in set of well-known bot accounts (dependabot[bot], renovate[bot], github-actions[bot], etc.) is always ignored. Comparison is case-insensitive. |
 | `smith` | object\|null | null | Smith configuration for this anvil. Currently supports `deny_patterns` for file and command restrictions. See [Smith Deny Patterns](#smith-deny-patterns) below. |
 | `hooks` | object\|null | null | Shell commands to run before/after each pipeline stage. See [Pipeline Hooks](#pipeline-hooks) below. |
+| `stage_providers` | map[string][]string | `{}` (use global) | Per-anvil override for `settings.stage_providers`. When set, takes precedence over the global stage providers for beads in this anvil. Same keys/format. See [Settings](#settings) and the Wicket [Per-Anvil Settings](#per-anvil-settings) table. |
+| `assay` | object\|null | null (use global) | Per-anvil overlay for the top-level `assay` (AI PR review) config. Non-empty fields override the corresponding global values. See [Assay — AI Pull-Request Review](#assay--ai-pull-request-review) below. |
 
 ### Smith Deny Patterns
 
@@ -328,6 +342,8 @@ For pipelines that need more than three steps, per-step working directories, or 
 | `required` | bool | `true` | When `true`, failure fails the whole temper run. When `false`, failure is reported as a warning. |
 | `paths` | `[]string` | `[]` (always run) | Glob patterns (doublestar syntax, e.g. `client/**`, `**/*.go`). When set, the step is skipped if no changed files in the PR diff match any pattern. When empty or omitted, the step always runs. |
 | `verify_clean` | `[]string` | `[]` (no check) | Pathspecs (relative to the worktree, e.g. `web/dist`) that must remain clean after the step runs. When the step succeeds but `git status --porcelain -- <pathspecs>` reports changes, the step is converted to a failure. Use this to enforce that committed build artifacts (e.g. an embedded frontend bundle) match a fresh build of the source. |
+| `verify_no_conflict_markers` | `[]string` | `[]` (no check) | Pathspecs (relative to the worktree) that must not contain git merge-conflict markers (`<<<<<<<`, `=======`, `>>>>>>>` at line start). When set on a step with **no** `command`, Temper performs a cheap scan-only check that runs unconditionally (no `paths` gating) — complementary to `verify_clean`, which depends on a rebuild and can miss markers committed directly into build output. A scan-only step (empty `command`) is valid only when this is set. |
+| `tolerate_host_crash` | bool | `false` | When `true`, re-classifies a non-zero exit from this step as a pass **only if** the output shows a completed, all-passed .NET test summary **and** an explicit test-host crash/abort marker. Exists for .NET test hosts that occasionally OOM/crash at teardown after every test has already passed, producing false Temper failures. A real test failure (`Failed: N>0`) or a build error (no crash marker) still fails. |
 
 **Precedence:** If `temper.steps` is set and non-empty, it takes precedence over `temper.build`/`test`/`lint`. A warning is logged if both are present. If neither `steps` nor the shorthand fields are set, auto-detection applies as usual.
 
@@ -476,6 +492,7 @@ anvils:
 | `warden_full_rereview` | bool | `false` | | When true, the Warden performs a full independent review on every iteration. When false (default), re-review iterations only check whether previously raised issues were addressed, preventing the whack-a-mole pattern. |
 | `copilot_combined_smith_warden` | bool | `false` | | When true and the primary provider is Copilot, embeds Warden review criteria into the Smith prompt so Smith self-reviews its own diff. A real Warden still runs for P0-P1 beads, when the self-review flags concerns, or via random sampling. Saves 1+ premium requests per bead. |
 | `copilot_warden_sample_rate` | float | `0.1` | | Probability (0.0–1.0) that a real Warden review is spawned even when Smith's self-review approves. Only used when `copilot_combined_smith_warden` is true. Set to 1.0 to always run real Warden (useful for validating self-review quality). |
+| `warden` | object | (see below) | | Review-time filtering of learned Warden rules and Smelter archival thresholds. See [Warden Rule Filtering](#warden-rule-filtering) below. |
 | `rate_limit_backoff` | duration | `5m` | | How long to wait before retrying when all providers are rate-limited. |
 | `schematic_enabled` | bool | `false` | | Enable Schematic pre-worker globally for complex beads. |
 | `schematic_word_threshold` | int | `100` | | Minimum word count in bead description to trigger Schematic analysis. |
@@ -487,6 +504,7 @@ anvils:
 | `copilot_premium_multipliers` | map | built-in defaults | | Per-model Copilot premium-request multipliers (e.g. `claude-opus-4.6: 3`). Each entry overrides the built-in default for that model; unlisted models keep their defaults (and unknown models default to `1.0`). Hot-reloadable. See [Pricing Tables](#pricing-tables) below. |
 | `max_ci_fix_attempts` | int | `5` | `1` | Maximum CI fix cycles per PR before marking as exhausted. |
 | `max_review_fix_attempts` | int | `5` | `1` | Maximum review fix cycles per PR before marking as exhausted. |
+| `burnish_verify_timeout` | duration | `5m` | `30s` (when set) | Maximum time allowed for the post-Smith Temper (verification) step within a single Burnish (review-fix) attempt. The push and thread-resolution steps that follow are not covered by this deadline. On timeout the Burnish worker logs a WARN, records the stable reason `warden_timeout` in the event log (`burnish_failed`) and the returned error, and lets the daemon's normal recovery re-dispatch. The timeout cannot be disabled — omitting the field (or setting it to `0`) falls back to the `5m` default; a non-zero value must be at least `30s`. |
 | `max_rebase_attempts` | int | `3` | `1` | Maximum conflict rebase attempts per PR before marking as exhausted. |
 | `max_lifecycle_workers` | int | `2` | `0` (use default) | Global cap on concurrent lifecycle/bellows fix workers (quench/cifix, burnish/reviewfix, rebase, assay) across all PRs and anvils. Each fix worker spawns its own Claude session and is **not** counted against `max_total_smiths`, so this independent ceiling prevents a burst of stuck PRs from fanning out unbounded Claude sessions and OOM-crashing the host. `0` or unset falls back to the default of `2`. |
 | `merge_strategy` | string | `"squash"` | | How PRs are merged from Hearth TUI. Valid: `squash`, `merge`, `rebase`. |
@@ -514,6 +532,7 @@ anvils:
 | `sse_poll_fallback` | bool | `false` | `true` | **Deprecated (removal planned next release).** Force the `/api/activity/stream` SSE endpoint back onto the legacy 2s polling loop even when `bus_enabled` is true. A one-release safety valve: if the bus-based replay-then-live activity stream misbehaves, set this to `true` to revert just that endpoint to polling without disabling the Bus for other consumers. Hot-reloadable — takes effect on the next SSE connect. |
 | `questgiver_enabled` | bool | `false` | | Enable the QuestGiver E2E quest monitor globally. When false, no quest scanning occurs. |
 | `questgiver_interval` | duration | `24h` | `0` | How often the QuestGiver polls anvils for quests. `0` disables. |
+| `adventurer_timeout` | duration | `5m` | | Maximum time allowed for a single quest execution by the headless-browser Adventurer (used by `forge quest run` and the QuestGiver monitor). Must not be negative. |
 | `wicket_enabled` | bool | `false` | | Enable the Wicket GitHub issue triage monitor globally. When false, no issue scanning occurs. |
 | `wicket_interval` | duration | `15m` | `1m` or `0` | How often Wicket polls repositories for new issues. `0` disables. |
 | `wicket_provider` | string | `""` (uses `providers`) | | AI provider used for triage decisions. When empty, the global `providers` chain is used. |
@@ -562,6 +581,96 @@ handover: it subscribes to the Bus *before* replaying the recent-event backlog
 over to the live channel while de-duplicating any event already emitted during
 replay. A resuming client's `Last-Event-ID` header seeds the replay cursor so it
 receives exactly the events it missed — no duplicates, no gaps.
+
+### Warden Rule Filtering
+
+When `auto_learn_rules` is enabled, the Warden accumulates review rules per anvil
+in `.forge/warden-rules.yaml`. To keep the review prompt small, Forge filters out
+rules that can't apply to the current diff before rendering the checklist. These
+settings live under `settings.warden`.
+
+```yaml
+settings:
+  warden:
+    max_rules_per_review: 30   # cap on rules emitted per review; 0 = default 30; negative = no cap
+    use_all_rules: false       # true bypasses the three filter passes (keeps only the cap)
+    filter_path_glob: true     # filter by Rule.Paths against the changed files
+    filter_category: true      # filter by Rule.Category against the extension→category map
+    filter_pattern_grep: true  # substring-match ≥4-char words from Rule.Pattern against the diff
+    archive_after_days: 180    # Smelter staleness sweep threshold; 0 = default 180; negative disables
+    dedup_threshold: 0.6       # similarity score above which duplicate rules are archived; 0 = default 0.6
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `warden.max_rules_per_review` | int | `30` | Caps the number of rules emitted in the review checklist after filtering. `0` (or omit) uses the default of `30`; a negative value disables the cap entirely; a positive value sets an explicit cap. |
+| `warden.use_all_rules` | bool | `false` | When `true`, bypasses the three filter passes and applies only `max_rules_per_review`. Useful for A/B comparison against the pre-filter behavior. |
+| `warden.filter_path_glob` | bool | `true` | Enables filtering by each rule's `Paths` against the changed files in the diff. |
+| `warden.filter_category` | bool | `true` | Enables filtering by each rule's `Category` against the in-code extension → category map. |
+| `warden.filter_pattern_grep` | bool | `true` | Enables substring matching of ≥4-character words from each rule's `Pattern` against the diff. |
+| `warden.archive_after_days` | int | `180` | Staleness threshold (days) used by the Smelter's Pass 2 sweep: a rule older than this with no recent source activity is archived with reason `stale`. `0` (or omit) uses the default of `180`; a negative value disables the pass ("never archive"). |
+| `warden.dedup_threshold` | float | `0.6` | Similarity score (0.0–1.0) above which two active rules are treated as duplicates and the older entry is archived with reason `duplicate`. `0` (or omit) uses the default of `0.6`. |
+
+## Assay — AI Pull-Request Review
+
+**Assay** is a multi-pass AI review of open pull requests (a Triage pass followed
+by parallel Logic / Security / Conventions / Tests / Repo passes) triggered by
+Bellows. It is configured under the **top-level** `assay` key (a sibling of
+`settings`, not nested inside it), with an optional per-anvil overlay under each
+anvil's `assay` key. Pointer-typed fields are tri-state: an unset value inherits
+from the global `assay` block (and, for the per-anvil overlay, from the built-in
+default).
+
+```yaml
+assay:
+  enabled: false             # master switch (default false)
+  shadow_mode: true          # true = write findings but post nothing (default true)
+  skip_drafts: true          # skip draft PRs (default true)
+  debounce_seconds: 300      # coalesce rapid pushes before reviewing (default 300)
+  daily_cost_limit_usd: 5.0  # per-day USD cap for Assay reviews (default 5.0)
+  max_runs: 2                # executed reviews per PR; <=0 = no cap (default 2)
+  max_diff_bytes: 250000     # cap on the diff embedded in pass prompts (default 250000)
+  max_base_file_bytes: 100000 # cap on base-file context bytes (default 100000)
+  nit_cap: 5                 # max Nit-severity findings retained; <=0 = no cap (default 5)
+  triage_provider: claude    # provider spec for the cheap triage pass
+  review_provider: claude    # provider spec for the five deep passes
+  model_tier: default        # semantic label recorded for observability
+  triage_model: ""           # model hint for triage (empty = provider default)
+  review_model: ""           # model hint for the deep passes (empty = provider default)
+  skip_paths:                # doublestar globs excluded from review
+    - "**/*.pb.go"
+    - "web/dist/**"
+
+anvils:
+  my-api:
+    path: /repos/my-api
+    assay:                   # per-anvil overlay — only non-empty fields override the global block
+      enabled: true
+      shadow_mode: false
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `enabled` | bool\|null | `false` | Master switch. When false, Assay never runs. |
+| `shadow_mode` | bool\|null | `true` | When true, Assay writes findings to `pr_findings` but posts nothing publicly — the safe default. Set to `false` to post review comments. |
+| `skip_drafts` | bool\|null | `true` | Skip draft PRs. |
+| `debounce_seconds` | int\|null | `300` | Seconds to coalesce rapid push bursts before running a review, so a flurry of commits triggers one review rather than many. |
+| `daily_cost_limit_usd` | float\|null | `5.0` | Per-calendar-day USD cap on Assay review spend. Prevents a runaway PR loop from silently burning quota. |
+| `max_runs` | int\|null | `2` | Maximum number of executed Assay reviews per PR (Assay re-reviews on every new head SHA). A value `<= 0` means no cap. |
+| `max_diff_bytes` | int\|null | `250000` | Caps the size of the diff embedded in pass prompts. `<= 0` falls back to the shared `diff.MaxBytes` default. |
+| `max_base_file_bytes` | int\|null | `100000` | Caps the base-file context bytes included with the diff. |
+| `nit_cap` | int\|null | `5` | Caps the number of Nit-severity findings retained after aggregation. `<= 0` means no cap. |
+| `triage_provider` | string | `""` (Claude) | Provider spec (same syntax as `settings.providers`) for the cheap triage pass. Empty defaults to Claude. |
+| `review_provider` | string | `""` (Claude) | Provider spec for the five deep passes. Empty defaults to Claude. |
+| `model_tier` | string | `"default"` | Semantic label describing desired model strength (e.g. `default`, `fast`). Recorded for observability; the concrete model always comes from the model hints below, never a baked-in ID. |
+| `triage_model` | string | `""` | Model hint for the triage pass. Empty means "let the provider pick its default model". |
+| `review_model` | string | `""` | Model hint for the deep passes. Empty means "let the provider pick its default model". |
+| `skip_paths` | []string | `[]` | Doublestar globs whose files are excluded from review (their hunks are dropped before the diff reaches any pass). |
+
+**Per-anvil overlay:** each anvil may set an `assay` block whose non-zero fields
+override the corresponding global values (pointer fields override when non-nil;
+string fields when non-empty; `skip_paths` when non-empty). Anvils without an
+`assay` block inherit the global configuration unchanged.
 
 ## Pricing Tables
 
@@ -918,7 +1027,7 @@ Teams webhooks receive rich Adaptive Cards. Generic webhook targets receive a un
 
 ## Environment Variable Overrides
 
-Environment variables with the `FORGE_` prefix override YAML values. Nested keys use underscores as separators.
+Environment variables with the `FORGE_` prefix override YAML values. Nested keys use underscores as separators. Every scalar `settings.*` key can be overridden this way — uppercase the dotted key path and replace each `.` with `_` (e.g. `settings.temper_output_cap` → `FORGE_SETTINGS_TEMPER_OUTPUT_CAP`, `settings.forgechat.turn_timeout` → `FORGE_SETTINGS_FORGECHAT_TURN_TIMEOUT`). The table below lists common overrides; it is not exhaustive. The `pricing` and `copilot_premium_multipliers` maps are the exception — they are loaded directly from the YAML file (not viper), so they cannot be set via environment variables.
 
 | Variable | Overrides |
 |----------|-----------|
@@ -938,8 +1047,12 @@ Environment variables with the `FORGE_` prefix override YAML values. Nested keys
 | `FORGE_SETTINGS_MAX_REVIEW_FIX_ATTEMPTS` | `settings.max_review_fix_attempts` |
 | `FORGE_SETTINGS_MAX_REBASE_ATTEMPTS` | `settings.max_rebase_attempts` |
 | `FORGE_SETTINGS_MAX_LIFECYCLE_WORKERS` | `settings.max_lifecycle_workers` |
+| `FORGE_SETTINGS_BURNISH_VERIFY_TIMEOUT` | `settings.burnish_verify_timeout` |
 | `FORGE_SETTINGS_MERGE_STRATEGY` | `settings.merge_strategy` |
 | `FORGE_SETTINGS_STALE_INTERVAL` | `settings.stale_interval` |
+| `FORGE_SETTINGS_TEMPER_STEP_TIMEOUT` | `settings.temper_step_timeout` |
+| `FORGE_SETTINGS_TEMPER_GIT_TIMEOUT` | `settings.temper_git_timeout` |
+| `FORGE_SETTINGS_TEMPER_OUTPUT_CAP` | `settings.temper_output_cap` |
 | `FORGE_SETTINGS_DEPCHECK_INTERVAL` | `settings.depcheck_interval` |
 | `FORGE_SETTINGS_DEPCHECK_TIMEOUT` | `settings.depcheck_timeout` |
 | `FORGE_SETTINGS_VULNCHECK_ENABLED` | `settings.vulncheck_enabled` |
@@ -959,6 +1072,7 @@ Environment variables with the `FORGE_` prefix override YAML values. Nested keys
 | `FORGE_SETTINGS_AUTO_MERGE_CRUCIBLE_CHILDREN` | `settings.auto_merge_crucible_children` |
 | `FORGE_SETTINGS_QUESTGIVER_ENABLED` | `settings.questgiver_enabled` |
 | `FORGE_SETTINGS_QUESTGIVER_INTERVAL` | `settings.questgiver_interval` |
+| `FORGE_SETTINGS_ADVENTURER_TIMEOUT` | `settings.adventurer_timeout` |
 | `FORGE_SETTINGS_WICKET_ENABLED` | `settings.wicket_enabled` |
 | `FORGE_SETTINGS_WICKET_INTERVAL` | `settings.wicket_interval` |
 | `FORGE_SETTINGS_WICKET_PROVIDER` | `settings.wicket_provider` |
@@ -967,6 +1081,11 @@ Environment variables with the `FORGE_` prefix override YAML values. Nested keys
 | `FORGE_SETTINGS_WICKET_NEEDS_HUMAN_LABEL` | `settings.wicket_needs_human_label` |
 | `FORGE_SETTINGS_WICKET_BEAD_CREATED_LABEL` | `settings.wicket_bead_created_label` |
 | `FORGE_SETTINGS_WICKET_TRIGGER_LABEL` | `settings.wicket_trigger_label` |
+| `FORGE_SETTINGS_WICKET_STALE_DAYS` | `settings.wicket_stale_days` |
+| `FORGE_SETTINGS_BD_READY_LIMIT` | `settings.bd_ready_limit` |
+| `FORGE_SETTINGS_FORGE_ID` | `settings.forge_id` |
+| `FORGE_SETTINGS_WARDEN_MODEL_OVERRIDE` | `settings.warden_model_override` |
+| `FORGE_SETTINGS_SCHEMATIC_MODEL_OVERRIDE` | `settings.schematic_model_override` |
 | `FORGE_NOTIFICATIONS_ENABLED` | `notifications.enabled` |
 | `FORGE_NOTIFICATIONS_TEAMS_WEBHOOK_URL` | `notifications.teams_webhook_url` |
 
@@ -985,22 +1104,30 @@ The config is validated at load time. Errors are reported as a list:
 - `max_review_fix_attempts` must be >= 1
 - `max_rebase_attempts` must be >= 1
 - `max_lifecycle_workers` must not be negative (omit or set to 0 to use the default)
+- `burnish_verify_timeout` must not be negative, and must be >= 30s when set explicitly (omit or set to 0 to use the package default)
 - `poll_interval` must be >= 10s
 - `smith_timeout` must be >= 1m
 - `bellows_interval` must be >= 30s
 - `daily_cost_limit` must be a non-negative finite number
 - `per_worker_cost_estimate` must be a non-negative finite number (omit or set to 0 to use the default)
+- `copilot_daily_request_limit` must be >= 0 (0 = no limit)
+- `copilot_warden_sample_rate` must be a finite value in [0.0, 1.0]
+- `log_retention_days` must be >= 0 (0 disables the log retention sweep)
 - `stale_interval` must be >= 30s when enabled, or 0 to disable
 - `smelter_interval` must be >= 1h when enabled, or 0 to disable
 - `questgiver_interval` must be > 0 when questgiver is enabled, or 0 to disable
+- `adventurer_timeout` must not be negative
 - `depcheck_interval` must be >= 1h when enabled, or 0 to disable
 - `depcheck_timeout` must not be negative
+- `crucible_poll_interval` must be >= 30s when enabled, or 0 to disable two-tier polling
 - Each anvil `path` must be non-empty
 - Each anvil `platform` (if set) must be one of: `github`, `gitlab`, `gitea`, `bitbucket`, `azuredevops` (note: `bitbucket` and `azuredevops` are recognised by the validator but not yet implemented)
 - Each anvil `max_smiths` must be >= 0
 - `auto_dispatch` must be one of: `all`, `tagged`, `priority`, `off`
 - If `auto_dispatch: tagged`, then `auto_dispatch_tag` must be non-empty
 - If `auto_dispatch: priority`, then `auto_dispatch_min_priority` must be 0-4
+- If an anvil sets `temper.lint_required: true`, then `temper.lint` (or `temper.steps`) must be set
+- Within `temper.steps`: each step `name` must be non-empty and unique; each `command` must be non-empty unless `verify_no_conflict_markers` is set (scan-only step); each step `timeout` must be non-negative
 - If `self_deploy.enabled` is true, `self_deploy.anvil` must be non-empty and match a configured anvil
 - `self_deploy.drain_timeout` must not be negative (omit or set to 0 to use the 30m default)
 
