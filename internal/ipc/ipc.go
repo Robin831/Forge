@@ -671,13 +671,20 @@ type Server struct {
 	listener net.Listener
 	handler  CommandHandler
 	clients  map[net.Conn]bool
-	mu       sync.RWMutex
+	// subscribers is the subset of clients that issued a "subscribe" command and
+	// are draining the pushed event stream. Broadcast targets only these
+	// long-lived connections so a high-volume event stream never interleaves an
+	// unsolicited "event" line into a transient request/response connection
+	// (e.g. `forge status`), which would corrupt that client's single-line read.
+	subscribers map[net.Conn]bool
+	mu          sync.RWMutex
 }
 
 // NewServer creates a new IPC server.
 func NewServer() *Server {
 	return &Server{
-		clients: make(map[net.Conn]bool),
+		clients:     make(map[net.Conn]bool),
+		subscribers: make(map[net.Conn]bool),
 	}
 }
 
@@ -718,7 +725,9 @@ func (s *Server) Start(ctx context.Context) error {
 	}
 }
 
-// Broadcast sends an event to all connected clients.
+// Broadcast pushes an event to every subscribed client (those that issued a
+// "subscribe" command). Non-subscriber connections are skipped so a pushed
+// event never races the response of an in-flight request/response command.
 func (s *Server) Broadcast(evt Event) {
 	data, err := json.Marshal(Response{
 		Type:    "event",
@@ -732,7 +741,7 @@ func (s *Server) Broadcast(evt Event) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	for conn := range s.clients {
+	for conn := range s.subscribers {
 		// Non-blocking write with short deadline
 		_ = conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
 		_, _ = conn.Write(data)
@@ -754,6 +763,7 @@ func (s *Server) Close() error {
 	for conn := range s.clients {
 		conn.Close()
 		delete(s.clients, conn)
+		delete(s.subscribers, conn)
 	}
 
 	if s.listener != nil {
@@ -766,6 +776,7 @@ func (s *Server) handleConn(ctx context.Context, conn net.Conn) {
 	defer func() {
 		s.mu.Lock()
 		delete(s.clients, conn)
+		delete(s.subscribers, conn)
 		s.mu.Unlock()
 		conn.Close()
 	}()
@@ -800,6 +811,18 @@ func (s *Server) handleConn(ctx context.Context, conn net.Conn) {
 			}
 		}
 		writeResponse(conn, resp)
+
+		// A "subscribe" command promotes this connection into the pushed-event
+		// fan-out set. Registration is deferred until after the ack response is
+		// written so a concurrent Broadcast cannot slip an event line ahead of
+		// the ack (which the subscribing client reads as a single response). The
+		// connection then keeps blocking in scanner.Scan(), never sending another
+		// command, while Broadcast writes events to it.
+		if cmd.Type == "subscribe" {
+			s.mu.Lock()
+			s.subscribers[conn] = true
+			s.mu.Unlock()
+		}
 	}
 }
 

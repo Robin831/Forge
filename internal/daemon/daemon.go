@@ -1110,6 +1110,12 @@ func (d *Daemon) Run(ctx context.Context) error {
 		}
 	}()
 
+	// Bridge the in-process event Bus to IPC subscribers (the Hearth TUI) so its
+	// event feed rides pushed events instead of ticker-polling the events table.
+	// No-op when the Bus is disabled (settings.bus_enabled off), leaving the
+	// legacy poll path intact.
+	go d.forwardBusEvents(ctx)
+
 	// Start optional Hearth 2.0 web server (gated by FORGE_WEB_ENABLED).
 	if err := d.startWebServer(ctx); err != nil {
 		d.logger.Error("web server failed to start", "error", err)
@@ -7217,6 +7223,51 @@ func (d *Daemon) stopBead(p stopBeadParams) ipc.Response {
 	}()
 	resp, _ := ipc.NewQueuedResponse(reqID, "stopping bead")
 	return resp
+}
+
+// forwardBusEvents subscribes to the in-process event Bus and pushes every
+// logged event to IPC subscribers (the Hearth TUI) via Broadcast, so the TUI's
+// event feed streams in real time instead of ticker-polling the events table.
+//
+// It mirrors FetchEvents' filtering: poll / poll_error rows are skipped because
+// anvil health is shown inline in the Queue panel, not the event feed. An
+// overflow gap marker is forwarded as an "events_gap" signal telling the TUI to
+// re-sync its feed from the DB once, then resume streaming.
+//
+// The method returns immediately (leaving the legacy poll path intact) when the
+// Bus is disabled — settings.bus_enabled off means d.eventBus is nil.
+func (d *Daemon) forwardBusEvents(ctx context.Context) {
+	if d.eventBus == nil || d.ipc == nil {
+		return
+	}
+	ch, unsubscribe := d.eventBus.Subscribe()
+	defer unsubscribe()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case ev, ok := <-ch:
+			if !ok {
+				return
+			}
+			if ev.GapMarker {
+				d.BroadcastEvent("events_gap", struct{}{})
+				continue
+			}
+			if ev.Type == state.EventPoll || ev.Type == state.EventPollError {
+				continue
+			}
+			d.BroadcastEvent("event_logged", ipc.EventInfo{
+				ID:        ev.ID,
+				Timestamp: ev.Timestamp.Format(time.RFC3339),
+				Type:      string(ev.Type),
+				Message:   ev.Message,
+				BeadID:    ev.BeadID,
+				Anvil:     ev.Anvil,
+			})
+		}
+	}
 }
 
 // BroadcastEvent sends an event to all connected IPC clients.

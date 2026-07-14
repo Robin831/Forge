@@ -322,6 +322,18 @@ type AsyncCompletionMsg struct {
 	Message   string
 }
 
+// LoggedEventMsg is delivered when the daemon pushes a real logged event over
+// the IPC subscribe stream (event bus → Broadcast). The event feed prepends it
+// live instead of waiting for the next poll tick.
+type LoggedEventMsg struct {
+	Event ipc.EventInfo
+}
+
+// EventsGapMsg is delivered when the daemon's event bus overflowed and dropped
+// events for this subscriber. The TUI re-syncs its event feed from the DB once
+// to recover the missed rows, then resumes streaming.
+type EventsGapMsg struct{}
+
 // asyncSubscriptionStartedMsg signals that the event subscription is ready.
 type asyncSubscriptionStartedMsg struct {
 	events <-chan ipc.Event
@@ -513,6 +525,12 @@ type Model struct {
 	eventCountCache       int
 	eventRevision         int // incremented on every UpdateEventsMsg to detect content changes
 	eventRevisionCache    int
+	// eventStreamActive flips true once the first real event arrives over the IPC
+	// subscribe stream, proving the daemon's event bus is forwarding. From then
+	// on the periodic tick stops polling the events table (status/queue polls
+	// remain) and the feed rides pushed events. It stays false against a daemon
+	// with the bus disabled, preserving the legacy poll-every-tick behaviour.
+	eventStreamActive bool
 
 	// Event filter — text search toggled with '/'
 	eventFilter       textinput.Model
@@ -611,6 +629,9 @@ func (m *Model) Init() tea.Cmd {
 		cmds = append(cmds, SpinnerTick())
 		cmds = append(cmds, Tick())
 		cmds = append(cmds, FetchAll(m.data, m.logCache))
+		// Prime the event feed once. Live updates then arrive over the subscribe
+		// stream; the tick only re-polls events while streaming stays inactive.
+		cmds = append(cmds, FetchEvents(m.data.DB, EventFetchLimit))
 		cmds = append(cmds, FetchDaemonHealth())
 		cmds = append(cmds, startAsyncSubscription())
 	}
@@ -1776,7 +1797,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.asyncEvents = msg.events
 		m.asyncCancelFunc = msg.cancel
 		m.asyncClient = msg.client
-		return m, waitForAsyncEvent(msg.events)
+		return m, waitForStreamEvent(msg.events)
 
 	case AsyncCompletionMsg:
 		if op, ok := m.pendingAsync[msg.RequestID]; ok {
@@ -1796,8 +1817,45 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		if m.asyncEvents != nil {
-			return m, waitForAsyncEvent(m.asyncEvents)
+			return m, waitForStreamEvent(m.asyncEvents)
 		}
+
+	case LoggedEventMsg:
+		// A real event arrived over the subscribe stream. Mark streaming active
+		// (the tick stops polling events from here) and re-arm the wait so the
+		// channel keeps draining. Prepend the event and route it through the
+		// UpdateEventsMsg path so toast/filter/auto-scroll bookkeeping is shared
+		// with the poll path — no divergent update logic.
+		m.eventStreamActive = true
+		var cmds []tea.Cmd
+		if m.asyncEvents != nil {
+			cmds = append(cmds, waitForStreamEvent(m.asyncEvents))
+		}
+		item := EventItem{
+			Timestamp: formatEventTimestamp(msg.Event.Timestamp),
+			Type:      msg.Event.Type,
+			Message:   msg.Event.Message,
+			BeadID:    msg.Event.BeadID,
+		}
+		merged := append([]EventItem{item}, m.events...)
+		if len(merged) > EventFetchLimit {
+			merged = merged[:EventFetchLimit]
+		}
+		cmds = append(cmds, func() tea.Msg { return UpdateEventsMsg{Items: merged} })
+		return m, tea.Batch(cmds...)
+
+	case EventsGapMsg:
+		// The bus dropped events for us (slow consumer). Re-sync the feed from
+		// the DB once and re-arm the wait to resume live streaming.
+		m.eventStreamActive = true
+		var cmds []tea.Cmd
+		if m.asyncEvents != nil {
+			cmds = append(cmds, waitForStreamEvent(m.asyncEvents))
+		}
+		if m.data != nil {
+			cmds = append(cmds, FetchEvents(m.data.DB, EventFetchLimit))
+		}
+		return m, tea.Batch(cmds...)
 
 	case TickMsg:
 		// On each tick, refresh all panels and schedule the next tick.
@@ -1817,6 +1875,12 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.ensureQueueNav()
 				m.captureFocusedBeadID()
 				cmds = append(cmds, FetchAll(m.data, m.logCache))
+				// Event feed rides the subscribe stream once active; only fall
+				// back to polling it while streaming is inactive (bus disabled or
+				// no event pushed yet). status/queue polls always run above.
+				if !m.eventStreamActive {
+					cmds = append(cmds, FetchEvents(m.data.DB, EventFetchLimit))
+				}
 			}
 			if m.healthTickCount%healthTickDivisor == 0 {
 				cmds = append(cmds, FetchDaemonHealth())
@@ -5362,34 +5426,48 @@ func startAsyncSubscription() tea.Cmd {
 	}
 }
 
-// waitForAsyncEvent blocks until the next async_complete event arrives on the
-// subscription channel and returns it as an AsyncCompletionMsg.
-func waitForAsyncEvent(events <-chan ipc.Event) tea.Cmd {
+// waitForStreamEvent blocks until the next relevant event arrives on the IPC
+// subscribe channel and translates it into a Bubbletea message: async_complete
+// → AsyncCompletionMsg, event_logged → LoggedEventMsg, events_gap →
+// EventsGapMsg. Unknown event types are skipped. Returns nil when the channel
+// closes (subscription torn down). Each handler re-arms the wait so the stream
+// is drained continuously.
+func waitForStreamEvent(events <-chan ipc.Event) tea.Cmd {
 	return func() tea.Msg {
 		for evt := range events {
-			if evt.Type != "async_complete" {
+			switch evt.Type {
+			case "async_complete":
+				var data struct {
+					RequestID string `json:"request_id"`
+					Type      string `json:"type"`
+					Response  struct {
+						Type    string          `json:"type"`
+						Payload json.RawMessage `json:"payload"`
+					} `json:"response"`
+				}
+				if json.Unmarshal(evt.Data, &data) != nil {
+					continue
+				}
+				msg := AsyncCompletionMsg{
+					RequestID: data.RequestID,
+					Success:   data.Response.Type == "ok",
+				}
+				var payload struct{ Message string }
+				if json.Unmarshal(data.Response.Payload, &payload) == nil && payload.Message != "" {
+					msg.Message = payload.Message
+				}
+				return msg
+			case "event_logged":
+				var info ipc.EventInfo
+				if json.Unmarshal(evt.Data, &info) != nil {
+					continue
+				}
+				return LoggedEventMsg{Event: info}
+			case "events_gap":
+				return EventsGapMsg{}
+			default:
 				continue
 			}
-			var data struct {
-				RequestID string `json:"request_id"`
-				Type      string `json:"type"`
-				Response  struct {
-					Type    string          `json:"type"`
-					Payload json.RawMessage `json:"payload"`
-				} `json:"response"`
-			}
-			if json.Unmarshal(evt.Data, &data) != nil {
-				continue
-			}
-			msg := AsyncCompletionMsg{
-				RequestID: data.RequestID,
-				Success:   data.Response.Type == "ok",
-			}
-			var payload struct{ Message string }
-			if json.Unmarshal(data.Response.Payload, &payload) == nil && payload.Message != "" {
-				msg.Message = payload.Message
-			}
-			return msg
 		}
 		return nil
 	}
