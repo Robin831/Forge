@@ -483,6 +483,8 @@ anvils:
 | `daily_cost_limit` | float | `0` (no limit) | | Maximum estimated USD spend per calendar day. Auto-dispatch pauses once the **projected** total — recorded spend plus the estimated in-flight spend of currently active workers — reaches the limit, and the gate is re-checked before **each** dispatch. This accounting prevents N concurrent workers from overshooting the limit by roughly N × per-bead cost. See `per_worker_cost_estimate`. |
 | `per_worker_cost_estimate` | float | `2.00` | `0` (use default) | Floor (USD) used to estimate a single active worker's in-flight (not-yet-recorded) spend when projecting against `daily_cost_limit`. The daemon maintains a rolling average of recorded per-bead cost and uses `max(rolling average, this floor)`, so the reservation is never zero before any cost data exists. Only relevant when `daily_cost_limit > 0`. Lifecycle/bellows fix workers (quench/burnish/rebase/assay) also reserve this estimate so their spend counts against the gate; those workers are themselves **not** blocked by the gate (they fix already-open PRs), but their in-flight spend causes the gate to back off new Smith dispatch. `0` or unset falls back to the default of `2.00`. |
 | `copilot_daily_request_limit` | int | `0` (no limit) | | Maximum weighted Copilot premium requests per calendar day (e.g. 300 for Pro, 1500 for Pro+). When the limit is reached or exceeded, the Copilot provider is skipped in the fallback chain. Displayed as a progress indicator in the Hearth Usage panel. |
+| `pricing` | map | built-in defaults | | Per-model USD rates (per 1M tokens) used to **estimate** cost for providers that do not self-report it (Copilot, Gemini, OpenAI/Codex). Claude self-reports `total_cost_usd` and is unaffected. Each entry overrides the built-in default for that model key; unlisted models keep their defaults. Hot-reloadable. See [Pricing Tables](#pricing-tables) below. |
+| `copilot_premium_multipliers` | map | built-in defaults | | Per-model Copilot premium-request multipliers (e.g. `claude-opus-4.6: 3`). Each entry overrides the built-in default for that model; unlisted models keep their defaults (and unknown models default to `1.0`). Hot-reloadable. See [Pricing Tables](#pricing-tables) below. |
 | `max_ci_fix_attempts` | int | `5` | `1` | Maximum CI fix cycles per PR before marking as exhausted. |
 | `max_review_fix_attempts` | int | `5` | `1` | Maximum review fix cycles per PR before marking as exhausted. |
 | `max_rebase_attempts` | int | `3` | `1` | Maximum conflict rebase attempts per PR before marking as exhausted. |
@@ -520,6 +522,67 @@ anvils:
 | `forgechat.turn_timeout` | duration | `5m` | (cap `15m`) | Wall-clock budget for a single Beads-Forge AI turn (drafter, grilling, plan, emit). When the budget is exceeded, the runner returns a sentinel chat message instead of the truncated streamed preamble and logs a warning. Values above `15m` are clamped on load. |
 
 Duration values use Go syntax: `30s`, `5m`, `1h30m`, `168h`, etc.
+
+## Pricing Tables
+
+Forge tracks token spend per bead and per day. **Claude self-reports an exact
+`total_cost_usd`** in its stream output, so Claude cost is never estimated. For
+providers that do not report a cost (Copilot, Gemini, OpenAI/Codex), Forge
+estimates spend from token counts and a configurable per-model pricing table.
+
+Because these are estimates, Forge logs an info line the first time a fallback
+price is applied for a given provider/model each day
+(`cost: applying fallback pricing estimate …`) so you can spot drift between the
+table and real provider billing.
+
+### `settings.pricing`
+
+Overrides per-model USD rates **per 1M tokens**. Overrides are overlaid on top
+of the built-in defaults, so you only need to list the models you want to change.
+
+| Model key | Input | Output | Cache read | Cache write |
+|-----------|-------|--------|------------|-------------|
+| `claude-sonnet` (also the Copilot fallback) | `3.00` | `15.00` | `0.30` | `3.75` |
+| `claude-haiku` | `1.00` | `5.00` | `0.10` | `1.25` |
+| `claude-opus` | `15.00` | `75.00` | `1.50` | `18.75` |
+| `gemini` | `3.50` | `10.50` | `0.00` | `0.00` |
+| `openai` | `2.50` | `10.00` | `0.00` | `0.00` |
+
+When a fallback estimate runs, Forge first looks for an exact model-key match,
+then infers a family from the model name (e.g. a Copilot `claude-opus-4.6`
+resolves to the `claude-opus` row), then falls back to the provider's default
+key. So you can add rows keyed by a specific model id if you need finer control.
+
+```yaml
+settings:
+  pricing:
+    gemini:
+      input_per_m: 4.00
+      output_per_m: 12.00
+    claude-opus:
+      input_per_m: 15.00
+      output_per_m: 75.00
+      cache_read_per_m: 1.50
+      cache_write_per_m: 18.75
+```
+
+### `settings.copilot_premium_multipliers`
+
+Overrides the premium-request weight for a Copilot model. Weighted requests
+count against `copilot_daily_request_limit`. Overrides are overlaid on the
+built-in defaults (e.g. `claude-opus-4.6: 3`, `claude-opus-4.6-fast: 30`,
+`claude-haiku-4.5: 0.33`, most `gpt-5.x: 1`, `gpt-5-mini`/`gpt-4.1: 0`). Any
+model not present in the table defaults to `1.0`.
+
+```yaml
+settings:
+  copilot_premium_multipliers:
+    claude-opus-4.6: 3
+    claude-haiku-4.5: 0.33
+```
+
+Both maps are hot-reloadable: editing the config file re-applies them to running
+workers without a daemon restart.
 
 ## Log Management
 
@@ -837,6 +900,7 @@ The daemon watches `forge.yaml` via fsnotify. When the file changes, **only a su
 - `copilot_warden_sample_rate` adjusts the sampling rate at runtime
 - `smelter_enabled` enables or disables the Smelter background process at runtime
 - `smelter_interval` changes the Smelter schedule; takes effect on the next scheduled run
+- `pricing` and `copilot_premium_multipliers` are re-applied to the cost estimator for subsequent cost calculations
 - `notifications.*` (webhook URL, enabled, events, etc.) are re-read and applied immediately
 - In-flight workers are **not** interrupted
 

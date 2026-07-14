@@ -667,6 +667,36 @@ func TestSave_RoundTrip_StageProviders(t *testing.T) {
 		"stage_providers must survive Save→Load round-trip")
 }
 
+func TestSave_RoundTrip_Pricing(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "forge.yaml")
+
+	original := Defaults()
+	original.Settings.Pricing = map[string]ModelPricing{
+		"gemini": {InputPerM: 4.00, OutputPerM: 12.00},
+		"claude-opus": {
+			InputPerM:      15.00,
+			OutputPerM:     75.00,
+			CacheReadPerM:  1.50,
+			CacheWritePerM: 18.75,
+		},
+	}
+	original.Settings.CopilotPremiumMultipliers = map[string]float64{
+		"claude-opus-4.6":  3,
+		"claude-haiku-4.5": 0.33,
+	}
+
+	require.NoError(t, Save(&original, cfgPath))
+
+	loaded, err := Load(cfgPath)
+	require.NoError(t, err)
+
+	assert.Equal(t, original.Settings.Pricing, loaded.Settings.Pricing,
+		"pricing must survive Save→Load round-trip")
+	assert.Equal(t, original.Settings.CopilotPremiumMultipliers, loaded.Settings.CopilotPremiumMultipliers,
+		"copilot_premium_multipliers must survive Save→Load round-trip")
+}
+
 func TestSave_RoundTrip_PerAnvilStageProviders(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "forge.yaml")

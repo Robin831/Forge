@@ -642,6 +642,32 @@ type SettingsConfig struct {
 	// plan, emit). Currently exposes turn_timeout so operators can lift the
 	// per-turn budget without recompiling.
 	ForgeChat ForgeChatSettings `mapstructure:"forgechat" yaml:"forgechat,omitempty"`
+
+	// Pricing maps a model key to its per-million-token USD rates, used as the
+	// fallback cost estimate for providers that do not self-report a cost
+	// (Copilot, Gemini, OpenAI/Codex). Claude self-reports total_cost_usd and
+	// is unaffected. Each entry overrides the built-in default for that model;
+	// models not listed keep their default rates. Hot-reloadable. See
+	// cost.DefaultPricingTable for the default keys (claude-sonnet,
+	// claude-haiku, claude-opus, gemini, openai) and values.
+	Pricing map[string]ModelPricing `mapstructure:"pricing" yaml:"pricing,omitempty"`
+
+	// CopilotPremiumMultipliers maps a Copilot model name to its premium-request
+	// multiplier (e.g. claude-opus-4.6 = 3x). Each entry overrides the built-in
+	// default for that model; models not listed keep their default multiplier.
+	// Hot-reloadable. See cost.DefaultCopilotPremiumMultipliers for defaults.
+	CopilotPremiumMultipliers map[string]float64 `mapstructure:"copilot_premium_multipliers" yaml:"copilot_premium_multipliers,omitempty"`
+}
+
+// ModelPricing defines per-million-token USD rates for a single model, used by
+// the fallback cost estimator when a provider does not self-report its cost.
+// It mirrors cost.Pricing; the daemon converts between the two when pushing
+// settings.pricing into the cost package.
+type ModelPricing struct {
+	InputPerM      float64 `mapstructure:"input_per_m" yaml:"input_per_m"`
+	OutputPerM     float64 `mapstructure:"output_per_m" yaml:"output_per_m"`
+	CacheReadPerM  float64 `mapstructure:"cache_read_per_m" yaml:"cache_read_per_m,omitempty"`
+	CacheWritePerM float64 `mapstructure:"cache_write_per_m" yaml:"cache_write_per_m,omitempty"`
 }
 
 // DefaultMaxLifecycleWorkers is the fallback concurrency cap for lifecycle/bellows
@@ -863,20 +889,22 @@ func (s SettingsConfig) MarshalYAML() (interface{}, error) {
 		QuestgiverInterval          string  `yaml:"questgiver_interval,omitempty"`
 		AdventurerTimeout           string  `yaml:"adventurer_timeout,omitempty"`
 
-		WicketEnabled          bool            `yaml:"wicket_enabled"`
-		WicketInterval         string          `yaml:"wicket_interval"`
-		WicketProvider         string          `yaml:"wicket_provider,omitempty"`
-		WicketBatchSize        int             `yaml:"wicket_batch_size,omitempty"`
-		WicketProcessedLabel   string          `yaml:"wicket_processed_label,omitempty"`
-		WicketNeedsHumanLabel  string          `yaml:"wicket_needs_human_label,omitempty"`
-		WicketBeadCreatedLabel string          `yaml:"wicket_bead_created_label,omitempty"`
-		WicketTriggerLabel     string          `yaml:"wicket_trigger_label,omitempty"`
-		WicketStaleDays        int             `yaml:"wicket_stale_days,omitempty"`
-		BdReadyLimit           int             `yaml:"bd_ready_limit,omitempty"`
-		CruciblePollInterval   string          `yaml:"crucible_poll_interval,omitempty"`
-		ForgeID                string          `yaml:"forge_id,omitempty"`
-		Warden                 WardenSettings  `yaml:"warden,omitempty"`
-		ForgeChat              forgeChatShadow `yaml:"forgechat,omitempty"`
+		WicketEnabled             bool                    `yaml:"wicket_enabled"`
+		WicketInterval            string                  `yaml:"wicket_interval"`
+		WicketProvider            string                  `yaml:"wicket_provider,omitempty"`
+		WicketBatchSize           int                     `yaml:"wicket_batch_size,omitempty"`
+		WicketProcessedLabel      string                  `yaml:"wicket_processed_label,omitempty"`
+		WicketNeedsHumanLabel     string                  `yaml:"wicket_needs_human_label,omitempty"`
+		WicketBeadCreatedLabel    string                  `yaml:"wicket_bead_created_label,omitempty"`
+		WicketTriggerLabel        string                  `yaml:"wicket_trigger_label,omitempty"`
+		WicketStaleDays           int                     `yaml:"wicket_stale_days,omitempty"`
+		BdReadyLimit              int                     `yaml:"bd_ready_limit,omitempty"`
+		CruciblePollInterval      string                  `yaml:"crucible_poll_interval,omitempty"`
+		ForgeID                   string                  `yaml:"forge_id,omitempty"`
+		Warden                    WardenSettings          `yaml:"warden,omitempty"`
+		ForgeChat                 forgeChatShadow         `yaml:"forgechat,omitempty"`
+		Pricing                   map[string]ModelPricing `yaml:"pricing,omitempty"`
+		CopilotPremiumMultipliers map[string]float64      `yaml:"copilot_premium_multipliers,omitempty"`
 	}
 
 	sh := shadow{
@@ -927,17 +955,19 @@ func (s SettingsConfig) MarshalYAML() (interface{}, error) {
 		SmelterEnabled:              s.SmelterEnabled,
 		QuestgiverEnabled:           s.QuestgiverEnabled,
 
-		WicketEnabled:          s.WicketEnabled,
-		WicketProvider:         s.WicketProvider,
-		WicketBatchSize:        s.WicketBatchSize,
-		WicketProcessedLabel:   s.WicketProcessedLabel,
-		WicketNeedsHumanLabel:  s.WicketNeedsHumanLabel,
-		WicketBeadCreatedLabel: s.WicketBeadCreatedLabel,
-		WicketTriggerLabel:     s.WicketTriggerLabel,
-		WicketStaleDays:        s.WicketStaleDays,
-		BdReadyLimit:           s.BdReadyLimit,
-		ForgeID:                s.ForgeID,
-		Warden:                 s.Warden,
+		WicketEnabled:             s.WicketEnabled,
+		WicketProvider:            s.WicketProvider,
+		WicketBatchSize:           s.WicketBatchSize,
+		WicketProcessedLabel:      s.WicketProcessedLabel,
+		WicketNeedsHumanLabel:     s.WicketNeedsHumanLabel,
+		WicketBeadCreatedLabel:    s.WicketBeadCreatedLabel,
+		WicketTriggerLabel:        s.WicketTriggerLabel,
+		WicketStaleDays:           s.WicketStaleDays,
+		BdReadyLimit:              s.BdReadyLimit,
+		ForgeID:                   s.ForgeID,
+		Warden:                    s.Warden,
+		Pricing:                   s.Pricing,
+		CopilotPremiumMultipliers: s.CopilotPremiumMultipliers,
 		ForgeChat: forgeChatShadow{
 			TurnTimeout: func() string {
 				if s.ForgeChat.TurnTimeout > 0 && s.ForgeChat.TurnTimeout != DefaultForgeChatTurnTimeout {

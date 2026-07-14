@@ -369,7 +369,7 @@ func SpawnWithOptions(ctx context.Context, worktreePath, promptText, logDir stri
 				InputTokens:  result.TokensIn,
 				OutputTokens: result.TokensOut,
 			}
-			u.Calculate(cost.CopilotPricing())
+			u.Calculate(cost.FallbackPricing(pv.Kind, pv.Model))
 			result.CostUSD = u.EstimatedCostUSD
 		}
 
@@ -379,7 +379,7 @@ func SpawnWithOptions(ctx context.Context, worktreePath, promptText, logDir stri
 				InputTokens:  result.TokensIn,
 				OutputTokens: result.TokensOut,
 			}
-			u.Calculate(cost.OpenAIPricing())
+			u.Calculate(cost.FallbackPricing(pv.Kind, pv.Model))
 			result.CostUSD = u.EstimatedCostUSD
 		}
 
@@ -656,7 +656,7 @@ func readStreamJSON(r io.Reader, buf *strings.Builder, logFile *os.File, result 
 							InputTokens:  event.Stats.InputTokens,
 							OutputTokens: event.Stats.OutputTokens,
 						}
-						u.Calculate(cost.GeminiPricing())
+						u.Calculate(cost.FallbackPricing(provider.Gemini, result.Model))
 						result.CostUSD = u.EstimatedCostUSD
 					}
 

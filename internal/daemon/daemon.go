@@ -36,6 +36,7 @@ import (
 	"github.com/Robin831/Forge/internal/bellows"
 	"github.com/Robin831/Forge/internal/burnish"
 	"github.com/Robin831/Forge/internal/config"
+	"github.com/Robin831/Forge/internal/cost"
 	"github.com/Robin831/Forge/internal/crucible"
 	"github.com/Robin831/Forge/internal/depcheck"
 	"github.com/Robin831/Forge/internal/executil"
@@ -537,6 +538,7 @@ func New(cfg *config.Config, configPath string) (*Daemon, error) {
 	d.costLimitLoggedDate.Store("")
 	d.cfg.Store(cfg)
 	applyWardenFilterConfig(cfg)
+	applyPricingConfig(cfg)
 	d.labelAdder = func(anvilPath, beadID, tag string) error {
 		ctx, cancel := context.WithTimeout(d.runCtx, executil.DefaultBdTimeout)
 		defer cancel()
@@ -1079,6 +1081,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 		d.configWatcher.OnChange(func(old, new *config.Config) {
 			d.cfg.Store(new)
 			applyWardenFilterConfig(new)
+			applyPricingConfig(new)
 			// Re-publish the resolved forge id so PR-body builders and the
 			// reconciler use the new value immediately. Resolution falls back
 			// to os.Hostname() so this normally only changes when the operator
@@ -3507,13 +3510,13 @@ normalPipeline:
 	// Resolve per-stage providers via stage_providers → smith_providers → providers fallback.
 	cfg := d.cfg.Load()
 	pipelineParams := pipeline.Params{
-		DB:              d.db,
-		WorktreeManager: d.worktreeMgr,
-		PromptBuilder:   d.promptBuilder,
-		AnvilName:       bead.Anvil,
-		AnvilConfig:     anvilCfg,
-		Bead:            bead,
-		ExtraFlags:      cfg.Settings.ClaudeFlags,
+		DB:                d.db,
+		WorktreeManager:   d.worktreeMgr,
+		PromptBuilder:     d.promptBuilder,
+		AnvilName:         bead.Anvil,
+		AnvilConfig:       anvilCfg,
+		Bead:              bead,
+		ExtraFlags:        cfg.Settings.ClaudeFlags,
 		TemperConfig:      d.resolveTemperConfig(anvilCfg),
 		GoRaceDetection:   d.resolveGoRaceDetection(anvilCfg),
 		TemperStepTimeout: cfg.Settings.TemperStepTimeout,
@@ -8804,14 +8807,14 @@ func (d *Daemon) runPostForceSmithPipeline(ctx context.Context, beadID, anvil st
 	defer cancel()
 
 	postPipelineParams := pipeline.Params{
-		DB:              d.db,
-		WorktreeManager: d.worktreeMgr,
-		PromptBuilder:   d.promptBuilder,
-		AnvilName:       anvil,
-		AnvilConfig:     anvilCfg,
-		Bead:            bead,
-		BaseBranch:      bead.EpicBranch, // empty for non-Crucible beads; set for children
-		ExtraFlags:      d.cfg.Load().Settings.ClaudeFlags,
+		DB:                d.db,
+		WorktreeManager:   d.worktreeMgr,
+		PromptBuilder:     d.promptBuilder,
+		AnvilName:         anvil,
+		AnvilConfig:       anvilCfg,
+		Bead:              bead,
+		BaseBranch:        bead.EpicBranch, // empty for non-Crucible beads; set for children
+		ExtraFlags:        d.cfg.Load().Settings.ClaudeFlags,
 		TemperConfig:      d.resolveTemperConfig(anvilCfg),
 		GoRaceDetection:   d.resolveGoRaceDetection(anvilCfg),
 		TemperStepTimeout: d.cfg.Load().Settings.TemperStepTimeout,
@@ -8876,4 +8879,32 @@ func applyWardenFilterConfig(cfg *config.Config) {
 		FilterCategory:    w.IsFilterCategoryEnabled(),
 		FilterPatternGrep: w.IsFilterPatternGrepEnabled(),
 	})
+}
+
+// applyPricingConfig pushes settings.pricing and
+// settings.copilot_premium_multipliers into the cost package so fallback cost
+// estimates (Copilot/Gemini/OpenAI) and Copilot premium-request weighting use
+// the configured rates. Both are overlaid on top of the built-in defaults, so
+// an operator can override a single model without restating the rest. Called
+// at daemon startup and again whenever the config hot-reloads.
+func applyPricingConfig(cfg *config.Config) {
+	if cfg == nil {
+		cost.SetPricingTable(nil)
+		cost.SetCopilotPremiumMultipliers(nil)
+		return
+	}
+	var overrides map[string]cost.Pricing
+	if len(cfg.Settings.Pricing) > 0 {
+		overrides = make(map[string]cost.Pricing, len(cfg.Settings.Pricing))
+		for model, p := range cfg.Settings.Pricing {
+			overrides[model] = cost.Pricing{
+				InputPerM:      p.InputPerM,
+				OutputPerM:     p.OutputPerM,
+				CacheReadPerM:  p.CacheReadPerM,
+				CacheWritePerM: p.CacheWritePerM,
+			}
+		}
+	}
+	cost.SetPricingTable(overrides)
+	cost.SetCopilotPremiumMultipliers(cfg.Settings.CopilotPremiumMultipliers)
 }
