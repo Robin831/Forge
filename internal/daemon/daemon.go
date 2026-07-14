@@ -2256,28 +2256,7 @@ func (d *Daemon) handleWicketPRMerged(ctx context.Context, event bellows.PREvent
 // event it launches runSelfDeploy in the background so the bellows handler chain
 // is never blocked by a drain-and-rebuild that can take many minutes.
 func (d *Daemon) handleSelfDeploy(_ context.Context, event bellows.PREvent) {
-	if event.EventType != bellows.EventPRMerged {
-		return
-	}
-	cfg := d.config()
-	sd := cfg.SelfDeploy
-	if !sd.Enabled || sd.Anvil == "" {
-		return
-	}
-	if event.Anvil != sd.Anvil {
-		return
-	}
-	// Only deploy on merges to the watched base branch. The bellows PREvent does
-	// not carry the base branch, so read it from the PR record; treat a missing
-	// record conservatively as "not the watched branch".
-	wantBranch := sd.ResolvedBranch()
-	if pr, err := d.db.GetPRByNumber(event.Anvil, event.PRNumber); err == nil && pr != nil {
-		if pr.BaseBranch != "" && pr.BaseBranch != wantBranch {
-			return
-		}
-	} else {
-		d.logger.Warn("self-deploy: could not resolve base branch for merged PR; skipping",
-			"anvil", event.Anvil, "pr", event.PRNumber, "error", err)
+	if !d.selfDeployAccepts(event) {
 		return
 	}
 
@@ -2289,10 +2268,50 @@ func (d *Daemon) handleSelfDeploy(_ context.Context, event bellows.PREvent) {
 		return
 	}
 
+	sd := d.config().SelfDeploy
 	go func() {
 		defer d.selfDeployInFlight.Store(false)
 		d.runSelfDeploy(sd)
 	}()
+}
+
+// selfDeployAccepts reports whether a bellows event qualifies to trigger a
+// self-deploy: it must be a PR-merged event, the feature must be enabled with a
+// configured anvil, the event anvil must match, and the merged PR's recorded
+// base branch must equal the watched branch.
+//
+// The base-branch check is deliberately conservative. The bellows PREvent does
+// not carry the base branch, so it is read from the PR record. A missing record,
+// a lookup error, OR an empty recorded base branch all disqualify the event:
+// an empty base branch is ambiguous (it may not be the watched branch at all),
+// and silently treating "unknown" as "matches" would let a merge to some other
+// branch trigger a production restart. When in doubt, do not deploy.
+func (d *Daemon) selfDeployAccepts(event bellows.PREvent) bool {
+	if event.EventType != bellows.EventPRMerged {
+		return false
+	}
+	sd := d.config().SelfDeploy
+	if !sd.Enabled || sd.Anvil == "" {
+		return false
+	}
+	if event.Anvil != sd.Anvil {
+		return false
+	}
+	pr, err := d.db.GetPRByNumber(event.Anvil, event.PRNumber)
+	if err != nil || pr == nil {
+		d.logger.Warn("self-deploy: could not resolve merged PR record; skipping",
+			"anvil", event.Anvil, "pr", event.PRNumber, "error", err)
+		return false
+	}
+	if pr.BaseBranch == "" {
+		d.logger.Warn("self-deploy: merged PR has no recorded base branch; skipping to avoid an unintended restart",
+			"anvil", event.Anvil, "pr", event.PRNumber)
+		return false
+	}
+	if pr.BaseBranch != sd.ResolvedBranch() {
+		return false
+	}
+	return true
 }
 
 // runSelfDeploy pauses dispatch, drains active workers, then rebuilds and
@@ -2345,7 +2364,10 @@ func (d *Daemon) runSelfDeploy(sd config.SelfDeployConfig) {
 			BuildTarget: sd.ResolvedBuildTarget(),
 		},
 		selfdeploy.ExecCommander{},
-		selfdeploy.SystemctlRestarter{},
+		selfdeploy.SystemctlRestarter{
+			Cmd:         sd.ResolvedRestartCommand(),
+			PrependArgs: sd.RestartArgs,
+		},
 		selfDeployEventSink{db: d.db, anvil: sd.Anvil},
 		d.activeWorkerCount,
 	)

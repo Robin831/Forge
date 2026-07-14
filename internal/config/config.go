@@ -62,6 +62,17 @@ type SelfDeployConfig struct {
 	BinaryPath string `mapstructure:"binary_path" yaml:"binary_path,omitempty"`
 	// UnitName is the systemd unit restarted after the swap. Defaults to "forge".
 	UnitName string `mapstructure:"unit_name" yaml:"unit_name,omitempty"`
+	// RestartCommand is the executable used to restart the unit. Defaults to
+	// "systemctl". Set it to (for example) "sudo" when the daemon runs as an
+	// unprivileged user that needs elevation to restart a system unit — pair it
+	// with RestartArgs: ["systemctl"] so the final invocation is
+	// `sudo systemctl restart <unit>`.
+	RestartCommand string `mapstructure:"restart_command" yaml:"restart_command,omitempty"`
+	// RestartArgs are arguments inserted before "restart <unit>". Use it to wire
+	// the invocation to the daemon's privileges/user context — e.g. ["--user"]
+	// for a `systemctl --user` unit, or ["systemctl"] when RestartCommand is
+	// "sudo". Empty (the default) yields a plain `systemctl restart <unit>`.
+	RestartArgs []string `mapstructure:"restart_args" yaml:"restart_args,omitempty"`
 	// Branch is the base branch a merge must target to trigger a deploy, and the
 	// branch pulled before building. Defaults to "main".
 	Branch string `mapstructure:"branch" yaml:"branch,omitempty"`
@@ -101,6 +112,17 @@ func (s SelfDeployConfig) ResolvedUnitName() string {
 		return "forge"
 	}
 	return s.UnitName
+}
+
+// ResolvedRestartCommand returns the restart executable, defaulting to
+// "systemctl". Paired with RestartArgs, this wires the restart invocation to the
+// daemon's privileges/user context (e.g. "sudo" + ["systemctl"], or "systemctl"
+// + ["--user"]).
+func (s SelfDeployConfig) ResolvedRestartCommand() string {
+	if s.RestartCommand == "" {
+		return "systemctl"
+	}
+	return s.RestartCommand
 }
 
 // ResolvedBranch returns the branch a merge must target, defaulting to "main".

@@ -662,15 +662,32 @@ self_deploy:
   repo_path: ~/source/Forge # optional: source to pull+build (default: the anvil's path)
   binary_path: ~/bin/forge  # optional: live binary to replace (default ~/bin/forge)
   unit_name: forge          # optional: systemd unit to restart (default "forge")
+  restart_command: systemctl # optional: restart executable (default "systemctl")
+  restart_args: []          # optional: args before "restart <unit>" (e.g. ["--user"])
   branch: main              # optional: base branch a merge must target (default "main")
   build_target: ./cmd/forge # optional: go build target (default "./cmd/forge")
   drain_timeout: 30m        # optional: max wait for workers to finish (default 30m)
 ```
 
+**Restart privileges / user** — the restart runs `<restart_command>
+<restart_args...> restart <unit_name>`. Wire it to however the daemon is allowed
+to restart its unit:
+
+- **System unit as root** (the default): leave both unset →
+  `systemctl restart forge`.
+- **System unit as an unprivileged user** that has sudo rights for the restart:
+  `restart_command: sudo`, `restart_args: [systemctl]` →
+  `sudo systemctl restart forge` (the sudoers rule must be NOPASSWD, since the
+  restart runs non-interactively).
+- **User unit** (`systemctl --user`): `restart_args: [--user]` →
+  `systemctl --user restart forge`.
+
 **How it behaves:**
 
 - Triggered only by a `pr_merged` event whose anvil matches `self_deploy.anvil`
-  and whose base branch matches `self_deploy.branch`.
+  and whose base branch matches `self_deploy.branch`. A merged PR with no
+  recorded base branch is skipped rather than assumed to target `branch`, so an
+  unrelated merge cannot trigger a production restart.
 - **Drain guardrail** — dispatch is paused and the daemon waits until no worker
   is active (including operator-paused workers, which still hold a worktree).
   If workers do not drain within `drain_timeout`, the deploy is deferred (a
