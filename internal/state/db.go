@@ -1407,6 +1407,28 @@ func (db *DB) PausedWorkerByBeadID(beadID string) (*Worker, error) {
 	return &workers[0], nil
 }
 
+// ResumableWorkerByBeadID returns the most recent worker row for a bead (across
+// any anvil) that carries the resume preconditions — a recorded branch AND a
+// captured session_id — regardless of the worker's terminal status. It backs the
+// needs-attention resume-with-message entrypoint: after a bead's worktree has
+// been torn down, the surviving worker row still holds the branch and Claude
+// session_id needed to recreate the worktree (worktree.CreateFromBranch) and
+// resume the session. Returns (nil, nil) when no such row exists (e.g. the bead
+// never ran, or ran only on a non-Claude provider that reported no session).
+func (db *DB) ResumableWorkerByBeadID(beadID string) (*Worker, error) {
+	workers, err := db.queryWorkers(`SELECT id, bead_id, anvil, branch, pid, status, phase, title, pr_number, started_at, completed_at, log_path, session_id, model
+		FROM workers WHERE bead_id = ? AND branch != '' AND session_id != ''
+		ORDER BY started_at DESC
+		LIMIT 1`, beadID)
+	if err != nil {
+		return nil, err
+	}
+	if len(workers) == 0 {
+		return nil, nil
+	}
+	return &workers[0], nil
+}
+
 // HasWorkerRecord returns true if Forge has ever had a worker for the given
 // bead in the given anvil (any status). This is used by orphan recovery to
 // distinguish beads that Forge previously claimed from beads that are

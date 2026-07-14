@@ -12,6 +12,7 @@ package pipeline
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -861,17 +862,46 @@ func Run(ctx context.Context, p Params) *Outcome {
 		ctx = timeout.set(originalDeadline)
 	}
 
+	// resumeDowngraded is armed when a needs-attention resume asked to recreate the
+	// worktree from a surviving branch (RecreateFromBranch) but that branch turned
+	// out to be gone (deleted, or merged and pruned). With no branch to recreate,
+	// a session resume is impossible: createWorktree falls back to a fresh worktree
+	// from base and this flag tells the resume-arming logic below to seed a fresh
+	// Smith session with the operator message instead of attempting `claude --resume`.
+	resumeDowngraded := false
+
 	// Resolve injectable dependencies, falling back to defaults.
 	createWorktree := p.WorktreeCreator
 	if createWorktree == nil {
 		createWorktree = func(ctx context.Context, anvilPath, beadID string) (*worktree.Worktree, error) {
+			// Needs-attention resume: the worktree directory was torn down but the
+			// forge/<bead> branch survives. Recreate the worktree at its exact
+			// original path from that branch (sub-task 1's CreateFromBranch) so
+			// `claude --resume` finds the transcript keyed on that cwd.
+			if rs := p.ResumeSession; rs != nil && rs.RecreateFromBranch {
+				wt, err := p.WorktreeManager.CreateFromBranch(ctx, anvilPath, beadID, rs.Branch, rs.WorktreePath)
+				if err == nil {
+					return wt, nil
+				}
+				if !errors.Is(err, worktree.ErrBranchDeleted) {
+					return nil, err
+				}
+				// The surviving branch is gone, so the prior worktree — and with it
+				// any resumable session — cannot be reconstructed. Recreate a fresh
+				// worktree from base and let the resume-arming logic seed a fresh
+				// Smith session with the operator message.
+				log.Printf("[pipeline:%s] Resume branch %q for bead %s no longer exists — recreating a fresh worktree from base", workerID, rs.Branch, beadID)
+				resumeDowngraded = true
+			}
 			return p.WorktreeManager.CreateWithOptions(ctx, anvilPath, beadID, worktree.CreateOptions{
 				BaseBranch:              p.BaseBranch,
 				ResetBranch:             p.ResetBranch,
 				SkipNodeModulesJunction: hasDepsUpdateLabel(p.Bead.Labels),
 				// Restart-resume: reuse the retained worktree exactly as it was
 				// when the bead was paused, so `claude --resume` continues in place.
-				PreserveExisting: p.ResumeSession != nil,
+				// A needs-attention resume recreates from the branch instead (handled
+				// above) and never wants to preserve a stale directory here.
+				PreserveExisting: p.ResumeSession != nil && !p.ResumeSession.RecreateFromBranch,
 			})
 		}
 	}
@@ -1381,30 +1411,55 @@ func Run(ctx context.Context, p Params) *Outcome {
 	var resumeProvider provider.Provider
 	var resumeParkStart time.Time
 
-	// Restart-resume seed (see Params.ResumeSession). When the daemon re-enters a
-	// bead that was paused before a restart, arm the resume respawn for the FIRST
-	// iteration so it flows through the exact same steer resume path as a live
-	// resume. When no session_id was captured, fold the resume message into the
-	// fresh prompt instead (mirrors the empty-session branch of a live resume).
+	// resumeFallbackToFresh is armed alongside an operator-initiated resume
+	// (Params.ResumeSession with a session_id). If that resume spawn fails to
+	// attach — the transcript is missing or `claude --resume` errors — the
+	// pipeline does not fail the worker: it folds the operator message into the
+	// fresh bd-context prompt and runs a normal Smith session on the same
+	// iteration. It is consumed (disarmed) on the first resume attempt so a later
+	// chained steer resume falls through the existing steer paths unchanged.
+	var resumeFallbackToFresh bool
+
+	// Resume seed (see Params.ResumeSession). Two operator-initiated flows arm
+	// this: a daemon-restart cold resume of a paused bead (retained worktree), and
+	// a needs-attention resume-with-message whose worktree was recreated from the
+	// surviving branch above. Both arm the resume respawn for the FIRST iteration
+	// so it flows through the exact same resume path as a live steer/park resume.
+	// A fresh Smith session (operator message folded into the bd-context prompt)
+	// is used instead of a resume when either:
+	//   - the surviving branch was gone, so no session can be resumed (resumeDowngraded), or
+	//   - no session_id was ever captured (e.g. a non-Claude provider).
+	// When a resume IS armed, resumeFallbackToFresh lets it downgrade to a fresh
+	// session at spawn time if the transcript is missing or the resume errors.
 	if p.ResumeSession != nil {
 		rmsg := strings.TrimSpace(p.ResumeSession.Message)
 		if rmsg == "" {
 			rmsg = DefaultResumeMessage
 		}
-		if p.ResumeSession.SessionID != "" {
+		switch {
+		case resumeDowngraded:
+			if !p.SkipSmith {
+				currentPrompt = appendSteerToPrompt(currentPrompt, rmsg)
+			}
+			log.Printf("[pipeline:%s] Resume: surviving branch gone — running a fresh session seeded with the operator message", workerID)
+			_ = p.DB.LogEvent(state.EventBeadResumed,
+				"Resume branch gone; running a fresh session seeded with the operator message",
+				p.Bead.ID, p.AnvilName)
+		case p.ResumeSession.SessionID != "":
 			pendingResume = true
 			resumeSessionID = p.ResumeSession.SessionID
 			resumeProvider = p.ResumeSession.Provider
 			resumeMessage = rmsg
-			log.Printf("[pipeline:%s] Restart-resume: arming respawn of session %s in retained worktree", workerID, resumeSessionID)
+			resumeFallbackToFresh = true
+			log.Printf("[pipeline:%s] Resume: arming respawn of session %s (fresh-session fallback armed)", workerID, resumeSessionID)
 			_ = p.DB.LogEvent(state.EventBeadResumed,
-				fmt.Sprintf("Resumed after daemon restart (session %s)", resumeSessionID),
+				fmt.Sprintf("Resuming recorded session %s", resumeSessionID),
 				p.Bead.ID, p.AnvilName)
-		} else if !p.SkipSmith {
+		case !p.SkipSmith:
 			currentPrompt = appendSteerToPrompt(currentPrompt, rmsg)
-			log.Printf("[pipeline:%s] Restart-resume: no session_id captured — folded resume message into fresh prompt", workerID)
+			log.Printf("[pipeline:%s] Resume: no session_id captured — folded resume message into fresh prompt", workerID)
 			_ = p.DB.LogEvent(state.EventBeadResumed,
-				"Resumed after daemon restart (no session; folded into fresh prompt)",
+				"Resumed (no session_id; folded resume message into fresh prompt)",
 				p.Bead.ID, p.AnvilName)
 		}
 	}
@@ -1659,42 +1714,81 @@ func Run(ctx context.Context, p Params) *Outcome {
 			resumeParkStart = time.Time{}
 		}
 
+		// runFreshSmith drives the normal provider-fallback Smith spawn below. It
+		// is skipped while a resume is armed, but a failed operator resume
+		// (resumeFallbackToFresh) re-arms it so the fresh bd-context session runs
+		// on the same iteration.
+		runFreshSmith := !pendingResume
 		if pendingResume {
 			// Resume a Claude session with the steering message as the new
 			// prompt. Armed by mode A (interrupt of a running spawn — resumeMessage
-			// is the raw steer text) or mode B (message consumed between spawns —
-			// resumeMessage merges the steer text with pending feedback). A resume
-			// is session-bound to a single provider, so there is no rate-limit
+			// is the raw steer text), mode B (message consumed between spawns —
+			// resumeMessage merges the steer text with pending feedback), or an
+			// operator resume-with-message (Params.ResumeSession). A resume is
+			// session-bound to a single provider, so there is no rate-limit
 			// fallback here.
 			pv := resumeProvider
 			spawnProvider = pv
-			log.Printf("[pipeline:%s] Resuming session %s with steer message (iteration %d, provider: %s)", workerID, resumeSessionID, iteration, pv.Label())
-			_ = p.DB.LogEvent(state.EventSmithStarted, fmt.Sprintf("Steer resume of session %s (iteration %d)", resumeSessionID, iteration), p.Bead.ID, p.AnvilName)
+			log.Printf("[pipeline:%s] Resuming session %s with message (iteration %d, provider: %s)", workerID, resumeSessionID, iteration, pv.Label())
+			_ = p.DB.LogEvent(state.EventSmithStarted, fmt.Sprintf("Resume of session %s (iteration %d)", resumeSessionID, iteration), p.Bead.ID, p.AnvilName)
 
+			// resumeUnavailable is set when an operator resume could not attach to
+			// its session (spawn error, or `claude --resume` reported the transcript
+			// missing). It downgrades this iteration to a fresh bd-context session
+			// rather than failing the worker.
+			resumeUnavailable := false
 			process, err := spawnResume(ctx, wt.Path, resumeMessage, logDir, pv, resumeSessionID, p.ExtraFlags)
 			if err != nil {
-				outcome.Error = fmt.Errorf("resuming smith session %s (%s): %w", resumeSessionID, pv.Label(), err)
-				_ = p.DB.UpdateWorkerStatus(workerID, state.WorkerFailed)
-				_ = p.DB.LogEvent(state.EventSmithFailed, err.Error(), p.Bead.ID, p.AnvilName)
-				markIngotFailed()
-				outcome.Duration = time.Since(start)
-				return outcome
-			}
-			_ = p.DB.UpdateWorkerPID(workerID, process.PID)
-			_ = p.DB.UpdateWorkerLogPath(workerID, process.LogPath)
-			smithResult, steerMsgThisIter, pausedThisIter = waitSmith(process)
+				if !resumeFallbackToFresh {
+					outcome.Error = fmt.Errorf("resuming smith session %s (%s): %w", resumeSessionID, pv.Label(), err)
+					_ = p.DB.UpdateWorkerStatus(workerID, state.WorkerFailed)
+					_ = p.DB.LogEvent(state.EventSmithFailed, err.Error(), p.Bead.ID, p.AnvilName)
+					markIngotFailed()
+					outcome.Duration = time.Since(start)
+					return outcome
+				}
+				log.Printf("[pipeline:%s] Resume spawn for session %s failed to start (%v) — falling back to a fresh session", workerID, resumeSessionID, err)
+				resumeUnavailable = true
+			} else {
+				_ = p.DB.UpdateWorkerPID(workerID, process.PID)
+				_ = p.DB.UpdateWorkerLogPath(workerID, process.LogPath)
+				smithResult, steerMsgThisIter, pausedThisIter = waitSmith(process)
 
-			_ = p.DB.UpdateWorkerSession(workerID, smithResult.SessionID, smith.SessionModel(smithResult, pv))
-			if smithResult.ResultSubtype == "success" && !smithResult.IsError && smithResult.ExitCode == 0 {
-				smithResult.RateLimited = false
+				_ = p.DB.UpdateWorkerSession(workerID, smithResult.SessionID, smith.SessionModel(smithResult, pv))
+				if smithResult.ResultSubtype == "success" && !smithResult.IsError && smithResult.ExitCode == 0 {
+					smithResult.RateLimited = false
+				}
+				recordSpawnAccounting(pv, smithResult)
+
+				// An operator resume whose transcript is missing or whose
+				// `claude --resume` errored cannot continue the prior session.
+				// A steer/pause interrupt of the resumed spawn is a deliberate
+				// action (handled by its own path below), not a resume failure, so
+				// exclude those before deciding to fall back.
+				if resumeFallbackToFresh && steerMsgThisIter == "" && !pausedThisIter && smith.ResumeUnavailable(smithResult) {
+					log.Printf("[pipeline:%s] Session %s could not be resumed (transcript missing / resume error) — falling back to a fresh session seeded with the operator message", workerID, resumeSessionID)
+					_ = p.DB.LogEvent(state.EventBeadResumed,
+						fmt.Sprintf("Resume of session %s failed (transcript missing / resume error); starting a fresh session seeded with the operator message", resumeSessionID),
+						p.Bead.ID, p.AnvilName)
+					resumeUnavailable = true
+				}
 			}
-			recordSpawnAccounting(pv, smithResult)
 
 			// The resume for this iteration is consumed. Keep resumeProvider so
 			// a chained steer (interrupt of the resumed spawn) resumes the same
-			// session owner again.
+			// session owner again. Disarm the one-shot fresh-session fallback so a
+			// later chained steer resume uses the existing steer paths unchanged.
 			pendingResume = false
-		} else {
+			resumeFallbackToFresh = false
+
+			if resumeUnavailable {
+				// Seed the fresh bd-context prompt with the operator message and
+				// run a normal Smith session on this same iteration.
+				currentPrompt = appendSteerToPrompt(currentPrompt, resumeMessage)
+				runFreshSmith = true
+			}
+		}
+		if runFreshSmith {
 			// Run Smith (with provider fallback on rate limit)
 			log.Printf("[pipeline:%s] Running Smith (provider: %s)", workerID, providers[activeProviderIdx].Label())
 			_ = p.DB.LogEvent(state.EventSmithStarted, fmt.Sprintf("Iteration %d (provider: %s)", iteration, providers[activeProviderIdx].Label()), p.Bead.ID, p.AnvilName)

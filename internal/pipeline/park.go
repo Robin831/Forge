@@ -64,6 +64,24 @@ type ResumeSession struct {
 	// Message is the resume prompt delivered to the resumed session. Empty is
 	// substituted with DefaultResumeMessage.
 	Message string
+
+	// RecreateFromBranch, when true, tells the pipeline the worktree directory
+	// was torn down but the forge/<bead> branch survives. Instead of reusing a
+	// retained worktree in place (PreserveExisting), the pipeline recreates it at
+	// its exact original path from that branch (worktree.CreateFromBranch) so
+	// `claude --resume` finds the transcript keyed on that cwd. Used by the
+	// needs-attention resume-with-message path; false keeps the daemon-restart
+	// behaviour of reusing the retained worktree.
+	RecreateFromBranch bool
+
+	// Branch is the surviving forge/<bead> branch to recreate the worktree from.
+	// Only consulted when RecreateFromBranch is true.
+	Branch string
+
+	// WorktreePath is the exact original worktree path claude keyed its
+	// transcript on (<anvil>/.workers/<bead>). The recreation MUST land here for
+	// `claude --resume` to attach. Only consulted when RecreateFromBranch is true.
+	WorktreePath string
 }
 
 // ParkHandle is the registry-handle contract between the daemon's control

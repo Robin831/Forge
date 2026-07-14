@@ -99,12 +99,22 @@ func (m *Manager) Create(ctx context.Context, anvilPath, beadID string, branch .
 	return m.CreateWithOptions(ctx, anvilPath, beadID, opts)
 }
 
+// WorktreePath returns the canonical worktree path for a bead in the given
+// anvil: <anvilPath>/<WorkersDir>/<sanitized-beadID>. It matches the path
+// CreateWithOptions derives, so callers can predict where a worktree lives
+// without creating one — notably to pass the exact original path to
+// CreateFromBranch when recreating a torn-down worktree for a resume (claude
+// keys its transcript on that cwd, so the recreation must land here).
+func (m *Manager) WorktreePath(anvilPath, beadID string) string {
+	return filepath.Join(anvilPath, m.WorkersDir, sanitizePath(beadID))
+}
+
 // CreateWithOptions creates a new worktree with full control over branch and
 // base ref. When opts.BaseBranch is set, the worktree branches from
 // origin/<BaseBranch> instead of origin/main.
 func (m *Manager) CreateWithOptions(ctx context.Context, anvilPath, beadID string, opts CreateOptions) (*Worktree, error) {
 	workersDir := filepath.Join(anvilPath, m.WorkersDir)
-	worktreePath := filepath.Join(workersDir, sanitizePath(beadID))
+	worktreePath := m.WorktreePath(anvilPath, beadID)
 
 	targetBranch := opts.Branch
 	if targetBranch == "" {

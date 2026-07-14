@@ -12,6 +12,62 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestResumeUnavailable(t *testing.T) {
+	tests := []struct {
+		name string
+		r    *Result
+		want bool
+	}{
+		{"nil result is unavailable", nil, true},
+		{
+			"genuine success is available",
+			&Result{ResultSubtype: "success", FullOutput: "done"},
+			false,
+		},
+		{
+			"success is available even if output mentions a session",
+			&Result{ResultSubtype: "success", FullOutput: "resumed session abc"},
+			false,
+		},
+		{
+			"missing transcript in stderr is unavailable",
+			&Result{ExitCode: 1, ErrorOutput: "Error: No conversation found with session ID: sess-1"},
+			true,
+		},
+		{
+			"session not found in full output is unavailable",
+			&Result{ResultSubtype: "error", FullOutput: "session not found"},
+			true,
+		},
+		{
+			"case-insensitive marker match",
+			&Result{ErrorOutput: "UNABLE TO RESUME the requested session"},
+			true,
+		},
+		{
+			"rate limit is not a missing transcript",
+			&Result{RateLimited: true, ErrorOutput: "no conversation found"},
+			false,
+		},
+		{
+			"auth failure is not a missing transcript",
+			&Result{AuthFailed: true, ErrorOutput: "session not found"},
+			false,
+		},
+		{
+			"an unrelated failure without a marker is not reported unavailable",
+			&Result{ExitCode: 1, ErrorOutput: "compilation failed"},
+			false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, ResumeUnavailable(tt.r))
+		})
+	}
+}
+
 func TestLogFileName(t *testing.T) {
 	logSeq.Store(0)
 
