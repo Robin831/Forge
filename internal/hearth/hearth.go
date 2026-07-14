@@ -334,6 +334,16 @@ type LoggedEventMsg struct {
 // to recover the missed rows, then resumes streaming.
 type EventsGapMsg struct{}
 
+// streamClosedMsg is delivered when the IPC subscribe channel closes (daemon
+// restart, dropped connection, or a failed initial connect). It drops the
+// streaming latch so the tick's poll fallback resumes — the feed never freezes —
+// and schedules a reconnect attempt.
+type streamClosedMsg struct{}
+
+// reconnectSubscriptionMsg fires after a short delay following a dropped
+// subscription, prompting a fresh connect attempt.
+type reconnectSubscriptionMsg struct{}
+
 // asyncSubscriptionStartedMsg signals that the event subscription is ready.
 type asyncSubscriptionStartedMsg struct {
 	events <-chan ipc.Event
@@ -1856,6 +1866,22 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			cmds = append(cmds, FetchEvents(m.data.DB, EventFetchLimit))
 		}
 		return m, tea.Batch(cmds...)
+
+	case streamClosedMsg:
+		// The IPC subscribe stream ended (daemon restart, dropped connection, or
+		// a failed initial connect). Tear down the dead subscription, drop the
+		// streaming latch so the tick's poll fallback resumes immediately — the
+		// feed keeps updating instead of freezing — and schedule a reconnect.
+		m.cleanupAsyncSubscription()
+		m.asyncEvents = nil
+		m.eventStreamActive = false
+		return m, scheduleSubscriptionReconnect()
+
+	case reconnectSubscriptionMsg:
+		// Delay elapsed after a dropped stream; attempt a fresh subscription. A
+		// failed connect yields another streamClosedMsg, continuing the retry
+		// loop while the poll fallback covers the feed.
+		return m, startAsyncSubscription()
 
 	case TickMsg:
 		// On each tick, refresh all panels and schedule the next tick.
@@ -5413,12 +5439,14 @@ func isTerminalMsg(msg tea.Msg) bool {
 }
 
 // startAsyncSubscription returns a Cmd that connects to the daemon's event
-// stream. On success it delivers an asyncSubscriptionStartedMsg.
+// stream. On success it delivers an asyncSubscriptionStartedMsg. On a failed
+// connect it delivers a streamClosedMsg so the reconnect loop keeps retrying
+// (and the tick's poll fallback stays active) instead of giving up forever.
 func startAsyncSubscription() tea.Cmd {
 	return func() tea.Msg {
 		client, err := ipc.NewClient()
 		if err != nil {
-			return nil
+			return streamClosedMsg{}
 		}
 		ctx, cancel := context.WithCancel(context.Background())
 		events := client.Subscribe(ctx)
@@ -5429,9 +5457,10 @@ func startAsyncSubscription() tea.Cmd {
 // waitForStreamEvent blocks until the next relevant event arrives on the IPC
 // subscribe channel and translates it into a Bubbletea message: async_complete
 // → AsyncCompletionMsg, event_logged → LoggedEventMsg, events_gap →
-// EventsGapMsg. Unknown event types are skipped. Returns nil when the channel
-// closes (subscription torn down). Each handler re-arms the wait so the stream
-// is drained continuously.
+// EventsGapMsg. Unknown event types are skipped. Returns a streamClosedMsg when
+// the channel closes (subscription torn down) so the model can drop the
+// streaming latch and reconnect. Each handler re-arms the wait so the stream is
+// drained continuously.
 func waitForStreamEvent(events <-chan ipc.Event) tea.Cmd {
 	return func() tea.Msg {
 		for evt := range events {
@@ -5469,7 +5498,7 @@ func waitForStreamEvent(events <-chan ipc.Event) tea.Cmd {
 				continue
 			}
 		}
-		return nil
+		return streamClosedMsg{}
 	}
 }
 
@@ -5488,6 +5517,20 @@ func (m *Model) trackPending(requestID, description string) {
 }
 
 const asyncTimeout = 60 * time.Second
+
+// subscribeReconnectDelay is the pause before retrying the IPC subscribe stream
+// after it drops, so a briefly-unavailable daemon (e.g. a restart) is not
+// hammered with connect attempts. While disconnected the tick's poll fallback
+// keeps the event feed live.
+const subscribeReconnectDelay = 3 * time.Second
+
+// scheduleSubscriptionReconnect returns a Cmd that emits a
+// reconnectSubscriptionMsg after subscribeReconnectDelay.
+func scheduleSubscriptionReconnect() tea.Cmd {
+	return tea.Tick(subscribeReconnectDelay, func(time.Time) tea.Msg {
+		return reconnectSubscriptionMsg{}
+	})
+}
 
 // expirePendingOps removes stale pending operations older than asyncTimeout.
 func (m *Model) expirePendingOps() {
