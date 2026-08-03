@@ -454,6 +454,67 @@ func toActivityEvent(e state.Event) activityEvent {
 //
 // Returns an error if the context is cancelled, the budget expires, the path
 // fails validation, or os.Open fails with anything other than ErrNotExist.
+// workerLogWaitBudget bounds how long a stream waits for a worker's log path
+// (and then the file itself) to materialise before giving up and letting the
+// client reconnect.
+const workerLogWaitBudget = 30 * time.Second
+
+// workerMayStillLog reports whether a worker with a currently-empty log_path
+// could still record one. The pipeline inserts the row before Smith spawns, so
+// an active worker's path routinely arrives a few seconds late. Bellows
+// pseudo-workers (phase bellows/ready_to_merge, status monitoring) never have a
+// claude log, and a terminal worker that finished without one never will.
+// Errors resolve to false so an unreadable row fails fast rather than pinning a
+// stream open for the full budget.
+func workerMayStillLog(db *state.DB, workerID string) bool {
+	worker, err := db.GetWorker(workerID)
+	if err != nil || worker == nil {
+		return false
+	}
+	switch worker.Phase {
+	case "bellows", "ready_to_merge":
+		return false
+	}
+	switch worker.Status {
+	case state.WorkerPending, state.WorkerRunning, state.WorkerReviewing, state.WorkerPaused:
+		return true
+	default:
+		return false
+	}
+}
+
+// waitForWorkerLogPath polls the worker row until its log_path is populated,
+// emitting SSE keep-alives so proxies don't reap the idle connection. It
+// returns the resolved path, or "" when the budget expires, the client
+// disconnects, or the worker reaches a state where no log is coming.
+func waitForWorkerLogPath(ctx context.Context, db *state.DB, workerID string, budget time.Duration, w http.ResponseWriter, flusher http.Flusher) string {
+	deadline := time.Now().Add(budget)
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return ""
+		case <-ticker.C:
+		}
+
+		if path, _, _, err := resolveWorkerLogPath(db, workerID); err == nil && path != "" {
+			return path
+		}
+		// Stop early once the worker can no longer produce a log, rather than
+		// holding the connection for the remainder of the budget.
+		if !workerMayStillLog(db, workerID) {
+			return ""
+		}
+		if time.Now().After(deadline) {
+			return ""
+		}
+		fmt.Fprint(w, ": waiting for log\n\n")
+		flusher.Flush()
+	}
+}
+
 func openLogWaiting(ctx context.Context, logPath string, budget time.Duration, w http.ResponseWriter, flusher http.Flusher) (*os.File, error) {
 	deadline := time.Now().Add(budget)
 
@@ -705,11 +766,17 @@ func (s *Server) handleWorkerLogStream(w http.ResponseWriter, r *http.Request) {
 		writeError(w, status, err.Error())
 		return
 	}
-	if logPath == "" {
-		// Worker has no log file (bellows pseudo-worker, etc.). The SPA gates
-		// these so the modal should never be opened in the first place; if
-		// something else hits this URL anyway, return 404 so EventSource
-		// fails fast instead of spinning on "reconnecting…" forever.
+	// An empty log path is not necessarily permanent: the pipeline inserts the
+	// worker row (status running) *before* Smith spawns and records its log
+	// path, so a panel opened inside that window sees no path yet. 404-ing here
+	// was actively harmful — a non-2xx makes the browser's EventSource give up
+	// for good rather than honouring `retry:`, which is why live panels stuck
+	// on "reconnecting" until the dashboard was navigated away from and back.
+	//
+	// So decide before writing any headers: a worker that may still produce a
+	// log gets the stream held open and the path awaited below; one that never
+	// will (terminal, or a Bellows pseudo-worker) still fails fast with 404.
+	if logPath == "" && !workerMayStillLog(s.db, workerID) {
 		writeError(w, http.StatusNotFound, "worker has no log file")
 		return
 	}
@@ -727,12 +794,23 @@ func (s *Server) handleWorkerLogStream(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprint(w, "retry: 3000\n\n")
 	flusher.Flush()
 
+	// The row may not carry a log path yet (see above). Wait for it with the
+	// same budget and keep-alive behaviour used for the file itself. Giving up
+	// just ends the stream, which the client retries per the `retry:` directive
+	// — recoverable, unlike the 404 this replaced.
+	if logPath == "" {
+		logPath = waitForWorkerLogPath(r.Context(), s.db, workerID, workerLogWaitBudget, w, flusher)
+		if logPath == "" {
+			return
+		}
+	}
+
 	// Wait briefly for the log file to appear if the smith hasn't written
 	// anything yet (race between the workers row insert and claude creating
 	// its log on disk). Capped at 30s; the loop also honours client
 	// disconnect and emits keep-alives so the connection isn't reaped by a
 	// reverse proxy. Once the file shows up we proceed to the normal stream.
-	f, err := openLogWaiting(r.Context(), logPath, 30*time.Second, w, flusher)
+	f, err := openLogWaiting(r.Context(), logPath, workerLogWaitBudget, w, flusher)
 	if err != nil {
 		fmt.Fprintf(w, "event: error\ndata: {\"error\":\"log file not accessible\"}\n\n")
 		flusher.Flush()
