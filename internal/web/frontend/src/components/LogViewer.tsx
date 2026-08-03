@@ -3,12 +3,17 @@ import { ArrowDown, Loader2, ScrollText } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import {
   parseTranscript,
+  type HiddenEntry,
   type SummaryEntry,
   type ToolEntry,
   type TranscriptEntry,
 } from '../lib/logParse'
 
 const RESULT_PREVIEW_LINES = 3
+// Hidden rows are raw wire records, some of them multi-kilobyte (a thinking
+// block carrying only an encrypted signature runs ~1.5KB). Clamp them so
+// switching on verbose stays readable.
+const HIDDEN_PREVIEW_CHARS = 200
 
 export interface LogViewerProps {
   // rawLines are the newline-delimited claude stream-json records (already
@@ -186,21 +191,7 @@ function TranscriptRow({ entry }: { entry: TranscriptEntry }) {
     case 'summary':
       return <SummaryRow entry={entry} />
     case 'hidden':
-      return (
-        <div className="flex gap-2 text-slate-600">
-          <span className="select-none" aria-hidden>
-            ·
-          </span>
-          <div className="min-w-0">
-            <span className="uppercase tracking-wide">{entry.label}</span>
-            {entry.content && (
-              <pre className="mt-0.5 whitespace-pre-wrap break-all text-slate-600">
-                {entry.content}
-              </pre>
-            )}
-          </div>
-        </div>
-      )
+      return <HiddenRow entry={entry} />
     case 'raw':
       return (
         <div className="flex gap-2">
@@ -331,6 +322,41 @@ function ToolRow({ entry }: { entry: ToolEntry }) {
           </div>
         )
       )}
+    </div>
+  )
+}
+
+// HiddenRow renders one classified-noise record, only reachable with verbose
+// on. The raw content is clamped behind a show-more expander so a run's worth
+// of signature-only thinking blocks doesn't bury the events worth reading.
+function HiddenRow({ entry }: { entry: HiddenEntry }) {
+  const [expanded, setExpanded] = useState(false)
+  const truncated = entry.content.length > HIDDEN_PREVIEW_CHARS
+
+  return (
+    <div className="flex gap-2 text-slate-600">
+      <span className="select-none" aria-hidden>
+        ·
+      </span>
+      <div className="min-w-0">
+        <span className="uppercase tracking-wide">{entry.label}</span>
+        {entry.content && (
+          <pre className="mt-0.5 whitespace-pre-wrap break-all text-slate-600">
+            {expanded || !truncated
+              ? entry.content
+              : `${entry.content.slice(0, HIDDEN_PREVIEW_CHARS)}…`}
+          </pre>
+        )}
+        {truncated && (
+          <button
+            type="button"
+            onClick={() => setExpanded((v) => !v)}
+            className="mt-0.5 text-[11px] text-slate-500 underline decoration-dotted hover:text-slate-300"
+          >
+            {expanded ? 'show less' : 'show more'}
+          </button>
+        )}
+      </div>
     </div>
   )
 }

@@ -2,8 +2,9 @@
 // module coerces those raw lines into a *transcript model* that the log
 // viewer renders like a Claude Code CLI session: one-line tool headlines with
 // their results nested underneath, markdown assistant prose, collapsed
-// thinking, and a summary footer — with system/hook/rate-limit noise
-// classified as hidden so it stays out of the way by default.
+// thinking, and a summary footer — with system/hook/rate-limit noise and
+// content-less assistant records classified as hidden so they stay out of the
+// way by default.
 //
 // The parser is intentionally permissive: the Claude wire format evolves and
 // we would rather render an unrecognised line verbatim (kind 'raw') than
@@ -67,8 +68,10 @@ export interface SummaryEntry {
   outputTokens?: number
 }
 
-// Classified noise (thinking_tokens, hook_started/response, rate_limit_event)
-// and other system chatter — not rendered unless the viewer is in verbose mode.
+// Classified noise (thinking_tokens, hook_started/response, rate_limit_event),
+// other system chatter, and assistant records whose content blocks rendered
+// nothing (signature-only thinking, empty text) — not rendered unless the
+// viewer is in verbose mode.
 export interface HiddenEntry {
   kind: 'hidden'
   label: string
@@ -253,6 +256,18 @@ type ProtoBlock =
   | { proto: 'tool'; entry: ToolEntry }
   | { proto: 'result'; toolUseId?: string; content: string; isError: boolean }
 
+// emptyBlocksLabel names a message whose content blocks all rendered nothing,
+// so verbose mode can still say what was suppressed. Multiple block types are
+// joined ("thinking+text (empty)") to keep one label per source record.
+function emptyBlocksLabel(blocks: ClaudeContentBlock[]): string {
+  const types: string[] = []
+  for (const b of blocks) {
+    const t = b.type || 'unknown'
+    if (!types.includes(t)) types.push(t)
+  }
+  return `${types.join('+')} (empty)`
+}
+
 function parseLine(raw: string, cwd?: string): ProtoBlock[] {
   const trimmed = raw.trim()
   if (!trimmed) return []
@@ -308,8 +323,17 @@ function parseLine(raw: string, cwd?: string): ProtoBlock[] {
         if (block.text) out.push({ proto: 'entry', entry: { kind: 'assistant', text: block.text } })
     }
   }
+  // Blocks were present but none of them rendered — a thinking block carrying
+  // only a signature (encrypted reasoning with the plaintext stripped), an
+  // empty text block, or a block type we don't render such as
+  // redacted_thinking. These arrive in bulk during a normal run and used to
+  // fall through to a 'raw' dump of the entire record, putting multi-kilobyte
+  // signature blobs in the transcript that the verbose toggle could not hide
+  // (only 'hidden' is filtered). Classify them as hidden noise instead.
   if (out.length === 0) {
-    return [{ proto: 'entry', entry: { kind: 'raw', content: raw } }]
+    return [
+      { proto: 'entry', entry: { kind: 'hidden', label: emptyBlocksLabel(blocks), content: raw } },
+    ]
   }
   return out
 }

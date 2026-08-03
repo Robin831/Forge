@@ -213,6 +213,37 @@ describe('event classification', () => {
     expect(entries.map((e) => e.kind)).toEqual(['assistant', 'thinking'])
   })
 
+  // Regression: these used to fall through to a 'raw' entry holding the whole
+  // wire record, which the verbose toggle cannot filter — so a run's worth of
+  // signature-only thinking blocks buried the transcript.
+  it('hides assistant records whose blocks render nothing', () => {
+    const entries = parseTranscript([
+      // Thinking with the plaintext stripped, signature retained.
+      assistant({ type: 'thinking', thinking: '', signature: 'ErQGCokBCBAYAipA' }),
+      assistant({ type: 'text', text: '' }),
+      assistant({ type: 'redacted_thinking', data: 'AAAAB' }),
+    ])
+    expect(entries.map((e) => e.kind)).toEqual(['hidden', 'hidden', 'hidden'])
+    expect(entries.map((e) => (e.kind === 'hidden' ? e.label : ''))).toEqual([
+      'thinking (empty)',
+      'text (empty)',
+      'redacted_thinking (empty)',
+    ])
+  })
+
+  it('keeps the raw record on a hidden entry so verbose can reveal it', () => {
+    const line = assistant({ type: 'thinking', thinking: '', signature: 'sig-abc' })
+    const entries = parseTranscript([line])
+    expect(entries[0]).toMatchObject({ kind: 'hidden', content: line })
+  })
+
+  it('still renders sibling blocks when only some are empty', () => {
+    const entries = parseTranscript([
+      assistant({ type: 'thinking', thinking: '', signature: 'sig' }, { type: 'text', text: 'hi' }),
+    ])
+    expect(entries.map((e) => e.kind)).toEqual(['assistant'])
+  })
+
   it('never throws on malformed or non-JSON lines', () => {
     const entries = parseTranscript(['not json at all', '{"broken":', ''])
     // Empty line is dropped; the two others become raw entries.
