@@ -90,6 +90,20 @@ jobs:
           echo "bd: $BD_VER (want $SHORT)"
           echo "$BD_VER" | grep -q "$SHORT" || { echo "baked bd != fork ref $SHORT" >&2; exit 1; }
 
+      # Kick off the forgeBench devbox image build for this release (the devbox is
+      # FROM forge:<tag>-skybert). Needs a PAT secret DEVBOX_DISPATCH_PAT with
+      # repo access to Robin831/forgeBench; skips gracefully if unset.
+      - name: Trigger devbox image build (forgeBench)
+        env:
+          GH_TOKEN: ${{ secrets.DEVBOX_DISPATCH_PAT }}
+        run: |
+          if [ -z "${GH_TOKEN}" ]; then
+            echo "DEVBOX_DISPATCH_PAT not set - skipping devbox auto-build. Add the PAT secret to enable it."
+            exit 0
+          fi
+          gh api repos/Robin831/forgeBench/dispatches -f event_type=forge-released -f "client_payload[forge_tag]=${{ github.ref_name }}"
+          echo "Dispatched forge-released to forgeBench for ${{ github.ref_name }}"
+
       - name: Ensure release notes
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
