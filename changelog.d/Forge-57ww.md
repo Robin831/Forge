@@ -1,2 +1,0 @@
-category: Changed
-- **Configuration reference refresh** - Documented every settings key present in `config.go`: added `settings.burnish_verify_timeout`, `settings.adventurer_timeout`, the `settings.warden.*` rule-filtering block, the top-level and per-anvil `assay` (AI PR review) config, and the `temper.steps` `verify_no_conflict_markers` / `tolerate_host_crash` fields. Filled in the matching validation rules and environment-variable overrides. (Forge-57ww)

@@ -1,2 +1,0 @@
-category: Added
-- **Steer mode B — enqueue a steering message between spawns** - A steer message enqueued while Temper/Warden run (no active Smith spawn to interrupt) is now consumed on the next Smith iteration: the pipeline resumes the last completed session via `--resume` with the steer text merged into the pending Warden/Temper feedback. Consumption is race-safe relative to steer mode A — the pipeline goroutine is the sole consumer of the steer mailbox, so a message is handled either between spawns or during a spawn, never both or lost. (Forge-aqgb)

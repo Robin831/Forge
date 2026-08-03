@@ -1,2 +1,0 @@
-category: Added
-- **Resume with message from Needs Attention** - Surface a "Resume with message" action on needs-attention rows for escalations where a worker branch survives: a new `resume_bead_with_message` IPC verb and `POST /api/bead/{id}/resume-with-message` endpoint recreate the worktree from the surviving branch and resume the recorded Claude session with an operator message (falling back to a fresh session when the transcript or branch is gone). The action is gated on branch existence and escalation type, mirroring the steer affordance. (Forge-hxl2)

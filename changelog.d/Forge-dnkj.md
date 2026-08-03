@@ -1,2 +1,0 @@
-category: Added
-- **Event Bus vs polling documentation** - Documented the `bus_enabled` / `bus_buffer_size` / `sse_poll_fallback` toggle with a dedicated "Event Bus vs Legacy Polling" section in the configuration reference, covering real-time delivery, gap-marker re-sync, and the replay-then-live SSE handover. Backed by new bus fan-out, slow-subscriber, and sub-100ms SSE delivery tests. (Forge-dnkj)

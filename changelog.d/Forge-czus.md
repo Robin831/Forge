@@ -1,2 +1,0 @@
-category: Added
-- **Daemon-restart recovery for paused beads** - Beads paused with a per-bead pause now survive a daemon restart: the worker row and worktree are retained, the bead is surfaced in Needs Attention, and it can be resumed in place (cold resume respawns `claude --resume` in the retained worktree) or discarded via the existing stop path. Parked pipelines are treated like drained pipelines on shutdown (state persisted, worktree retained). (Forge-czus)

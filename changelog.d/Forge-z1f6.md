@@ -1,2 +1,0 @@
-category: Added
-- **Pause/resume a running bead** - The pipeline can now park a running Claude spawn on an operator pause request: it gracefully interrupts the spawn via the steer path (no failure marking), records the session and iteration in a park record, marks the worker paused, and blocks until a resume. On resume it respawns `claude --resume <session>` with the resume message (defaulting to "Continue with the task.") and continues from where it parked. (Forge-z1f6)

@@ -1,2 +1,0 @@
-category: Added
-- **Inline steer + pause/resume in worker panels** - Dashboard worker panels now embed the steer composer in their footer and expose pause/resume header actions, so a running Smith can be course-corrected, paused (with confirmation), and resumed without leaving the grid. Paused panels render a distinct amber/dimmed state with a "stream frozen" note while keeping their transcript visible. (Forge-ksen)

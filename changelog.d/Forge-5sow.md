@@ -1,2 +1,0 @@
-category: Security
-- **Web auth hardening** - Failed Hearth logins are now progressively throttled per username and per client IP (five free attempts, then 1s, 2s, 4s … up to 60s), POST `/login` and `/logout` require the `X-Forge-Action` header to block cross-site requests, sessions gained an absolute lifetime cap (default 7d, `FORGE_WEB_SESSION_ABSOLUTE_TTL`) on top of the sliding expiry and rotate their token on every successful login, and a new `forge web revoke-sessions` command force-logs-out every session for incident response. (Forge-5sow)

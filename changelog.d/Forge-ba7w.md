@@ -1,2 +1,0 @@
-category: Added
-- **Resume-with-message execution path** - A needs-attention bead whose worktree was torn down can be resumed with an operator message: Forge recreates the worktree from the surviving branch, resumes the recorded Claude session in place, and re-enters the normal Temper → Warden → PR loop. If the transcript is missing, the resume errors, or the branch is gone, it falls back to a fresh session seeded with the bead context plus the operator message. (Forge-ba7w)

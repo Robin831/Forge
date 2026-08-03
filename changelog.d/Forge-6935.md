@@ -1,2 +1,0 @@
-category: Added
-- **TurnStore garbage collection and graceful SSE reconnect** - Completed Beads-Forge turns now expire after a configurable duration (`forgechat.turn_expiry`, default 30m) and the total retained count is capped (`forgechat.turn_retention_cap`, default 1000, oldest completed evicted first). When a reconnecting SSE client requests a turn that has expired, been evicted, or was lost on a daemon restart, the stream now emits a graceful `turn_expired` event so the SPA refetches canonical messages and clears its spinner instead of receiving a 404. (Forge-6935)

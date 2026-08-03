@@ -1,2 +1,0 @@
-category: Changed
-- **Real-time activity stream over the event Bus** - When the in-process event Bus is enabled, `/api/activity/stream` now subscribes to the Bus and delivers events in real time via a replay-then-live handover (subscribe first, replay the backlog, then dedup live events by sequence) instead of polling every 2s. Falls back to the legacy poll loop when the Bus is disabled. (Forge-7spr)

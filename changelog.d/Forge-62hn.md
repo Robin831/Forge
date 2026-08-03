@@ -1,2 +1,0 @@
-category: Added
-- **Configurable pricing tables** - Per-model fallback cost rates (`settings.pricing`) and Copilot premium multipliers (`settings.copilot_premium_multipliers`) are now configurable and hot-reloadable, defaulting to the previous hardcoded values. Fallback pricing usage is logged once per day per model so table drift from real provider billing is visible. Dead `cost.ParseStreamJSON`/`ParseResultJSON` parsers were removed. (Forge-62hn)

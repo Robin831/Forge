@@ -1,2 +1,0 @@
-category: Changed
-- **CLI-style worker log transcript** - The web worker log viewer now reads like a Claude Code CLI session: one-line tool headlines with paired, collapsed results (expandable), markdown-rendered assistant text, collapsed thinking, and a duration/turns/cost summary footer. Hook, thinking-token and rate-limit noise is hidden behind a new verbose toggle, and errors are shown in red and expanded by default. (Forge-got3)

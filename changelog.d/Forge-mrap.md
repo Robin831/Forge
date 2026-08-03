@@ -1,2 +1,0 @@
-category: Added
-- **Capture Claude session_id and model per worker** - Forge now parses the `session_id` and `model` from Claude's stream-json output and stores them on each worker row (empty for non-Claude providers). Both are exposed via `/api/workers` and `/api/history/workers`, and the model is shown in the worker log modal header. This is the prerequisite for session-resume and transcript indexing. (Forge-mrap)

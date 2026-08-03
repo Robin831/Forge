@@ -1,2 +1,0 @@
-category: Fixed
-- **No Assay review busy-loop while a fix worker is running** - The Assay trigger no longer emits `pr_review_needed` every debounce while a non-Assay worker (Smith/Quench/Burnish/Rebase) holds the bead in flight. Previously the daemon would skip the dispatched Assay ("bead in flight") but Bellows kept re-emitting, spamming the event log with no progress until the worker finished. Bellows now suppresses the emit while such a worker is active and fires once it completes. (Forge-dkso)

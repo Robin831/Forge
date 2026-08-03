@@ -1,2 +1,0 @@
-category: Fixed
-- **Steering no longer cancels the whole pipeline** - A steer message previously fired a pipeline-wide context cancel, so the resume spawn (and any Temper/Warden work) was born with a cancelled context and the bead failed with "context canceled". Steering now interrupts only the current Smith spawn and resumes the same session, and the mode A/mode B response label is derived from whether a spawn is actually live. (Forge-bpd2)

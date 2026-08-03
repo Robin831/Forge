@@ -1,2 +1,0 @@
-category: Changed
-- **Incremental token streaming for Beads-Forge chat** - The per-turn AI runner now forwards stream-json text deltas and tool events to the SSE broadcaster as they arrive, so drafting/plan replies stream incrementally instead of arriving as one batched text_delta. Tool use/result events interleave in provider order, and the final complete/message semantics are unchanged. (Forge-ozml)
