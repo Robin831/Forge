@@ -8,6 +8,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Unreleased changes live as fragments in `changelog.d/` and are assembled at
 release time by `scripts/assemble-changelog.sh`.
 
+## [0.23.1] - 2026-08-03
+
+### Changed
+
+- **Hearth 2.0 tool result summaries** - Tool results in the log transcript are now summarized CLI-style instead of dumped: Edit/Write success acknowledgements are suppressed (the headline already names the file), a file `Read` collapses to `Read 47 lines`, and a backgrounded `Bash` collapses to `running in background (<id>)`. The result preview also gained a character cap so one very long line can no longer swamp the panel, and the per-row "show input" link is gone — click the tool name to reveal raw input. Full output stays behind the expander, and failed results are never summarized. Measured over 621 tool results from real worker logs this cuts rendered result text by 59%. (Forge-teqe)
+
+### Fixed
+
+- **Assay live worker panel** - The Assay worker row is now pointed at its first pass log as soon as triage spawns, so the Hearth 2.0 live panel streams its output. Previously Assay recorded no log path at all and its panel sat on "Waiting for log output…" for the whole run, which read as a missing worker. (Forge-5ot7)
+- **Hearth 2.0 log noise** - Assistant records whose content blocks render nothing — a thinking block carrying only an encrypted signature, an empty text block, or `redacted_thinking` — are now classified as hidden noise instead of dumping the whole multi-kilobyte wire record into the transcript, so the live worker panel shows the output you care about. They remain available behind the verbose toggle, clamped with a show-more expander. (Forge-qrwe)
+- **Lifecycle worker logs survive worktree cleanup** - Quench, Burnish, Rebase and Assay now preserve their `.forge-logs` to `~/.forge/logs/<beadID>/` and repoint their worker rows before the worktree is removed, mirroring what the pipeline already did. Their logs were previously deleted with the worktree, leaving every historical row pointing at a path that no longer existed and an empty per-bead Logs browser. (Forge-5ot7)
+
 ## [0.23.0] - 2026-08-03
 
 ### Added

@@ -1,2 +1,0 @@
-category: Fixed
-- **Hearth 2.0 log noise** - Assistant records whose content blocks render nothing — a thinking block carrying only an encrypted signature, an empty text block, or `redacted_thinking` — are now classified as hidden noise instead of dumping the whole multi-kilobyte wire record into the transcript, so the live worker panel shows the output you care about. They remain available behind the verbose toggle, clamped with a show-more expander. (Forge-qrwe)

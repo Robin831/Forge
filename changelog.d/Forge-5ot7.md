@@ -1,3 +1,0 @@
-category: Fixed
-- **Assay live worker panel** - The Assay worker row is now pointed at its first pass log as soon as triage spawns, so the Hearth 2.0 live panel streams its output. Previously Assay recorded no log path at all and its panel sat on "Waiting for log output…" for the whole run, which read as a missing worker. (Forge-5ot7)
-- **Lifecycle worker logs survive worktree cleanup** - Quench, Burnish, Rebase and Assay now preserve their `.forge-logs` to `~/.forge/logs/<beadID>/` and repoint their worker rows before the worktree is removed, mirroring what the pipeline already did. Their logs were previously deleted with the worktree, leaving every historical row pointing at a path that no longer existed and an empty per-bead Logs browser. (Forge-5ot7)
