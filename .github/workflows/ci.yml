@@ -104,8 +104,8 @@ jobs:
       - name: Verify committed dist is up to date
         working-directory: .
         run: |
-          if ! git diff --quiet internal/web/dist/; then
+          if [ -n "$(git status --porcelain -- internal/web/dist/)" ]; then
             echo "::error::internal/web/dist is out of date — run 'npm run build' in internal/web/frontend and commit the result."
-            git diff --stat internal/web/dist/
+            git status -- internal/web/dist/
             exit 1
           fi
