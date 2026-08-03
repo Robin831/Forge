@@ -73,3 +73,39 @@ jobs:
 
       - name: Test
         run: go test -short ./...
+
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: internal/web/frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: internal/web/frontend/.nvmrc
+          cache: npm
+          cache-dependency-path: internal/web/frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint (typecheck)
+        run: npm run lint
+
+      - name: Test
+        run: npm run test
+
+      - name: Build
+        run: npm run build
+
+      - name: Verify committed dist is up to date
+        working-directory: .
+        run: |
+          if [ -n "$(git status --porcelain -- internal/web/dist/)" ]; then
+            echo "::error::internal/web/dist is out of date — run 'npm run build' in internal/web/frontend and commit the result."
+            git status -- internal/web/dist/
+            exit 1
+          fi
