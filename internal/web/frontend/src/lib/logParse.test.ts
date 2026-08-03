@@ -213,6 +213,65 @@ describe('event classification', () => {
     expect(entries.map((e) => e.kind)).toEqual(['assistant', 'thinking'])
   })
 
+  // Tool acknowledgements are verbose but say nothing the headline doesn't.
+  // Edit/Write acks are exactly one line, so the line-based preview cap never
+  // trimmed them and they rendered in full on every call.
+  describe('result summaries', () => {
+    function summaryFor(name: string, result: string, isError = false): string | undefined {
+      const entries = parseTranscript([
+        assistant(toolUse('t1', name, { file_path: '/w/a.ts' })),
+        user(toolResult('t1', result, isError)),
+      ])
+      return (entries[0] as ToolEntry).resultSummary
+    }
+
+    it('suppresses Edit and Write success acknowledgements', () => {
+      expect(
+        summaryFor('Edit', 'The file /home/forge/anvils/x/.workers/y/a.md has been updated successfully. (file state is current in your context — no need to Read it back)'),
+      ).toBe('')
+      expect(summaryFor('Write', 'File created successfully at: /home/forge/x/park.go')).toBe('')
+      expect(summaryFor('NotebookEdit', 'The cell has been updated successfully.')).toBe('')
+    })
+
+    it('collapses a file Read to its line count', () => {
+      expect(summaryFor('Read', '     1→alpha\n     2→beta\n     3→gamma')).toBe('Read 3 lines')
+      expect(summaryFor('Read', '     1→only')).toBe('Read 1 line')
+    })
+
+    // Real worker logs carry both line-number shapes; the tab form is the one
+    // the current CLI emits and is by far the more common of the two.
+    it('collapses cat -n style Read output, including offset reads', () => {
+      expect(summaryFor('Read', '1\tpackage daemon\n2\t\n3\timport "sync"')).toBe('Read 3 lines')
+      expect(summaryFor('Read', '1140\trecheckUseCount := 0\n1141\t')).toBe('Read 2 lines')
+    })
+
+    it('collapses the backgrounded-Bash boilerplate to the task id', () => {
+      const result = [
+        'Command running in background with ID: bb329k505',
+        'Output is being written to: /tmp/claude-1000/x/tasks/bb329k505.output',
+        'Session cwd remains /home/forge/anvils/x/.workers/y',
+      ].join('\n')
+      expect(summaryFor('Bash', result)).toBe('running in background (bb329k505)')
+    })
+
+    it('leaves real output, non-file reads, and errors alone', () => {
+      expect(summaryFor('Bash', 'Exit code 1\nCONFLICT in package.json')).toBeUndefined()
+      expect(summaryFor('Read', 'Image dimensions 800x600')).toBeUndefined()
+      expect(summaryFor('Grep', '23: match here')).toBeUndefined()
+      // An Edit that failed must stay readable in full.
+      expect(summaryFor('Edit', 'has been updated successfully', true)).toBeUndefined()
+    })
+
+    it('leaves the full result on the entry so the expander can reveal it', () => {
+      const ack = 'File created successfully at: /home/forge/x/park.go'
+      const entries = parseTranscript([
+        assistant(toolUse('t1', 'Write', { file_path: '/w/park.go' })),
+        user(toolResult('t1', ack)),
+      ])
+      expect(entries[0]).toMatchObject({ kind: 'tool', result: ack, resultSummary: '' })
+    })
+  })
+
   // Regression: these used to fall through to a 'raw' entry holding the whole
   // wire record, which the verbose toggle cannot filter — so a run's worth of
   // signature-only thinking blocks buried the transcript.

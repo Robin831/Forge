@@ -10,6 +10,10 @@ import {
 } from '../lib/logParse'
 
 const RESULT_PREVIEW_LINES = 3
+// The line cap alone doesn't bound width: a single long line (a one-line
+// changelog entry, a minified blob) renders in full and swamps the panel. Cap
+// characters too, whichever limit bites first.
+const RESULT_PREVIEW_CHARS = 240
 // Hidden rows are raw wire records, some of them multi-kilobyte (a thinking
 // block carrying only an encrypted signature runs ~1.5KB). Clamp them so
 // switching on verbose stays readable.
@@ -230,8 +234,8 @@ function ToolRow({ entry }: { entry: ToolEntry }) {
     if (entry.isError) setExpanded(true)
   }, [entry.isError])
 
-  const { preview, totalLines } = useMemo(() => {
-    if (!entry.result) return { preview: '', totalLines: 0 }
+  const { preview, totalLines, truncated } = useMemo(() => {
+    if (!entry.result) return { preview: '', totalLines: 0, truncated: false }
     let lineCount = 1
     let previewEnd = -1
     for (let i = 0; i < entry.result.length; i++) {
@@ -242,14 +246,28 @@ function ToolRow({ entry }: { entry: ToolEntry }) {
         }
       }
     }
-    return {
-      preview: previewEnd === -1 ? entry.result : entry.result.slice(0, previewEnd),
-      totalLines: lineCount,
+    let text = previewEnd === -1 ? entry.result : entry.result.slice(0, previewEnd)
+    let clipped = lineCount > RESULT_PREVIEW_LINES
+    if (text.length > RESULT_PREVIEW_CHARS) {
+      text = `${text.slice(0, RESULT_PREVIEW_CHARS)}…`
+      clipped = true
     }
+    return { preview: text, totalLines: lineCount, truncated: clipped }
   }, [entry.result])
-  const truncated = totalLines > RESULT_PREVIEW_LINES
-  const hiddenLines = totalLines - RESULT_PREVIEW_LINES
-  const hasExpandable = truncated || entry.input != null
+
+  // A summarized result ("Read 47 lines", or '' for a bare success ack) hides
+  // the real body, so it is expandable even when nothing was clipped.
+  const summarized = entry.resultSummary !== undefined
+  const hiddenLines = Math.max(0, totalLines - RESULT_PREVIEW_LINES)
+  const hasExpandable = truncated || summarized
+  // Body shown while collapsed: the summary when we have one, else the capped
+  // preview. Expanding always reveals the full result.
+  const collapsedBody = summarized ? entry.resultSummary! : preview
+  const body = expanded ? (entry.result ?? '') : collapsedBody
+  // The raw input is reachable by clicking the tool name rather than a
+  // "show input" link on every row — with one link per tool call the chrome
+  // outweighed the content.
+  const showResultBlock = !!body || hasExpandable || expanded
 
   return (
     <div className="flex flex-col gap-1">
@@ -261,10 +279,24 @@ function ToolRow({ entry }: { entry: ToolEntry }) {
           ⏺
         </span>
         <div className="min-w-0 flex-1">
-          <span className="text-slate-200">
-            <span className="font-semibold text-sky-300">{entry.name}</span>
-            {entry.headline && <span className="text-slate-400">({entry.headline})</span>}
-          </span>
+          {entry.input != null ? (
+            <button
+              type="button"
+              onClick={() => setExpanded((v) => !v)}
+              title={expanded ? 'Hide raw tool input' : 'Show raw tool input'}
+              className="max-w-full text-left text-slate-200"
+            >
+              <span className="font-semibold text-sky-300 underline decoration-dotted decoration-transparent underline-offset-2 hover:decoration-sky-300/70">
+                {entry.name}
+              </span>
+              {entry.headline && <span className="text-slate-400">({entry.headline})</span>}
+            </button>
+          ) : (
+            <span className="text-slate-200">
+              <span className="font-semibold text-sky-300">{entry.name}</span>
+              {entry.headline && <span className="text-slate-400">({entry.headline})</span>}
+            </span>
+          )}
         </div>
       </div>
 
@@ -282,7 +314,7 @@ function ToolRow({ entry }: { entry: ToolEntry }) {
           ))}
         </div>
       ) : (
-        (entry.result || hasExpandable) && (
+        showResultBlock && (
           <div className="ml-6 flex gap-2">
             <span
               className={`select-none ${entry.isError ? 'text-red-500' : 'text-slate-600'}`}
@@ -291,16 +323,16 @@ function ToolRow({ entry }: { entry: ToolEntry }) {
               ⎿
             </span>
             <div className="min-w-0 flex-1">
-              {entry.result != null && (
+              {body && (
                 <pre
                   className={`whitespace-pre-wrap break-all leading-relaxed ${
                     entry.isError ? 'text-red-300' : 'text-slate-400'
                   }`}
                 >
-                  {expanded ? entry.result : preview}
+                  {body}
                 </pre>
               )}
-              {hasExpandable && (
+              {(hasExpandable || expanded) && (
                 <button
                   type="button"
                   onClick={() => setExpanded((v) => !v)}
@@ -308,9 +340,9 @@ function ToolRow({ entry }: { entry: ToolEntry }) {
                 >
                   {expanded
                     ? 'show less'
-                    : truncated
+                    : hiddenLines > 0
                       ? `+${hiddenLines} line${hiddenLines === 1 ? '' : 's'}`
-                      : 'show input'}
+                      : 'show more'}
                 </button>
               )}
               {expanded && entry.input != null && (

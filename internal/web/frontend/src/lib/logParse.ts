@@ -37,6 +37,12 @@ export interface ToolEntry {
   input: unknown
   // Paired tool_result content, when a matching result was found.
   result?: string
+  // Terse one-line stand-in for a verbose-but-uninformative result body, e.g.
+  // "Read 47 lines". An empty string means render no body at all — used for
+  // Edit/Write success acknowledgements, where the headline already says what
+  // happened. undefined means fall through to the default capped preview. The
+  // full `result` is always retained so the expander can reveal it.
+  resultSummary?: string
   isError?: boolean
   // Populated for TodoWrite so the UI can render a checklist instead of JSON.
   todos?: TodoItem[]
@@ -211,6 +217,56 @@ export function toolHeadline(name: string, input: unknown, cwd?: string): string
       return 'Update Todos'
     default:
       return fallback()
+  }
+}
+
+// Boilerplate shapes emitted by the tools themselves. These acknowledgements
+// carry no information the headline doesn't already give — measured across
+// real worker logs, Edit/Write acknowledgements alone were 37% of all rendered
+// tool-result text, and being exactly one line they slipped under the
+// line-based preview cap and rendered in full every time.
+const EDIT_ACK = /has been updated successfully/
+const WRITE_ACK = /^File created successfully at:/
+const BACKGROUND_BASH = /Command running in background with ID:\s*(\S+)/
+// Read output comes back line-numbered in two shapes depending on CLI version:
+// right-aligned with an arrow ("     1→text") and cat -n style with a tab
+// ("1\ttext"). Both appear in real worker logs — the tab form is the common
+// one — and offset reads start the numbering partway into the file.
+const NUMBERED_LINE = /^\s*\d+(→|\t)/
+
+// summarizeResult collapses a verbose-but-uninformative tool result into a
+// terse one-liner, mirroring the CLI's "⎿ Read 47 lines". Returns undefined to
+// fall through to the default preview, or '' to render no body at all. Errors
+// are never summarized — those are exactly what you want to read in full.
+export function summarizeResult(
+  name: string,
+  result: string,
+  isError: boolean,
+): string | undefined {
+  if (isError || !result) return undefined
+  switch (name) {
+    case 'Edit':
+    case 'MultiEdit':
+    case 'NotebookEdit':
+      return EDIT_ACK.test(result) ? '' : undefined
+    case 'Write':
+      return WRITE_ACK.test(result) ? '' : undefined
+    case 'Read': {
+      // Only collapse genuine file reads, which come back as numbered lines.
+      // Image reads, empty-file notices and error text fall through so their
+      // content still shows.
+      const numbered = result.split('\n').filter((l) => NUMBERED_LINE.test(l)).length
+      if (numbered === 0) return undefined
+      return `Read ${numbered} line${numbered === 1 ? '' : 's'}`
+    }
+    case 'Bash': {
+      // A backgrounded command answers with three lines of harness boilerplate
+      // (task id, output path, cwd note) and no actual output.
+      const m = result.match(BACKGROUND_BASH)
+      return m ? `running in background (${m[1]})` : undefined
+    }
+    default:
+      return undefined
   }
 }
 
@@ -435,6 +491,7 @@ export function parseTranscript(rawLines: string[]): TranscriptEntry[] {
         if (res) {
           tool.result = res.content
           tool.isError = res.isError
+          tool.resultSummary = summarizeResult(tool.name, res.content, res.isError)
         }
       }
       entries.push(tool)
