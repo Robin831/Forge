@@ -52,6 +52,44 @@ jobs:
           SCOOP_BUCKET_PAT: ${{ secrets.SCOOP_BUCKET_PAT }}
           HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
 
+      # Build the FULL cluster image. The GoReleaser images above are the minimal
+      # alpine binary (Dockerfile.minimal); the skybert cluster needs the full
+      # Dockerfile (dolt + bd from the Robin831/beads fork + claude + ttyd). Pushed
+      # under a distinct `-skybert` tag so it never collides with the minimal images.
+      # Deploy (no laptop build): update-skybert.ps1 -SkipBuild -ImageTag <tag>-skybert
+      - name: Resolve full-image build args
+        id: fullargs
+        run: |
+          BEADS_REF=$(git ls-remote https://github.com/Robin831/beads main | cut -f1)
+          [ -n "$BEADS_REF" ] || { echo "could not resolve Robin831/beads main ref" >&2; exit 1; }
+          CLAUDE_VER=$(npm view @anthropic-ai/claude-code version)
+          [ -n "$CLAUDE_VER" ] || { echo "could not resolve claude-code version" >&2; exit 1; }
+          echo "beads_ref=$BEADS_REF" >> "$GITHUB_OUTPUT"
+          echo "claude=@$CLAUDE_VER" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push full skybert image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: ghcr.io/robin831/forge:${{ github.ref_name }}-skybert
+          build-args: |
+            VERSION=${{ github.ref_name }}
+            COMMIT=${{ github.sha }}
+            BEADS_REF=${{ steps.fullargs.outputs.beads_ref }}
+            CLAUDE_CODE_VERSION=${{ steps.fullargs.outputs.claude }}
+
+      - name: Verify baked bd matches the beads fork
+        run: |
+          IMG="ghcr.io/robin831/forge:${{ github.ref_name }}-skybert"
+          docker pull "$IMG"
+          BD_VER=$(docker run --rm --entrypoint bd "$IMG" version 2>&1 || true)
+          SHORT="${{ steps.fullargs.outputs.beads_ref }}"; SHORT="${SHORT:0:9}"
+          echo "bd: $BD_VER (want $SHORT)"
+          echo "$BD_VER" | grep -q "$SHORT" || { echo "baked bd != fork ref $SHORT" >&2; exit 1; }
+
       - name: Ensure release notes
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
