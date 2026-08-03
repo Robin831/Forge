@@ -1074,7 +1074,7 @@ func Run(ctx context.Context, p Params) *Outcome {
 		}
 		log.Printf("[pipeline:%s] Cleaning up worktree", workerID)
 		oldLogDir := filepath.Join(wt.Path, ".forge-logs")
-		dstDir, err := preserveWorktreeLogs(wt.Path, p.Bead.ID)
+		dstDir, err := PreserveWorktreeLogs(wt.Path, p.Bead.ID)
 		if err != nil {
 			log.Printf("[pipeline:%s] Warning: failed to preserve smith logs: %v", workerID, err)
 		} else if dstDir != "" && p.DB != nil {
@@ -3005,13 +3005,13 @@ Branch: %s
 	return b.String()
 }
 
-// preserveWorktreeLogs copies smith log files from the worktree's .forge-logs
+// PreserveWorktreeLogs copies smith log files from the worktree's .forge-logs
 // directory to a persistent location at ~/.forge/logs/<beadID>/ before the
 // worktree is removed. Returns the destination directory path, or an empty
 // string if no logs were found. The DB log_path is updated by the caller to
 // point to this persistent directory so post-mortem debugging remains possible
 // after worktree cleanup.
-func preserveWorktreeLogs(worktreePath, beadID string) (string, error) {
+func PreserveWorktreeLogs(worktreePath, beadID string) (string, error) {
 	srcDir := filepath.Join(worktreePath, ".forge-logs")
 	entries, err := os.ReadDir(srcDir)
 	if os.IsNotExist(err) {

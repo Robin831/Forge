@@ -71,6 +71,13 @@ type ReviewRequest struct {
 	// WorkDir is the directory the default Smith-based runner executes in
 	// (typically the PR worktree). Ignored when a custom runner is installed.
 	WorkDir string
+	// OnPassLog, when set, is called with the log path of each pass as it is
+	// spawned — triage first, then the deep passes concurrently. The daemon
+	// uses the first call to point the Assay worker row's log_path at a file
+	// the Hearth live panel can stream; without it the panel renders an
+	// endlessly empty transcript for the whole run. Ignored when a custom
+	// runner is installed. Implementations must be safe for concurrent use.
+	OnPassLog func(logPath string)
 }
 
 // Finding is a single code-review observation emitted by a pass.
@@ -149,7 +156,7 @@ func Review(ctx context.Context, req ReviewRequest, db *state.DB, cfg Config) (*
 		if req.WorkDir == "" {
 			return nil, fmt.Errorf("assay: ReviewRequest.WorkDir is required when using the default Smith-based runner")
 		}
-		runner = newSmithRunner(cfg, req.WorkDir)
+		runner = newSmithRunner(cfg, req)
 	}
 
 	// Pick up the anvil's REVIEW.md once and forward it to every pass.

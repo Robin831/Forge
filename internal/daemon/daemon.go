@@ -1553,7 +1553,31 @@ func (d *Daemon) restoreDispatchPause() {
 // Worker-row lifecycle is the caller's responsibility, so this is reusable from
 // both the ActionAssayReview dispatch and the Burnish pre-fetch coordination
 // step. headSHA is recorded on the run and used as the inline-comment anchor.
-func (d *Daemon) runAssayReview(ctx context.Context, anvil, anvilPath, beadID string, prNumber int, headSHA, worktreePath string) (*state.AssayRun, error) {
+// assayLogPathRecorder returns the ReviewRequest.OnPassLog callback that points
+// the Assay worker row at the first pass log to be spawned (triage, which
+// always runs before the concurrent deep passes). Assay previously recorded no
+// log path at all, so its Hearth panel sat on "Waiting for log output…" for the
+// entire run and read as a missing worker.
+//
+// sync.Once keeps this to the first pass: the deep passes fan out concurrently,
+// so without it the panel would flip between logs mid-run. A nil return (empty
+// workerID) disables recording — used on the Burnish-coordination path, where
+// the run piggybacks on the Burnish worker and owns no row of its own.
+func (d *Daemon) assayLogPathRecorder(workerID string) func(string) {
+	if workerID == "" {
+		return nil
+	}
+	var once sync.Once
+	return func(logPath string) {
+		once.Do(func() {
+			if err := d.db.UpdateWorkerLogPath(workerID, logPath); err != nil {
+				d.logger.Warn("failed to record Assay worker log path", "worker", workerID, "error", err)
+			}
+		})
+	}
+}
+
+func (d *Daemon) runAssayReview(ctx context.Context, anvil, anvilPath, beadID string, prNumber int, headSHA, worktreePath, workerID string) (*state.AssayRun, error) {
 	resolved := d.cfg.Load().ResolvedAssay(anvil)
 	engineCfg := assay.FromAssayConfig(resolved)
 
@@ -1578,6 +1602,13 @@ func (d *Daemon) runAssayReview(ctx context.Context, anvil, anvilPath, beadID st
 		run.SkippedReason = "diff fetch failed"
 		run.Error = diffErr.Error()
 	} else {
+		// Point the worker row at the first pass log to be spawned (triage,
+		// which always runs before the concurrent deep passes) so the Hearth
+		// live panel has something to stream. Assay previously recorded no
+		// log path at all, so its panel sat on "Waiting for log output…" for
+		// the entire run and read as a missing worker. sync.Once keeps this to
+		// the first pass: the deep passes fan out concurrently, so without it
+		// the panel would flip between logs mid-run.
 		result, rerr := assay.Review(ctx, assay.ReviewRequest{
 			Anvil:     anvil,
 			AnvilPath: anvilPath,
@@ -1587,6 +1618,7 @@ func (d *Daemon) runAssayReview(ctx context.Context, anvil, anvilPath, beadID st
 			BeadID:    beadID,
 			Title:     d.db.BeadTitle(beadID, anvil),
 			WorkDir:   worktreePath,
+			OnPassLog: d.assayLogPathRecorder(workerID),
 		}, d.db, engineCfg)
 		if rerr != nil {
 			d.logger.Error("Assay review failed", "pr", prNumber, "bead", beadID, "error", rerr)
@@ -1674,7 +1706,9 @@ func (d *Daemon) ensureAssayReviewedHead(ctx context.Context, anvil, anvilPath, 
 		return // current head already reviewed; its comments (if any) are posted
 	}
 	d.logger.Info("Burnish/Assay coordination: running Assay before fix so both reviews land in one pass", "pr", prNumber, "anvil", anvil, "head", st.HeadSHA)
-	_, _ = d.runAssayReview(ctx, anvil, anvilPath, beadID, prNumber, st.HeadSHA, worktreePath)
+	// No dedicated Assay worker row on this path — the run piggybacks on the
+	// Burnish worker — so there is nothing to point at a log file.
+	_, _ = d.runAssayReview(ctx, anvil, anvilPath, beadID, prNumber, st.HeadSHA, worktreePath, "")
 }
 
 // handleLifecycleAction handles PR-triggered fixes from Bellows.
@@ -1819,7 +1853,26 @@ func (d *Daemon) handleLifecycleAction(ctx context.Context, req lifecycle.Action
 			}
 			return
 		}
-		defer d.worktreeMgr.Remove(ctx, anvilCfg.Path, wt)
+		// Preserve this worker's claude logs before the worktree goes away,
+		// mirroring the pipeline's teardown. Without this the lifecycle
+		// stages (quench/burnish/rebase/assay) left their worker rows
+		// pointing into a deleted worktree, so every historical log was
+		// unreadable in the web UI and the per-bead Logs browser was empty
+		// for them.
+		defer func() {
+			oldLogDir := filepath.Join(wt.Path, ".forge-logs")
+			dstDir, perr := pipeline.PreserveWorktreeLogs(wt.Path, req.BeadID)
+			if perr != nil {
+				d.logger.Warn("failed to preserve lifecycle logs", "bead", req.BeadID, "error", perr)
+			} else if dstDir != "" {
+				if n, rerr := d.db.RepointWorkerLogPaths(req.BeadID, oldLogDir, dstDir); rerr != nil {
+					d.logger.Warn("failed to repoint lifecycle log paths", "bead", req.BeadID, "error", rerr)
+				} else if n > 0 {
+					d.logger.Info("preserved lifecycle logs", "bead", req.BeadID, "workers", n, "dir", dstDir)
+				}
+			}
+			d.worktreeMgr.Remove(ctx, anvilCfg.Path, wt)
+		}()
 
 		workerID := fmt.Sprintf("%s-%s-%d", req.Anvil, req.BeadID, time.Now().UnixNano())
 
@@ -2115,7 +2168,7 @@ func (d *Daemon) handleLifecycleAction(ctx context.Context, req lifecycle.Action
 				break
 			}
 
-			run, recErr := d.runAssayReview(workerCtx, req.Anvil, anvilCfg.Path, req.BeadID, req.PRNumber, req.HeadSHA, wt.Path)
+			run, recErr := d.runAssayReview(workerCtx, req.Anvil, anvilCfg.Path, req.BeadID, req.PRNumber, req.HeadSHA, wt.Path, workerID)
 			if recErr != nil || run.Error != "" {
 				_ = d.db.UpdateWorkerStatus(workerID, state.WorkerFailed)
 			} else {

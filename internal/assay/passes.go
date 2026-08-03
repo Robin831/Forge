@@ -96,15 +96,22 @@ type PassRunner func(ctx context.Context, pass, tier, prompt string) (PassOutput
 
 // newSmithRunner returns the production PassRunner. It spawns a one-shot Smith
 // session in workDir using the provider/model resolved from cfg for the tier.
-func newSmithRunner(cfg Config, workDir string) PassRunner {
+func newSmithRunner(cfg Config, req ReviewRequest) PassRunner {
+	workDir := req.WorkDir
 	return func(ctx context.Context, pass, tier, prompt string) (PassOutput, error) {
 		pv := cfg.providerFor(tier)
+		// Logs go to the worktree's .forge-logs like every other stage; the
+		// lifecycle teardown preserves them to ~/.forge/logs/<beadID>/ before
+		// the worktree is removed.
 		logDir := filepath.Join(workDir, ".forge-logs")
 		flags := []string{"--max-turns", strconv.Itoa(assayMaxTurns)}
 
 		proc, err := smith.SpawnWithOptions(ctx, workDir, prompt, logDir, pv, flags, smith.SpawnOptions{LogPrefix: "assay"})
 		if err != nil {
 			return PassOutput{}, fmt.Errorf("assay pass %s: spawning %s: %w", pass, pv.Label(), err)
+		}
+		if req.OnPassLog != nil && proc.LogPath != "" {
+			req.OnPassLog(proc.LogPath)
 		}
 		res := proc.Wait()
 		if res.RateLimited {

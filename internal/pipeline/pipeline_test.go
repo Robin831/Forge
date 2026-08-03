@@ -1319,7 +1319,7 @@ func TestSchematic_Quota_PersistedToStateDB(t *testing.T) {
 // the .forge-logs directory does not exist in the worktree.
 func TestPreserveWorktreeLogs_NoLogDir(t *testing.T) {
 	wtDir := t.TempDir()
-	dst, err := preserveWorktreeLogs(wtDir, "bead-xyz")
+	dst, err := PreserveWorktreeLogs(wtDir, "bead-xyz")
 	require.NoError(t, err)
 	assert.Empty(t, dst, "no destination dir expected when source does not exist")
 }
@@ -1330,7 +1330,7 @@ func TestPreserveWorktreeLogs_EmptyLogDir(t *testing.T) {
 	wtDir := t.TempDir()
 	require.NoError(t, os.MkdirAll(filepath.Join(wtDir, ".forge-logs"), 0o755))
 
-	dst, err := preserveWorktreeLogs(wtDir, "bead-empty")
+	dst, err := PreserveWorktreeLogs(wtDir, "bead-empty")
 	require.NoError(t, err)
 	assert.Empty(t, dst, "no destination dir expected when log dir is empty")
 }
@@ -1351,7 +1351,7 @@ func TestPreserveWorktreeLogs_CopiesFiles(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(logSrc, "smith.log"), []byte("smith output"), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(logSrc, "session.log"), []byte("session data"), 0o644))
 
-	dst, err := preserveWorktreeLogs(wtDir, "bead-abc")
+	dst, err := PreserveWorktreeLogs(wtDir, "bead-abc")
 	require.NoError(t, err)
 	require.NotEmpty(t, dst)
 
@@ -1384,7 +1384,7 @@ func TestPreserveWorktreeLogs_SkipsSubdirs(t *testing.T) {
 	require.NoError(t, os.MkdirAll(filepath.Join(logSrc, "subdir"), 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(logSrc, "subdir", "nested.log"), []byte("nested"), 0o644))
 
-	dst, err := preserveWorktreeLogs(wtDir, "bead-sub")
+	dst, err := PreserveWorktreeLogs(wtDir, "bead-sub")
 	require.NoError(t, err)
 	require.NotEmpty(t, dst)
 
@@ -1392,7 +1392,7 @@ func TestPreserveWorktreeLogs_SkipsSubdirs(t *testing.T) {
 	_, statErr := os.Stat(filepath.Join(dst, "output.log"))
 	require.NoError(t, statErr)
 
-	// The subdir itself should NOT be copied (preserveWorktreeLogs skips dirs).
+	// The subdir itself should NOT be copied (PreserveWorktreeLogs skips dirs).
 	_, statErr = os.Stat(filepath.Join(dst, "subdir"))
 	require.True(t, os.IsNotExist(statErr), "subdirectory should not be copied to persistent log dir")
 }
@@ -1418,7 +1418,7 @@ func TestPreserveWorktreeLogs_SkipsSymlinks(t *testing.T) {
 	require.NoError(t, os.WriteFile(externalFile, []byte("sensitive"), 0o644))
 	require.NoError(t, os.Symlink(externalFile, filepath.Join(logSrc, "link.log")))
 
-	dst, err := preserveWorktreeLogs(wtDir, "bead-sym")
+	dst, err := PreserveWorktreeLogs(wtDir, "bead-sym")
 	require.NoError(t, err)
 	require.NotEmpty(t, dst)
 
