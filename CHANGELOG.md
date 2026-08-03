@@ -8,6 +8,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Unreleased changes live as fragments in `changelog.d/` and are assembled at
 release time by `scripts/assemble-changelog.sh`.
 
+## [0.23.2] - 2026-08-03
+
+### Changed
+
+- **Dependency updates (15.07.2026)** - Bumped Go modules (modernc.org/sqlite v1.53.0→v1.55.0, github.com/mattn/go-runewidth v0.0.24→v0.0.27) and frontend npm packages (lucide-react 1.24.0→1.28.0, vite 8.1.4→8.2.0, @tailwindcss/vite 4.3.2→4.3.3, @types/react 19.2.17→19.2.18, @types/react-dom 19.2.3→19.2.4, @vitejs/plugin-react 6.0.3→6.0.5, react 19.2.7→19.2.8, react-dom 19.2.7→19.2.8, react-router-dom 7.18.1→7.18.2, tailwindcss 4.3.2→4.3.3), and regenerated the embedded Hearth 2.0 bundle. Major updates (@testing-library/jest-dom, @types/node, jsdom, typescript) deferred for manual review. (Forge-duq7)
+
+### Fixed
+
+- **Live worker panels stuck on "reconnecting"** - A worker's log stream no longer 404s while its log path is still being recorded. The pipeline inserts the worker row before Smith spawns, so a panel opened in that window hit a 404 — and a non-2xx permanently closes the browser's EventSource, leaving the panel stuck until the dashboard was navigated away from and back. Active workers now get a held-open stream that waits for the path; Bellows pseudo-workers and terminal workers still fail fast. (Forge-xad3)
+- **SSE streams recover from failed connections** - `useEventSource` now reconnects with exponential backoff when the browser marks a stream permanently CLOSED. Previously any non-2xx initial response — including the 429 from the per-session SSE connection cap — killed the stream for the lifetime of the component. Transient drops are still left to the browser's own `retry:` handling. (Forge-xad3)
+
 ## [0.23.1] - 2026-08-03
 
 ### Changed
