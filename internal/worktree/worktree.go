@@ -205,6 +205,22 @@ func (m *Manager) CreateWithOptions(ctx context.Context, anvilPath, beadID strin
 		}
 	}
 
+	// Drop registrations whose directory no longer exists. The block above only
+	// handles the case where the directory IS present but unusable; the inverse —
+	// directory gone, registration still held by git — is what a KILLED worker
+	// leaves behind, and it is unrecoverable without this. `git worktree add`
+	// then fails "already registered" (exit 255) for that path forever, and
+	// because each lifecycle retry burns an attempt, five retries later the PR's
+	// fix budget is spent and the PR is silently abandoned.
+	//
+	// Observed 2026-08-04: a pod roll killed smith mid-fix on
+	// FHIDev/Munin#4616; every retry then failed
+	// `git worktree add (reset local to origin/forge/Fhi.Metadata-krzku): exit status 255`
+	// until max_review_fix_attempts was exhausted. `git worktree prune` only
+	// removes entries pointing at non-existent directories, so it is safe to run
+	// unconditionally here and makes the whole class self-healing.
+	_ = gitCmd(ctx, anvilPath, "worktree", "prune")
+
 	if !opts.LocalHead {
 		// Safety check: ensure the main repo is on main/master before creating a
 		// worktree. If a previous smith ran git checkout in the parent directory

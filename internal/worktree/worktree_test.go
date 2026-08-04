@@ -1272,3 +1272,45 @@ func gitOutput(t *testing.T, dir string, args ...string) string {
 	}
 	return strings.TrimSpace(string(out))
 }
+
+// TestCreate_RecoversFromStaleRegistrationAfterKilledWorker covers the failure
+// mode that silently abandoned FHIDev/Munin#4616 on 2026-08-04: a worker killed
+// mid-run (pod roll, OOM, restart) leaves the worktree REGISTERED with git while
+// its directory is gone. Every later Create for that branch then failed with
+// "git worktree add ...: exit status 255", and because each lifecycle retry
+// burns an attempt, the PR's fix budget was exhausted and it was dropped with no
+// visible error on the PR itself.
+//
+// Note the inverse case (directory present but unusable) was already handled;
+// this is specifically directory-absent-registration-present.
+func TestCreate_RecoversFromStaleRegistrationAfterKilledWorker(t *testing.T) {
+	_, anvil := initBareRemoteCloneWithInitialCommit(t)
+
+	const branch = "forge/Fhi.Metadata-krzku"
+	runGit(t, anvil, "checkout", "-b", branch)
+	runGit(t, anvil, "push", "-u", "origin", branch)
+	runGit(t, anvil, "checkout", "main")
+
+	m := NewManager()
+	ctx := context.Background()
+
+	wt, err := m.Create(ctx, anvil, "pr-4616", branch)
+	if err != nil {
+		t.Fatalf("initial Create: %v", err)
+	}
+
+	// Simulate the kill: the directory vanishes, the registration survives.
+	if err := os.RemoveAll(wt.Path); err != nil {
+		t.Fatalf("removing worktree dir: %v", err)
+	}
+	if out, err := exec.Command("git", "-C", anvil, "worktree", "list").CombinedOutput(); err != nil {
+		t.Fatalf("worktree list: %v\n%s", err, out)
+	} else if !strings.Contains(string(out), "pr-4616") {
+		t.Fatalf("precondition failed: registration should still be present, got:\n%s", out)
+	}
+
+	// Before the prune fix this returned "exit status 255" forever.
+	if _, err := m.Create(ctx, anvil, "pr-4616", branch); err != nil {
+		t.Fatalf("Create after killed worker should recover, got: %v", err)
+	}
+}
