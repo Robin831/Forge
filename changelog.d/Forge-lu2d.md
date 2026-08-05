@@ -1,0 +1,2 @@
+category: Changed
+- **Dependency update batch** - Bumped modernc.org/sqlite to v1.56.0 and updated Hearth frontend dev/test dependencies: @testing-library/user-event 14.6.3, @testing-library/jest-dom 7.0.0, @types/node 26.1.2, jsdom 30.0.1 (clears the transitive undici audit findings). TypeScript stays at 6.0.3; react-router 7.18.2 retains GHSA-qwww-vcr4-c8h2 (RSC-mode only, fixed upstream in 8.3.0). (Forge-lu2d)
