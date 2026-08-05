@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { History as HistoryIcon } from 'lucide-react'
-import { Link } from 'react-router-dom'
+import { Link } from 'react-router'
 import { useApiPoll } from '../hooks/useApiPoll'
 import type { EventsResponse, HistoryWorkersResponse, StatusResponse } from '../api'
 import AppHeader from '../components/AppHeader'

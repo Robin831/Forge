@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { ExternalLink, Loader2 } from 'lucide-react'
-import { Link } from 'react-router-dom'
+import { Link } from 'react-router'
 import { apiGet, ApiError, type BeadBrief, type BeadDetailResponse } from '../api'
 import { useAuth } from '../auth'
 import { priorityClasses, priorityLabel } from '../lib/format'

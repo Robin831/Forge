@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { ChevronDown, ChevronRight, List, MoreHorizontal, Play, RotateCcw, Square, Tag, X } from 'lucide-react'
-import { Link } from 'react-router-dom'
+import { Link } from 'react-router'
 import { actions, type QueueItem } from '../api'
 import { priorityClasses, priorityLabel, relativeTime } from '../lib/format'
 import { useAction } from '../hooks/useAction'

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { ExternalLink, Loader2, Maximize2, RotateCcw, X } from 'lucide-react'
-import { Link } from 'react-router-dom'
+import { Link } from 'react-router'
 import { ApiError, fetchBeadDeps, type BeadBrief, type BeadDepsResponse } from '../api'
 import { useAuth } from '../auth'
 import { priorityClasses, priorityLabel } from '../lib/format'

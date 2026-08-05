@@ -1,5 +1,5 @@
 import { useEffect, useState, type FormEvent } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate } from 'react-router'
 import { Hammer, Loader2 } from 'lucide-react'
 import { useAuth } from '../auth'
 

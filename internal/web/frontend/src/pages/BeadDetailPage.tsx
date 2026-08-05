@@ -13,7 +13,7 @@ import {
   X,
   XCircle,
 } from 'lucide-react'
-import { Link, useParams, useSearchParams } from 'react-router-dom'
+import { Link, useParams, useSearchParams } from 'react-router'
 import { useApiPoll } from '../hooks/useApiPoll'
 import {
   actions,

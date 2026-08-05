@@ -2,7 +2,7 @@ import '@testing-library/jest-dom/vitest'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { MemoryRouter } from 'react-router-dom'
+import { MemoryRouter } from 'react-router'
 import QueuePane, { groupQueueItems, sortItems } from './QueuePane'
 import { actions, type QueueItem } from '../api'
 

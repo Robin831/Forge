@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import { Package } from 'lucide-react'
-import { Link } from 'react-router-dom'
+import { Link } from 'react-router'
 import { useApiPoll } from '../hooks/useApiPoll'
 import type { Ingot, StatusResponse } from '../api'
 import AppHeader from '../components/AppHeader'

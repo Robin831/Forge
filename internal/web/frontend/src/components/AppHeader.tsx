@@ -1,5 +1,5 @@
 import { Activity, Coins, FlaskConical, GitPullRequest, Hammer, History, LayoutDashboard, LogOut, Package, Settings, Sparkles } from 'lucide-react'
-import { NavLink } from 'react-router-dom'
+import { NavLink } from 'react-router'
 import { useAuth } from '../auth'
 
 interface NavItem {

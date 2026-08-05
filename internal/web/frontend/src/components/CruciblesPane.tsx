@@ -1,5 +1,5 @@
 import { FlaskConical } from 'lucide-react'
-import { Link } from 'react-router-dom'
+import { Link } from 'react-router'
 import type { CrucibleStatus } from '../api'
 import { relativeTime } from '../lib/format'
 import Pane, { EmptyState } from './Pane'

@@ -1,7 +1,7 @@
 import '@testing-library/jest-dom/vitest'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, render, screen, within } from '@testing-library/react'
-import { MemoryRouter } from 'react-router-dom'
+import { MemoryRouter } from 'react-router'
 
 // Drive the four polled endpoints with static data so the page renders
 // deterministically without a live daemon.
