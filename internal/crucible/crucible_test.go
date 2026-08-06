@@ -755,3 +755,87 @@ func TestRun_SchematicOnSpawn_UpdatesWorkerPIDAndLogPath(t *testing.T) {
 		t.Errorf("expected worker LogPath /fake/crucible.log, got %q", found.LogPath)
 	}
 }
+
+// TestRun_ChildEmptyBranch_SkipsPRAndContinues verifies that a child whose work
+// already landed on the feature branch (empty branch, no commits vs base) is
+// closed and counted as done instead of pausing the epic — and, critically,
+// that no PR is opened for it.
+func TestRun_ChildEmptyBranch_SkipsPRAndContinues(t *testing.T) {
+	db := testDB(t)
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+
+	var createdPRs []vcs.CreateParams
+	var closedBeads []string
+
+	p := Params{
+		DB:     db,
+		Logger: logger,
+		ParentBead: poller.Bead{
+			ID:    "parent-1",
+			Title: "Parent bead",
+		},
+		AnvilName:                 "test-anvil",
+		AnvilConfig:               config.AnvilConfig{Path: t.TempDir()},
+		AutoMergeCrucibleChildren: true,
+		EmptyDiffAction:           config.EmptyDiffActionClose,
+
+		EpicBranchCreator: func(_ context.Context, _, _ string) error { return nil },
+
+		ChildFetcher: func(_ context.Context, _, _ string) ([]poller.Bead, error) {
+			return []poller.Bead{
+				{ID: "child-1", Title: "First child", DependsOn: []string{"parent-1"}},
+			}, nil
+		},
+
+		PipelineRunner: func(_ context.Context, pp pipeline.Params) *pipeline.Outcome {
+			if pp.EmptyDiffAction != config.EmptyDiffActionClose {
+				t.Errorf("child pipeline should inherit empty_diff_action, got %q", pp.EmptyDiffAction)
+			}
+			return &pipeline.Outcome{
+				EmptyDiff:       true,
+				EmptyDiffAction: config.EmptyDiffActionClose,
+				EmptyDiffBase:   "origin/feature/parent-1",
+				Branch:          "forge/child-1",
+			}
+		},
+
+		PRCreator: func(_ context.Context, params vcs.CreateParams) (*vcs.PR, error) {
+			createdPRs = append(createdPRs, params)
+			return &vcs.PR{Number: len(createdPRs), URL: "https://example.test/pr"}, nil
+		},
+
+		PRMerger:    func(_ context.Context, _ int, _ string) error { return nil },
+		BeadClaimer: func(_ context.Context, _, _ string) error { return nil },
+		BeadCloser: func(_ context.Context, beadID, _ string) error {
+			closedBeads = append(closedBeads, beadID)
+			return nil
+		},
+	}
+
+	result := Run(context.Background(), p)
+
+	if result.Error != nil {
+		t.Fatalf("unexpected error: %v", result.Error)
+	}
+	if !result.Success {
+		t.Error("an empty-branch child must not fail the epic")
+	}
+	if result.ChildrenDone != 1 {
+		t.Errorf("expected the empty-branch child to count as done, got %d", result.ChildrenDone)
+	}
+	// Only the final epic PR may exist — never one for the empty child branch.
+	for _, pr := range createdPRs {
+		if pr.Branch == "forge/child-1" {
+			t.Error("no PR may be created for a branch with no commits")
+		}
+	}
+	found := false
+	for _, id := range closedBeads {
+		if id == "child-1" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("the empty-branch child should be closed")
+	}
+}

@@ -3842,6 +3842,7 @@ func (d *Daemon) dispatchBead(ctx context.Context, bead poller.Bead, anvilCfg co
 			WardenFullRereview:          d.cfg.Load().Settings.WardenFullRereview,
 			CopilotCombinedSmithWarden:  d.cfg.Load().Settings.CopilotCombinedSmithWarden,
 			CopilotWardenSampleRate:     d.cfg.Load().Settings.CopilotWardenSampleRate,
+			EmptyDiffAction:             d.resolveEmptyDiffAction(d.cfg.Load()),
 
 			StatusCallback: func(s crucible.Status) {
 				d.crucibleStatuses.Store(bead.Anvil+"/"+bead.ID, s)
@@ -4003,6 +4004,7 @@ normalPipeline:
 		WardenFullRereview:          cfg.Settings.WardenFullRereview,
 		CopilotCombinedSmithWarden:  cfg.Settings.CopilotCombinedSmithWarden,
 		CopilotWardenSampleRate:     cfg.Settings.CopilotWardenSampleRate,
+		EmptyDiffAction:             d.resolveEmptyDiffAction(cfg),
 	}
 
 	// Only set WardenProviders/SchematicProviders when explicitly configured in
@@ -4124,6 +4126,15 @@ normalPipeline:
 	}
 
 	if !outcome.Success {
+		if outcome.EmptyDiff {
+			// The branch has no commits vs its base — PR creation would fail and
+			// re-running Smith would rebuild the same empty branch. Terminal:
+			// resolved here without touching the circuit breaker.
+			emptyCtx, emptyCancel := context.WithTimeout(context.Background(), executil.DefaultBdTimeout)
+			defer emptyCancel()
+			d.applyEmptyDiffOutcome(emptyCtx, bead, anvilCfg.Path, outcome)
+			return
+		}
 		if outcome.NoChangesNeeded {
 			// Smith determined no changes are needed — close the bead with the
 			// reason instead of marking it as failed or needs_human.
@@ -4535,6 +4546,60 @@ func (d *Daemon) applyNoChangesNeededOutcome(ctx context.Context, bead poller.Be
 			fmt.Sprintf("Bead closed — no changes needed: %s", reason),
 			bead.ID, bead.Anvil)
 	}
+}
+
+// applyEmptyDiffOutcome handles the terminal case where the pipeline reached
+// Warden approval but the branch carries no commits against its base — the work
+// is already on the base branch (typically a sibling PR shipped it first). PR
+// creation is skipped by the pipeline; this decides what happens to the bead.
+//
+// Either way the outcome is deterministic: a re-dispatch rebuilds the identical
+// empty branch. So the retry record is cleared rather than incremented — an
+// empty branch must never feed the dispatch circuit breaker or schedule a retry.
+// With empty_diff_action=close the bead is closed with a note; the default
+// (attention) leaves it open and raises a Needs Attention entry for the
+// operator. A failed auto-close falls back to needs-attention so the bead is
+// never silently stranded in_progress.
+func (d *Daemon) applyEmptyDiffOutcome(ctx context.Context, bead poller.Bead, anvilPath string, outcome *pipeline.Outcome) {
+	base := outcome.EmptyDiffBase
+	if base == "" {
+		base = "the base branch"
+	}
+	branch := outcome.Branch
+	if branch == "" {
+		branch = worktree.BranchName(bead.ID)
+	}
+	note := fmt.Sprintf("No changes needed — branch %s has no commits vs %s; the work is already on the base branch.", branch, base)
+
+	if err := d.db.ClearRetry(bead.ID, bead.Anvil); err != nil {
+		d.logger.Error("failed to clear retry state after empty-diff outcome", "bead", bead.ID, "error", err)
+	}
+
+	if outcome.EmptyDiffAction == config.EmptyDiffActionClose {
+		if err := d.closeBead(ctx, bead.ID, anvilPath, note); err != nil {
+			reason := fmt.Sprintf("%s Auto-close failed: %v", note, err)
+			d.logger.Error("failed to close bead after empty-diff outcome", "bead", bead.ID, "error", err)
+			if markErr := d.db.MarkNeedsHuman(bead.ID, bead.Anvil, reason); markErr != nil {
+				d.logger.Error("failed to mark bead as needs_human", "bead", bead.ID, "error", markErr)
+			}
+			_ = d.db.LogEvent(state.EventSmithEmptyResult, reason, bead.ID, bead.Anvil)
+			d.releaseBeadClaim(bead.ID, bead.Anvil, false)
+			return
+		}
+		d.logger.Info("empty branch — bead closed", "bead", bead.ID, "branch", branch, "base", base)
+		_ = d.db.LogEvent(state.EventSmithEmptyResult, "Bead closed — "+note, bead.ID, bead.Anvil)
+		return
+	}
+
+	d.logger.Warn("empty branch — bead needs attention", "bead", bead.ID, "branch", branch, "base", base)
+	if err := d.db.MarkNeedsHuman(bead.ID, bead.Anvil, note); err != nil {
+		d.logger.Error("failed to mark bead as needs_human", "bead", bead.ID, "error", err)
+	}
+	_ = d.db.LogEvent(state.EventSmithEmptyResult, "Needs attention — "+note, bead.ID, bead.Anvil)
+	// Release the bd claim so the bead does not sit in_progress with no live
+	// worker (which orphan recovery would later have to untangle). needs_human
+	// keeps the poller from re-dispatching it in the meantime.
+	d.releaseBeadClaim(bead.ID, bead.Anvil, false)
 }
 
 // cleanGitEnv returns a copy of os.Environ with git worktree env vars removed
@@ -8734,6 +8799,19 @@ func (d *Daemon) resolveGoRaceDetection(anvilCfg config.AnvilConfig) bool {
 	return goRace
 }
 
+// resolveEmptyDiffAction resolves settings.empty_diff_action for a dispatch.
+// An unrecognised value is not fatal — it falls back to "attention" (the
+// conservative choice: surface it rather than auto-close a bead) and warns so
+// the typo is visible in the daemon log.
+func (d *Daemon) resolveEmptyDiffAction(cfg *config.Config) string {
+	action, ok := config.ResolveEmptyDiffAction(cfg.Settings.EmptyDiffAction)
+	if !ok {
+		d.logger.Warn("unrecognised settings.empty_diff_action — falling back",
+			"configured", cfg.Settings.EmptyDiffAction, "using", action)
+	}
+	return action
+}
+
 // filterCopilotIfLimited removes copilot providers from the list when the
 // daily copilot premium request limit has been reached. If the limit is 0
 // (unlimited) or not yet reached, the list is returned unchanged.
@@ -9613,6 +9691,7 @@ func (d *Daemon) runPostForceSmithPipeline(ctx context.Context, beadID, anvil st
 		WardenFullRereview:          d.cfg.Load().Settings.WardenFullRereview,
 		CopilotCombinedSmithWarden:  d.cfg.Load().Settings.CopilotCombinedSmithWarden,
 		CopilotWardenSampleRate:     d.cfg.Load().Settings.CopilotWardenSampleRate,
+		EmptyDiffAction:             d.resolveEmptyDiffAction(d.cfg.Load()),
 	}
 	// Only set WardenProviders/SchematicProviders when explicitly configured in
 	// stage_providers; otherwise leave empty so the legacy model-override path runs.
@@ -9632,6 +9711,14 @@ func (d *Daemon) runPostForceSmithPipeline(ctx context.Context, beadID, anvil st
 	}
 
 	if !outcome.Success {
+		if outcome.EmptyDiff {
+			// Nothing to open a PR for — the work is already on the base branch.
+			// Resolve it the same way a normal dispatch would.
+			emptyCtx, emptyCancel := context.WithTimeout(context.Background(), executil.DefaultBdTimeout)
+			defer emptyCancel()
+			d.applyEmptyDiffOutcome(emptyCtx, bead, anvilCfg.Path, outcome)
+			return
+		}
 		reason := "Force smith: warden rejected, needs human attention"
 		if outcome.ReviewResult != nil && outcome.ReviewResult.Summary != "" {
 			reason = "Force smith warden: " + outcome.ReviewResult.Summary
