@@ -101,6 +101,13 @@ func (f *fakePreviewManager) List() []*kiln.Environment {
 	return out
 }
 
+func (f *fakePreviewManager) Get(beadID string) (*kiln.Environment, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	env, ok := f.envs[beadID]
+	return env, ok
+}
+
 func (f *fakePreviewManager) startedOptions() []kiln.StartOptions {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -116,9 +123,15 @@ func (f *fakePreviewManager) startContextErrors() []error {
 
 func (f *fakePreviewManager) Stop(_ context.Context, beadID string) error {
 	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.stopped = append(f.stopped, beadID)
-	f.mu.Unlock()
-	return f.stopErr
+	if f.stopErr != nil {
+		return f.stopErr
+	}
+	// A stopped preview leaves the registry, so a follow-up List/Get sees it
+	// gone the way the real manager's does.
+	delete(f.envs, beadID)
+	return nil
 }
 
 func (f *fakePreviewManager) StopAll(context.Context) error {

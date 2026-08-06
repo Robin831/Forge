@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -41,6 +42,8 @@ type previewManager interface {
 	StopAll(ctx context.Context) error
 	// List returns every live preview, ordered by bead id.
 	List() []*kiln.Environment
+	// Get returns one bead's preview; the bool is false when it has none.
+	Get(beadID string) (*kiln.Environment, bool)
 }
 
 // *kiln.Manager is what the daemon actually wires in, so keep the two in step
@@ -398,8 +401,14 @@ func (d *Daemon) handlePreviewStart(p ipc.PreviewActionPayload) ipc.Response {
 
 // handlePreviewStop serves the "preview_stop" IPC command. Like the start it is
 // queued: teardown kills process groups, runs the manifest's teardown command
-// and removes a git worktree. Stopping a bead with no preview succeeds — the
-// caller asked for it to be gone, and it is.
+// and removes a git worktree.
+//
+// A bead with no preview is rejected up front rather than answered with a
+// silent success. An operator typing `forge preview stop <bead>` at the wrong
+// id deserves to hear about it, and the caller cannot tell the two apart once
+// the work is queued. The automatic teardown paths (PR merge/close, shutdown)
+// call the manager directly, where stopping something already gone stays the
+// no-op it needs to be.
 func (d *Daemon) handlePreviewStop(p ipc.PreviewActionPayload) ipc.Response {
 	mgr := d.previews()
 	if mgr == nil {
@@ -408,6 +417,9 @@ func (d *Daemon) handlePreviewStop(p ipc.PreviewActionPayload) ipc.Response {
 	beadID := strings.TrimSpace(p.BeadID)
 	if beadID == "" {
 		return errorResponse("bead_id is required")
+	}
+	if _, ok := mgr.Get(beadID); !ok {
+		return errorResponse(fmt.Sprintf("no preview running for bead %s", beadID))
 	}
 
 	reqID, _ := d.reqTracker.Track()
@@ -423,27 +435,31 @@ func (d *Daemon) handlePreviewStop(p ipc.PreviewActionPayload) ipc.Response {
 			return
 		}
 		d.logger.Info("preview stopped", "bead", beadID)
-		d.completeAsync(reqID, okResponse(map[string]string{
-			"message": fmt.Sprintf("preview for %s stopped", beadID),
+		d.completeAsync(reqID, okResponse(ipc.PreviewStopResponse{
+			Stopped: true,
+			BeadID:  beadID,
+			Message: fmt.Sprintf("preview for %s stopped", beadID),
 		}))
 	}()
 	resp, _ := ipc.NewQueuedResponse(reqID, "stopping preview")
 	return resp
 }
 
-// handlePreviewList serves the "previews" IPC command: every live preview with
-// its per-service ports and health, plus the two settings a client needs to
-// render links and idle deadlines itself.
+// handlePreviewList serves the "previews" and "preview_list" IPC commands:
+// every live preview with its per-service ports and health, plus the two
+// settings a client needs to render links and idle deadlines itself.
 //
 // Listing deliberately does not Touch the previews it reports. The dashboard
 // polls this endpoint, so counting a poll as activity would keep every preview
 // alive forever and turn the idle reaper off in practice.
 func (d *Daemon) handlePreviewList() ipc.Response {
-	out := ipc.PreviewsResponse{Anvils: []string{}, Previews: []ipc.PreviewInfo{}}
+	out := ipc.PreviewListResponse{Anvils: []string{}, Previews: []ipc.PreviewInfo{}}
 	cfg := d.cfg.Load()
+	var idle time.Duration
 	if cfg != nil {
 		out.PublicHost = cfg.Settings.PreviewPublicHost
-		out.IdleTimeoutSeconds = int64(cfg.Settings.PreviewIdleTimeout / time.Second)
+		idle = cfg.Settings.PreviewIdleTimeout
+		out.IdleTimeoutSeconds = int64(idle / time.Second)
 	}
 	mgr := d.previews()
 	if mgr == nil {
@@ -451,26 +467,97 @@ func (d *Daemon) handlePreviewList() ipc.Response {
 	}
 	out.Enabled = true
 	out.Anvils = previewableAnvils(cfg)
+	now := time.Now()
 	for _, env := range mgr.List() {
-		rec := env.Record()
-		info := ipc.PreviewInfo{
-			BeadID:       rec.BeadID,
-			Anvil:        rec.Anvil,
-			Branch:       rec.Branch,
-			Status:       rec.Status,
-			CreatedAt:    rec.CreatedAt,
-			LastActiveAt: rec.LastActiveAt,
-		}
-		for _, svc := range rec.Services {
-			info.Services = append(info.Services, ipc.PreviewServiceInfo{
-				Name:   svc.Name,
-				Port:   svc.Port,
-				Health: svc.Health,
-				Entry:  svc.Entry,
-				Error:  svc.Error,
-			})
-		}
-		out.Previews = append(out.Previews, info)
+		out.Previews = append(out.Previews, previewInfo(env.Record(), env.EntryURL(), idle, now))
 	}
 	return okResponse(out)
+}
+
+// previewInfo maps one preview's persisted record onto the IPC payload. It
+// takes the record and the entry URL rather than the *kiln.Environment so the
+// mapping — the entry port, the idle countdown and the resource note derived
+// here — is exercisable without a live preview behind it.
+func previewInfo(rec state.Preview, entryURL string, idle time.Duration, now time.Time) ipc.PreviewInfo {
+	info := ipc.PreviewInfo{
+		BeadID:               rec.BeadID,
+		Anvil:                rec.Anvil,
+		Branch:               rec.Branch,
+		Status:               rec.Status,
+		CreatedAt:            rec.CreatedAt,
+		LastActiveAt:         rec.LastActiveAt,
+		EntryURL:             entryURL,
+		Port:                 previewEntryPort(rec),
+		IdleRemainingSeconds: previewIdleRemaining(rec, idle, now),
+		ResourceNote:         previewResourceNote(rec),
+	}
+	for _, svc := range rec.Services {
+		info.Services = append(info.Services, ipc.PreviewServiceInfo{
+			Name:   svc.Name,
+			Port:   svc.Port,
+			Health: svc.Health,
+			Entry:  svc.Entry,
+			Error:  svc.Error,
+		})
+	}
+	return info
+}
+
+// previewEntryPort returns the port the preview's entry link points at: the
+// service flagged as the entry, falling back to the first service that has a
+// port so a single-service preview still reports one. 0 means ports have not
+// been allocated yet.
+func previewEntryPort(rec state.Preview) int {
+	for _, svc := range rec.Services {
+		if svc.Entry && svc.Port > 0 {
+			return svc.Port
+		}
+	}
+	for _, svc := range rec.Services {
+		if svc.Port > 0 {
+			return svc.Port
+		}
+	}
+	return 0
+}
+
+// previewIdleRemaining is the countdown to the idle reaper: how long is left of
+// preview_idle_timeout from the preview's last activity. It clamps at 0 (a
+// preview past its deadline is waiting for the next reaper tick, not overdue by
+// a negative number) and returns nil when the reaper is disabled or the preview
+// has never been touched, so a client renders "no deadline" rather than "due
+// now".
+func previewIdleRemaining(rec state.Preview, idle time.Duration, now time.Time) *int64 {
+	if idle <= 0 || rec.LastActiveAt.IsZero() {
+		return nil
+	}
+	secs := int64(rec.LastActiveAt.Add(idle).Sub(now) / time.Second)
+	if secs < 0 {
+		secs = 0
+	}
+	return &secs
+}
+
+// previewResourceNote summarises what a preview costs while it is up: the
+// supervised process groups and the ports they hold. Kiln applies no memory or
+// CPU limits, so the honest note is the footprint itself rather than a limit
+// that was never set.
+func previewResourceNote(rec state.Preview) string {
+	if len(rec.Services) == 0 {
+		return "no services"
+	}
+	ports := make([]string, 0, len(rec.Services))
+	for _, svc := range rec.Services {
+		if svc.Port > 0 {
+			ports = append(ports, strconv.Itoa(svc.Port))
+		}
+	}
+	note := fmt.Sprintf("%d service", len(rec.Services))
+	if len(rec.Services) != 1 {
+		note += "s"
+	}
+	if len(ports) == 0 {
+		return note + ", no ports allocated"
+	}
+	return note + ", ports " + strings.Join(ports, ", ")
 }
