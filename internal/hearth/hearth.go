@@ -105,6 +105,7 @@ const (
 	AttentionClarification                       // Bead flagged as needing clarification
 	AttentionStalled                             // Worker stalled (no log activity)
 	AttentionAnvilWedged                         // Anvil's beads database is mid-merge with unresolved conflicts
+	AttentionSelfDeploy                          // Self-deploy deferred, failed, or rolled back — the binary is not the merged code
 )
 
 // NeedsAttentionItem represents a bead requiring human attention.
@@ -121,13 +122,34 @@ type NeedsAttentionItem struct {
 	LastWardenReject string // Most recent warden_reject message, if any
 	// Kind mirrors state.NeedsAttentionBead.Kind. state.AttentionKindAnvil marks
 	// an anvil-level entry (no bead, no PR) whose only resolution is fixing the
-	// anvil itself, so the bead-scoped actions are suppressed for it.
+	// anvil itself, and state.AttentionKindDeploy a self-deploy failure, so the
+	// bead-scoped actions are suppressed for both.
 	Kind string
 }
 
 // IsAnvil reports whether this entry describes an unusable anvil rather than a
 // bead or PR.
 func (i NeedsAttentionItem) IsAnvil() bool { return i.Kind == state.AttentionKindAnvil }
+
+// IsDeploy reports whether this entry describes a self-deploy that left the
+// daemon running something other than the merged code.
+func (i NeedsAttentionItem) IsDeploy() bool { return i.Kind == state.AttentionKindDeploy }
+
+// IsBeadScoped reports whether this entry identifies a bead (or its PR) and so
+// supports the bead-scoped actions: retry, dismiss, notes, description. The
+// non-bead kinds carry an empty bead ID, so every action path must branch on
+// this rather than on a bead ID being present.
+func (i NeedsAttentionItem) IsBeadScoped() bool { return i.Kind == state.AttentionKindBead }
+
+// nonBeadAttentionHint explains why a non-bead entry offers no bead actions and
+// what actually resolves it. Both kinds clear themselves, so the operator's job
+// is to fix the underlying condition, not to dismiss a row.
+func nonBeadAttentionHint(item NeedsAttentionItem) string {
+	if item.IsDeploy() {
+		return fmt.Sprintf("%s — fix the deploy and merge again; this clears on the next successful self-deploy", item.Title)
+	}
+	return fmt.Sprintf("Anvil %s is wedged — resolve the beads merge conflict; this clears automatically", item.Anvil)
+}
 
 // ReadyToMergeItem represents a PR ready to merge.
 type ReadyToMergeItem struct {
@@ -1084,12 +1106,13 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Open action menu for selected Needs Attention bead
 			if m.focused == PanelNeedsAttention && len(m.needsAttention) > 0 &&
 				m.needsAttnVP.cursor < len(m.needsAttention) {
-				// Anvil-level entries (e.g. a wedged beads database) have no
-				// bead to retry, dismiss or re-review: the only fix is resolving
-				// the conflict in the anvil, after which Forge clears the entry
-				// on its own. Explain that instead of offering dead actions.
-				if sel := m.needsAttention[m.needsAttnVP.cursor]; sel.IsAnvil() {
-					m.setStatus(fmt.Sprintf("Anvil %s is wedged — resolve the beads merge conflict; this clears automatically", sel.Anvil), false)
+				// Non-bead entries (a wedged beads database, a failed
+				// self-deploy) have no bead to retry, dismiss or re-review: the
+				// only fix is resolving the underlying condition, after which
+				// Forge clears the entry on its own. Explain that instead of
+				// offering dead actions.
+				if sel := m.needsAttention[m.needsAttnVP.cursor]; !sel.IsBeadScoped() {
+					m.setStatus(nonBeadAttentionHint(sel), false)
 					return m, nil
 				}
 				m.actionTarget = new(NeedsAttentionItem)
@@ -1198,9 +1221,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			} else if m.focused == PanelNeedsAttention && len(m.needsAttention) > 0 &&
 				m.needsAttnVP.cursor < len(m.needsAttention) {
 				item := m.needsAttention[m.needsAttnVP.cursor]
-				if item.IsAnvil() {
-					// No bead description exists; show the full conflict detail,
-					// which is what the operator needs and is truncated in the row.
+				if !item.IsBeadScoped() {
+					// No bead description exists; show the full detail (conflict
+					// tables, or the deploy's attempted/restored builds), which is
+					// what the operator needs and is truncated in the row.
 					m.openDescriptionViewer(item.Anvil, item.Title, item.Reason)
 				} else {
 					m.openDescriptionViewer(item.BeadID, item.Title, item.Description)
@@ -1286,9 +1310,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			} else if m.focused == PanelNeedsAttention && len(m.needsAttention) > 0 &&
 				m.needsAttnVP.cursor < len(m.needsAttention) {
 				item := m.needsAttention[m.needsAttnVP.cursor]
-				// Anvil-level entries have no bead to annotate.
-				if item.IsAnvil() {
-					m.setStatus(fmt.Sprintf("Anvil %s is wedged — no bead to annotate", item.Anvil), false)
+				// Anvil- and deploy-level entries have no bead to annotate.
+				if !item.IsBeadScoped() {
+					m.setStatus(item.Title+" — no bead to annotate", false)
 					return m, nil
 				}
 				m.openNotesOverlay(item.BeadID, item.Anvil, item.Title)
@@ -2625,10 +2649,10 @@ func (m *Model) removeNeedsAttentionItem(beadID, anvil string, prID ...int) {
 		prid = prID[0]
 	}
 	for i, item := range m.needsAttention {
-		// Anvil-level entries are never the target of a bead/PR action and also
-		// carry an empty bead ID, so they must not be matched by the beadID==""
-		// fallback below.
-		if item.IsAnvil() {
+		// Non-bead entries (anvil, self-deploy) are never the target of a bead/PR
+		// action and also carry an empty bead ID, so they must not be matched by
+		// the beadID=="" fallback below.
+		if !item.IsBeadScoped() {
 			continue
 		}
 		var matched bool
@@ -3840,6 +3864,8 @@ func attentionReasonIcon(cat AttentionReason) string {
 		return lipgloss.NewStyle().Foreground(colorDanger).Render("◼ STALLED")
 	case AttentionAnvilWedged:
 		return lipgloss.NewStyle().Foreground(colorDanger).Render("⛔ WEDGED")
+	case AttentionSelfDeploy:
+		return lipgloss.NewStyle().Foreground(colorDanger).Render("⚙ DEPLOY")
 	default:
 		return lipgloss.NewStyle().Foreground(colorMuted).Render("⚠ UNKNOWN")
 	}

@@ -31,6 +31,7 @@ package selfdeploy
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
 	"strings"
@@ -90,6 +91,12 @@ type Config struct {
 	Branch string
 	// BuildTarget is the `go build` package target. Defaults to "./cmd/forge".
 	BuildTarget string
+	// CurrentSHA identifies the build of the binary that is live when the deploy
+	// starts — the one preserved at PrevPath and put back by a rollback. It is
+	// reported as DeployEvent.RestoredSHA so a rollback says what the host is
+	// running now, not just what it failed to run. Optional: an empty value only
+	// costs the needs-attention item that detail.
+	CurrentSHA string
 	// MaxDrainWait bounds how long Deploy waits for active workers to drain
 	// before deferring the deploy. Defaults to DefaultMaxDrainWait.
 	MaxDrainWait time.Duration
@@ -109,6 +116,12 @@ type Deployer struct {
 	cmd     Commander
 	restart Restarter
 	events  EventSink
+	// attention raises the operator-facing needs-attention item for a failed or
+	// rolled-back deploy. nil disables the escalation (the event log still gets
+	// the rollback/failed event).
+	attention Emitter
+	// logger records emission failures. Never nil after New.
+	logger *slog.Logger
 	// activeWorkers reports the workers currently active. While it returns a
 	// non-empty set the deploy waits; nil disables the check (tests).
 	activeWorkers ActiveWorkersFunc
@@ -123,8 +136,28 @@ type Deployer struct {
 	stat   func(string) (os.FileInfo, error)
 }
 
+// Option customises a Deployer beyond the collaborators every deploy needs.
+type Option func(*Deployer)
+
+// WithEmitter attaches the needs-attention emitter. Without it a failed deploy
+// is only visible in the event log, which is what made silent rollbacks so easy
+// to miss.
+func WithEmitter(e Emitter) Option {
+	return func(d *Deployer) { d.attention = e }
+}
+
+// WithLogger sets the logger used for the escalation path's own failures. It
+// defaults to slog.Default().
+func WithLogger(l *slog.Logger) Option {
+	return func(d *Deployer) {
+		if l != nil {
+			d.logger = l
+		}
+	}
+}
+
 // New constructs a Deployer, applying defaults to optional Config fields.
-func New(cfg Config, cmd Commander, restart Restarter, events EventSink, activeWorkers ActiveWorkersFunc) *Deployer {
+func New(cfg Config, cmd Commander, restart Restarter, events EventSink, activeWorkers ActiveWorkersFunc, opts ...Option) *Deployer {
 	if cfg.PrevPath == "" {
 		cfg.PrevPath = cfg.BinaryPath + ".prev"
 	}
@@ -143,11 +176,12 @@ func New(cfg Config, cmd Commander, restart Restarter, events EventSink, activeW
 	if cfg.DrainInterval <= 0 {
 		cfg.DrainInterval = DefaultDrainInterval
 	}
-	return &Deployer{
+	d := &Deployer{
 		cfg:           cfg,
 		cmd:           cmd,
 		restart:       restart,
 		events:        events,
+		logger:        slog.Default(),
 		activeWorkers: activeWorkers,
 		now:           time.Now,
 		newTicker:     realTicker,
@@ -155,6 +189,10 @@ func New(cfg Config, cmd Commander, restart Restarter, events EventSink, activeW
 		rename:        os.Rename,
 		stat:          os.Stat,
 	}
+	for _, opt := range opts {
+		opt(d)
+	}
+	return d
 }
 
 // Deploy runs the full flow. It returns nil once a restart has been requested
@@ -178,6 +216,10 @@ func (d *Deployer) Deploy(ctx context.Context) error {
 	if err := d.waitForDrain(ctx, d.cfg.MaxDrainWait); err != nil {
 		return err
 	}
+	// The forge drained, so an earlier deferral is history: resolve it now
+	// rather than leaving a stale "workers did not drain" item in the list for
+	// as long as it takes the next deploy to fail some other way.
+	d.resolveAttention(ReasonDrainTimeout)
 
 	// 1. Pull the latest source (fast-forward only — a diverged tree is an
 	//    operator problem the manual restart.sh path is better suited to).
@@ -216,10 +258,20 @@ func (d *Deployer) Deploy(ctx context.Context) error {
 
 	// 5. Atomic swap: temp -> live binary.
 	if err := d.rename(tmpPath, d.cfg.BinaryPath); err != nil {
+		restored := false
 		if hadPrev {
-			_ = d.rename(d.cfg.PrevPath, d.cfg.BinaryPath) // restore
+			restored = d.rename(d.cfg.PrevPath, d.cfg.BinaryPath) == nil // restore
 		}
 		_ = d.remove(tmpPath)
+		// The swap is the first step that can leave the host without its binary,
+		// so escalate here too: a restore that puts the old build back is exactly
+		// the silent rollback this escalation exists to surface.
+		d.raiseAttention(DeployEvent{
+			Reason:       ReasonSwapFailed,
+			AttemptedSHA: buildSHA,
+			RolledBack:   restored,
+			Detail:       fmt.Sprintf("swapping in new binary failed: %v", err),
+		})
 		return d.fail("swapping in new binary failed: %v", err)
 	}
 
@@ -242,18 +294,72 @@ func (d *Deployer) Deploy(ctx context.Context) error {
 		BinaryPath:   d.cfg.BinaryPath,
 		RollbackPath: rollbackPath,
 	}); err != nil {
-		if hadPrev {
+		// Exactly one needs-attention item per failed restart, whatever the
+		// rollback did: the reason names the originating failure and the payload
+		// says whether the previous binary is back. Emitting again from the
+		// rollback branch would double-list the same incident.
+		ev := DeployEvent{
+			Reason:       ReasonRestartFailed,
+			AttemptedSHA: buildSHA,
+			Detail:       fmt.Sprintf("restart failed: %v", err),
+		}
+		switch {
+		case !hadPrev:
+			ev.Detail = fmt.Sprintf("restart failed and no previous binary to roll back to: %v", err)
+			d.events.Emit(EventFailed, ev.Detail)
+		default:
 			if rbErr := d.rename(d.cfg.PrevPath, d.cfg.BinaryPath); rbErr == nil {
+				ev.RolledBack = true
+				ev.RestoredSHA = d.cfg.CurrentSHA
 				d.events.Emit(EventRollback, fmt.Sprintf("restart failed (%v); rolled back to previous binary", err))
 			} else {
-				d.events.Emit(EventFailed, fmt.Sprintf("restart failed (%v) and rollback failed (%v)", err, rbErr))
+				ev.Reason = ReasonRollbackFailed
+				ev.Detail = fmt.Sprintf("restart failed (%v) and rollback failed (%v)", err, rbErr)
+				d.events.Emit(EventFailed, ev.Detail)
 			}
-		} else {
-			d.events.Emit(EventFailed, fmt.Sprintf("restart failed and no previous binary to roll back to: %v", err))
 		}
+		d.raiseAttention(ev)
 		return fmt.Errorf("selfdeploy restart: %w", err)
 	}
+	// The restart is under way, so every earlier deferral, failure or rollback
+	// for this forge is stale — nothing else clears them, and a resolved item
+	// left in Needs Attention trains operators to ignore the list.
+	d.resolveAttention()
 	return nil
+}
+
+// raiseAttention records ev as a needs-attention item, filling in the fields
+// that are the same for every failure. Escalation is best-effort by design: it
+// runs on the rollback path, where the deploy has already gone wrong and the
+// one thing that must still happen is restoring the previous binary. A failure
+// to record is logged and swallowed.
+func (d *Deployer) raiseAttention(ev DeployEvent) {
+	if d.attention == nil {
+		return
+	}
+	ev.Unit = d.cfg.UnitName
+	ev.BinaryPath = d.cfg.BinaryPath
+	if ev.Timestamp.IsZero() {
+		ev.Timestamp = d.now()
+	}
+	if err := d.attention.EmitNeedsAttention(ev); err != nil {
+		d.logger.Warn("self-deploy: could not record the needs-attention item",
+			"reason", string(ev.Reason), "attempted_sha", ev.AttemptedSHA,
+			"rolled_back", ev.RolledBack, "error", err)
+	}
+}
+
+// resolveAttention clears outstanding needs-attention items for the given
+// reasons (all of them when called with none). Like raiseAttention it never
+// fails a deploy.
+func (d *Deployer) resolveAttention(reasons ...FailureReason) {
+	if d.attention == nil {
+		return
+	}
+	if err := d.attention.ClearNeedsAttention(reasons...); err != nil {
+		d.logger.Warn("self-deploy: could not clear needs-attention items",
+			"reasons", reasons, "error", err)
+	}
 }
 
 // verify runs the new binary's `version` and `--help` subcommands, requiring

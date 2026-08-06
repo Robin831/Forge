@@ -1,0 +1,2 @@
+category: Added
+- **Self-deploy failures surface in Hearth** - A self-deploy that is deferred, fails to swap or restart, or rolls back now raises a Needs Attention entry carrying the attempted build, the build that is running again, the failure reason and the time — instead of being discoverable only by diffing `forge version` against `origin/main`. Entries are anvil-level (no bead to retry) and clear themselves once a later deploy gets past the same failure mode. (Forge-0mi9)

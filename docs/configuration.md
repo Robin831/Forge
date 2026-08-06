@@ -854,6 +854,17 @@ mid-flight is still diagnosable.
 - **Events** — `self_deploy_started`, `self_deploy_success`,
   `self_deploy_rollback`, `self_deploy_failed`, and `self_deploy_skipped` are
   written to the event log.
+- **Needs Attention** — a deploy that does not end with the new binary live and
+  restarting also raises an entry in Hearth's Needs Attention list, because the
+  event-log line alone is easy to miss: after a rollback the daemon keeps
+  running the old binary exactly as before, so the only other symptom is
+  `forge version` quietly disagreeing with `origin/main`. The entry names the
+  build that was attempted, the build that is running now, the failure, and the
+  time. One entry per failure mode (`drain_timeout`, `swap_failed`,
+  `restart_failed`, `rollback_failed`), so a later deferral cannot overwrite the
+  record of an earlier rollback. Entries are anvil-level — there is no bead to
+  retry or dismiss — and clear themselves: the drain-timeout entry as soon as a
+  later deploy drains, the rest once a deploy reaches its restart.
 - **Single-flight** — a second merge while a deploy is in progress is ignored;
   the in-flight deploy already pulls the latest tip.
 

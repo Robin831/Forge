@@ -41,6 +41,7 @@ import (
 	"github.com/Robin831/Forge/internal/crucible"
 	"github.com/Robin831/Forge/internal/depcheck"
 	"github.com/Robin831/Forge/internal/executil"
+	"github.com/Robin831/Forge/internal/forge"
 	"github.com/Robin831/Forge/internal/hotreload"
 	"github.com/Robin831/Forge/internal/ingot"
 	"github.com/Robin831/Forge/internal/ipc"
@@ -2456,11 +2457,14 @@ func (d *Daemon) runSelfDeploy(sd config.SelfDeployConfig) {
 
 	deployer := selfdeploy.New(
 		selfdeploy.Config{
-			RepoPath:     sd.ResolvedRepoPath(anvilCfg.Path),
-			BinaryPath:   sd.ResolvedBinaryPath(),
-			UnitName:     sd.ResolvedUnitName(),
-			Branch:       sd.ResolvedBranch(),
-			BuildTarget:  sd.ResolvedBuildTarget(),
+			RepoPath:    sd.ResolvedRepoPath(anvilCfg.Path),
+			BinaryPath:  sd.ResolvedBinaryPath(),
+			UnitName:    sd.ResolvedUnitName(),
+			Branch:      sd.ResolvedBranch(),
+			BuildTarget: sd.ResolvedBuildTarget(),
+			// The running daemon was built from the binary the deploy preserves
+			// for rollback, so its build identifies what a rollback restores.
+			CurrentSHA:   forge.Build,
 			MaxDrainWait: maxDrainWait,
 		},
 		selfdeploy.ExecCommander{},
@@ -2474,6 +2478,16 @@ func (d *Daemon) runSelfDeploy(sd config.SelfDeployConfig) {
 		},
 		selfDeployEventSink{db: d.db, anvil: sd.Anvil},
 		d.activeWorkerIDs,
+		// A failed or rolled-back deploy is otherwise silent — the daemon keeps
+		// running the old binary exactly as before — so escalate it into Hearth's
+		// Needs Attention list instead of leaving it to be found by diffing
+		// `forge version` against origin/main.
+		selfdeploy.WithEmitter(selfDeployAttentionSink{
+			db:    d.db,
+			anvil: sd.Anvil,
+			unit:  sd.ResolvedUnitName(),
+		}),
+		selfdeploy.WithLogger(d.logger),
 	)
 
 	// Deploy owns the bounded drain wait: it re-checks activeWorkerIDs on a
@@ -2538,6 +2552,47 @@ type selfDeployEventSink struct {
 
 func (s selfDeployEventSink) Emit(event, message string) {
 	_ = s.db.LogEvent(state.EventType(event), message, "", s.anvil)
+}
+
+// selfDeployAttentionSink adapts the state.DB deploy_failures table to the
+// selfdeploy.Emitter interface, so a deferred, failed or rolled-back deploy
+// becomes a row in Hearth's Needs Attention list rather than a single event-log
+// line nobody reads. The row is keyed by anvil + reason and outlives daemon
+// restarts, because a rollback leaves the daemon running the old binary and the
+// operator has to see that state whenever they next look.
+type selfDeployAttentionSink struct {
+	db    *state.DB
+	anvil string
+	unit  string
+}
+
+// EmitNeedsAttention records one needs-attention row for the deploy failure.
+func (s selfDeployAttentionSink) EmitNeedsAttention(ev selfdeploy.DeployEvent) error {
+	unit := ev.Unit
+	if unit == "" {
+		unit = s.unit
+	}
+	return s.db.RecordDeployFailure(state.DeployFailure{
+		Anvil:        s.anvil,
+		Unit:         unit,
+		Reason:       string(ev.Reason),
+		Detail:       ev.Detail,
+		AttemptedSHA: ev.AttemptedSHA,
+		RestoredSHA:  ev.RestoredSHA,
+		RolledBack:   ev.RolledBack,
+		FailedAt:     ev.Timestamp,
+	})
+}
+
+// ClearNeedsAttention removes the rows a later deploy has superseded. Passing no
+// reasons clears every outstanding failure for the anvil.
+func (s selfDeployAttentionSink) ClearNeedsAttention(reasons ...selfdeploy.FailureReason) error {
+	names := make([]string, 0, len(reasons))
+	for _, r := range reasons {
+		names = append(names, string(r))
+	}
+	_, err := s.db.ClearDeployFailures(s.anvil, names...)
+	return err
 }
 
 // reconcileMergedBeads is a startup catch-up pass that closes beads whose PRs

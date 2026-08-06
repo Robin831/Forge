@@ -118,6 +118,14 @@ func (d *Deployer) waitForDrain(ctx context.Context, max time.Duration) error {
 			}
 			timeout := &DrainTimeoutError{Elapsed: now.Sub(start), Max: max, Workers: lastActive}
 			d.emit(EventSkipped, "deploy deferred: "+timeout.Summary())
+			// A deferral leaves the binary untouched, so there is nothing to roll
+			// back — but it also means the merged change is still not running,
+			// which is invisible unless it is said out loud.
+			d.raiseAttention(DeployEvent{
+				Reason:    ReasonDrainTimeout,
+				Detail:    timeout.Summary(),
+				Timestamp: now,
+			})
 			return timeout
 		}
 
