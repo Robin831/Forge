@@ -169,3 +169,20 @@ func KillProcessTree(cmd *exec.Cmd) error {
 	}
 	return killProcessTree(cmd.Process.Pid)
 }
+
+// KillProcessGroup is KillProcessTree for a process this daemon did not spawn —
+// a PID recovered from state.db after a restart, where there is no *exec.Cmd to
+// pass. It has the same semantics and the same caveats: on Unix it signals the
+// process group led by pid (which requires that the process was started with
+// SetProcessGroup, so pgid == pid), and on Windows it shells out to
+// `taskkill /T /F /PID`.
+//
+// Callers are responsible for establishing that the PID still belongs to the
+// process they recorded — a PID alone is not evidence of ownership once the OS
+// has been free to recycle it.
+func KillProcessGroup(pid int) error {
+	if pid <= 0 {
+		return nil
+	}
+	return killProcessTree(pid)
+}

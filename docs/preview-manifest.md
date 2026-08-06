@@ -157,6 +157,18 @@ dropped for the same reason.
 - **Status**: the preview is `running` when every service is healthy,
   `degraded` when some are healthy and some failed, and `failed` when none came
   up. A failed service is never allowed to stop its siblings.
+- **Idle teardown**: a preview that goes untouched for `preview_idle_timeout`
+  (default 30m) is torn down exactly as an explicit stop would tear it down —
+  `teardown`, checkout, ports, state row. Any use of the preview through Forge
+  resets the clock, so the timeout measures inactivity, not age. Set
+  `preview_idle_timeout: 0` to leave previews running until stopped explicitly.
+- **After a crash**: preview processes, checkouts and rows all outlive the
+  daemon, so on startup Forge kills the recorded service process groups, removes
+  the checkouts and deletes the rows, then prunes any `<anvil>/.previews/`
+  directory with no live preview behind it. Previews are never resumed — ask for
+  a new one. A recorded PID is only signalled once the live process is confirmed
+  to still be that service (its start time, and its working directory where the
+  platform exposes one); a PID the OS has recycled is logged and left alone.
 
 ## Validation errors
 

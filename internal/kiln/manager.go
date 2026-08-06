@@ -41,9 +41,10 @@ func (e *TooManyPreviewsError) Unwrap() error { return ErrTooManyPreviews }
 
 // ManagerStore is the persistence the Manager needs: the runtime's Store (which
 // writes the row while a preview starts and stops) plus the row-level
-// operations teardown and the idle reaper depend on.
+// operations teardown, the idle reaper and startup reconciliation depend on.
 type ManagerStore interface {
 	Store
+	ListPreviews() ([]state.Preview, error)
 	TouchPreview(beadID string) (bool, error)
 	DeletePreview(beadID string) error
 }
@@ -121,6 +122,11 @@ type ManagerConfig struct {
 	// Env is the environment preview commands inherit; nil means the daemon's
 	// own (os.Environ).
 	Env []string
+	// Anvils maps anvil name → main checkout path. It is what Reconcile scans
+	// for abandoned <anvil>/.previews/ checkouts on startup; the normal
+	// start/stop path takes the anvil path from StartOptions instead. An empty
+	// map means reconciliation cleans up rows only, never stray directories.
+	Anvils map[string]string
 }
 
 // ManagerDeps is everything NewManager needs. Runtime and Worktrees are
@@ -139,6 +145,11 @@ type ManagerDeps struct {
 	// Now is the clock, injectable so idle behaviour is testable. Defaults to
 	// time.Now.
 	Now func() time.Time
+	// Processes inspects and terminates the OS processes recorded in preview
+	// rows, which is how startup reconciliation reaps previews left behind by a
+	// previous daemon. Defaults to OSProcesses; tests substitute a fake so no
+	// test ever signals a real PID.
+	Processes Processes
 }
 
 // Manager owns the set of running preview environments: the registry, the
@@ -157,6 +168,7 @@ type Manager struct {
 	runtime      Runner
 	worktrees    Worktrees
 	store        ManagerStore
+	processes    Processes
 	cfg          ManagerConfig
 	logger       *slog.Logger
 	loadManifest func(anvilPath string) (*Manifest, error)
@@ -302,6 +314,10 @@ func NewManager(deps ManagerDeps) (*Manager, error) {
 	if now == nil {
 		now = time.Now
 	}
+	procs := deps.Processes
+	if procs == nil {
+		procs = OSProcesses{}
+	}
 	cfg := deps.Config
 	if cfg.MaxConcurrent <= 0 {
 		cfg.MaxConcurrent = config.DefaultPreviewMaxConcurrent
@@ -316,6 +332,7 @@ func NewManager(deps ManagerDeps) (*Manager, error) {
 		runtime:      deps.Runtime,
 		worktrees:    deps.Worktrees,
 		store:        deps.Store,
+		processes:    procs,
 		cfg:          cfg,
 		logger:       logger,
 		loadManifest: load,
