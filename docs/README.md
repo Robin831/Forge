@@ -11,6 +11,8 @@ Reference documentation for configuring and operating Forge.
 | [Providers](providers.md) | Provider chain syntax, model fallback, and rate limiting |
 | [Prompt Customization](prompt-customization.md) | Per-anvil `.forge/prompt.tmpl` templates |
 | [Burnish (Review Fix) Loop](reviewfix.md) | Automatic PR review comment handling and CI fix cycles |
+| [Preview Manifest](preview-manifest.md) | `.forge/preview.yaml` reference — fields, templates, runtime behaviour |
+| [Reference Preview Manifests](preview-manifests.md) | Worked example manifests and per-preview database lifecycle recipes |
 | [Remote Access](remote-access.md) | Remote Hearth TUI and Claude CLI via VS Code Tunnels |
 
 ## Quick Links

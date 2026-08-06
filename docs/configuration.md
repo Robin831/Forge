@@ -1048,7 +1048,10 @@ Two things must be true before an anvil can produce a preview:
 
 The manifest format — services, ports, health checks, template variables and
 the main-checkout-only rule — is documented in
-[preview-manifest.md](preview-manifest.md).
+[preview-manifest.md](preview-manifest.md). Two complete worked manifests (a Go
+API + Vite client, and a .NET API + React client sharing an MSSQL server) with
+the per-preview database setup/teardown scripts that go with them are in
+[preview-manifests.md](preview-manifests.md).
 
 ```yaml
 settings:

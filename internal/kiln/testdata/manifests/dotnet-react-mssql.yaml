@@ -1,0 +1,38 @@
+# .NET API + React client + a database on a SHARED MSSQL server.
+#
+# The database server is NOT a preview service: it runs once on the Forge box
+# and every preview gets its own database on it, created by `setup` and dropped
+# by `teardown`.
+#
+# Copy to <anvil>/.forge/preview.yaml ON THE MAIN BRANCH and adjust the paths.
+version: 1
+
+setup: "./scripts/preview-db-setup.sh"
+teardown: "./scripts/preview-db-teardown.sh"
+
+services:
+  api:
+    # The connection string is assembled by the shell rather than declared under
+    # `env:`, so the password comes from the daemon's environment (~/.forge/env)
+    # instead of being committed in the manifest. Manifest `env:` values are
+    # literal — "$VAR" in one stays the four characters "$VAR" — while a
+    # `command` runs through `sh -c` (see the Windows note in the docs).
+    command: >-
+      ConnectionStrings__Default="Server=$PREVIEW_MSSQL_HOST;Database=app_preview_{{.PreviewID}};User Id=$PREVIEW_MSSQL_USER;Password=$PREVIEW_MSSQL_PASSWORD;TrustServerCertificate=True"
+      dotnet run --project src/Api --no-launch-profile
+    env:
+      ASPNETCORE_ENVIRONMENT: "Preview"
+      ASPNETCORE_URLS: "http://127.0.0.1:{{.Port}}"
+    health: "/health/ready"
+    # First `dotnet run` after a checkout restores and builds.
+    ready_timeout: 240s
+
+  client:
+    command: "npm run dev -- --port {{.Port}} --strictPort"
+    dir: "src/Client"
+    env:
+      VITE_API_BASE_URL: "http://{{.Host}}:{{.ServicePort \"api\"}}"
+      BROWSER: "none"
+    # This service's URL is the preview link.
+    entry: true
+    ready_timeout: 90s
