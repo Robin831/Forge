@@ -39,8 +39,14 @@ type Monitor struct {
 	timeout  time.Duration
 	mu       sync.RWMutex
 	anvils   map[string]string // name -> path
-	logger   *slog.Logger
-	newExec  func() QuestExecutor
+	// previewQuests holds the anvils that opted into running their quests
+	// against a preview environment (name -> path). See SetPreviewQuestAnvils.
+	previewQuests map[string]string
+	// previewLookup resolves the preview a preview quest run targets. See
+	// SetPreviewLookup.
+	previewLookup PreviewLookup
+	logger        *slog.Logger
+	newExec       func() QuestExecutor
 }
 
 // New creates a Monitor that polls anvils for quests at the given interval.
@@ -53,12 +59,13 @@ func New(db *state.DB, interval, timeout time.Duration, anvils map[string]string
 		newExec = func() QuestExecutor { return nopExecutor{} }
 	}
 	return &Monitor{
-		db:       db,
-		interval: interval,
-		timeout:  timeout,
-		anvils:   anvils,
-		logger:   slog.Default(),
-		newExec:  newExec,
+		db:            db,
+		interval:      interval,
+		timeout:       timeout,
+		anvils:        anvils,
+		previewQuests: map[string]string{},
+		logger:        slog.Default(),
+		newExec:       newExec,
 	}
 }
 
@@ -134,15 +141,10 @@ func (m *Monitor) scan(ctx context.Context) {
 	}
 }
 
-// runQuest executes a single quest and handles the result.
-func (m *Monitor) runQuest(ctx context.Context, anvilName, anvilPath string, quest *Quest) {
-	m.logger.Info("starting quest", "quest", quest.Name, "anvil", anvilName)
-	if m.db != nil {
-		if err := m.db.LogEvent(state.EventAdventurerStarted, quest.Name, "", anvilName); err != nil {
-			m.logger.Warn("failed to log adventurer-started event", "quest", quest.Name, "error", err)
-		}
-	}
-
+// executeQuest runs one quest under the monitor's per-quest timeout. It is the
+// single place a quest meets an executor, shared by the scheduled scan and by
+// preview runs so both inherit the same timeout handling.
+func (m *Monitor) executeQuest(ctx context.Context, quest *Quest) *QuestResult {
 	questCtx := ctx
 	questCancel := func() {}
 	if m.timeout > 0 {
@@ -150,28 +152,48 @@ func (m *Monitor) runQuest(ctx context.Context, anvilName, anvilPath string, que
 	}
 	defer questCancel()
 
-	executor := m.newExec()
-	result := executor.Execute(questCtx, quest)
+	return m.newExec().Execute(questCtx, quest)
+}
+
+// logEvent records a quest event, tolerating a monitor without a database.
+func (m *Monitor) logEvent(event state.EventType, detail, anvilName string) {
+	if m.db == nil {
+		return
+	}
+	if err := m.db.LogEvent(event, detail, "", anvilName); err != nil {
+		m.logger.Warn("failed to log quest event", "event", event, "anvil", anvilName, "error", err)
+	}
+}
+
+// runQuest executes a single quest and handles the result.
+func (m *Monitor) runQuest(ctx context.Context, anvilName, anvilPath string, quest *Quest) {
+	m.logger.Info("starting quest", "quest", quest.Name, "anvil", anvilName)
+	m.logEvent(state.EventAdventurerStarted, quest.Name, anvilName)
+
+	// A scheduled run has no preview to point at, so templates resolve against
+	// the quest's own url field. A quest file whose templates do not parse is
+	// not executed at all: navigating to a literal "{{.BaseURL}}/login" would
+	// fail in a way that looks like a product bug and would create a bead
+	// blaming the application for a broken quest file.
+	expanded, err := Expand(quest, "")
+	if err != nil {
+		m.logger.Error("skipping quest with an invalid template",
+			"quest", quest.Name, "anvil", anvilName, "file", quest.FilePath, "error", err)
+		return
+	}
+
+	result := m.executeQuest(ctx, expanded)
 
 	if result.Passed {
 		m.logger.Info("quest passed", "quest", quest.Name, "anvil", anvilName, "duration", result.Duration)
-		if m.db != nil {
-			if err := m.db.LogEvent(state.EventAdventurerPassed, quest.Name, "", anvilName); err != nil {
-				m.logger.Warn("failed to log adventurer-passed event", "quest", quest.Name, "error", err)
-			}
-		}
+		m.logEvent(state.EventAdventurerPassed, quest.Name, anvilName)
 		return
 	}
 
 	m.logger.Warn("quest failed", "quest", quest.Name, "anvil", anvilName,
 		"step", result.FailedStep, "error", result.ErrorMessage)
-	if m.db != nil {
-		if err := m.db.LogEvent(state.EventAdventurerFailed,
-			fmt.Sprintf("%s: step %d — %s", quest.Name, result.FailedStep, result.ErrorMessage),
-			"", anvilName); err != nil {
-			m.logger.Warn("failed to log adventurer-failed event", "quest", quest.Name, "error", err)
-		}
-	}
+	m.logEvent(state.EventAdventurerFailed,
+		fmt.Sprintf("%s: step %d — %s", quest.Name, result.FailedStep, result.ErrorMessage), anvilName)
 
 	if isDuplicate(ctx, anvilPath, quest.Name) {
 		m.logger.Info("duplicate bead exists, skipping creation", "quest", quest.Name, "anvil", anvilName)

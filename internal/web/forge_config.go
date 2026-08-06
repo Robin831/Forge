@@ -858,6 +858,8 @@ var managedAnvilKeys = []anvilKeyDef{
 		Label: "QuestGiver E2E quests", Description: "Discover and run E2E quests for this anvil."},
 	{Key: "preview_enabled", Type: typeBool, TriState: true,
 		Label: "Kiln previews", Description: "Allow on-demand preview environments for this anvil's branches (requires the global preview_enabled and a .forge/preview.yaml manifest)."},
+	{Key: "preview_quests", Type: typeBool, TriState: false,
+		Label: "Preview E2E quests", Description: "Run this anvil's E2E quests against a running preview environment (requires previews to be enabled for the anvil)."},
 	{Key: "wicket_enabled", Type: typeBool, TriState: true,
 		Label: "Wicket issue triage", Description: "Poll this anvil's GitHub issues and triage them into beads."},
 	{Key: "wicket_auto_dispatch", Type: typeBool, TriState: false,

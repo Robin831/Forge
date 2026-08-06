@@ -1468,6 +1468,13 @@ func (d *Daemon) Run(ctx context.Context) error {
 				d.config().Settings.QuestgiverInterval,
 				adventurerTimeout,
 				qgAnvils, newExec)
+			// Quests can also be run on demand against a preview
+			// environment, for the anvils that opted in with
+			// preview_quests. That path needs its own anvil set (it is not
+			// filtered by questgiver_enabled) and a way to check the
+			// preview is healthy before driving a browser at it.
+			d.questgiverMonitor.SetPreviewQuestAnvils(previewQuestAnvils(d.cfg.Load()))
+			d.questgiverMonitor.SetPreviewLookup(d.previewQuestLookup)
 			go func() {
 				if err := d.questgiverMonitor.Run(ctx); err != nil && err != context.Canceled {
 					d.logger.Error("QuestGiver monitor error", "error", err)
@@ -9014,6 +9021,13 @@ func (d *Daemon) updateAnvilPaths(old, new *config.Config) {
 			d.questgiverMonitor.UpdateAnvilPaths(qgPaths)
 			d.logger.Info("updated questgiver anvil paths", "count", len(qgPaths))
 		}
+		// Preview quest runs are gated on preview_quests rather than on
+		// questgiver_enabled: they are asked for on a specific branch, not
+		// polled for, so they stay available even when scheduled scanning is
+		// off for the anvil.
+		pqPaths := previewQuestAnvils(new)
+		d.questgiverMonitor.SetPreviewQuestAnvils(pqPaths)
+		d.logger.Info("updated preview quest anvils", "count", len(pqPaths))
 	}
 }
 

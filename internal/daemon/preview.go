@@ -13,6 +13,7 @@ import (
 	"github.com/Robin831/Forge/internal/config"
 	"github.com/Robin831/Forge/internal/ipc"
 	"github.com/Robin831/Forge/internal/kiln"
+	"github.com/Robin831/Forge/internal/questgiver"
 	"github.com/Robin831/Forge/internal/state"
 	"github.com/Robin831/Forge/internal/worktree"
 )
@@ -92,6 +93,90 @@ func previewableAnvils(cfg *config.Config) []string {
 	}
 	sort.Strings(names)
 	return names
+}
+
+// previewQuestAnvils returns anvil name → main checkout path for every anvil
+// that opted into running its E2E quests against a preview
+// (`preview_quests: true`, with previews enabled for it).
+//
+// It is deliberately not filtered by questgiver_enabled: that flag governs the
+// scheduled scan, while a preview quest run is asked for on one branch at one
+// commit.
+func previewQuestAnvils(cfg *config.Config) map[string]string {
+	if cfg == nil {
+		return nil
+	}
+	opted := make(map[string]string)
+	for name, anvil := range cfg.Anvils {
+		if anvil.Path == "" || !cfg.IsPreviewQuestsEnabledForAnvil(name) {
+			continue
+		}
+		opted[name] = anvil.Path
+	}
+	if len(opted) == 0 {
+		return nil
+	}
+	return opted
+}
+
+// previewQuestLookup resolves the live preview serving an anvil at a given head
+// commit, for QuestGiver's preview run path. It reports the preview's id and
+// status; QuestGiver decides what to do with a preview that is not healthy.
+//
+// A match is a live preview of the same anvil whose checkout is at headSHA. An
+// empty headSHA matches the anvil's only preview, which is what a caller with
+// no commit in hand (a manual "run quests" on a single-preview anvil) gets.
+func (d *Daemon) previewQuestLookup(ctx context.Context, anvil, headSHA string) (questgiver.PreviewInfo, bool) {
+	mgr := d.previews()
+	if mgr == nil {
+		return questgiver.PreviewInfo{}, false
+	}
+	for _, env := range mgr.List() {
+		if env == nil || !strings.EqualFold(env.Anvil, anvil) {
+			continue
+		}
+		if headSHA != "" && !d.previewServesHead(ctx, env, headSHA) {
+			continue
+		}
+		return questgiver.PreviewInfo{
+			PreviewID: kiln.SanitizePreviewID(env.BeadID),
+			Status:    env.Status(),
+		}, true
+	}
+	return questgiver.PreviewInfo{}, false
+}
+
+// previewServesHead reports whether a preview's checkout is at headSHA. The
+// checkout is detached at the branch tip it was started from, so its HEAD is
+// the commit the running services were built from — the honest answer to "is
+// this preview showing that commit?", where the branch name is not (the branch
+// may have moved since the preview started).
+func (d *Daemon) previewServesHead(ctx context.Context, env *kiln.Environment, headSHA string) bool {
+	if env.WorktreePath == "" {
+		return false
+	}
+	head, err := worktree.HeadSHA(ctx, env.WorktreePath)
+	if err != nil {
+		d.logger.Debug("could not resolve preview checkout HEAD",
+			"bead", env.BeadID, "path", env.WorktreePath, "error", err)
+		return false
+	}
+	return shaMatches(head, headSHA)
+}
+
+// shaMatches compares a full commit SHA against a possibly abbreviated one.
+// Abbreviations shorter than 7 characters must match exactly rather than by
+// prefix, so a stray fragment cannot silently select the wrong preview.
+func shaMatches(full, want string) bool {
+	full = strings.ToLower(strings.TrimSpace(full))
+	want = strings.ToLower(strings.TrimSpace(want))
+	if full == "" || want == "" {
+		return false
+	}
+	if len(want) < 7 {
+		return full == want
+	}
+	return strings.HasPrefix(full, want)
 }
 
 // previews returns the live preview manager, or nil when previews are disabled.
