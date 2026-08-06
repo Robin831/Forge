@@ -1,9 +1,9 @@
 import { useCallback, useState } from 'react'
-import { ApiError } from '../api'
+import { ApiError, isUnresolvedQueued } from '../api'
 import { useToast } from './useToast'
 
 interface RunActionOptions {
-  // Message to show on a successful 200/202 response.
+  // Message to show once the action is confirmed to have succeeded.
   successMessage: string
   // Optional handler invoked after the action resolves successfully — useful
   // for triggering an immediate poll refresh on the calling page.
@@ -11,8 +11,9 @@ interface RunActionOptions {
 }
 
 interface UseActionResult {
-  // run executes the action. The promise resolves to true on success,
-  // false on failure. Errors are surfaced via toast automatically.
+  // run executes the action. The promise resolves to true on a confirmed
+  // success, false on failure or an unconfirmed outcome. Errors are surfaced
+  // via toast automatically.
   run: <T>(fn: () => Promise<T>, opts: RunActionOptions) => Promise<boolean>
   busy: boolean
 }
@@ -21,6 +22,12 @@ interface UseActionResult {
 // between the queue pane, workers pane and bead detail page so the UX stays
 // consistent: optimistic UI, success toast, and an error toast carrying the
 // daemon's message when something fails.
+//
+// Asynchronous ("queued") actions are resolved by apiPost before we get here:
+// a queued command that fails throws, so it lands in the error branch. A
+// queued command whose outcome could not be determined comes back tagged
+// `queued_unresolved` and is reported neutrally — never as success, since the
+// write may have been silently discarded (Forge-4r2n).
 export function useAction(): UseActionResult {
   const toast = useToast()
   const [busy, setBusy] = useState(false)
@@ -29,7 +36,14 @@ export function useAction(): UseActionResult {
     async <T,>(fn: () => Promise<T>, opts: RunActionOptions): Promise<boolean> => {
       setBusy(true)
       try {
-        await fn()
+        const result = await fn()
+        if (isUnresolvedQueued(result)) {
+          toast.push(`Queued, outcome unknown: ${opts.successMessage}`, 'info')
+          // Still refresh: the command may yet land, and the next poll is the
+          // only thing that will show it.
+          opts.onSuccess?.()
+          return false
+        }
         toast.push(opts.successMessage, 'success')
         opts.onSuccess?.()
         return true
