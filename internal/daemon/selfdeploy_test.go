@@ -165,15 +165,16 @@ func TestHandleSelfDeploy_SingleFlight(t *testing.T) {
 	assert.True(t, d.selfDeployInFlight.Load(), "in-flight flag must remain set")
 }
 
-// TestActiveWorkerCount_CountsActiveAndPaused verifies the drain guard counts
+// TestActiveWorkerIDs_ReportsActiveAndPaused verifies the drain guard reports
 // both active (running/pending/…) and operator-paused workers, since a paused
-// worker still holds a worktree and would resume into a running Smith.
-func TestActiveWorkerCount_CountsActiveAndPaused(t *testing.T) {
+// worker still holds a worktree and would resume into a running Smith. The IDs
+// are what a drain timeout names as holding the deploy up.
+func TestActiveWorkerIDs_ReportsActiveAndPaused(t *testing.T) {
 	d, db := newSelfDeployDaemon(t, config.SelfDeployConfig{}, nil)
 
-	n, err := d.activeWorkerCount()
+	ids, err := d.activeWorkerIDs()
 	require.NoError(t, err)
-	assert.Equal(t, 0, n, "no workers => zero")
+	assert.Empty(t, ids, "no workers => empty set")
 
 	require.NoError(t, db.InsertWorker(&state.Worker{
 		ID: "w-run", BeadID: "b1", Anvil: "forge", Status: state.WorkerRunning, StartedAt: time.Now(),
@@ -185,37 +186,9 @@ func TestActiveWorkerCount_CountsActiveAndPaused(t *testing.T) {
 		ID: "w-done", BeadID: "b3", Anvil: "forge", Status: state.WorkerDone, StartedAt: time.Now(),
 	}))
 
-	n, err = d.activeWorkerCount()
+	ids, err = d.activeWorkerIDs()
 	require.NoError(t, err)
-	assert.Equal(t, 2, n, "running + paused count; done excluded")
-}
-
-// TestWaitForDrain verifies the drain loop returns true when no workers are
-// active and false when the timeout elapses with a worker still active.
-func TestWaitForDrain(t *testing.T) {
-	d, db := newSelfDeployDaemon(t, config.SelfDeployConfig{}, nil)
-
-	// No workers: drains immediately.
-	assert.True(t, d.waitForDrain(context.Background(), time.Second))
-
-	// An active worker never drains within the (tiny) timeout.
-	require.NoError(t, db.InsertWorker(&state.Worker{
-		ID: "w-run", BeadID: "b1", Anvil: "forge", Status: state.WorkerRunning, StartedAt: time.Now(),
-	}))
-	assert.False(t, d.waitForDrain(context.Background(), time.Nanosecond))
-}
-
-// TestWaitForDrain_ContextCancel verifies a cancelled context aborts the drain
-// wait even when the timeout has not yet elapsed.
-func TestWaitForDrain_ContextCancel(t *testing.T) {
-	d, db := newSelfDeployDaemon(t, config.SelfDeployConfig{}, nil)
-	require.NoError(t, db.InsertWorker(&state.Worker{
-		ID: "w-run", BeadID: "b1", Anvil: "forge", Status: state.WorkerRunning, StartedAt: time.Now(),
-	}))
-
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	assert.False(t, d.waitForDrain(ctx, time.Hour))
+	assert.ElementsMatch(t, []string{"b1", "b2"}, ids, "running + paused reported by bead; done excluded")
 }
 
 // TestRunSelfDeploy_DrainTimeoutDefersAndRestoresPause verifies the pause/drain
@@ -226,7 +199,7 @@ func TestRunSelfDeploy_DrainTimeoutDefersAndRestoresPause(t *testing.T) {
 		Enabled:      true,
 		Anvil:        "forge",
 		Branch:       "main",
-		DrainTimeout: time.Nanosecond, // never drains before this elapses
+		MaxDrainWait: time.Nanosecond, // never drains before this elapses
 	}
 	anvils := map[string]config.AnvilConfig{"forge": {Path: t.TempDir()}}
 	d, db := newSelfDeployDaemon(t, sd, anvils)
@@ -246,6 +219,9 @@ func TestRunSelfDeploy_DrainTimeoutDefersAndRestoresPause(t *testing.T) {
 
 // TestRunSelfDeploy_DrainTimeoutKeepsPriorPause verifies that when dispatch was
 // already paused by an operator, a deferred deploy leaves it paused.
+//
+// It also pins the deprecated drain_timeout key: an existing config that still
+// sets it must keep bounding the wait.
 func TestRunSelfDeploy_DrainTimeoutKeepsPriorPause(t *testing.T) {
 	sd := config.SelfDeployConfig{
 		Enabled:      true,
@@ -275,6 +251,25 @@ func TestRunSelfDeploy_MissingAnvilAborts(t *testing.T) {
 	d.runSelfDeploy(sd)
 
 	assert.False(t, d.dispatchPaused.Load(), "must not pause when it aborts before draining")
+	assert.True(t, hasEvent(t, db, state.EventSelfDeployFailed), "a failed event must be logged")
+}
+
+// TestRunSelfDeploy_DeployFailureResumesDispatch verifies the deferred resume
+// covers failures after the drain too: with nothing to drain the deploy runs and
+// fails at the first step (an unusable repo path), and dispatch must come back.
+func TestRunSelfDeploy_DeployFailureResumesDispatch(t *testing.T) {
+	sd := config.SelfDeployConfig{
+		Enabled:  true,
+		Anvil:    "forge",
+		Branch:   "main",
+		RepoPath: filepath.Join(t.TempDir(), "does-not-exist"),
+	}
+	anvils := map[string]config.AnvilConfig{"forge": {Path: t.TempDir()}}
+	d, db := newSelfDeployDaemon(t, sd, anvils)
+
+	d.runSelfDeploy(sd)
+
+	assert.False(t, d.dispatchPaused.Load(), "a failed deploy must not leave dispatch paused")
 	assert.True(t, hasEvent(t, db, state.EventSelfDeployFailed), "a failed event must be logged")
 }
 

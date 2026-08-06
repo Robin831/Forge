@@ -79,13 +79,28 @@ type SelfDeployConfig struct {
 	Branch string `mapstructure:"branch" yaml:"branch,omitempty"`
 	// BuildTarget is the `go build` package target. Defaults to "./cmd/forge".
 	BuildTarget string `mapstructure:"build_target" yaml:"build_target,omitempty"`
-	// DrainTimeout bounds how long the daemon waits for active workers to finish
-	// after pausing dispatch before giving up on this deploy. Defaults to 30m.
+	// MaxDrainWait bounds how long the deploy waits for active workers to finish
+	// after pausing dispatch before giving up. The drain check is retried on a
+	// short ticker for the whole window rather than sampled once, so a deploy
+	// triggered while a Smith is mid-run lands in the gap as soon as it opens.
+	// Defaults to 30m.
+	MaxDrainWait time.Duration `mapstructure:"max_drain_wait" yaml:"max_drain_wait,omitempty"`
+	// DrainTimeout is the former name of MaxDrainWait, still read so existing
+	// configs keep working. MaxDrainWait wins when both are set.
+	//
+	// Deprecated: use MaxDrainWait (self_deploy.max_drain_wait).
 	DrainTimeout time.Duration `mapstructure:"drain_timeout" yaml:"drain_timeout,omitempty"`
 }
 
-// DefaultSelfDeployDrainTimeout is the fallback used when DrainTimeout is unset.
-const DefaultSelfDeployDrainTimeout = 30 * time.Minute
+// DefaultSelfDeployMaxDrainWait is the fallback used when neither MaxDrainWait
+// nor the deprecated DrainTimeout is set.
+const DefaultSelfDeployMaxDrainWait = 30 * time.Minute
+
+// DefaultSelfDeployDrainTimeout is the former name of
+// DefaultSelfDeployMaxDrainWait.
+//
+// Deprecated: use DefaultSelfDeployMaxDrainWait.
+const DefaultSelfDeployDrainTimeout = DefaultSelfDeployMaxDrainWait
 
 // ResolvedBinaryPath returns the configured binary path with a leading "~"
 // expanded to the user's home directory, defaulting to ~/bin/forge.
@@ -142,12 +157,25 @@ func (s SelfDeployConfig) ResolvedBuildTarget() string {
 	return s.BuildTarget
 }
 
-// ResolvedDrainTimeout returns DrainTimeout, or the package default when unset.
-func (s SelfDeployConfig) ResolvedDrainTimeout() time.Duration {
-	if s.DrainTimeout <= 0 {
-		return DefaultSelfDeployDrainTimeout
+// ResolvedMaxDrainWait returns how long a deploy may wait for workers to drain:
+// MaxDrainWait when set, else the deprecated DrainTimeout, else the 30m default.
+// A zero or negative value on either field falls through to the next candidate,
+// so callers never have to handle "unset".
+func (s SelfDeployConfig) ResolvedMaxDrainWait() time.Duration {
+	if s.MaxDrainWait > 0 {
+		return s.MaxDrainWait
 	}
-	return s.DrainTimeout
+	if s.DrainTimeout > 0 {
+		return s.DrainTimeout
+	}
+	return DefaultSelfDeployMaxDrainWait
+}
+
+// ResolvedDrainTimeout returns the resolved maximum drain wait.
+//
+// Deprecated: use ResolvedMaxDrainWait.
+func (s SelfDeployConfig) ResolvedDrainTimeout() time.Duration {
+	return s.ResolvedMaxDrainWait()
 }
 
 // expandHomePath expands a leading "~" (or "~/") in p to the current user's
@@ -2391,6 +2419,9 @@ func (c *Config) Validate() []string {
 		} else if _, ok := c.Anvils[c.SelfDeploy.Anvil]; !ok {
 			errs = append(errs, fmt.Sprintf("self_deploy.anvil %q does not match any configured anvil", c.SelfDeploy.Anvil))
 		}
+	}
+	if c.SelfDeploy.MaxDrainWait < 0 {
+		errs = append(errs, "self_deploy.max_drain_wait must not be negative (omit or set to 0 to use the default)")
 	}
 	if c.SelfDeploy.DrainTimeout < 0 {
 		errs = append(errs, "self_deploy.drain_timeout must not be negative (omit or set to 0 to use the default)")

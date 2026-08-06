@@ -11,8 +11,10 @@
 // rollback), and restarts the systemd unit.
 //
 // The flow is deliberately conservative:
-//   - it refuses to run while any worker is active (the caller drains first, and
-//     Deploy re-checks atomically before touching the binary);
+//   - it refuses to run while any worker is active: the caller pauses dispatch,
+//     then Deploy waits out Config.MaxDrainWait, re-checking on a ticker until
+//     the forge is idle (the last check is the one guarding the binary swap) or
+//     the budget is spent, in which case the deploy is deferred, not failed;
 //   - the freshly built binary must pass `forge version` and `forge --help`
 //     (exit 0) before it is allowed to replace the live one;
 //   - the previous binary is preserved at <binary>.prev so a bad restart can be
@@ -28,11 +30,11 @@ package selfdeploy
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 )
 
 // Event names emitted over an EventSink during a deploy. They mirror the
@@ -45,11 +47,6 @@ const (
 	EventFailed   = "self_deploy_failed"
 	EventSkipped  = "self_deploy_skipped"
 )
-
-// ErrWorkersActive is returned (and an EventSkipped emitted) when Deploy is
-// called while one or more workers are still active. The caller is expected to
-// have drained already; this is the final safety re-check.
-var ErrWorkersActive = errors.New("selfdeploy: workers still active, deploy deferred")
 
 // Commander runs an external command in a working directory and returns its
 // combined output. dir may be empty to inherit the current process directory.
@@ -93,7 +90,18 @@ type Config struct {
 	Branch string
 	// BuildTarget is the `go build` package target. Defaults to "./cmd/forge".
 	BuildTarget string
+	// MaxDrainWait bounds how long Deploy waits for active workers to drain
+	// before deferring the deploy. Defaults to DefaultMaxDrainWait.
+	MaxDrainWait time.Duration
+	// DrainInterval is how often the drain check is retried while waiting.
+	// Defaults to DefaultDrainInterval, and is clamped to MaxDrainWait.
+	DrainInterval time.Duration
 }
+
+// ActiveWorkersFunc reports the workers that would be disrupted by a restart,
+// identified for a human (bead or worker id). An empty result means the forge
+// has fully drained. A nil ActiveWorkersFunc disables the drain wait entirely.
+type ActiveWorkersFunc func() ([]string, error)
 
 // Deployer performs the drain-verify-swap-restart flow.
 type Deployer struct {
@@ -101,9 +109,13 @@ type Deployer struct {
 	cmd     Commander
 	restart Restarter
 	events  EventSink
-	// activeWorkers reports how many workers are currently active. When it
-	// returns > 0 the deploy is skipped. nil disables the check (tests).
-	activeWorkers func() (int, error)
+	// activeWorkers reports the workers currently active. While it returns a
+	// non-empty set the deploy waits; nil disables the check (tests).
+	activeWorkers ActiveWorkersFunc
+	// now and newTicker indirect the drain wait's timing so tests can drive polls
+	// with a fake clock instead of sleeping. Default to time.Now and realTicker.
+	now       func() time.Time
+	newTicker func(time.Duration) (<-chan time.Time, func())
 	// remove and rename indirect the filesystem swap so tests can inject
 	// failures. Default to os.Remove / os.Rename.
 	remove func(string) error
@@ -112,7 +124,7 @@ type Deployer struct {
 }
 
 // New constructs a Deployer, applying defaults to optional Config fields.
-func New(cfg Config, cmd Commander, restart Restarter, events EventSink, activeWorkers func() (int, error)) *Deployer {
+func New(cfg Config, cmd Commander, restart Restarter, events EventSink, activeWorkers ActiveWorkersFunc) *Deployer {
 	if cfg.PrevPath == "" {
 		cfg.PrevPath = cfg.BinaryPath + ".prev"
 	}
@@ -125,12 +137,20 @@ func New(cfg Config, cmd Commander, restart Restarter, events EventSink, activeW
 	if cfg.BuildTarget == "" {
 		cfg.BuildTarget = "./cmd/forge"
 	}
+	if cfg.MaxDrainWait <= 0 {
+		cfg.MaxDrainWait = DefaultMaxDrainWait
+	}
+	if cfg.DrainInterval <= 0 {
+		cfg.DrainInterval = DefaultDrainInterval
+	}
 	return &Deployer{
 		cfg:           cfg,
 		cmd:           cmd,
 		restart:       restart,
 		events:        events,
 		activeWorkers: activeWorkers,
+		now:           time.Now,
+		newTicker:     realTicker,
 		remove:        os.Remove,
 		rename:        os.Rename,
 		stat:          os.Stat,
@@ -139,25 +159,24 @@ func New(cfg Config, cmd Commander, restart Restarter, events EventSink, activeW
 
 // Deploy runs the full flow. It returns nil once a restart has been requested
 // (which, for a self-restart, means the process will imminently be terminated),
-// ErrWorkersActive when the drain guard trips, or a wrapped error at the first
-// failing step. On any failure before the binary is swapped, the live binary is
-// left untouched; on a swap or restart failure the previous binary is restored.
+// an error unwrapping to ErrDrainTimeout when workers never drained, a wrapped
+// ctx error when the wait is cancelled, or a wrapped error at the first failing
+// step. On any failure before the binary is swapped, the live binary is left
+// untouched; on a swap or restart failure the previous binary is restored.
+//
+// Deploy can block for up to Config.MaxDrainWait before doing any work — the
+// caller is expected to run it off the hot path (the daemon gives it its own
+// goroutine) with dispatch already paused.
 func (d *Deployer) Deploy(ctx context.Context) error {
 	d.emit(EventStarted, fmt.Sprintf("self-deploy starting (repo=%s binary=%s unit=%s branch=%s)",
 		d.cfg.RepoPath, d.cfg.BinaryPath, d.cfg.UnitName, d.cfg.Branch))
 
-	// Final drain guard: refuse to touch the binary while workers run. The
-	// caller pauses dispatch and waits, but a worker could have started in the
-	// gap between the wait loop and here, so re-check atomically.
-	if d.activeWorkers != nil {
-		n, err := d.activeWorkers()
-		if err != nil {
-			return d.fail("worker drain check failed: %v", err)
-		}
-		if n > 0 {
-			d.events.Emit(EventSkipped, fmt.Sprintf("deploy deferred: %d worker(s) still active", n))
-			return ErrWorkersActive
-		}
+	// Drain guard: refuse to touch the binary while workers run. The caller has
+	// paused dispatch, so the active set can only shrink — wait it out rather
+	// than giving up on the first busy sample, and let the final (successful)
+	// check double as the atomic guard immediately before the swap.
+	if err := d.waitForDrain(ctx, d.cfg.MaxDrainWait); err != nil {
+		return err
 	}
 
 	// 1. Pull the latest source (fast-forward only — a diverged tree is an
