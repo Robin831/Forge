@@ -30,6 +30,97 @@ type previewQuestRunner interface {
 
 var _ previewQuestRunner = (*questgiver.Monitor)(nil)
 
+// previewQuestReporter is the slice of *questgiver.Reporter the daemon uses to
+// publish a finished run onto the bead's pull request. It is an interface so the
+// hand-off can be asserted on without gh, a repository or a network.
+type previewQuestReporter interface {
+	ReportPreviewQuestResults(ctx context.Context, req questgiver.ReportRequest) (*questgiver.ReportResult, error)
+}
+
+var _ previewQuestReporter = (*questgiver.Reporter)(nil)
+
+// questReporter returns the reporter finished runs are published through. The
+// default is a Reporter on the real gh CLI with no screenshot uploader: Forge
+// hosts no artifact store, so screenshots are named by path in the comment
+// rather than embedded.
+func (d *Daemon) questReporter() previewQuestReporter {
+	if d.previewQuestReporter != nil {
+		return d.previewQuestReporter
+	}
+	return questgiver.NewReporter(nil)
+}
+
+// reportPreviewQuestRun posts the run's outcome to the bead's open pull request
+// as a single comment, upserted per head SHA so a re-run of the same commit
+// edits rather than duplicates.
+//
+// Everything about it is best effort. A bead with no open PR, an anvil whose
+// path is unknown, a skipped run or a gh failure all end the same way — a log
+// line and nothing else. Preview quest results are informational, and this is
+// the path that has to keep believing that: it creates no check run and no
+// commit status, so nothing it does (or fails to do) can gate a merge.
+func (d *Daemon) reportPreviewQuestRun(ctx context.Context, beadID, anvil, headSHA string, res *questgiver.QuestRunResult) {
+	if res == nil || res.Skipped {
+		return
+	}
+	pr := d.openPRForBead(anvil, beadID)
+	if pr == nil {
+		d.logger.Debug("no open PR to report preview quest results on", "bead", beadID, "anvil", anvil)
+		return
+	}
+	anvilCfg, ok := d.cfg.Load().Anvils[anvil]
+	if !ok || strings.TrimSpace(anvilCfg.Path) == "" {
+		d.logger.Debug("no anvil path to run gh from for preview quest report", "bead", beadID, "anvil", anvil)
+		return
+	}
+
+	out, err := d.questReporter().ReportPreviewQuestResults(ctx, questgiver.ReportRequest{
+		Anvil:        anvil,
+		BeadID:       beadID,
+		PRNumber:     pr.Number,
+		HeadSHA:      headSHA,
+		WorktreePath: anvilCfg.Path,
+		Result:       res,
+	})
+	if err != nil {
+		d.logger.Warn("reporting preview quest results to PR failed",
+			"bead", beadID, "anvil", anvil, "pr", pr.Number, "error", err)
+		return
+	}
+	if out == nil || (!out.Created && !out.Updated) {
+		return
+	}
+	d.logger.Info("preview quest results reported",
+		"bead", beadID, "anvil", anvil, "pr", pr.Number, "comment", out.CommentID,
+		"created", out.Created, "updated", out.Updated,
+		"screenshots_uploaded", out.ScreenshotsUploaded, "screenshots_failed", out.ScreenshotsFailed)
+}
+
+// openPRForBead returns the bead's most recent non-terminal PR on the anvil, or
+// nil when it has none. Reporting a quest run onto a merged or closed PR would
+// be noise, so only open PRs are considered.
+func (d *Daemon) openPRForBead(anvil, beadID string) *state.PR {
+	if d.db == nil || beadID == "" {
+		return nil
+	}
+	prs, err := d.db.OpenPRs()
+	if err != nil {
+		d.logger.Debug("could not load open PRs for preview quest report", "bead", beadID, "error", err)
+		return nil
+	}
+	var found *state.PR
+	for i := range prs {
+		p := &prs[i]
+		if p.Anvil != anvil || p.BeadID != beadID {
+			continue
+		}
+		if found == nil || p.Number > found.Number {
+			found = p
+		}
+	}
+	return found
+}
+
 // previewQuestAnvilNames returns the sorted names of the anvils that opted into
 // running their quests against a preview. It is the gating list a client reads
 // off the previews payload.
@@ -173,6 +264,14 @@ func (d *Daemon) handlePreviewQuestRun(p ipc.PreviewQuestRunPayload) ipc.Respons
 			_ = d.db.LogEvent(state.EventPreviewQuestRunDone,
 				fmt.Sprintf("preview quest run %s for %s: %s", run.RunID, beadID, questRunStatus(runs, run.RunID)),
 				beadID, anvil)
+		}
+		// Report the outcome onto the bead's PR, if it has one. Only a run that
+		// reached a verdict is reported — a run that fell over never exercised
+		// the branch. Failures here are logged and dropped: a report that could
+		// not be posted must never affect the run, the PR or anything
+		// downstream of it.
+		if err == nil {
+			d.reportPreviewQuestRun(runCtx, beadID, anvil, headSHA, res)
 		}
 	}()
 
