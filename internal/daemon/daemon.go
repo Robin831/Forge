@@ -330,15 +330,19 @@ type Daemon struct {
 	// IPC commands.
 	pauseMu sync.Mutex
 
-	// dispatchPaused is a manual daemon-wide pause switch. When true,
+	// dispatchPause is the daemon-wide pause switch. While paused,
 	// pollAndDispatch still polls (so the Hearth queue stays current) but
 	// returns before claiming/dispatching any new beads — currently running
 	// workers are left untouched and finish normally. Manual `forge queue run`
-	// dispatch is still allowed (mirrors the cost-limit pause behavior). The
-	// flag is persisted in state.db (daemon_settings) so a manual pause
-	// survives daemon restarts — it is restored on startup before the first
-	// pollAndDispatch. The cost-limit pause remains in-memory only.
-	dispatchPaused atomic.Bool
+	// dispatch is still allowed (mirrors the cost-limit pause behavior).
+	//
+	// It carries the pause *reason* (manual vs self-deploy drain) alongside the
+	// flag in a single atomic value, so status can say which one it is rather
+	// than reporting every pause as an operator action. Only a manual pause is
+	// persisted in state.db (daemon_settings) and restored on startup before the
+	// first pollAndDispatch; the self-deploy and cost-limit pauses are
+	// in-memory only. Mutate it through setDispatchPaused (see pause.go).
+	dispatchPause atomic.Pointer[pauseState]
 
 	// pausedSince records when the current manual dispatch pause began. It is
 	// stored as a time.Time (zero when not manually paused) and surfaced in
@@ -1584,7 +1588,15 @@ func (d *Daemon) restoreDispatchPause() {
 	if !ok || paused != "1" {
 		return
 	}
-	d.dispatchPaused.Store(true)
+	// Only a manual pause is ever persisted, but read the reason back rather
+	// than assuming it: a state.db written by an older Forge has no reason at
+	// all, and setDispatchPaused normalizes that empty value to manual.
+	reason, _, err := d.db.GetSetting(state.SettingDispatchPauseReason)
+	if err != nil {
+		d.logger.Warn("failed to read dispatch pause reason", "error", err)
+		reason = ""
+	}
+	d.setDispatchPaused(true, PauseReason(reason), "")
 	at, ok, err := d.db.GetSetting(state.SettingDispatchPausedAt)
 	if err != nil {
 		d.logger.Warn("failed to read dispatch pause timestamp", "error", err)
@@ -2455,26 +2467,16 @@ func (d *Daemon) runSelfDeploy(sd config.SelfDeployConfig) {
 		ctx = context.Background()
 	}
 
+	maxDrainWait := sd.ResolvedMaxDrainWait()
+
 	// Pause dispatch so no new workers start while the deploy drains, then arrange
 	// the resume up front: every exit path below — drain timeout, build failure,
 	// rollback, panic — runs it, so a failed deploy can never leave the daemon
-	// permanently paused. Two exemptions are deliberate:
-	//   - a pause that predates this deploy belongs to the operator, so it stays;
-	//   - once the restart has been requested the swap has already happened, and
-	//     resuming would let a worker start in the seconds before systemd stops
-	//     the process. The restart path must therefore not depend on the deferred
-	//     resume running, and it does not: nothing after it needs dispatch.
-	wasPaused := d.dispatchPaused.Load()
-	d.dispatchPaused.Store(true)
+	// permanently paused.
+	restorePause := d.pauseForSelfDeploy(maxDrainWait)
 	restartRequested := false
-	defer func() {
-		if restartRequested || wasPaused {
-			return
-		}
-		d.dispatchPaused.Store(false)
-	}()
+	defer func() { restorePause(restartRequested) }()
 
-	maxDrainWait := sd.ResolvedMaxDrainWait()
 	d.logger.Info("self-deploy: dispatch paused; draining workers before rebuild",
 		"anvil", sd.Anvil, "max_drain_wait", maxDrainWait)
 
@@ -3317,11 +3319,11 @@ func (d *Daemon) pollAndDispatch(ctx context.Context, fullPoll bool) {
 		return
 	}
 
-	// Manual pause switch: skip all new dispatch while paused. Running workers
-	// are untouched and finish normally; only new claims/dispatch are skipped.
+	// Pause switch: skip all new dispatch while paused. Running workers are
+	// untouched and finish normally; only new claims/dispatch are skipped.
 	// Manual `forge queue run` remains allowed (handled in the run_bead path).
-	if d.dispatchPaused.Load() {
-		d.logger.Debug("dispatch paused (manual), skipping dispatch")
+	if ps := d.dispatchPauseState(); ps.Paused {
+		d.logger.Debug("dispatch paused, skipping dispatch", "reason", string(ps.Reason))
 		return
 	}
 
@@ -5333,13 +5335,37 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 			// while the gate blocks the very next dispatch. Close enough for a
 			// human-facing status line (Forge-s3w7).
 			CostLimitPaused:        costLimit > 0 && projectedCost >= costLimit,
-			DispatchPaused:         d.dispatchPaused.Load(),
 			CopilotPremiumRequests: copilotReqs,
 			CopilotRequestLimit:    copilotLimit,
 			CopilotLimitReached:    copilotLimit > 0 && copilotReqs >= float64(copilotLimit),
 			AnvilLastPoll:          anvilLastPoll,
 			WedgedAnvils:           wedgedAnvils,
 			MaxTotalSmiths:         d.cfg.Load().Settings.MaxTotalSmiths,
+		}
+		// Report the pause with its cause, so a self-deploy drain does not read
+		// as an operator action. The boolean stays authoritative for clients
+		// that only know it.
+		pause := d.dispatchPauseState()
+		payload.DispatchPaused = pause.Paused
+		payload.DispatchPauseReason = string(pause.Reason)
+		payload.DispatchPauseDetail = pause.Detail
+		// The drain's held-up worker count is a live number, so derive it here
+		// rather than freezing it into Detail when the pause was taken. It comes
+		// from the same set the drain itself waits on (which includes paused
+		// workers, unlike the active-worker count above) so status agrees with
+		// what is actually holding the deploy up.
+		if pause.Paused && pause.Reason == PauseReasonSelfDeploy {
+			draining, err := d.activeWorkerIDs()
+			if err != nil {
+				d.logger.Debug("status: drain worker lookup failed", "error", err)
+			}
+			if n := len(draining); n > 0 {
+				waiting := fmt.Sprintf("waiting on %d worker%s", n, pluralS(n))
+				if pause.Detail != "" {
+					waiting += ", " + pause.Detail
+				}
+				payload.DispatchPauseDetail = waiting
+			}
 		}
 		// Surface when the manual dispatch pause began (not the cost-limit pause).
 		if payload.DispatchPaused {
@@ -5498,21 +5524,24 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 	case "pause_dispatch":
 		d.pauseMu.Lock()
 		// Idempotent: pausing while already paused is a no-op success.
-		if d.dispatchPaused.Load() {
+		if d.dispatchIsPaused() {
 			d.pauseMu.Unlock()
 			return okResponse(map[string]string{"message": "dispatch paused"})
 		}
 		now := time.Now()
 		// Flip in-memory flag first so concurrent poll cycles see the pause
 		// immediately, then persist. Revert if persistence fails.
-		d.dispatchPaused.Store(true)
+		d.setDispatchPaused(true, PauseReasonManual, "")
 		d.pausedSince.Store(now)
 		if err := d.db.SetSetting(state.SettingDispatchPaused, "1"); err != nil {
-			d.dispatchPaused.Store(false)
+			d.setDispatchPaused(false, PauseReasonNone, "")
 			d.pausedSince.Store(time.Time{})
 			d.pauseMu.Unlock()
 			d.logger.Error("failed to persist dispatch pause", "error", err)
 			return errorResponse("failed to persist dispatch pause: " + err.Error())
+		}
+		if err := d.db.SetSetting(state.SettingDispatchPauseReason, string(PauseReasonManual)); err != nil {
+			d.logger.Warn("failed to persist dispatch pause reason", "error", err)
 		}
 		if err := d.db.SetSetting(state.SettingDispatchPausedAt, now.Format(time.RFC3339)); err != nil {
 			d.logger.Warn("failed to persist dispatch pause timestamp", "error", err)
@@ -5527,7 +5556,7 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 	case "resume_dispatch":
 		d.pauseMu.Lock()
 		// Idempotent: resuming while not paused is a no-op success.
-		if !d.dispatchPaused.Load() {
+		if !d.dispatchIsPaused() {
 			d.pauseMu.Unlock()
 			return okResponse(map[string]string{"message": "dispatch resumed"})
 		}
@@ -5536,10 +5565,13 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 			d.logger.Error("failed to persist dispatch resume", "error", err)
 			return errorResponse("failed to persist dispatch resume: " + err.Error())
 		}
+		if err := d.db.SetSetting(state.SettingDispatchPauseReason, ""); err != nil {
+			d.logger.Warn("failed to clear dispatch pause reason", "error", err)
+		}
 		if err := d.db.SetSetting(state.SettingDispatchPausedAt, ""); err != nil {
 			d.logger.Warn("failed to clear dispatch pause timestamp", "error", err)
 		}
-		d.dispatchPaused.Store(false)
+		d.setDispatchPaused(false, PauseReasonNone, "")
 		d.pausedSince.Store(time.Time{})
 		if err := d.db.LogEvent(state.EventDispatchResumed, "Dispatch manually resumed", "", ""); err != nil {
 			d.logger.Warn("failed to log dispatch resume event", "error", err)

@@ -609,7 +609,7 @@ exit 0
 	// Pause via IPC: state flag flips and an event is logged.
 	resp := d.handleIPC(ipc.Command{Type: "pause_dispatch"})
 	assert.Equal(t, "ok", resp.Type)
-	assert.True(t, d.dispatchPaused.Load(), "dispatch should be paused after pause_dispatch")
+	assert.True(t, d.dispatchIsPaused(), "dispatch should be paused after pause_dispatch")
 
 	countEvents := func(et state.EventType) int {
 		events, err := db.RecentEvents(50)
@@ -643,7 +643,7 @@ exit 0
 	// Resume: state flag clears and a resume event is logged.
 	resp = d.handleIPC(ipc.Command{Type: "resume_dispatch"})
 	assert.Equal(t, "ok", resp.Type)
-	assert.False(t, d.dispatchPaused.Load(), "dispatch should resume after resume_dispatch")
+	assert.False(t, d.dispatchIsPaused(), "dispatch should resume after resume_dispatch")
 	assert.Equal(t, 1, countEvents(state.EventDispatchResumed), "resume should log one event")
 
 	// Resuming again is idempotent — no duplicate event.
@@ -690,16 +690,16 @@ func TestDispatchPause_PersistAndRestore(t *testing.T) {
 
 	// Simulate a restart: a fresh daemon over the same db restores the pause.
 	d2 := newDaemon()
-	assert.False(t, d2.dispatchPaused.Load(), "fresh daemon starts unpaused before restore")
+	assert.False(t, d2.dispatchIsPaused(), "fresh daemon starts unpaused before restore")
 	d2.restoreDispatchPause()
-	assert.True(t, d2.dispatchPaused.Load(), "pause should be restored from state.db on startup")
+	assert.True(t, d2.dispatchIsPaused(), "pause should be restored from state.db on startup")
 	since, sok := d2.pausedSince.Load().(time.Time)
 	assert.True(t, sok && !since.IsZero(), "pausedSince should be restored")
 
 	// Resume clears both the atomic and the persisted flag.
 	resp = d2.handleIPC(ipc.Command{Type: "resume_dispatch"})
 	require.Equal(t, "ok", resp.Type)
-	assert.False(t, d2.dispatchPaused.Load(), "resume clears the atomic")
+	assert.False(t, d2.dispatchIsPaused(), "resume clears the atomic")
 	paused, _, err = db.GetSetting(state.SettingDispatchPaused)
 	require.NoError(t, err)
 	assert.Equal(t, "0", paused, "resume clears the persisted flag")
@@ -707,7 +707,7 @@ func TestDispatchPause_PersistAndRestore(t *testing.T) {
 	// A subsequent restart must NOT restore a pause.
 	d3 := newDaemon()
 	d3.restoreDispatchPause()
-	assert.False(t, d3.dispatchPaused.Load(), "resumed state must not restore a pause")
+	assert.False(t, d3.dispatchIsPaused(), "resumed state must not restore a pause")
 }
 
 func TestHandleIPC_RetryBead(t *testing.T) {

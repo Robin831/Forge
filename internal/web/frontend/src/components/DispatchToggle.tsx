@@ -12,6 +12,32 @@ interface DispatchToggleProps {
   // (status.paused_since). Undefined when not manually paused or unknown; when
   // present it is rendered in the banner as "paused since <time>".
   pausedSince?: string
+  // reason is status.dispatch_pause_reason — 'manual', 'self-deploy', or an
+  // unknown value from a newer daemon. Empty/undefined means manual.
+  reason?: string
+  // detail is status.dispatch_pause_detail, e.g. 'waiting on 2 workers, max 30m'.
+  detail?: string
+}
+
+// describePauseCause names the cause of a pause for the badge and banner. It
+// mirrors ipc.FormatDispatchPause: a self-deploy drain must not read as an
+// operator action, and an unknown reason from a newer daemon is shown verbatim
+// rather than mislabelled.
+export function describePauseCause(reason?: string, detail?: string): string {
+  let cause: string
+  switch (reason) {
+    case 'self-deploy':
+      cause = 'self-deploy drain'
+      break
+    case 'manual':
+    case '':
+    case undefined:
+      cause = 'manual'
+      break
+    default:
+      cause = reason
+  }
+  return detail ? `${cause}, ${detail}` : cause
 }
 
 // formatPausedSince renders an RFC3339 timestamp as a short human-readable
@@ -28,7 +54,7 @@ function formatPausedSince(iso: string): string {
 // normally) — useful for draining the active set to zero before restarting the
 // daemon. The keyboard shortcut "p" toggles the state from anywhere on the
 // dashboard (ignored while typing in an input/textarea).
-export default function DispatchToggle({ paused, pausedSince }: DispatchToggleProps) {
+export default function DispatchToggle({ paused, pausedSince, reason, detail }: DispatchToggleProps) {
   const { run, busy } = useAction()
 
   const toggle = () => {
@@ -69,7 +95,8 @@ export default function DispatchToggle({ paused, pausedSince }: DispatchTogglePr
           aria-live="polite"
         >
           <Pause size={10} aria-hidden />
-          {pausedSince ? `dispatch paused since ${formatPausedSince(pausedSince)}` : 'dispatch paused'}
+          {`dispatch paused (${describePauseCause(reason, detail)})`}
+          {pausedSince ? ` since ${formatPausedSince(pausedSince)}` : ''}
         </span>
       )}
       <button

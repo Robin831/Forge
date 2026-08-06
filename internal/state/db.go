@@ -678,6 +678,12 @@ const (
 	// SettingDispatchPausedAt stores the RFC3339 timestamp of when dispatch
 	// was manually paused.
 	SettingDispatchPausedAt = "dispatch_paused_at"
+	// SettingDispatchPauseReason stores why dispatch is paused ("manual").
+	// Only operator pauses are persisted, so this is always "manual" today; it
+	// is written and read back anyway so the restored pause carries a reason
+	// instead of inheriting a default. Absent in databases written by an older
+	// Forge, where a persisted pause is interpreted as manual.
+	SettingDispatchPauseReason = "dispatch_pause_reason"
 )
 
 // parseTime is a helper to robustly parse timestamps that may come from

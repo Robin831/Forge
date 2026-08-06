@@ -71,8 +71,11 @@ var statusCmd = &cobra.Command{
 						fmt.Fprintf(tw, "Queue\t%d beads\n", s.QueueSize)
 						fmt.Fprintf(tw, "Open PRs\t%d\n", s.OpenPRs)
 						fmt.Fprintf(tw, "Last Poll\t%s\n", s.LastPoll)
-						if s.DispatchPaused {
-							fmt.Fprintf(tw, "Dispatch\tPAUSED (manual) — running workers continue\n")
+						// Name the cause: a self-deploy drain pauses dispatch too,
+						// and reading that as "manual" sends the operator looking
+						// for a pause nobody took.
+						if line := ipc.FormatDispatchPause(s.DispatchPaused, s.DispatchPauseReason, s.DispatchPauseDetail); line != "" {
+							fmt.Fprintf(tw, "Dispatch\t%s\n", line)
 						}
 						if s.DailyCostLimit > 0 {
 							fmt.Fprintf(tw, "Daily Cost\t$%.2f / $%.2f\n", s.DailyCost, s.DailyCostLimit)

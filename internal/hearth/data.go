@@ -1084,6 +1084,11 @@ type UpdateDaemonHealthMsg struct {
 	QueueSize int
 	LastPoll  string
 	Uptime    string
+	// DispatchPause is the rendered pause line ("PAUSED (self-deploy drain,
+	// waiting on 2 workers, max 30m) — running workers continue"), or "" when
+	// dispatch is running. Formatted daemon-side vocabulary via
+	// ipc.FormatDispatchPause so the TUI and `forge status` never disagree.
+	DispatchPause string
 }
 
 // FetchDaemonHealth probes the daemon via IPC and returns connectivity status.
@@ -1106,11 +1111,12 @@ func FetchDaemonHealth() tea.Cmd {
 		}
 
 		return UpdateDaemonHealthMsg{
-			Connected: true,
-			Workers:   s.Workers,
-			QueueSize: s.QueueSize,
-			LastPoll:  s.LastPoll,
-			Uptime:    s.Uptime,
+			Connected:     true,
+			Workers:       s.Workers,
+			QueueSize:     s.QueueSize,
+			LastPoll:      s.LastPoll,
+			Uptime:        s.Uptime,
+			DispatchPause: ipc.FormatDispatchPause(s.DispatchPaused, s.DispatchPauseReason, s.DispatchPauseDetail),
 		}
 	}
 }
