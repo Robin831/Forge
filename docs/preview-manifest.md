@@ -140,6 +140,20 @@ dropped for the same reason.
   process group, so stopping a preview reaps the whole tree (a `npm run dev`
   that forks node and esbuild included). Stop asks politely first, then kills
   the group.
+- **`setup` / `teardown`** run through the same shell and process group, with
+  output appended to `~/.forge/logs/<beadID>/preview.log` (beside the service
+  logs). Each is bounded by a 5-minute timeout, after which its process group is
+  killed. A failing `setup` aborts the start — no service is spawned and the
+  preview is unwound completely. A failing `teardown` is reported but not
+  obeyed: the worktree, the ports and the registry slot are released anyway.
+- **Concurrency**: at most `preview_max_concurrent` previews run at once
+  (default 2). A start over that limit is rejected outright rather than queued,
+  so an operator who asked for a preview learns immediately that they need to
+  stop one first.
+- **Unwinding**: any failure after the preview worktree is created — `setup`,
+  the runtime, or every service failing its health check — kills whatever
+  started, runs `teardown`, removes the checkout and deletes the state row. The
+  per-service logs survive under `~/.forge/logs/<beadID>/` for the post-mortem.
 - **Status**: the preview is `running` when every service is healthy,
   `degraded` when some are healthy and some failed, and `failed` when none came
   up. A failed service is never allowed to stop its siblings.
