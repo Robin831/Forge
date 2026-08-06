@@ -116,6 +116,34 @@ inside the preview worktree, and receive the same vocabulary as pipeline hooks:
 | `FORGE_ANVIL_NAME` / `FORGE_ANVIL_PATH` | The anvil the preview belongs to |
 | `FORGE_PREVIEW_PORT_<NAME>` | The allocated port of each service, uppercased name |
 
+Every service sees the port of *every* service, so a client can be told where
+its api listens without either side knowing the allocation in advance. The name
+is uppercased and `-` becomes `_` (`api-gateway` → `FORGE_PREVIEW_PORT_API_GATEWAY`).
+
+Precedence, from weakest to strongest: the daemon's own environment, the
+service's `env`, then the `FORGE_*` context. A manifest can therefore override
+an inherited variable (that is how a service is pointed at its preview
+database) but cannot override the context variables — those describe which
+preview this is. Any `FORGE_*` variable in the daemon's own environment is
+dropped for the same reason.
+
+## Runtime behaviour
+
+- **Ports** are allocated per service from `preview_port_range` before any
+  command runs, so templates can reference every service's port. Each candidate
+  is bind-tested, so a port another process already holds is skipped.
+- **Logs**: each service's stdout and stderr are appended to
+  `~/.forge/logs/<beadID>/preview-<service>.log` — the same per-bead directory
+  the pipeline preserves worker logs in, so preview logs appear in the Hearth
+  bead-log browser and are covered by the usual retention sweep.
+- **Supervision**: each service runs through the platform shell in its own
+  process group, so stopping a preview reaps the whole tree (a `npm run dev`
+  that forks node and esbuild included). Stop asks politely first, then kills
+  the group.
+- **Status**: the preview is `running` when every service is healthy,
+  `degraded` when some are healthy and some failed, and `failed` when none came
+  up. A failed service is never allowed to stop its siblings.
+
 ## Validation errors
 
 Every validation error names the offending service and field. The rules:
@@ -123,6 +151,8 @@ Every validation error names the offending service and field. The rules:
 - `version`, when set, must be `1`
 - at least one service must be declared
 - service names must be unique and match `[a-zA-Z0-9][a-zA-Z0-9_-]*`
+- no two service names may fold to the same `FORGE_PREVIEW_PORT_<NAME>`
+  variable (i.e. they must differ by more than case or `-` vs `_`)
 - `command` is required and must be non-blank
 - exactly one service must set `entry: true` when the manifest declares more
   than one service (a lone service is the entry point implicitly)

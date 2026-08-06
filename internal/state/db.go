@@ -588,6 +588,19 @@ CREATE TABLE IF NOT EXISTS anvil_health (
     detected_at      TEXT NOT NULL DEFAULT '',
     updated_at       TEXT NOT NULL DEFAULT ''
 );
+
+CREATE TABLE IF NOT EXISTS previews (
+    bead_id        TEXT PRIMARY KEY,
+    anvil          TEXT NOT NULL DEFAULT '',
+    branch         TEXT NOT NULL DEFAULT '',
+    status         TEXT NOT NULL DEFAULT 'starting',
+    worktree_path  TEXT NOT NULL DEFAULT '',
+    services       TEXT NOT NULL DEFAULT '[]',
+    created_at     TEXT NOT NULL DEFAULT '',
+    last_active_at TEXT NOT NULL DEFAULT ''
+);
+
+CREATE INDEX IF NOT EXISTS idx_previews_status ON previews(status);
 `
 
 // dbTimeLayout is the canonical, fixed-width layout used for timestamps

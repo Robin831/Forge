@@ -128,6 +128,19 @@ func TestParseInvalidManifests(t *testing.T) {
 			wantErr: `duplicate service "web"`,
 		},
 		{
+			// Both names fold to FORGE_PREVIEW_PORT_API_GATEWAY, so one
+			// service would be told the other's port.
+			name: "service names colliding in the port env var",
+			yaml: `services:
+  api-gateway:
+    command: "go run ./cmd/api"
+    entry: true
+  API_gateway:
+    command: "go run ./cmd/other"
+`,
+			wantErr: "both map to FORGE_PREVIEW_PORT_API_GATEWAY",
+		},
+		{
 			name: "missing entry with two services",
 			yaml: `services:
   api:
