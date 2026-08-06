@@ -10,6 +10,9 @@ import (
 	"testing"
 )
 
+// fakeHeadSHA is what the fake `git rev-parse HEAD` reports.
+const fakeHeadSHA = "cafebabe0123456789abcdef"
+
 // fakeCommander records the commands it is asked to run and fails any command
 // whose name+first-arg matches a key in failOn. For a `go build` invocation it
 // writes a stub binary to the -o target so the swap step has a real file.
@@ -30,6 +33,11 @@ func (f *fakeCommander) Run(_ context.Context, dir, name string, args ...string)
 	}
 	if err, ok := f.failOn[key]; ok {
 		return []byte("boom: " + key), err
+	}
+
+	// Emulate `git rev-parse HEAD` so the deploy can stamp a build SHA.
+	if name == "git" && len(args) > 0 && args[0] == "rev-parse" {
+		return []byte(fakeHeadSHA + "\n"), nil
 	}
 
 	// Emulate `go build -o <path> <target>` by producing a stub binary.
@@ -58,11 +66,13 @@ type fakeRestarter struct {
 	called int
 	err    error
 	unit   string
+	req    RestartRequest
 }
 
-func (f *fakeRestarter) Restart(_ context.Context, unit string) error {
+func (f *fakeRestarter) Restart(req RestartRequest) error {
 	f.called++
-	f.unit = unit
+	f.unit = req.Unit
+	f.req = req
 	return f.err
 }
 

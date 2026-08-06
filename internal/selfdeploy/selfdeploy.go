@@ -16,7 +16,10 @@
 //   - the freshly built binary must pass `forge version` and `forge --help`
 //     (exit 0) before it is allowed to replace the live one;
 //   - the previous binary is preserved at <binary>.prev so a bad restart can be
-//     rolled back manually or automatically.
+//     rolled back manually or automatically;
+//   - the restart itself is spawned detached, outside the daemon's unit cgroup
+//     and free of any caller context, so stopping forge.service cannot kill the
+//     process performing the restart (see SystemctlRestarter).
 //
 // All external interactions (git/go/systemctl) sit behind small interfaces so
 // the drain/verify/swap/rollback logic is unit-testable without touching the
@@ -29,6 +32,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strings"
 )
 
 // Event names emitted over an EventSink during a deploy. They mirror the
@@ -56,8 +60,16 @@ type Commander interface {
 // Restarter restarts a systemd unit. The production implementation may cause
 // the calling process to be terminated (self-restart); callers must treat a nil
 // return as "restart requested" rather than "restart completed".
+//
+// Restart takes no context.Context on purpose. The restart child must outlive
+// both the caller and the daemon's own lifetime: it is the thing that stops
+// forge.service, so binding it to the deploy context means a cancellation or
+// deadline SIGKILLs the restart mid-flight, which Deploy would then read as a
+// failed restart and roll a perfectly good binary back. Keeping the parameter
+// out of the signature makes that mistake unrepresentable rather than merely
+// discouraged — see SystemctlRestarter for the full rationale.
 type Restarter interface {
-	Restart(ctx context.Context, unit string) error
+	Restart(req RestartRequest) error
 }
 
 // EventSink records deploy lifecycle events. Implementations should not block.
@@ -154,6 +166,11 @@ func (d *Deployer) Deploy(ctx context.Context) error {
 		return d.fail("git pull failed: %v: %s", err, trim(out))
 	}
 
+	// 1b. Resolve the commit being deployed. Best-effort: it only feeds the
+	//     restart intent log and the transient scope unit name, so a failure here
+	//     must not abort a deploy.
+	buildSHA := d.headSHA(ctx)
+
 	// 2. Build to a temp path on the same filesystem as the target so the final
 	//    swap is an atomic rename.
 	tmpPath := d.cfg.BinaryPath + ".new"
@@ -187,13 +204,25 @@ func (d *Deployer) Deploy(ctx context.Context) error {
 		return d.fail("swapping in new binary failed: %v", err)
 	}
 
-	d.emit(EventSuccess, fmt.Sprintf("new binary installed at %s (previous kept at %s); restarting unit %s",
-		d.cfg.BinaryPath, d.cfg.PrevPath, d.cfg.UnitName))
+	rollbackPath := ""
+	if hadPrev {
+		rollbackPath = d.cfg.PrevPath
+	}
+
+	d.emit(EventSuccess, fmt.Sprintf("new binary installed at %s (build %s, previous kept at %s); restarting unit %s",
+		d.cfg.BinaryPath, shaOrUnknown(buildSHA), d.cfg.PrevPath, d.cfg.UnitName))
 
 	// 6. Restart. On a self-restart this call typically does not return (the
-	//    process is terminated by systemd). If it returns an error the restart
-	//    did not take, so roll back to the known-good previous binary.
-	if err := d.restart.Restart(ctx, d.cfg.UnitName); err != nil {
+	//    process is terminated by systemd). The deploy ctx is deliberately NOT
+	//    passed: the restart must survive this process, and Restarter's signature
+	//    enforces that. If it returns an error the restart never started, so roll
+	//    back to the known-good previous binary.
+	if err := d.restart.Restart(RestartRequest{
+		Unit:         d.cfg.UnitName,
+		BuildSHA:     buildSHA,
+		BinaryPath:   d.cfg.BinaryPath,
+		RollbackPath: rollbackPath,
+	}); err != nil {
 		if hadPrev {
 			if rbErr := d.rename(d.cfg.PrevPath, d.cfg.BinaryPath); rbErr == nil {
 				d.events.Emit(EventRollback, fmt.Sprintf("restart failed (%v); rolled back to previous binary", err))
@@ -220,6 +249,26 @@ func (d *Deployer) verify(ctx context.Context, path string) error {
 		return fmt.Errorf("`%s --help` did not exit 0: %v: %s", path, err, trim(out))
 	}
 	return nil
+}
+
+// headSHA resolves the commit the build will be produced from. It is purely
+// diagnostic — it identifies the deploy in the restart intent log and in the
+// transient scope unit name — so any failure yields an empty string rather than
+// aborting the deploy.
+func (d *Deployer) headSHA(ctx context.Context) string {
+	out, err := d.cmd.Run(ctx, d.cfg.RepoPath, "git", "rev-parse", "HEAD")
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// shaOrUnknown renders a possibly-empty build SHA for human-facing messages.
+func shaOrUnknown(sha string) string {
+	if sha == "" {
+		return "unknown"
+	}
+	return sha
 }
 
 func (d *Deployer) emit(event, message string) {
@@ -258,26 +307,4 @@ func (ExecCommander) Run(ctx context.Context, dir, name string, args ...string) 
 		cmd.Dir = dir
 	}
 	return cmd.CombinedOutput()
-}
-
-// SystemctlRestarter restarts a unit via `systemctl restart <unit>`.
-type SystemctlRestarter struct {
-	// Cmd is the command name (default "systemctl") and PrependArgs are inserted
-	// before "restart" (e.g. nil for a root daemon, or ["--user"] elsewhere).
-	Cmd         string
-	PrependArgs []string
-}
-
-// Restart invokes systemctl restart for the unit.
-func (s SystemctlRestarter) Restart(ctx context.Context, unit string) error {
-	bin := s.Cmd
-	if bin == "" {
-		bin = "systemctl"
-	}
-	args := append(append([]string{}, s.PrependArgs...), "restart", unit)
-	cmd := exec.CommandContext(ctx, bin, args...)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("%s %v: %w: %s", bin, args, err, trim(out))
-	}
-	return nil
 }
