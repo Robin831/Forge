@@ -594,6 +594,7 @@ func New(cfg *config.Config, configPath string) (*Daemon, error) {
 	d.cfg.Store(cfg)
 	applyWardenFilterConfig(cfg)
 	applyPricingConfig(cfg)
+	applyWorktreeTimeoutConfig(cfg)
 	d.labelAdder = func(anvilPath, beadID, tag string) error {
 		ctx, cancel := context.WithTimeout(d.runCtx, executil.DefaultBdTimeout)
 		defer cancel()
@@ -1143,6 +1144,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 			d.cfg.Store(new)
 			applyWardenFilterConfig(new)
 			applyPricingConfig(new)
+			applyWorktreeTimeoutConfig(new)
 			// Re-publish the resolved forge id so PR-body builders and the
 			// reconciler use the new value immediately. Resolution falls back
 			// to os.Hostname() so this normally only changes when the operator
@@ -9489,6 +9491,19 @@ func applyWardenFilterConfig(cfg *config.Config) {
 		FilterCategory:    w.IsFilterCategoryEnabled(),
 		FilterPatternGrep: w.IsFilterPatternGrepEnabled(),
 	})
+}
+
+// applyWorktreeTimeoutConfig pushes settings.worktree_git_timeout into the
+// worktree package so checkout-heavy git commands (worktree add, fetch, push,
+// reset, clean) run under the configured deadline instead of the built-in
+// default. Cheap metadata commands keep their own tight bound. Called at daemon
+// startup and again whenever the config hot-reloads.
+func applyWorktreeTimeoutConfig(cfg *config.Config) {
+	if cfg == nil {
+		worktree.SetGitCheckoutTimeout(0)
+		return
+	}
+	worktree.SetGitCheckoutTimeout(cfg.Settings.WorktreeGitTimeout)
 }
 
 // applyPricingConfig pushes settings.pricing and

@@ -3,11 +3,15 @@ package worktree
 import (
 	"context"
 	"errors"
+	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestSanitizePath(t *testing.T) {
@@ -1312,5 +1316,180 @@ func TestCreate_RecoversFromStaleRegistrationAfterKilledWorker(t *testing.T) {
 	// Before the prune fix this returned "exit status 255" forever.
 	if _, err := m.Create(ctx, anvil, "pr-4616", branch); err != nil {
 		t.Fatalf("Create after killed worker should recover, got: %v", err)
+	}
+}
+
+// TestGitTimeoutFor asserts the two timeout tiers: checkout-heavy git commands
+// get the (configurable) checkout timeout, cheap metadata commands keep the
+// tight default bound. Regression guard for Forge-7du1, where every git command
+// shared a hardcoded 60s deadline and `git worktree add` on a large anvil was
+// SIGKILLed at 60s on the first attempt of most beads.
+func TestGitTimeoutFor(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+		want time.Duration
+	}{
+		{"worktree add", []string{"worktree", "add", "-f", "-b", "forge/x", "/tmp/x", "origin/main"}, DefaultGitCheckoutTimeout},
+		{"worktree remove", []string{"worktree", "remove", "--force", "/tmp/x"}, DefaultGitCheckoutTimeout},
+		{"worktree prune", []string{"worktree", "prune"}, DefaultGitTimeout},
+		{"fetch", []string{"fetch", "origin"}, DefaultGitCheckoutTimeout},
+		{"push", []string{"push", "-u", "origin", "--", "forge/x"}, DefaultGitCheckoutTimeout},
+		{"checkout", []string{"checkout", "--force", "HEAD"}, DefaultGitCheckoutTimeout},
+		{"reset", []string{"reset", "--hard", "origin/main"}, DefaultGitCheckoutTimeout},
+		{"clean", []string{"clean", "-fd", "-e", "node_modules"}, DefaultGitCheckoutTimeout},
+		{"rev-parse", []string{"rev-parse", "--verify", "origin/main"}, DefaultGitTimeout},
+		{"show-ref", []string{"show-ref", "--verify", "--quiet", "refs/heads/main"}, DefaultGitTimeout},
+		{"branch", []string{"branch", "-D", "forge/x"}, DefaultGitTimeout},
+		{"check-ref-format", []string{"check-ref-format", "--branch", "forge/x"}, DefaultGitTimeout},
+		{"no args", nil, DefaultGitTimeout},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := gitTimeoutFor(tt.args); got != tt.want {
+				t.Errorf("gitTimeoutFor(%v) = %s; want %s", tt.args, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestSetGitCheckoutTimeout covers the configured override and the fallback for
+// zero/negative values (settings.worktree_git_timeout omitted or misconfigured).
+func TestSetGitCheckoutTimeout(t *testing.T) {
+	t.Cleanup(func() { SetGitCheckoutTimeout(0) })
+
+	SetGitCheckoutTimeout(12 * time.Minute)
+	if got := gitCheckoutTimeout(); got != 12*time.Minute {
+		t.Errorf("gitCheckoutTimeout after override = %s; want 12m0s", got)
+	}
+	if got := gitTimeoutFor([]string{"worktree", "add"}); got != 12*time.Minute {
+		t.Errorf("gitTimeoutFor(worktree add) after override = %s; want 12m0s", got)
+	}
+	// Cheap commands are unaffected by the checkout-tier override.
+	if got := gitTimeoutFor([]string{"rev-parse", "HEAD"}); got != DefaultGitTimeout {
+		t.Errorf("gitTimeoutFor(rev-parse) after override = %s; want %s", got, DefaultGitTimeout)
+	}
+
+	for _, d := range []time.Duration{0, -1 * time.Second} {
+		SetGitCheckoutTimeout(d)
+		if got := gitCheckoutTimeout(); got != DefaultGitCheckoutTimeout {
+			t.Errorf("gitCheckoutTimeout after SetGitCheckoutTimeout(%s) = %s; want default %s",
+				d, got, DefaultGitCheckoutTimeout)
+		}
+	}
+}
+
+// TestGitCmdOutTimeout_ClassifiesDeadline asserts that a git command killed by
+// its deadline surfaces as a *GitTimeoutError naming the command and the time it
+// got — not the bare "signal: killed" that exec.CommandContext produces and that
+// made the original failures unreadable in daemon.log.
+func TestGitCmdOutTimeout_ClassifiesDeadline(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fake git shim is a POSIX shell script")
+	}
+	// Put a deliberately slow `git` on PATH so the deadline fires mid-flight and
+	// the process is really SIGKILLed, exactly as it was in production.
+	shimDir := t.TempDir()
+	shim := filepath.Join(shimDir, "git")
+	if err := os.WriteFile(shim, []byte("#!/bin/sh\nexec sleep 30\n"), 0o755); err != nil {
+		t.Fatalf("writing git shim: %v", err)
+	}
+	t.Setenv("PATH", shimDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	var out strings.Builder
+	start := time.Now()
+	err := gitCmdOutTimeout(context.Background(), shimDir, &out, 100*time.Millisecond,
+		"worktree", "add", "-f", "-b", "forge/Forge-7du1", "/tmp/wt", "origin/main")
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("expected a timeout error, got nil")
+	}
+	if elapsed > 10*time.Second {
+		t.Fatalf("command was not killed at its deadline (took %s)", elapsed)
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("errors.Is(err, context.DeadlineExceeded) = false; err = %v", err)
+	}
+	var timeoutErr *GitTimeoutError
+	if !errors.As(err, &timeoutErr) {
+		t.Fatalf("errors.As(*GitTimeoutError) = false; err = %v", err)
+	}
+	if timeoutErr.Elapsed <= 0 {
+		t.Errorf("GitTimeoutError.Elapsed = %s; want > 0", timeoutErr.Elapsed)
+	}
+	if timeoutErr.Limit != 100*time.Millisecond {
+		t.Errorf("GitTimeoutError.Limit = %s; want 100ms", timeoutErr.Limit)
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "worktree add") {
+		t.Errorf("error message %q does not name the git subcommand", msg)
+	}
+	if !strings.Contains(msg, "timed out after") {
+		t.Errorf("error message %q does not report the elapsed time", msg)
+	}
+	if strings.Contains(msg, "signal: killed") {
+		t.Errorf("error message %q still surfaces the bare kill signal", msg)
+	}
+
+	// A wrapping caller (as in CreateWithOptions) keeps the classification.
+	wrapped := fmt.Errorf("git worktree add (new): %w", err)
+	if !errors.Is(wrapped, context.DeadlineExceeded) {
+		t.Errorf("wrapped error lost its DeadlineExceeded classification: %v", wrapped)
+	}
+}
+
+// TestGitCmdOutTimeout_CallerDeadlineWins asserts that when the caller's context
+// expires before the tier timeout, the reported limit is the caller's remaining
+// budget rather than the (larger) tier value.
+func TestGitCmdOutTimeout_CallerDeadlineWins(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fake git shim is a POSIX shell script")
+	}
+	shimDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(shimDir, "git"), []byte("#!/bin/sh\nexec sleep 30\n"), 0o755); err != nil {
+		t.Fatalf("writing git shim: %v", err)
+	}
+	t.Setenv("PATH", shimDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	err := gitCmdOutTimeout(ctx, shimDir, io.Discard, 5*time.Minute, "fetch", "origin")
+	var timeoutErr *GitTimeoutError
+	if !errors.As(err, &timeoutErr) {
+		t.Fatalf("errors.As(*GitTimeoutError) = false; err = %v", err)
+	}
+	if timeoutErr.Limit > time.Second {
+		t.Errorf("GitTimeoutError.Limit = %s; want the caller's ~100ms budget", timeoutErr.Limit)
+	}
+}
+
+// TestGitCmdOutTimeout_CancelIsNotATimeout asserts that a caller cancelling the
+// context (e.g. daemon shutdown) is not misreported as a deadline overrun.
+func TestGitCmdOutTimeout_CancelIsNotATimeout(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fake git shim is a POSIX shell script")
+	}
+	shimDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(shimDir, "git"), []byte("#!/bin/sh\nexec sleep 30\n"), 0o755); err != nil {
+		t.Fatalf("writing git shim: %v", err)
+	}
+	t.Setenv("PATH", shimDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		cancel()
+	}()
+
+	err := gitCmdOutTimeout(ctx, shimDir, io.Discard, 5*time.Minute, "fetch", "origin")
+	if err == nil {
+		t.Fatal("expected an error from the cancelled command, got nil")
+	}
+	var timeoutErr *GitTimeoutError
+	if errors.As(err, &timeoutErr) {
+		t.Errorf("cancellation was misclassified as a timeout: %v", err)
 	}
 }

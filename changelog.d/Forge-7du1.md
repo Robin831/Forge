@@ -1,0 +1,2 @@
+category: Fixed
+- **Worktree git timeout raised and made configurable** - Checkout-heavy git commands (`worktree add`, `fetch`, `push`, `checkout`, `reset`, `clean`) now run under a 5m deadline instead of a hardcoded 60s, so a cold full-tree checkout of a large anvil under memory/disk pressure no longer gets SIGKILLed and wastes a bead's first attempt. Tunable via `settings.worktree_git_timeout`; cheap metadata commands keep their tight 60s bound, and a deadline overrun now reports the git command and elapsed time instead of a bare `signal: killed`. (Forge-7du1)
