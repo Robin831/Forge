@@ -80,6 +80,17 @@ func (s *Server) routes() http.Handler {
 		r.Get("/bead/{bead_id}/logs", s.handleBeadLogs)
 		r.Get("/bead/{bead_id}/logs/{filename}", s.handleBeadLogFile)
 
+		// Kiln preview environments. Start/stop are queued by the daemon
+		// (worktree + setup script + service spawn + health checks), so they
+		// answer 202 with the request_id/poll_url pair every other async
+		// action uses. The list endpoint carries per-service ports and health
+		// plus the entry link; the log endpoint tails one service's output out
+		// of the same ~/.forge/logs/<beadID>/ directory as the bead logs.
+		r.Get("/previews", s.handlePreviewsList)
+		r.Get("/preview/{bead_id}/log/{service}", s.handlePreviewLog)
+		r.Post("/bead/{bead_id}/preview/start", s.handlePreviewStart)
+		r.Post("/bead/{bead_id}/preview/stop", s.handlePreviewStop)
+
 		// Daemon-wide dispatch control (Hearth 2.0). Pause/resume the
 		// auto-dispatch of new workers without touching running ones.
 		r.Post("/dispatch/pause", s.handleDispatchPause)

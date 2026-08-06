@@ -6941,6 +6941,23 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 		}
 		return okResponse(out)
 
+	case "preview_start":
+		var p ipc.PreviewActionPayload
+		if err := json.Unmarshal(cmd.Payload, &p); err != nil {
+			return errorResponse("invalid preview_start payload")
+		}
+		return d.handlePreviewStart(p)
+
+	case "preview_stop":
+		var p ipc.PreviewActionPayload
+		if err := json.Unmarshal(cmd.Payload, &p); err != nil {
+			return errorResponse("invalid preview_stop payload")
+		}
+		return d.handlePreviewStop(p)
+
+	case "previews":
+		return d.handlePreviewList()
+
 	case "wicket_status":
 		cfg := d.cfg.Load()
 		enabled := cfg.Settings.WicketEnabled

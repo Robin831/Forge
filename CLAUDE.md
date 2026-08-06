@@ -111,7 +111,7 @@ Forge is a **Go orchestrator daemon** that autonomously drives Claude Code agent
 | `internal/ledger` | Interactive bead management TUI |
 | `internal/ipc` | Named pipe (Windows) / Unix socket daemon↔CLI protocol; newline-delimited JSON |
 | `internal/hearth` | **Hearth (TUI)** — Bubbletea terminal dashboard (`forge hearth`): three-column layout (Queue+Crucibles(when active)+ReadyToMerge+NeedsAttention / Workers / LiveActivity+Events) |
-| `internal/web` | **Hearth 2.0 (web GUI)** — chi-based HTTP server run in-process inside the daemon (gated by `FORGE_WEB_ENABLED`). Serves the browser dashboard: bcrypt session login, JSON/SSE endpoints mirroring IPC (status, queue, workers, events, crucibles, ingots, costs, PRs), per-worker log tail/stream, per-bead log browsing, PR actions (merge/close/approve/fix), queue actions, worker steering/pause/resume, and the Beads-Forge session pages |
+| `internal/web` | **Hearth 2.0 (web GUI)** — chi-based HTTP server run in-process inside the daemon (gated by `FORGE_WEB_ENABLED`). Serves the browser dashboard: bcrypt session login, JSON/SSE endpoints mirroring IPC (status, queue, workers, events, crucibles, ingots, costs, PRs), per-worker log tail/stream, per-bead log browsing, PR actions (merge/close/approve/fix), queue actions, worker steering/pause/resume, the Kiln preview routes (start/stop/list/log-tail, whose DTOs in `preview_handlers.go` are the frontend contract), and the Beads-Forge session pages |
 | `internal/forgechat` | Backs the per-turn AI loop for the Hearth 2.0 "Beads-Forge" page — drafting → grilling → ready stages, one claude round-trip per turn via a pluggable `Runner` |
 | `internal/queueactions` | Shared business logic behind the queue resolution verbs (clarify, unclarify, retry, clear, stop) — single source of truth for the state mutations/audit entries used by both the CLI verbs and the IPC handlers; enforces multi-forge safety |
 | `internal/logsweep` | Daily retention sweep for preserved per-bead log directories under `~/.forge/logs/<beadID>/`; deletes stale dirs with no running worker |
@@ -240,6 +240,12 @@ browser → internal/web (Hearth 2.0, in-process HTTP server, gated by FORGE_WEB
                                               → pause_bead / resume_bead[_with_message]
   → PR + queue actions: merge/close/approve/fix-ci/fix-comments/fix-conflicts,
       queue retry/dispatch/clarify/stop, bead close/label/note/comment
+  → Kiln previews: POST /bead/{id}/preview/start|stop → preview_start/preview_stop
+      (queued, so both answer 202); GET /previews → previews, mapped to the
+      PreviewSummary/PreviewServiceStatus DTOs in internal/web/preview_handlers.go
+      (the frontend contract) with an entry URL built from preview_public_host
+      falling back to the request's Host; GET /preview/{id}/log/{service} tails
+      ~/.forge/logs/<beadID>/preview-<service>.log
   → async outcomes: an action the daemon runs in the background answers 202 with
       {request_id, poll_url}; the SPA polls GET /api/requests/{request_id}
       → request_status (pending → ok/error, unknown once evicted) so a failed
@@ -354,6 +360,13 @@ The daemon exposes a named pipe (Windows: `\\.\pipe\forge`) or Unix socket. Mess
 |---------|-------------|
 | `kill_worker` | Kill a worker process (PID looked up from state.db). |
 | `view_logs` | Return the log path/contents for a bead's worker. |
+
+**Previews (Kiln)**
+| Command | Description |
+|---------|-------------|
+| `preview_start` | Start a bead's preview environment (queued; anvil required, branch defaults to `forge/<beadID>`). |
+| `preview_stop` | Tear a bead's preview down (queued; keyed by bead id alone). |
+| `previews` | List live previews with per-service ports/health, plus `preview_public_host` and `preview_idle_timeout` so clients build links and deadlines themselves. |
 
 **Security**
 | Command | Description |

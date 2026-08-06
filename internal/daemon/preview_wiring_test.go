@@ -5,12 +5,14 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"sort"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/Robin831/Forge/internal/bellows"
 	"github.com/Robin831/Forge/internal/config"
+	"github.com/Robin831/Forge/internal/kiln"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -23,10 +25,15 @@ type fakePreviewManager struct {
 	reconciled   int
 	reaping      bool
 	reaperDone   bool
+	started      []kiln.StartOptions
 	stopped      []string
 	stopAllCalls int
 
+	// envs is what List reports and what Start hands back, keyed by bead id.
+	envs map[string]*kiln.Environment
+
 	reconcileErr error
+	startErr     error
 	stopErr      error
 	stopAllErr   error
 	// reaperStarted closes the first time RunReaper is entered, so a test can
@@ -56,6 +63,42 @@ func (f *fakePreviewManager) RunReaper(ctx context.Context) {
 	f.mu.Lock()
 	f.reaperDone = true
 	f.mu.Unlock()
+}
+
+func (f *fakePreviewManager) Start(_ context.Context, opts kiln.StartOptions) (*kiln.Environment, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.started = append(f.started, opts)
+	if f.startErr != nil {
+		return nil, f.startErr
+	}
+	env := &kiln.Environment{
+		BeadID: opts.BeadID,
+		Anvil:  opts.Anvil,
+		Branch: opts.Branch,
+	}
+	if f.envs == nil {
+		f.envs = make(map[string]*kiln.Environment)
+	}
+	f.envs[opts.BeadID] = env
+	return env, nil
+}
+
+func (f *fakePreviewManager) List() []*kiln.Environment {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]*kiln.Environment, 0, len(f.envs))
+	for _, env := range f.envs {
+		out = append(out, env)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].BeadID < out[j].BeadID })
+	return out
+}
+
+func (f *fakePreviewManager) startedOptions() []kiln.StartOptions {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]kiln.StartOptions(nil), f.started...)
 }
 
 func (f *fakePreviewManager) Stop(_ context.Context, beadID string) error {

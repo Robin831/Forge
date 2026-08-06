@@ -3,16 +3,24 @@ package daemon
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/Robin831/Forge/internal/bellows"
 	"github.com/Robin831/Forge/internal/config"
+	"github.com/Robin831/Forge/internal/ipc"
 	"github.com/Robin831/Forge/internal/kiln"
+	"github.com/Robin831/Forge/internal/worktree"
 )
 
 // previewStopTimeout bounds the teardown of all live previews on shutdown, so a
 // wedged teardown script cannot hold the daemon open indefinitely.
 const previewStopTimeout = 2 * time.Minute
+
+// previewStartTimeout bounds one preview start. It has to cover the manifest's
+// setup command, spawning every service and waiting out their health checks,
+// which for a .NET restore + npm install is minutes rather than seconds.
+const previewStartTimeout = 15 * time.Minute
 
 // previewManager is the slice of *kiln.Manager the daemon drives. It is an
 // interface rather than the concrete type so the wiring can be exercised
@@ -22,10 +30,14 @@ type previewManager interface {
 	Reconcile(ctx context.Context) error
 	// RunReaper tears down idle previews until ctx is cancelled.
 	RunReaper(ctx context.Context)
+	// Start brings a bead's preview up, or returns the existing one.
+	Start(ctx context.Context, opts kiln.StartOptions) (*kiln.Environment, error)
 	// Stop tears down one bead's preview; a bead without one is a no-op.
 	Stop(ctx context.Context, beadID string) error
 	// StopAll tears down every live preview.
 	StopAll(ctx context.Context) error
+	// List returns every live preview, ordered by bead id.
+	List() []*kiln.Environment
 }
 
 // *kiln.Manager is what the daemon actually wires in, so keep the two in step
@@ -208,4 +220,145 @@ func (d *Daemon) handlePreviewTeardownOnPRClose(ctx context.Context, event bello
 				"bead", beadID, "event", eventType, "error", err)
 		}
 	}()
+}
+
+// handlePreviewStart serves the "preview_start" IPC command.
+//
+// Starting a preview is slow enough (git checkout, setup script, service spawn,
+// health checks) that it cannot be answered synchronously, so it follows the
+// daemon's queued-command pattern: the work runs on its own goroutine and the
+// caller gets a request id it resolves through "request_status".
+func (d *Daemon) handlePreviewStart(p ipc.PreviewActionPayload) ipc.Response {
+	mgr := d.previews()
+	if mgr == nil {
+		return errorResponse("preview environments are disabled (settings.preview_enabled)")
+	}
+	beadID := strings.TrimSpace(p.BeadID)
+	if beadID == "" {
+		return errorResponse("bead_id is required")
+	}
+	if strings.TrimSpace(p.Anvil) == "" {
+		return errorResponse("anvil is required")
+	}
+	anvilName, anvilCfg, ok := d.resolveAnvilConfig(p.Anvil)
+	if !ok {
+		return errorResponse(fmt.Sprintf("anvil %q not found", p.Anvil))
+	}
+	if anvilCfg.Path == "" {
+		return errorResponse(fmt.Sprintf("anvil %q has no path configured", anvilName))
+	}
+	// The global gate is already implied by mgr being non-nil; this catches the
+	// anvil that opted out via its own tri-state while its siblings did not.
+	if !d.cfg.Load().IsPreviewEnabledForAnvil(anvilName) {
+		return errorResponse(fmt.Sprintf("previews are disabled for anvil %q", anvilName))
+	}
+
+	branch := strings.TrimSpace(p.Branch)
+	if branch == "" {
+		branch = worktree.BranchName(beadID)
+	}
+	opts := kiln.StartOptions{
+		BeadID:    beadID,
+		Anvil:     anvilName,
+		AnvilPath: anvilCfg.Path,
+		Branch:    branch,
+	}
+
+	reqID, _ := d.reqTracker.Track()
+	go func() {
+		startCtx, cancel := context.WithTimeout(d.runCtx, previewStartTimeout)
+		defer cancel()
+		env, err := mgr.Start(startCtx, opts)
+		if err != nil {
+			d.logger.Warn("starting preview failed", "bead", beadID, "anvil", anvilName, "error", err)
+			d.completeAsync(reqID, errorResponse(fmt.Sprintf("starting preview for %s failed: %v", beadID, err)))
+			return
+		}
+		d.logger.Info("preview started", "bead", beadID, "anvil", anvilName,
+			"branch", branch, "status", env.Status())
+		d.completeAsync(reqID, okResponse(map[string]string{
+			"message":   fmt.Sprintf("preview for %s is %s", beadID, env.Status()),
+			"status":    env.Status(),
+			"entry_url": env.EntryURL(),
+		}))
+	}()
+	resp, _ := ipc.NewQueuedResponse(reqID, "starting preview")
+	return resp
+}
+
+// handlePreviewStop serves the "preview_stop" IPC command. Like the start it is
+// queued: teardown kills process groups, runs the manifest's teardown command
+// and removes a git worktree. Stopping a bead with no preview succeeds — the
+// caller asked for it to be gone, and it is.
+func (d *Daemon) handlePreviewStop(p ipc.PreviewActionPayload) ipc.Response {
+	mgr := d.previews()
+	if mgr == nil {
+		return errorResponse("preview environments are disabled (settings.preview_enabled)")
+	}
+	beadID := strings.TrimSpace(p.BeadID)
+	if beadID == "" {
+		return errorResponse("bead_id is required")
+	}
+
+	reqID, _ := d.reqTracker.Track()
+	go func() {
+		// Detached from the run context: a shutdown mid-teardown would otherwise
+		// abandon the very worktree and process group the teardown exists to
+		// release.
+		stopCtx, cancel := context.WithTimeout(context.WithoutCancel(d.runCtx), previewStopTimeout)
+		defer cancel()
+		if err := mgr.Stop(stopCtx, beadID); err != nil {
+			d.logger.Warn("stopping preview failed", "bead", beadID, "error", err)
+			d.completeAsync(reqID, errorResponse(fmt.Sprintf("stopping preview for %s failed: %v", beadID, err)))
+			return
+		}
+		d.logger.Info("preview stopped", "bead", beadID)
+		d.completeAsync(reqID, okResponse(map[string]string{
+			"message": fmt.Sprintf("preview for %s stopped", beadID),
+		}))
+	}()
+	resp, _ := ipc.NewQueuedResponse(reqID, "stopping preview")
+	return resp
+}
+
+// handlePreviewList serves the "previews" IPC command: every live preview with
+// its per-service ports and health, plus the two settings a client needs to
+// render links and idle deadlines itself.
+//
+// Listing deliberately does not Touch the previews it reports. The dashboard
+// polls this endpoint, so counting a poll as activity would keep every preview
+// alive forever and turn the idle reaper off in practice.
+func (d *Daemon) handlePreviewList() ipc.Response {
+	out := ipc.PreviewsResponse{Previews: []ipc.PreviewInfo{}}
+	if cfg := d.cfg.Load(); cfg != nil {
+		out.PublicHost = cfg.Settings.PreviewPublicHost
+		out.IdleTimeoutSeconds = int64(cfg.Settings.PreviewIdleTimeout / time.Second)
+	}
+	mgr := d.previews()
+	if mgr == nil {
+		return okResponse(out)
+	}
+	out.Enabled = true
+	for _, env := range mgr.List() {
+		rec := env.Record()
+		info := ipc.PreviewInfo{
+			BeadID:       rec.BeadID,
+			Anvil:        rec.Anvil,
+			Branch:       rec.Branch,
+			Status:       rec.Status,
+			CreatedAt:    rec.CreatedAt,
+			LastActiveAt: rec.LastActiveAt,
+		}
+		for _, svc := range rec.Services {
+			info.Services = append(info.Services, ipc.PreviewServiceInfo{
+				Name:   svc.Name,
+				Port:   svc.Port,
+				Health: svc.Health,
+				Entry:  svc.Entry,
+				Error:  svc.Error,
+			})
+		}
+		out.Previews = append(out.Previews, info)
+	}
+	return okResponse(out)
 }

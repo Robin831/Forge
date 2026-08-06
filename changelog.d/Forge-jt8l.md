@@ -1,0 +1,2 @@
+category: Added
+- **Preview HTTP API** - Hearth 2.0 can now drive Kiln previews over HTTP: `POST /api/bead/{id}/preview/start` and `/preview/stop` (queued, answering 202 with a `request_id` + `poll_url`), `GET /api/previews` listing live previews with per-service ports, health and idle deadline, and `GET /api/preview/{id}/log/{service}` tailing one service's log. Preview links use `preview_public_host` when configured and fall back to the request's own Host header. (Forge-jt8l)
