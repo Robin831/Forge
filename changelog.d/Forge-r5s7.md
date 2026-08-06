@@ -1,0 +1,2 @@
+category: Changed
+- **Self-deploy documentation** - Document the `self_deploy` keys (including `max_drain_wait` and its deprecated `drain_timeout` alias) as a field table, the detached restart (`systemd-run --scope` and the `--no-block` fallback, and why the restart must escape the unit cgroup), the Needs Attention entry raised on a deferred, failed or rolled-back deploy, and how to spot a stale binary. (Forge-r5s7)
