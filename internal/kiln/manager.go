@@ -21,19 +21,31 @@ import (
 var ErrTooManyPreviews = errors.New("kiln: preview limit reached")
 
 // TooManyPreviewsError reports a start refused because preview_max_concurrent
-// is already reached. v1 rejects rather than queues: a preview is an
-// interactive thing an operator asked for, and silently starting it ten minutes
-// later — after they gave up and stopped watching — is worse than saying no now.
+// is already reached. Rejecting is the default rather than queueing: a preview
+// is an interactive thing an operator asked for, and silently starting it ten
+// minutes later — after they gave up and stopped watching — is worse than saying
+// no now. The error names the limit and the beads holding the slots so the
+// answer carries what to stop, not just that something is full.
+//
+// settings.preview_evict_lru turns the rejection into an eviction of the least
+// recently used preview instead; see Manager.reserveSlot.
 type TooManyPreviewsError struct {
 	// Running is how many previews were up or starting when the request came in.
 	Running int
 	// Limit is the configured preview_max_concurrent.
 	Limit int
+	// RunningIDs are the beads holding those slots — started previews and
+	// in-flight starts alike — sorted, so the message is deterministic.
+	RunningIDs []string
 }
 
 func (e *TooManyPreviewsError) Error() string {
-	return fmt.Sprintf("kiln: preview limit reached (%d of %d in use, preview_max_concurrent=%d) — stop a running preview first",
-		e.Running, e.Limit, e.Limit)
+	held := "none"
+	if len(e.RunningIDs) > 0 {
+		held = strings.Join(e.RunningIDs, ", ")
+	}
+	return fmt.Sprintf("kiln: preview limit reached (%d of %d in use, preview_max_concurrent=%d; held by: %s) — stop one of those previews first, or set settings.preview_evict_lru to have Kiln evict the least recently used one",
+		e.Running, e.Limit, e.Limit, held)
 }
 
 // Unwrap makes errors.Is(err, ErrTooManyPreviews) work.
@@ -107,7 +119,13 @@ func (GitWorktrees) RemoveDetached(ctx context.Context, anvilPath, beadID string
 type ManagerConfig struct {
 	// MaxConcurrent caps how many previews may run at once
 	// (settings.preview_max_concurrent). Zero uses the configured default.
+	// Reaching it rejects the start with a *TooManyPreviewsError unless
+	// EvictLRU is set.
 	MaxConcurrent int
+	// EvictLRU (settings.preview_evict_lru) makes a start that hits
+	// MaxConcurrent stop the least recently used preview to make room instead
+	// of being rejected. Default false.
+	EvictLRU bool
 	// IdleTimeout is how long a preview may go untouched before the reaper
 	// tears it down (settings.preview_idle_timeout). Zero disables reaping.
 	// The manager records the deadline; the reaper acts on it.
@@ -205,6 +223,11 @@ type StartOptions struct {
 	AnvilPath string
 	// Branch is the branch to preview.
 	Branch string
+	// NoEvict opts this start out of preview_evict_lru: a full box rejects it
+	// instead of stopping the least recently used preview. Automatic starts
+	// set it, because a background start is not worth taking a preview away
+	// from the operator who opened one.
+	NoEvict bool
 }
 
 func (o StartOptions) validate() error {
@@ -358,6 +381,10 @@ func NewManager(deps ManagerDeps) (*Manager, error) {
 // MaxConcurrent returns the effective concurrency cap.
 func (m *Manager) MaxConcurrent() int { return m.cfg.MaxConcurrent }
 
+// EvictLRU reports whether a start that hits the cap evicts the least recently
+// used preview (true) or is rejected (false, the default).
+func (m *Manager) EvictLRU() bool { return m.cfg.EvictLRU }
+
 // IdleTimeout returns the configured idle timeout (0 = reaping disabled).
 func (m *Manager) IdleTimeout() time.Duration { return m.cfg.IdleTimeout }
 
@@ -382,7 +409,7 @@ func (m *Manager) Start(ctx context.Context, opts StartOptions) (*Environment, e
 	// Reserve under the registry lock: the existence check and the cap check
 	// have to be one atomic decision, or two starts racing for the last slot
 	// both win it.
-	existing, err := m.reserve(opts.BeadID)
+	existing, err := m.reserveSlot(ctx, opts.BeadID, !opts.NoEvict)
 	if err != nil {
 		return nil, err
 	}
@@ -534,10 +561,110 @@ func (m *Manager) reserve(beadID string) (*Environment, error) {
 	// In-flight starts count: they already hold a worktree and (soon) ports.
 	inUse := len(m.envs) + len(m.starting)
 	if inUse >= m.cfg.MaxConcurrent {
-		return nil, &TooManyPreviewsError{Running: inUse, Limit: m.cfg.MaxConcurrent}
+		return nil, &TooManyPreviewsError{
+			Running:    inUse,
+			Limit:      m.cfg.MaxConcurrent,
+			RunningIDs: m.slotHoldersLocked(),
+		}
 	}
 	m.starting[beadID] = true
 	return nil, nil
+}
+
+// maxEvictionRounds bounds how many times one Start will evict to make room.
+// Each round frees a slot, so a single round suffices unless another caller
+// takes the slot first; the bound keeps a pathological interleaving from
+// turning a start into an eviction loop.
+const maxEvictionRounds = 3
+
+// reserveSlot is reserve plus the preview_evict_lru behaviour: with the flag
+// off it is exactly reserve, and a full box is a rejection naming what holds
+// the slots. With the flag on, a rejection instead stops the least recently
+// used preview and retries the reservation.
+//
+// Lock ordering, since this takes a second bead's lock while holding the
+// caller's: eviction candidates come from envs (fully started previews) and
+// never from starting, so the bead doing the evicting can never itself be a
+// candidate. A started preview's own lock is only ever held by a Stop or by an
+// idempotent Start, neither of which acquires another bead's lock — so the
+// start → victim edge cannot close a cycle.
+func (m *Manager) reserveSlot(ctx context.Context, beadID string, mayEvict bool) (*Environment, error) {
+	existing, err := m.reserve(beadID)
+	if !m.cfg.EvictLRU || !mayEvict {
+		return existing, err
+	}
+	for round := 0; round < maxEvictionRounds; round++ {
+		var capErr *TooManyPreviewsError
+		if !errors.As(err, &capErr) {
+			return existing, err
+		}
+		victim := m.lruVictim(beadID)
+		if victim == "" {
+			// Every slot is held by a start that has not finished yet. There
+			// is nothing safely stoppable, so the rejection stands.
+			return nil, err
+		}
+		m.logger.Info("kiln: evicting the least recently used preview to make room",
+			"evicted", victim, "for", beadID, "limit", m.cfg.MaxConcurrent)
+		if stopErr := m.Stop(ctx, victim); stopErr != nil {
+			// The registry entry is gone either way, so the slot is free; a
+			// noisy teardown must not cost the new preview its start.
+			m.logger.Warn("kiln: evicting a preview hit errors",
+				"bead", victim, "error", stopErr)
+		}
+		existing, err = m.reserve(beadID)
+	}
+	return existing, err
+}
+
+// lruVictim names the started preview with the oldest last-active time — the
+// one preview_evict_lru stops to free a slot. Last-active is bumped on start
+// and on every preview API call, so "least recently used" is as close to "the
+// one nobody is watching" as the manager can see.
+//
+// In-flight starts are never candidates: they hold no serving preview yet, and
+// stopping one would race the Start that owns it. exclude is the bead asking
+// for the slot, which cannot evict itself.
+func (m *Manager) lruVictim(exclude string) string {
+	m.mu.Lock()
+	envs := make([]*Environment, 0, len(m.envs))
+	for id, env := range m.envs {
+		if id == exclude {
+			continue
+		}
+		envs = append(envs, env)
+	}
+	m.mu.Unlock()
+
+	var victim *Environment
+	var oldest time.Time
+	for _, env := range envs {
+		active := env.LastActive()
+		// Bead id breaks a tie so the choice is deterministic for callers and
+		// tests using a frozen clock.
+		if victim == nil || active.Before(oldest) ||
+			(active.Equal(oldest) && env.BeadID < victim.BeadID) {
+			victim, oldest = env, active
+		}
+	}
+	if victim == nil {
+		return ""
+	}
+	return victim.BeadID
+}
+
+// slotHoldersLocked lists the beads holding a concurrency slot — started
+// previews and in-flight starts alike — sorted. Callers must hold m.mu.
+func (m *Manager) slotHoldersLocked() []string {
+	ids := make([]string, 0, len(m.envs)+len(m.starting))
+	for id := range m.envs {
+		ids = append(ids, id)
+	}
+	for id := range m.starting {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	return ids
 }
 
 // release drops the in-flight reservation for beadID.

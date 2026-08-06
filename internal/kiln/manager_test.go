@@ -277,6 +277,33 @@ type harness struct {
 	// manifest is what LoadManifest returns; tests mutate it before starting.
 	manifest *Manifest
 	loadErr  error
+
+	// nowMu/nowAt back the manager's clock. While nowAt is zero the manager
+	// reads the real clock; a test that cares about last-active ordering
+	// freezes it with setNow and moves it with advance.
+	nowMu sync.Mutex
+	nowAt time.Time
+}
+
+func (h *harness) clock() time.Time {
+	h.nowMu.Lock()
+	defer h.nowMu.Unlock()
+	if h.nowAt.IsZero() {
+		return time.Now()
+	}
+	return h.nowAt
+}
+
+func (h *harness) setNow(at time.Time) {
+	h.nowMu.Lock()
+	defer h.nowMu.Unlock()
+	h.nowAt = at
+}
+
+func (h *harness) advance(d time.Duration) {
+	h.nowMu.Lock()
+	defer h.nowMu.Unlock()
+	h.nowAt = h.nowAt.Add(d)
 }
 
 func newHarness(t *testing.T, cfg ManagerConfig) *harness {
@@ -307,6 +334,7 @@ func newHarness(t *testing.T, cfg ManagerConfig) *harness {
 		Store:     h.store,
 		Processes: h.procs,
 		Config:    cfg,
+		Now:       h.clock,
 		LoadManifest: func(string) (*Manifest, error) {
 			if h.loadErr != nil {
 				return nil, h.loadErr
@@ -397,6 +425,17 @@ func TestManagerStartRejectsOverCap(t *testing.T) {
 	if !strings.Contains(err.Error(), "1") {
 		t.Errorf("message %q does not mention the limit", err.Error())
 	}
+	// The rejection has to say what is holding the slots, or the operator has
+	// to go find out before they can act on it.
+	if len(capErr.RunningIDs) != 1 || capErr.RunningIDs[0] != "Forge-aaa1" {
+		t.Errorf("RunningIDs = %v, want [Forge-aaa1]", capErr.RunningIDs)
+	}
+	if !strings.Contains(err.Error(), "Forge-aaa1") {
+		t.Errorf("message %q does not name the running preview", err.Error())
+	}
+	if !strings.Contains(err.Error(), "preview_evict_lru") {
+		t.Errorf("message %q does not point at the eviction setting", err.Error())
+	}
 
 	// The rejected bead must leave nothing behind.
 	if _, ok := h.mgr.Get("Forge-bbb2"); ok {
@@ -404,6 +443,162 @@ func TestManagerStartRejectsOverCap(t *testing.T) {
 	}
 	if len(h.wts.createdPaths()) != 1 {
 		t.Errorf("CreateDetached ran for the rejected bead: %v", h.wts.createdPaths())
+	}
+	if got := h.runner.startCount(); got != 1 {
+		t.Errorf("runtime started %d previews, want 1 (a rejection must not reach the runtime)", got)
+	}
+	// The running preview is untouched by the refusal.
+	if _, ok := h.mgr.Get("Forge-aaa1"); !ok {
+		t.Error("the running preview disappeared when a second start was refused")
+	}
+}
+
+// TestManagerStartRejectsOverCapConcurrently is the TOCTOU case: more starts
+// than slots, all at once. Exactly MaxConcurrent of them may win.
+func TestManagerStartRejectsOverCapConcurrently(t *testing.T) {
+	const limit, callers = 2, 6
+	h := newHarness(t, ManagerConfig{MaxConcurrent: limit})
+
+	var (
+		mu       sync.Mutex
+		started  int
+		rejected int
+		wg       sync.WaitGroup
+	)
+	for i := 0; i < callers; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			_, err := h.mgr.Start(context.Background(), h.opts(fmt.Sprintf("Forge-c%02d", i)))
+			mu.Lock()
+			defer mu.Unlock()
+			switch {
+			case err == nil:
+				started++
+			case errors.Is(err, ErrTooManyPreviews):
+				rejected++
+			default:
+				t.Errorf("Start: unexpected error %v", err)
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	if started != limit || rejected != callers-limit {
+		t.Errorf("started=%d rejected=%d, want started=%d rejected=%d",
+			started, rejected, limit, callers-limit)
+	}
+	if got := len(h.mgr.List()); got != limit {
+		t.Errorf("List() returned %d previews, want %d", got, limit)
+	}
+}
+
+// TestManagerStartEvictsLRUWhenEnabled covers the opt-in half of the cap
+// policy: with preview_evict_lru on, the preview nobody has touched for the
+// longest makes room for the new one.
+func TestManagerStartEvictsLRUWhenEnabled(t *testing.T) {
+	h := newHarness(t, ManagerConfig{MaxConcurrent: 2, EvictLRU: true})
+	h.setNow(time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC))
+
+	if _, err := h.mgr.Start(context.Background(), h.opts("Forge-aaa1")); err != nil {
+		t.Fatalf("first Start: %v", err)
+	}
+	h.advance(time.Minute)
+	if _, err := h.mgr.Start(context.Background(), h.opts("Forge-bbb2")); err != nil {
+		t.Fatalf("second Start: %v", err)
+	}
+	// Someone opens the older preview again — that, not start order, is what
+	// decides who gets evicted.
+	h.advance(time.Minute)
+	h.mgr.Touch("Forge-aaa1")
+
+	h.advance(time.Minute)
+	env, err := h.mgr.Start(context.Background(), h.opts("Forge-ccc3"))
+	if err != nil {
+		t.Fatalf("third Start: %v", err)
+	}
+	if env.BeadID != "Forge-ccc3" {
+		t.Fatalf("Start returned %q, want Forge-ccc3", env.BeadID)
+	}
+
+	if _, ok := h.mgr.Get("Forge-bbb2"); ok {
+		t.Error("Forge-bbb2 is still registered; it was the least recently used")
+	}
+	if _, ok := h.mgr.Get("Forge-aaa1"); !ok {
+		t.Error("Forge-aaa1 was evicted despite being touched more recently")
+	}
+	if got := len(h.mgr.List()); got != 2 {
+		t.Errorf("List() returned %d previews, want 2 (the cap still holds)", got)
+	}
+	// Eviction is a full teardown, not just a registry delete.
+	if row, err := h.store.GetPreview("Forge-bbb2"); err != nil || row != nil {
+		t.Errorf("evicted preview still has a row: row=%v err=%v", row, err)
+	}
+	if _, err := os.Stat(filepath.Join(h.anvil, ".previews", "Forge-bbb2")); !os.IsNotExist(err) {
+		t.Errorf("evicted preview's checkout survived: %v", err)
+	}
+}
+
+// TestManagerStartRejectsWhenEvictionIsOff is the same scenario with the flag
+// at its default: the running preview stays put and the new start is refused.
+func TestManagerStartRejectsWhenEvictionIsOff(t *testing.T) {
+	h := newHarness(t, ManagerConfig{MaxConcurrent: 1})
+
+	if _, err := h.mgr.Start(context.Background(), h.opts("Forge-aaa1")); err != nil {
+		t.Fatalf("first Start: %v", err)
+	}
+	if _, err := h.mgr.Start(context.Background(), h.opts("Forge-bbb2")); !errors.Is(err, ErrTooManyPreviews) {
+		t.Fatalf("second Start error = %v, want ErrTooManyPreviews", err)
+	}
+	if _, ok := h.mgr.Get("Forge-aaa1"); !ok {
+		t.Error("the running preview was stopped without preview_evict_lru")
+	}
+	if h.mgr.EvictLRU() {
+		t.Error("EvictLRU() is true for a manager configured without it")
+	}
+}
+
+// TestManagerStartNoEvictIsRefusedOverCap covers the automatic-start path:
+// nobody asked for that preview, so it never takes a slot away from one an
+// operator started, even with eviction enabled.
+func TestManagerStartNoEvictIsRefusedOverCap(t *testing.T) {
+	h := newHarness(t, ManagerConfig{MaxConcurrent: 1, EvictLRU: true})
+
+	if _, err := h.mgr.Start(context.Background(), h.opts("Forge-aaa1")); err != nil {
+		t.Fatalf("first Start: %v", err)
+	}
+	opts := h.opts("Forge-bbb2")
+	opts.NoEvict = true
+	if _, err := h.mgr.Start(context.Background(), opts); !errors.Is(err, ErrTooManyPreviews) {
+		t.Fatalf("NoEvict Start error = %v, want ErrTooManyPreviews", err)
+	}
+	if _, ok := h.mgr.Get("Forge-aaa1"); !ok {
+		t.Error("an automatic start evicted a running preview")
+	}
+}
+
+// TestManagerStartWithEvictionIsIdempotent guards the obvious self-eviction
+// bug: a bead that already has a preview gets it back, and nothing is stopped
+// to make room for a slot it already holds.
+func TestManagerStartWithEvictionIsIdempotent(t *testing.T) {
+	h := newHarness(t, ManagerConfig{MaxConcurrent: 1, EvictLRU: true})
+
+	first, err := h.mgr.Start(context.Background(), h.opts("Forge-aaa1"))
+	if err != nil {
+		t.Fatalf("first Start: %v", err)
+	}
+	again, err := h.mgr.Start(context.Background(), h.opts("Forge-aaa1"))
+	if err != nil {
+		t.Fatalf("second Start: %v", err)
+	}
+	if again != first {
+		t.Error("second Start returned a different environment")
+	}
+	if got := h.runner.startCount(); got != 1 {
+		t.Errorf("runtime started %d previews, want 1", got)
+	}
+	if got := len(h.mgr.List()); got != 1 {
+		t.Errorf("List() returned %d previews, want 1", got)
 	}
 }
 

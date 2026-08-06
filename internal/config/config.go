@@ -800,7 +800,19 @@ type SettingsConfig struct {
 	// PreviewMaxConcurrent caps how many previews may run at once. Previews
 	// cost real memory (a database, an API and a dev server each), so the cap
 	// is deliberately low. 0 means DefaultPreviewMaxConcurrent.
+	//
+	// Reaching the cap rejects the start rather than queueing it: the error
+	// names the limit and the beads holding the slots, so the operator can
+	// stop one and try again. Set PreviewEvictLRU to trade that rejection for
+	// automatic eviction.
 	PreviewMaxConcurrent int `mapstructure:"preview_max_concurrent" yaml:"preview_max_concurrent,omitempty"`
+	// PreviewEvictLRU decides what happens when a preview is requested while
+	// preview_max_concurrent is already reached. False (the default) rejects
+	// the request and names the previews holding the slots. True stops the
+	// least recently used preview to make room — convenient on a box where
+	// previews are opened and abandoned, at the cost of a preview someone may
+	// still have open in a tab disappearing under them.
+	PreviewEvictLRU bool `mapstructure:"preview_evict_lru" yaml:"preview_evict_lru,omitempty"`
 	// PreviewIdleTimeout is how long a preview may go unused before it is
 	// torn down. 0 disables the idle reaper (previews then run until stopped
 	// or until their PR merges/closes). Defaults to 30m.
@@ -1222,6 +1234,7 @@ func (s SettingsConfig) MarshalYAML() (interface{}, error) {
 
 		PreviewEnabled       bool   `yaml:"preview_enabled"`
 		PreviewMaxConcurrent int    `yaml:"preview_max_concurrent,omitempty"`
+		PreviewEvictLRU      bool   `yaml:"preview_evict_lru,omitempty"`
 		PreviewIdleTimeout   string `yaml:"preview_idle_timeout,omitempty"`
 		PreviewPortRange     string `yaml:"preview_port_range,omitempty"`
 		PreviewBindHost      string `yaml:"preview_bind_host,omitempty"`
@@ -1297,6 +1310,7 @@ func (s SettingsConfig) MarshalYAML() (interface{}, error) {
 
 		PreviewEnabled:       s.PreviewEnabled,
 		PreviewMaxConcurrent: s.PreviewMaxConcurrent,
+		PreviewEvictLRU:      s.PreviewEvictLRU,
 		PreviewPortRange:     s.PreviewPortRange,
 		PreviewBindHost:      s.PreviewBindHost,
 		PreviewPublicHost:    s.PreviewPublicHost,
@@ -1982,9 +1996,12 @@ func Defaults() Config {
 			// values only matter once preview_enabled is turned on.
 			PreviewEnabled:       false,
 			PreviewMaxConcurrent: DefaultPreviewMaxConcurrent,
-			PreviewIdleTimeout:   DefaultPreviewIdleTimeout,
-			PreviewPortRange:     DefaultPreviewPortRange,
-			PreviewBindHost:      DefaultPreviewBindHost,
+			// Rejection, not eviction, is the default: a preview is something
+			// an operator asked for and may still be looking at.
+			PreviewEvictLRU:    false,
+			PreviewIdleTimeout: DefaultPreviewIdleTimeout,
+			PreviewPortRange:   DefaultPreviewPortRange,
+			PreviewBindHost:    DefaultPreviewBindHost,
 			// Copilot combined Smith+Warden mode settings.
 			CopilotWardenSampleRate: 0.1,
 			// Wicket issue triage monitor defaults.
@@ -2084,6 +2101,7 @@ func Load(configFile string) (*Config, error) {
 	v.SetDefault("settings.adventurer_timeout", "5m")
 	v.SetDefault("settings.preview_enabled", false)
 	v.SetDefault("settings.preview_max_concurrent", DefaultPreviewMaxConcurrent)
+	v.SetDefault("settings.preview_evict_lru", false)
 	v.SetDefault("settings.preview_idle_timeout", DefaultPreviewIdleTimeout.String())
 	v.SetDefault("settings.preview_port_range", DefaultPreviewPortRange)
 	v.SetDefault("settings.preview_bind_host", DefaultPreviewBindHost)

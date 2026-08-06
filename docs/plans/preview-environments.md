@@ -112,7 +112,8 @@ Hearth 2.0 (React SPA)
       ↓ in-process (same pattern as other Hearth write actions)
 kiln.Manager (started by daemon, like questgiver.Monitor)
   ├─ registry: beadID → *kiln.Preview  (also persisted to state.db `previews`)
-  ├─ caps: preview_max_concurrent (default 2); LRU-stop or reject when full
+  ├─ caps: preview_max_concurrent (default 2); reject when full, or stop the
+  │         LRU preview when preview_evict_lru is on (default off)
   ├─ idle reaper: preview_idle_timeout (default 30m) since last start/URL open
   ├─ startup reconciliation: kill orphan PIDs from state.db, prune
   │    <anvil>/.previews/* (mirrors shutdown.go orphan worktree cleanup)
@@ -163,6 +164,7 @@ Global (`~/.forge/config.yaml` settings):
 ```yaml
 preview_enabled: true          # master gate, default false
 preview_max_concurrent: 2
+preview_evict_lru: false       # cap reached: reject (false) or stop the LRU preview
 preview_idle_timeout: 30m
 preview_port_range: "42000-42999"
 preview_bind_host: "127.0.0.1"
@@ -172,6 +174,37 @@ preview_public_host: ""        # hostname for links; default = request Host
 Per-anvil (`AnvilConfig`): `preview_enabled *bool` (tri-state like
 `questgiver_enabled`). An anvil without `.forge/preview.yaml` simply shows no
 Preview button.
+
+### Resolved: what happens when `preview_max_concurrent` is full
+
+The plan left "LRU-stop or reject" open. **Rejection is the behaviour, and it is
+not configurable away by default**; LRU eviction exists behind
+`preview_evict_lru` (default `false`).
+
+- **Reject (default).** `kiln.Manager.reserve` refuses the start under the same
+  lock that guards the registry — before a worktree, a port or a process
+  exists — with a `*kiln.TooManyPreviewsError` (wrapping `ErrTooManyPreviews`,
+  so `errors.Is` works) carrying `Limit`, `Running` and `RunningIDs`. The
+  message names the limit and the beads holding the slots, which is what an
+  operator needs to act: stop one of *those* previews. Starts are never queued —
+  a preview that comes up ten minutes after it was asked for costs memory and
+  serves nobody.
+- **Evict LRU (opt-in).** With `preview_evict_lru: true`, a start that would be
+  rejected instead stops the preview with the oldest last-active time (the
+  clock the idle reaper already maintains, bumped on start and on every preview
+  API call) and retries the reservation. The eviction is a full teardown. In-
+  flight starts are never candidates — they hold no serving preview yet and
+  stopping one would race its own `Start` — and if every slot is held by an
+  in-flight start the rejection stands.
+- **Automatic previews never evict.** `preview_auto: ready_to_merge` passes
+  `StartOptions.NoEvict`: a background start being skipped is cheap, a preview
+  vanishing from under the person watching it is not.
+
+Lock ordering is what makes eviction safe to do while holding the starting
+bead's lock: candidates only ever come from the started-preview registry, and a
+started preview's lock is only taken by a `Stop` or an idempotent `Start`,
+neither of which reaches for a second bead's lock. The start → victim edge
+therefore cannot close a cycle.
 
 ## Hearth 2.0 UI
 
@@ -219,9 +252,9 @@ dependency (1 → 2/3 in parallel → 4 → 5).
    manifests: Hytte (Go api + Vite client) and a .NET + React + MSSQL app
    (setup script creating `app_preview_<id>` + running EF migrations,
    teardown dropping it). Ships as docs + Hytte's real `.forge/preview.yaml`.
-7. **Resource hardening.** Idle-timeout tuning, LRU eviction when the cap is
-   hit, memory note surfaced in the panel, `forge preview list|stop` CLI for
-   recovery without the web UI.
+7. **Resource hardening.** Idle-timeout tuning, cap behaviour when the box is
+   full (resolved below), memory note surfaced in the panel,
+   `forge preview list|stop` CLI for recovery without the web UI.
 
 **Phase 3 — leverage**
 
