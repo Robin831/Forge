@@ -872,6 +872,8 @@ var managedAnvilKeys = []anvilKeyDef{
 		Label: "Auto-dispatch tag", Description: "Label a bead must carry when auto-dispatch is \"tagged\" (e.g. forgeReady)."},
 	{Key: "auto_dispatch_min_priority", Type: typeInt, Min: fptr(0), Max: fptr(4),
 		Label: "Auto-dispatch min priority", Description: "Minimum priority (0=highest) a bead needs to be auto-dispatched."},
+	{Key: "preview_auto", Type: typeEnum, Options: config.PreviewAutoModes,
+		Label: "Automatic previews", Description: "When to start a preview without being asked. \"ready_to_merge\" starts one as a PR becomes mergeable; it still obeys preview_max_concurrent and the idle timeout, and each preview holds memory for as long as it runs."},
 	{Key: "platform", Type: typeEnum, Options: []string{"github", "gitlab", "gitea", "bitbucket", "azuredevops"},
 		Label: "VCS platform", Description: "Hosting platform for this anvil's PR operations."},
 

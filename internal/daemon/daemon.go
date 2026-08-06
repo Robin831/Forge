@@ -1322,6 +1322,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 	d.bellowsMonitor.OnEvent(d.handleWicketPRMerged)
 	d.bellowsMonitor.OnEvent(d.handleSelfDeploy)
 	d.bellowsMonitor.OnEvent(d.handlePreviewTeardownOnPRClose)
+	d.bellowsMonitor.OnEvent(d.handlePreviewAutoStart)
 
 	// Reconcile: register any open PRs not yet tracked in the state DB.
 	// This handles PRs created before the current DB or after a DB reset.

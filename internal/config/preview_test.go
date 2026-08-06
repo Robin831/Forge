@@ -231,3 +231,103 @@ func TestSave_RoundTrip_PreviewIdleTimeoutZero(t *testing.T) {
 	require.NoError(t, err)
 	assert.Zero(t, loaded.Settings.PreviewIdleTimeout, "an explicit 0 must survive a save/load round trip")
 }
+
+// TestPreviewAutoDefaultsToOff pins the opt-in: an anvil that says nothing
+// about preview_auto starts no previews on its own, even with previews
+// otherwise fully enabled.
+func TestPreviewAutoDefaultsToOff(t *testing.T) {
+	cfg, err := Load(writeConfig(t, `anvils:
+  quiet:
+    path: /tmp/quiet
+settings:
+  preview_enabled: true
+`))
+	require.NoError(t, err)
+
+	assert.Empty(t, cfg.Anvils["quiet"].PreviewAuto)
+	assert.Equal(t, PreviewAutoOff, cfg.PreviewAutoForAnvil("quiet"))
+	assert.False(t, cfg.IsPreviewAutoReadyToMerge("quiet"))
+	assert.Empty(t, cfg.Validate())
+}
+
+// TestPreviewAutoForAnvil covers the resolution the ready-to-merge handler
+// relies on, including the two gates it folds in: previews must be enabled
+// globally and the anvil must not have opted out.
+func TestPreviewAutoForAnvil(t *testing.T) {
+	optedOut := false
+	base := func() *Config {
+		cfg := Defaults()
+		cfg.Settings.PreviewEnabled = true
+		cfg.Anvils = map[string]AnvilConfig{
+			"auto":     {Path: "/tmp/auto", PreviewAuto: PreviewAutoReadyToMerge},
+			"messy":    {Path: "/tmp/messy", PreviewAuto: "  Ready_To_Merge  "},
+			"explicit": {Path: "/tmp/explicit", PreviewAuto: PreviewAutoOff},
+			"inherit":  {Path: "/tmp/inherit"},
+			"optout":   {Path: "/tmp/optout", PreviewAuto: PreviewAutoReadyToMerge, PreviewEnabled: &optedOut},
+			"bogus":    {Path: "/tmp/bogus", PreviewAuto: "on-every-poll"},
+		}
+		return &cfg
+	}
+
+	cfg := base()
+	assert.Equal(t, PreviewAutoReadyToMerge, cfg.PreviewAutoForAnvil("auto"))
+	assert.Equal(t, PreviewAutoReadyToMerge, cfg.PreviewAutoForAnvil("messy"), "case and padding are normalized")
+	assert.Equal(t, PreviewAutoOff, cfg.PreviewAutoForAnvil("explicit"))
+	assert.Equal(t, PreviewAutoOff, cfg.PreviewAutoForAnvil("inherit"))
+	assert.Equal(t, PreviewAutoOff, cfg.PreviewAutoForAnvil("optout"),
+		"an anvil that cannot run previews cannot auto-start them either")
+	assert.Equal(t, PreviewAutoOff, cfg.PreviewAutoForAnvil("bogus"),
+		"an unrecognized mode must not be read as an opt-in")
+	assert.Equal(t, PreviewAutoOff, cfg.PreviewAutoForAnvil("unknown-anvil"))
+	assert.True(t, cfg.IsPreviewAutoReadyToMerge("auto"))
+
+	// The global gate wins over any per-anvil opt-in.
+	off := base()
+	off.Settings.PreviewEnabled = false
+	assert.Equal(t, PreviewAutoOff, off.PreviewAutoForAnvil("auto"))
+	assert.False(t, off.IsPreviewAutoReadyToMerge("auto"))
+
+	// A nil config must answer rather than panic — hot reload can hand a
+	// handler a config before one is loaded.
+	var nilCfg *Config
+	assert.Equal(t, PreviewAutoOff, nilCfg.PreviewAutoForAnvil("auto"))
+	assert.False(t, nilCfg.IsPreviewAutoReadyToMerge("auto"))
+}
+
+// TestPreviewAutoValidation rejects a misspelled mode at load time, so the
+// silent-off fallback in PreviewAutoForAnvil is a safety net rather than the
+// only thing standing between a typo and "previews never start".
+func TestPreviewAutoValidation(t *testing.T) {
+	cfg := Defaults()
+	cfg.Anvils["bad"] = AnvilConfig{Path: "/tmp/bad", PreviewAuto: "readytomerge"}
+	assert.Contains(t, cfg.Validate(),
+		`anvil "bad": invalid preview_auto "readytomerge" (must be off|ready_to_merge)`)
+
+	for _, ok := range []string{"", PreviewAutoOff, PreviewAutoReadyToMerge, "READY_TO_MERGE"} {
+		valid := Defaults()
+		valid.Anvils["good"] = AnvilConfig{Path: "/tmp/good", PreviewAuto: ok}
+		assert.Empty(t, valid.Validate(), "preview_auto %q must be accepted", ok)
+	}
+}
+
+// TestPreviewAutoRoundTrip keeps the key readable and writable through the
+// config API's load → save → load path.
+func TestPreviewAutoRoundTrip(t *testing.T) {
+	cfg, err := Load(writeConfig(t, `anvils:
+  api:
+    path: /tmp/api
+    preview_auto: ready_to_merge
+settings:
+  preview_enabled: true
+`))
+	require.NoError(t, err)
+	require.Equal(t, PreviewAutoReadyToMerge, cfg.Anvils["api"].PreviewAuto)
+	assert.Equal(t, PreviewAutoReadyToMerge, cfg.AnvilSettingsMap()["api"].PreviewAuto)
+
+	path := filepath.Join(t.TempDir(), "forge.yaml")
+	require.NoError(t, Save(cfg, path))
+	reloaded, err := Load(path)
+	require.NoError(t, err)
+	assert.Equal(t, PreviewAutoReadyToMerge, reloaded.Anvils["api"].PreviewAuto)
+	assert.True(t, reloaded.IsPreviewAutoReadyToMerge("api"))
+}

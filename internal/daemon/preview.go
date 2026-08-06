@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -11,6 +12,7 @@ import (
 	"github.com/Robin831/Forge/internal/config"
 	"github.com/Robin831/Forge/internal/ipc"
 	"github.com/Robin831/Forge/internal/kiln"
+	"github.com/Robin831/Forge/internal/state"
 	"github.com/Robin831/Forge/internal/worktree"
 )
 
@@ -239,6 +241,93 @@ func (d *Daemon) handlePreviewTeardownOnPRClose(ctx context.Context, event bello
 		if err := mgr.Stop(stopCtx, beadID); err != nil {
 			d.logger.Error("tearing down preview after PR close failed",
 				"bead", beadID, "event", eventType, "error", err)
+		}
+	}()
+}
+
+// handlePreviewAutoStart starts a preview when Bellows announces a PR ready to
+// merge, for anvils that opted in with `preview_auto: ready_to_merge`. It is
+// the automatic half of the Preview button: the ready-to-merge moment is
+// exactly when a human is about to decide on the branch, so having it already
+// running (and, with the QuestGiver integration, already exercised) is worth
+// the memory for the few minutes a review takes.
+//
+// Bellows emits EventPRReadyToMerge on the rising edge only, so this fires once
+// per transition rather than every poll. Everything else is the same
+// bounded resource a manual start gets: the concurrency cap still rejects, the
+// idle reaper still collects, and a bead whose preview is already up just gets
+// its idle clock touched.
+//
+// Skips are silent by design (log only, no Needs Attention): an auto-preview
+// nobody asked for must not turn into an operator task when the cap is full.
+func (d *Daemon) handlePreviewAutoStart(ctx context.Context, event bellows.PREvent) {
+	if event.EventType != bellows.EventPRReadyToMerge {
+		return
+	}
+	mgr := d.previews()
+	if mgr == nil || event.BeadID == "" {
+		return
+	}
+	// External PRs carry a synthetic ext-<number> bead id and a branch Forge
+	// never created — there is nothing to check out under our own naming.
+	if strings.HasPrefix(event.BeadID, "ext-") {
+		return
+	}
+	cfg := d.cfg.Load()
+	anvilName, anvilCfg, ok := d.resolveAnvilConfig(event.Anvil)
+	if !ok || anvilCfg.Path == "" {
+		return
+	}
+	// Covers the global gate, the per-anvil preview_enabled opt-out and the
+	// preview_auto mode in one call.
+	if !cfg.IsPreviewAutoReadyToMerge(anvilName) {
+		return
+	}
+	// An anvil with no manifest could only ever fail the start; skipping here
+	// keeps a warning per ready-to-merge PR out of the log.
+	if !kiln.Exists(anvilCfg.Path) {
+		d.logger.Debug("auto-preview skipped: anvil has no .forge/preview.yaml",
+			"anvil", anvilName, "bead", event.BeadID)
+		return
+	}
+
+	branch := strings.TrimSpace(event.Branch)
+	if branch == "" {
+		branch = worktree.BranchName(event.BeadID)
+	}
+	opts := kiln.StartOptions{
+		BeadID:    event.BeadID,
+		Anvil:     anvilName,
+		AnvilPath: anvilCfg.Path,
+		Branch:    branch,
+	}
+	prNumber := event.PRNumber
+
+	// Detached from the bellows poll context (cancelled at the end of the
+	// cycle, which would abort the setup script mid-run) and off the poll
+	// goroutine, because a start is minutes of git checkout, setup and health
+	// checks that must not stall PR monitoring.
+	go func() {
+		startCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), previewStartTimeout)
+		defer cancel()
+		env, err := mgr.Start(startCtx, opts)
+		if err != nil {
+			if errors.Is(err, kiln.ErrTooManyPreviews) {
+				d.logger.Info("auto-preview skipped: preview_max_concurrent reached",
+					"bead", opts.BeadID, "anvil", opts.Anvil, "pr", prNumber, "reason", err)
+				return
+			}
+			d.logger.Warn("auto-preview on ready-to-merge failed",
+				"bead", opts.BeadID, "anvil", opts.Anvil, "pr", prNumber, "error", err)
+			return
+		}
+		d.logger.Info("auto-preview started on ready-to-merge",
+			"bead", opts.BeadID, "anvil", opts.Anvil, "pr", prNumber,
+			"branch", opts.Branch, "status", env.Status(), "entry_url", env.EntryURL())
+		if d.db != nil {
+			_ = d.db.LogEvent(state.EventPreviewAutoStarted,
+				fmt.Sprintf("preview auto-started for PR #%d (%s)", prNumber, env.Status()),
+				opts.BeadID, opts.Anvil)
 		}
 	}()
 }

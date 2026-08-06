@@ -168,6 +168,7 @@ Each key under `anvils` is the anvil name. The name is used in CLI output, logs,
 | `auto_merge` | bool | `false` | When enabled, PRs that reach the ready-to-merge state (CI passing, no conflicts, no unresolved threads, no pending reviews) are automatically merged using the configured `merge_strategy`. External PRs (`ext-*`) are never auto-merged. |
 | `questgiver_enabled` | bool\|null | null (use global) | Per-anvil override for QuestGiver E2E quest scanning. When null, uses `settings.questgiver_enabled`. Set to `false` to opt this anvil out entirely. |
 | `preview_enabled` | bool\|null | null (use global) | Per-anvil override for Kiln preview environments. When null, uses `settings.preview_enabled`. Set to `false` to opt this anvil out entirely. An anvil without a `.forge/preview.yaml` manifest offers no preview regardless. See [Preview Environments (Kiln)](#preview-environments-kiln). |
+| `preview_auto` | string | `"off"` | When to start a preview for this anvil without being asked. `off` = only on request; `ready_to_merge` = start one when a PR transitions to ready-to-merge. Still bounded by `preview_max_concurrent` and `preview_idle_timeout`; note the memory trade-off in [Automatic previews](#automatic-previews-preview_auto). |
 | `questgiver_setup_cmd` | string | | Shell command to run before executing quests for this anvil (e.g. `"podman compose up -d"`). Runs in the anvil's root directory. If the command fails, quest execution is aborted. Used by `forge quest run` and the QuestGiver monitor. |
 | `questgiver_teardown_cmd` | string | | Shell command to run after executing quests for this anvil (e.g. `"podman compose down"`). Runs in the anvil's root directory. Always runs even if quests fail; teardown failures are logged as warnings rather than errors. |
 | `wicket_enabled` | bool\|null | null (use global) | Per-anvil override for Wicket issue triage scanning. When null, uses `settings.wicket_enabled`. Set to `false` to opt this anvil out entirely. |
@@ -1068,7 +1069,50 @@ anvils:
   my-api:
     path: /home/robin/source/MyApi
     preview_enabled: true        # null (omitted) inherits settings.preview_enabled
+    preview_auto: ready_to_merge # off (default) | ready_to_merge
 ```
+
+### Automatic previews (`preview_auto`)
+
+By default a preview starts only when someone asks for one — the Preview button
+in Hearth 2.0, or `preview_start` over IPC. An anvil can instead opt into
+starting one automatically:
+
+| Value | Behavior |
+|-------|----------|
+| `off` (default, also the value of an omitted key) | Previews start only on request. |
+| `ready_to_merge` | Bellows starts a preview the moment one of this anvil's PRs transitions to ready-to-merge (CI green, no conflicts, no unresolved threads or pending reviews). |
+
+`ready_to_merge` fires **once per transition**, not once per poll: a PR that
+stays ready does not restart its preview, and a PR that goes back to needing
+fixes and becomes ready again gets a fresh one. Automatic starts are subject to
+exactly the same limits as manual ones — `settings.preview_enabled` and the
+anvil's `preview_enabled` must both allow previews, the anvil needs a
+`.forge/preview.yaml`, `preview_max_concurrent` still applies, and the idle
+reaper still tears the preview down after `preview_idle_timeout`. When the cap
+is already reached the auto-start is **skipped silently**: the reason is logged
+(`auto-preview skipped: preview_max_concurrent reached`) but nothing is raised
+for human attention, because nobody asked for that preview in the first place.
+A successful automatic start is recorded as a `preview_auto_started` event, so
+a preview appearing on its own is explainable from the event log. Previews are
+never auto-started for external (`ext-*`) PRs.
+
+Combined with the QuestGiver integration, `ready_to_merge` gives per-PR browser
+E2E: the branch comes up on its own and the anvil's quests run against it while
+the PR waits to be merged.
+
+**Memory trade-off.** This is off by default because it inverts the cost model.
+An on-demand preview exists only for the minutes someone is looking at it; with
+`ready_to_merge`, every PR that goes green brings a full application stack up —
+a database, an API process, a dev server — and holds that memory until the idle
+timeout expires (30m by default) or the PR merges. On a box merging several PRs
+an hour that is a permanent multi-hundred-megabyte resident cost rather than an
+occasional one, and previews that nobody opens still pay it. Before enabling
+it, size `preview_max_concurrent` against the memory the box can actually
+spare (the cap is what stops a burst of ready PRs from exhausting it — starts
+past the cap are dropped, not queued) and consider shortening
+`preview_idle_timeout`, since an auto-started preview has no one watching to
+stop it.
 
 **Security note.** Preview URLs are served by the previewed application itself,
 not by Hearth, so they are **not** behind the Hearth login. The default
