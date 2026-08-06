@@ -263,6 +263,17 @@ dependency (1 → 2/3 in parallel → 4 → 5).
    (`{{.BaseURL}}` already exists in quest templating) and attach results +
    screenshots to the PR (via the existing ingot/assay comment machinery).
    This is per-PR browser E2E — arguably the biggest payoff of the feature.
+
+   **Status: shipped.** Per-anvil `preview_quests` opt-in (default off) plus
+   `Monitor.RunQuestsForPreview`; a **Run quests** action on the Hearth 2.0
+   preview panel with per-quest rows and screenshot thumbnails; results posted
+   to the bead's open PR as one comment, upserted per head SHA against a
+   `<!-- forge-preview-quest: <sha> -->` marker. Two deliberate departures
+   from the sketch above: runs live in daemon memory only (no `state.db` row,
+   no ingot record), and reporting creates **no check run and no commit
+   status** — a preview quest result is informational and must never gate a
+   merge. User docs:
+   [configuration.md § Quests against previews](../configuration.md#quests-against-previews-preview_quests).
 9. **Auto-preview on ready-to-merge.** Per-anvil opt-in
    (`preview_auto: ready_to_merge`), still subject to cap + idle reaper.
 

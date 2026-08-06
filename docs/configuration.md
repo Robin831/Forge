@@ -1193,19 +1193,63 @@ Each run is tagged with the preview id and the head SHA it ran against, so
 downstream reporting can post results once per commit rather than once per
 attempt.
 
-**Running them from Hearth 2.0.** The bead-detail preview panel grows a **Run
-quests** button for anvils that opted in, and only while the preview is healthy
-— the same two gates the backend enforces, so the endpoint answers `403` to
-anyone who posts without them. A run is dispatched asynchronously: the panel
-gets a run id immediately and polls it, showing the overall status
-(running/passed/failed/skipped/errored), a row per quest with its failing step
-and message, and thumbnails of any screenshots the quests captured.
+Quests are **never** started automatically by opting in: `preview_quests: true`
+only makes the action available. A run happens when someone asks for one (the
+Hearth 2.0 button, or `preview_quest_run` over IPC). Nor does a preview run use
+the anvil's `questgiver_setup_cmd` / `questgiver_teardown_cmd` — those exist to
+bring an environment up for the scheduled scan, and the preview *is* the
+environment. Preview runs also create no beads, unlike a failing scheduled scan.
 
-**Results are informational.** Nothing reads a preview quest run back: no
-pipeline stage, no Bellows check and no merge gate consults it, and a run is
-never persisted to `state.db` — it lives in daemon memory for the life of the
-preview it describes. A red run is a prompt for whoever is reviewing the branch,
-not a block on it, which is what the panel says next to a failure.
+**Where the results appear.** In two places, both informational:
+
+1. **The Hearth 2.0 preview panel.** The bead-detail preview panel grows a **Run
+   quests** button for anvils that opted in, and only while the preview is
+   healthy — the same two gates the backend enforces, so the endpoint answers
+   `403` to anyone who posts without them. A run is dispatched asynchronously:
+   the panel gets a run id immediately and polls it, showing the overall status
+   (running/passed/failed/skipped/errored), a row per quest with its failing step
+   and message, and thumbnails of any screenshots the quests captured.
+2. **A comment on the bead's pull request.** When a run reaches a verdict and the
+   bead has an open PR, Forge posts a single comment with a pass/fail table (one
+   row per quest, with duration and the failing step's message) and a screenshots
+   section. The comment is keyed to the head SHA by a hidden
+   `<!-- forge-preview-quest: <sha> -->` marker, so re-running the same commit
+   **edits** its existing comment while a new head gets a fresh one. Runs that
+   were skipped by a gate, or that fell over before exercising the branch, are
+   not reported at all — and neither is a bead with no open PR.
+
+Forge hosts no artifact store, so screenshots are listed by their path on the
+Forge host in the PR comment rather than embedded. The panel serves them
+directly and does show thumbnails.
+
+**Results never block anything.** This is a guarantee, not a default:
+
+- No check run and no commit status is ever created from a quest run, so a red
+  run cannot turn a PR's merge box red.
+- Nothing reads a run back — not a pipeline stage, not Bellows, not the merge
+  path, not Warden or Assay. The only reader is the status command the panel
+  polls.
+- A run is never persisted to `state.db`. It lives in daemon memory for the life
+  of the daemon and is gone after a restart, which is what keeps the point above
+  true by construction.
+- A failure to post the PR comment (no `gh`, no network, a lost race with a
+  closing PR) is logged and dropped; it affects neither the run nor the PR.
+
+A red run is a prompt for whoever is reviewing the branch, not a block on it,
+which is what both the panel and the PR comment say next to a failure.
+
+**Troubleshooting.**
+
+| Symptom | Cause and fix |
+|---------|---------------|
+| No **Run quests** button on the panel | The anvil is not in the opt-in set. Check `preview_quests: true` under the anvil (not under `settings`) and that previews are enabled for it; the previews payload exposes the opted-in anvils as `quest_anvils`. |
+| Run rejected with *"preview … is starting/failed, not healthy"* | Every service must pass its health check before quests run — a half-started stack produces browser failures that say nothing about the branch. Watch the per-service health in the panel and read the failing service's log (`~/.forge/logs/<beadID>/preview-<service>.log`, also reachable from the panel). A service that never goes healthy is usually a wrong `health.path`/`health.port` in `.forge/preview.yaml`, or a `setup` command that failed. |
+| Run rejected with *"no preview running for bead …"* | The preview was torn down between the page load and the click — most often by the idle reaper (`preview_idle_timeout`), by its PR merging or closing, or by LRU eviction when `preview_evict_lru` is on. Start it again. |
+| Run rejected with *"has no entry service URL"* | The manifest's entry service resolved to nothing to point a browser at. Exactly one service must carry `entry: true` in `.forge/preview.yaml` when the manifest declares more than one; a single-service manifest is the entry implicitly. |
+| Quests fail immediately on a healthy preview | The steps are probably not using the placeholder. Only `{{.BaseURL}}` in a step's `url`/`value` is redirected at the preview; a step with a hardcoded `http://localhost:3000` still talks to whatever is on that port, not the preview. |
+| No screenshots in the panel or the comment | Screenshots are only captured by explicit `screenshot` steps — a quest without one produces none. Beyond that: the panel serves an image by its position in the run, so a capture whose file was moved or deleted since the run reads as *"screenshot file is gone"*, and only image extensions are served. |
+| Screenshots named by path instead of shown in the PR comment | Expected. No screenshot uploader is wired (Forge has no artifact store), so the comment names the file on the Forge host. The panel's thumbnails are the way to look at them. |
+| Panel shows no run after a daemon restart | Runs are memory-only by design (see above). The PR comment from the last run survives; the run itself does not. |
 
 **Security note.** Preview URLs are served by the previewed application itself,
 not by Hearth, so they are **not** behind the Hearth login. The default
