@@ -266,6 +266,10 @@ func TestResumeWithMessage_BranchGoneDowngradesToFresh(t *testing.T) {
 		return smith.NewProcessForTest(&smith.Result{ExitCode: 0, SessionID: "sess-fresh", ResultSubtype: "success"}), nil
 	}
 	params.EmptyDiffChecker = func(_, _ string) bool { return false }
+	// The stubbed Smith never commits, so the recreated branch is literally
+	// empty against origin/main. This test is about the resume downgrade, not
+	// the empty-branch guard, so report the branch as carrying work.
+	params.CommitCounter = func(_ context.Context, _, _, _ string) (int, error) { return 1, nil }
 	params.WardenReviewer = func(_ context.Context, _, _, _, _, _ string, _ *state.DB, _ string, _ ...provider.Provider) (*warden.ReviewResult, error) {
 		return &warden.ReviewResult{Verdict: warden.VerdictApprove, Summary: "LGTM"}, nil
 	}

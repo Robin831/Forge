@@ -64,6 +64,11 @@ type Params struct {
 	CopilotCombinedSmithWarden  bool
 	CopilotWardenSampleRate     float64
 
+	// EmptyDiffAction mirrors pipeline.Params.EmptyDiffAction — it is threaded
+	// into each child pipeline so a child whose work already landed on the
+	// feature branch is recognised instead of failing at PR creation.
+	EmptyDiffAction string
+
 	// WorkerID is the state DB worker record ID for this crucible run.
 	// When set, the worker's PID and log_path are updated when the schematic
 	// subprocess starts so that hearth can tail logs in real time.
@@ -402,6 +407,24 @@ func Run(ctx context.Context, p Params) *Result {
 			continue
 		}
 
+		// An empty branch is the same class of outcome: the child's work is
+		// already on the feature branch (an earlier child shipped it), so there
+		// is nothing to open a PR for. Close it and continue rather than
+		// pausing the epic on a failure that no retry can clear.
+		if childResult.EmptyDiff {
+			log.Info("crucible child produced an empty branch, closing and continuing",
+				"child", child.ID, "base", childResult.EmptyDiffBase)
+			p.emitEvent(state.EventSmithEmptyResult,
+				fmt.Sprintf("Crucible %s: child %s has no commits vs %s — already on the feature branch",
+					p.ParentBead.ID, child.ID, childResult.EmptyDiffBase),
+				child.ID)
+			if err := p.closeBead(ctx, child.ID, anvilPath); err != nil {
+				log.Warn("failed to close empty-branch child bead", "child", child.ID, "error", err)
+			}
+			completedChildren++
+			continue
+		}
+
 		if childResult.Error != nil || !childResult.Success {
 			reason := "pipeline failed"
 			if childResult.Error != nil {
@@ -666,6 +689,7 @@ func (p *Params) runChildPipeline(ctx context.Context, child poller.Bead, baseBr
 		WardenFullRereview:          p.WardenFullRereview,
 		CopilotCombinedSmithWarden:  p.CopilotCombinedSmithWarden,
 		CopilotWardenSampleRate:     p.CopilotWardenSampleRate,
+		EmptyDiffAction:             p.EmptyDiffAction,
 	}
 
 	if p.PipelineRunner != nil {

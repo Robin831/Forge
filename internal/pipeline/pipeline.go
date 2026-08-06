@@ -20,6 +20,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -252,6 +253,21 @@ type Outcome struct {
 	NoChangesReason string
 	// ChangelogSummary is the extracted changelog fragment bullets (if any).
 	ChangelogSummary string
+	// EmptyDiff is true when the run reached Warden approval but the branch
+	// carries no commits relative to its base — the work is already on the base
+	// branch (e.g. a sibling PR shipped it first). PR creation is skipped: it
+	// would fail with "No commits between <base> and <branch>" and every retry
+	// would reproduce the identical empty branch. Success is false, but this is
+	// a terminal outcome, not a failure: callers must not schedule a retry or
+	// count it against the dispatch circuit breaker.
+	EmptyDiff bool
+	// EmptyDiffAction is the resolved settings.empty_diff_action for this run
+	// (config.EmptyDiffActionClose or config.EmptyDiffActionAttention). Only
+	// meaningful when EmptyDiff is true.
+	EmptyDiffAction string
+	// EmptyDiffBase is the git ref the branch was compared against (e.g.
+	// "origin/main"). Only meaningful when EmptyDiff is true.
+	EmptyDiffBase string
 }
 
 // DiffStat summarises the diff produced by Smith for skip-warden evaluation.
@@ -468,6 +484,10 @@ type Params struct {
 	// EmptyDiffChecker overrides hasEmptyDiff. Used in tests to simulate a
 	// dirty worktree without depending on a real git repository.
 	EmptyDiffChecker func(worktreePath, preSmithSHA string) bool
+	// CommitCounter overrides countCommitsAhead, the git rev-list call that
+	// decides whether the approved branch actually carries commits against its
+	// base. Used in tests to simulate an empty branch without a real repo.
+	CommitCounter func(ctx context.Context, worktreePath, base, branch string) (int, error)
 
 	// WorkerID is the pre-generated worker ID to use for the state.db record.
 	// When set (e.g. because the daemon inserted a pending worker row at claim
@@ -492,6 +512,11 @@ type Params struct {
 	// Copilot provider entry when spawning the Schematic pre-analysis stage.
 	// Non-Copilot providers are unaffected.
 	SchematicModelOverride string
+
+	// EmptyDiffAction carries settings.empty_diff_action into the pipeline so
+	// the resolved action travels with the outcome. Empty or unrecognised
+	// values resolve to config.EmptyDiffActionAttention. See Outcome.EmptyDiff.
+	EmptyDiffAction string
 
 	// CopilotSkipWardenSmallDiffs, when true, allows the pipeline to auto-approve
 	// small, low-risk diffs without running Warden when the primary provider is
@@ -652,6 +677,32 @@ func (p *Params) schematicProviders(providers []provider.Provider) []provider.Pr
 		}
 	}
 	return cloned
+}
+
+// countBranchCommits counts the commits the worktree's branch carries against
+// the base it will be merged into. It reports ok=false when the answer is
+// unknown — the base ref could not be resolved, or git failed — so callers fall
+// through to their normal path rather than mistaking an unknown for an empty
+// branch. The resolved base ref is returned for diagnostics.
+func (p *Params) countBranchCommits(ctx context.Context, workerID string, wt *worktree.Worktree) (base string, count int, ok bool) {
+	if wt == nil || wt.Path == "" || wt.Branch == "" {
+		return "", 0, false
+	}
+	base = resolveBaseRef(ctx, wt.Path, p.BaseBranch)
+	if base == "" {
+		log.Printf("[pipeline:%s] Cannot resolve base ref for branch %s — skipping empty-branch check", workerID, wt.Branch)
+		return "", 0, false
+	}
+	counter := p.CommitCounter
+	if counter == nil {
+		counter = countCommitsAhead
+	}
+	count, err := counter(ctx, wt.Path, base, wt.Branch)
+	if err != nil {
+		log.Printf("[pipeline:%s] Commit count against %s failed — skipping empty-branch check: %v", workerID, base, err)
+		return base, 0, false
+	}
+	return base, count, true
 }
 
 // releaseBead resets a bead status to open via the bd CLI. It always uses a
@@ -2601,6 +2652,39 @@ func Run(ctx context.Context, p Params) *Outcome {
 
 			log.Printf("[pipeline:%s] Warden approved", workerID)
 			outcome.Verdict = warden.VerdictApprove
+
+			// A clean run can still leave an empty branch: the change may have
+			// landed on the base branch while this bead was in flight (a
+			// sibling PR shipping the same work), so Smith rebuilds the same
+			// artifacts, commits nothing, and Temper/Warden happily pass. PR
+			// creation would then fail with "No commits between <base> and
+			// <branch>" and every retry would reproduce it, so short-circuit
+			// here with a distinct, non-retryable outcome instead.
+			if base, count, ok := p.countBranchCommits(ctx, workerID, wt); ok && count == 0 {
+				action, recognised := config.ResolveEmptyDiffAction(p.EmptyDiffAction)
+				if !recognised {
+					log.Printf("[pipeline:%s] Unrecognised empty_diff_action %q — falling back to %q", workerID, p.EmptyDiffAction, action)
+				}
+				log.Printf("[pipeline:%s] Branch %s has no commits vs %s — skipping PR creation (action=%s)", workerID, wt.Branch, base, action)
+				outcome.EmptyDiff = true
+				outcome.EmptyDiffAction = action
+				outcome.EmptyDiffBase = base
+				_ = p.DB.UpdateWorkerStatus(workerID, state.WorkerDone)
+				// The review did approve — record it so the ingot does not sit
+				// in "warden" forever. The missing PR is explained by the
+				// smith_empty_result event below.
+				if p.DB != nil {
+					logIngotErr(workerID, "approved", ingot.UpdateIngotStatus(p.DB.Conn(), p.Bead.ID, p.AnvilName, ingot.StatusApproved))
+				}
+				_ = p.DB.LogEvent(state.EventWardenPass, reviewResult.Summary, p.Bead.ID, p.AnvilName)
+				_ = p.DB.LogEvent(state.EventSmithEmptyResult,
+					fmt.Sprintf("Branch %s has no commits vs %s — the work is already on the base branch; skipping PR creation (action=%s)",
+						wt.Branch, base, action),
+					p.Bead.ID, p.AnvilName)
+				outcome.Duration = time.Since(start)
+				return outcome
+			}
+
 			outcome.Success = true
 			_ = p.DB.UpdateWorkerStatus(workerID, state.WorkerMonitoring)
 			_ = p.DB.UpdateWorkerPhase(workerID, "bellows")
@@ -2744,6 +2828,55 @@ func resolveTemperBaseRef(ctx context.Context, worktreePath, baseBranch string) 
 		}
 	}
 	return ""
+}
+
+// resolveBaseRef returns the remote-tracking ref the worktree's branch will be
+// merged into: "origin/<baseBranch>" when a base branch is known (e.g. a
+// Crucible child targeting its epic branch), otherwise origin/main or
+// origin/master, whichever exists. Returns an empty string when none resolves.
+//
+// Unlike resolveTemperBaseRef this runs with GIT_DIR/GIT_WORK_TREE stripped, so
+// a daemon that itself lives in a git worktree cannot have its own repository
+// answer for the anvil's.
+func resolveBaseRef(ctx context.Context, worktreePath, baseBranch string) string {
+	verify := func(ref string) bool {
+		cmd := executil.HideWindow(exec.CommandContext(ctx, "git", "-C", worktreePath, "rev-parse", "--verify", ref))
+		cmd.Env = gitCmdCleanEnv()
+		return cmd.Run() == nil
+	}
+	if baseBranch != "" {
+		ref := "origin/" + baseBranch
+		if verify(ref) {
+			return ref
+		}
+		return ""
+	}
+	for _, candidate := range []string{"origin/main", "origin/master"} {
+		if verify(candidate) {
+			return candidate
+		}
+	}
+	return ""
+}
+
+// countCommitsAhead returns how many commits branch carries that base does not,
+// i.e. `git rev-list --count <base>..<branch>`. This is the same comparison the
+// forge (GitHub/GitLab/Gitea) performs when opening a PR, so a zero here means
+// PR creation would fail with "No commits between <base> and <branch>".
+func countCommitsAhead(ctx context.Context, worktreePath, base, branch string) (int, error) {
+	cmd := executil.HideWindow(exec.CommandContext(ctx, "git", "-C", worktreePath,
+		"rev-list", "--count", base+".."+branch))
+	cmd.Env = gitCmdCleanEnv()
+	out, err := cmd.Output()
+	if err != nil {
+		return 0, fmt.Errorf("git rev-list --count %s..%s: %w", base, branch, err)
+	}
+	trimmed := strings.TrimSpace(string(out))
+	n, err := strconv.Atoi(trimmed)
+	if err != nil {
+		return 0, fmt.Errorf("git rev-list --count %s..%s: unparseable output %q: %w", base, branch, trimmed, err)
+	}
+	return n, nil
 }
 
 // hasEmptyDiff reports whether the worktree has no uncommitted changes and no

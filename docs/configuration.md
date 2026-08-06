@@ -58,6 +58,7 @@ settings:
   max_lifecycle_workers: 2          # Concurrent quench/burnish/rebase/assay fix workers
   burnish_verify_timeout: 5m        # Verify (Temper) deadline within one review-fix attempt
   merge_strategy: squash
+  empty_diff_action: attention      # Approved branch with no commits vs base: attention | close
   daily_cost_limit: 50.00
   per_worker_cost_estimate: 2.00    # In-flight spend reserved per active worker for the cost gate
   copilot_daily_request_limit: 300  # 300 for Pro, 1500 for Pro+
@@ -517,6 +518,7 @@ anvils:
 | `max_rebase_attempts` | int | `3` | `1` | Maximum conflict rebase attempts per PR before marking as exhausted. |
 | `max_lifecycle_workers` | int | `2` | `0` (use default) | Global cap on concurrent lifecycle/bellows fix workers (quench/cifix, burnish/reviewfix, rebase, assay) across all PRs and anvils. Each fix worker spawns its own Claude session and is **not** counted against `max_total_smiths`, so this independent ceiling prevents a burst of stuck PRs from fanning out unbounded Claude sessions and OOM-crashing the host. `0` or unset falls back to the default of `2`. |
 | `merge_strategy` | string | `"squash"` | | How PRs are merged from Hearth TUI. Valid: `squash`, `merge`, `rebase`. |
+| `empty_diff_action` | string | `"attention"` | | What to do when a run is approved but its branch has **no commits** against the base — the work already landed on the base branch (e.g. a sibling PR shipped it first). The pipeline skips PR creation (it would fail with `No commits between <base> and <branch>`) and records a `smith_empty_result` event; the outcome never schedules a retry or counts against the dispatch circuit breaker, because a re-run reproduces the identical empty branch. Valid: `attention` (raise a Needs Attention entry and leave the bead open for the operator) and `close` (close the bead with a note). Unrecognised values log a warning and fall back to `attention`. |
 | `stale_interval` | duration | `5m` | `30s` or `0` | How long a worker's log can go without modification before marking as stalled. `0` disables stale detection. |
 | `go_race_detection` | bool | `false` | | Enable the `-race` flag for Go tests in Temper globally. Per-anvil `go_race_detection` overrides this. |
 | `temper_step_timeout` | duration | `5m` | | Default timeout applied to a Temper verification step whose own per-step `timeout` is unset. A per-step timeout still overrides this. Raise it for long-but-legitimate test suites so they finish instead of being killed and reported as a phantom failure (timeouts are retried once without Smith, then escalated). |
@@ -1304,6 +1306,7 @@ Environment variables with the `FORGE_` prefix override YAML values. Nested keys
 | `FORGE_SETTINGS_MAX_LIFECYCLE_WORKERS` | `settings.max_lifecycle_workers` |
 | `FORGE_SETTINGS_BURNISH_VERIFY_TIMEOUT` | `settings.burnish_verify_timeout` |
 | `FORGE_SETTINGS_MERGE_STRATEGY` | `settings.merge_strategy` |
+| `FORGE_SETTINGS_EMPTY_DIFF_ACTION` | `settings.empty_diff_action` |
 | `FORGE_SETTINGS_STALE_INTERVAL` | `settings.stale_interval` |
 | `FORGE_SETTINGS_TEMPER_STEP_TIMEOUT` | `settings.temper_step_timeout` |
 | `FORGE_SETTINGS_TEMPER_GIT_TIMEOUT` | `settings.temper_git_timeout` |
@@ -1407,6 +1410,7 @@ The daemon watches `forge.yaml` via fsnotify. When the file changes, **only a su
 - `max_lifecycle_workers` is re-read and applied to subsequent lifecycle fix-worker dispatches
 - `claude_flags` are re-read and used for newly started smiths
 - `smith_providers` and `stage_providers` are re-read and used for newly dispatched beads
+- `empty_diff_action` is re-read per dispatch and applies to beads dispatched after the change
 - `copilot_combined_smith_warden` toggles combined Smith+Warden mode at runtime
 - `copilot_warden_sample_rate` adjusts the sampling rate at runtime
 - `smelter_enabled` enables or disables the Smelter background process at runtime

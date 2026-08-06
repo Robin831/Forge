@@ -136,6 +136,9 @@ func toastForEvent(ev EventItem) (message string, isError bool, ok bool) {
 	case "smith_recheck":
 		return "↻ " + firstOf(msg, "Smith RECHECK_PREVIOUS"), false, true
 
+	case "smith_empty_result":
+		return "⚠ " + firstOf(msg, "Empty branch — no commits vs base, PR skipped"), true, true
+
 	case "pr_merge_failed":
 		return "✗ " + firstOf(msg, "PR merge failed"), true, true
 

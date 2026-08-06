@@ -2375,6 +2375,12 @@ const (
 	EventNoChangesNeeded     EventType = "no_changes_needed"
 	EventPRCreationFailed    EventType = "pr_creation_failed"
 	EventPRAlreadyExists     EventType = "pr_already_exists"
+	// EventSmithEmptyResult fires when a run is approved but its branch carries
+	// no commits against the base — the work already landed on the base branch,
+	// so PR creation is skipped. Terminal and non-retryable: the same empty
+	// branch would come back from every re-dispatch.
+	EventSmithEmptyResult EventType = "smith_empty_result"
+
 	// EventPRCreateRecovered fires when the manual create-PR-from-existing-branch
 	// recovery opens (or registers) a PR for an already-pushed forge branch
 	// without re-running Smith, clearing the needs_human escalation.

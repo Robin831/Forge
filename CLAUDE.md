@@ -175,7 +175,14 @@ bd ready (poller) → pipeline.Run()
   → [before_temper hook] → temper.Run (build/test/lint) → [after_temper hook]
   → [before_warden hook] → warden.Review (second claude session) → [after_warden hook]
   → if request_changes: loop back to Smith (max max_review_attempts iterations)
-  → if approved: vcs.Provider.CreatePR (gh pr create)
+  → if approved: empty-branch guard — git rev-list --count <base>..<branch>
+    → 0 commits (the work already landed on the base branch) → skip CreatePR,
+      emit smith_empty_result, and resolve per settings.empty_diff_action
+      (attention = Needs Attention entry, close = bd close with a note). Never
+      retried and never counted against the dispatch circuit breaker: a
+      re-dispatch would rebuild the identical empty branch. An unresolvable
+      base ref or a failed rev-list falls through to the normal path.
+  → if approved (branch has commits): vcs.Provider.CreatePR (gh pr create)
   → bellows monitors open PRs (CI fix, review fix, rebase)
     → Assay trigger gate → assay.Review (multi-pass AI PR review)
       → diff.* shapes the PR diff → Triage + parallel deep passes

@@ -1629,3 +1629,43 @@ settings:
 	assert.Equal(t, 45*time.Minute, cfg.Settings.ForgeChat.TurnExpiry)
 	assert.Equal(t, 500, cfg.Settings.ForgeChat.TurnRetentionCap)
 }
+
+// TestResolveEmptyDiffAction verifies the empty_diff_action enum, including the
+// conservative fallback: an unrecognised value must never auto-close beads.
+func TestResolveEmptyDiffAction(t *testing.T) {
+	cases := []struct {
+		raw    string
+		want   string
+		wantOK bool
+	}{
+		{"", EmptyDiffActionAttention, true},
+		{"attention", EmptyDiffActionAttention, true},
+		{"close", EmptyDiffActionClose, true},
+		{"  Close  ", EmptyDiffActionClose, true},
+		{"ATTENTION", EmptyDiffActionAttention, true},
+		{"delete", EmptyDiffActionAttention, false},
+	}
+	for _, tc := range cases {
+		t.Run("raw="+tc.raw, func(t *testing.T) {
+			action, ok := ResolveEmptyDiffAction(tc.raw)
+			assert.Equal(t, tc.want, action)
+			assert.Equal(t, tc.wantOK, ok)
+			assert.Equal(t, tc.want, SettingsConfig{EmptyDiffAction: tc.raw}.ResolvedEmptyDiffAction())
+		})
+	}
+}
+
+// TestLoad_EmptyDiffAction_ParsedFromFile verifies settings.empty_diff_action is
+// read off the config file.
+func TestLoad_EmptyDiffAction_ParsedFromFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "forge.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(`
+settings:
+  empty_diff_action: close
+`), 0o644))
+
+	cfg, err := Load(path)
+	require.NoError(t, err)
+	assert.Equal(t, EmptyDiffActionClose, cfg.Settings.ResolvedEmptyDiffAction())
+}

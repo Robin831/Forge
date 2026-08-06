@@ -625,6 +625,16 @@ type SettingsConfig struct {
 	// MergeStrategy controls how PRs are merged from the Hearth TUI.
 	// Valid values: "squash" (default), "merge", "rebase".
 	MergeStrategy string `mapstructure:"merge_strategy" yaml:"merge_strategy,omitempty"`
+	// EmptyDiffAction controls what happens when a pipeline run is approved but
+	// its branch has no commits relative to the base branch — the work already
+	// landed on main (e.g. a sibling PR shipped the same change first). Opening
+	// a PR in that state always fails ("No commits between main and
+	// forge/<bead>") and every retry reproduces the same empty branch, so the
+	// outcome is terminal either way. Valid values: "attention" (default —
+	// raise a Needs Attention entry for the operator) and "close" (close the
+	// bead with a note). Unrecognised values fall back to "attention".
+	// See EmptyDiffAction / ResolveEmptyDiffAction.
+	EmptyDiffAction string `mapstructure:"empty_diff_action" yaml:"empty_diff_action,omitempty"`
 	// StaleInterval is how long a worker's log file can go without being
 	// modified before the worker is marked as stalled. A value of 0 disables
 	// stale detection. Defaults to 5 minutes.
@@ -1156,6 +1166,7 @@ func (s SettingsConfig) MarshalYAML() (interface{}, error) {
 		MaxLifecycleWorkers       int                 `yaml:"max_lifecycle_workers"`
 		BurnishVerifyTimeout      string              `yaml:"burnish_verify_timeout,omitempty"`
 		MergeStrategy             string              `yaml:"merge_strategy,omitempty"`
+		EmptyDiffAction           string              `yaml:"empty_diff_action,omitempty"`
 		StaleInterval             string              `yaml:"stale_interval"`
 		DepcheckInterval          string              `yaml:"depcheck_interval,omitempty"`
 		DepcheckTimeout           string              `yaml:"depcheck_timeout,omitempty"`
@@ -1241,6 +1252,7 @@ func (s SettingsConfig) MarshalYAML() (interface{}, error) {
 			return ""
 		}(),
 		MergeStrategy:             s.MergeStrategy,
+		EmptyDiffAction:           s.EmptyDiffAction,
 		StaleInterval:             durationString(s.StaleInterval),
 		VulncheckEnabled:          s.VulncheckEnabled,
 		AnvilHealthCheck:          s.AnvilHealthCheck,
@@ -1445,6 +1457,42 @@ func (s SettingsConfig) IsQuestgiverEnabled() bool {
 		return false
 	}
 	return *s.QuestgiverEnabled
+}
+
+// Actions for settings.empty_diff_action — what to do with a bead whose
+// approved branch turns out to have no commits against its base.
+const (
+	// EmptyDiffActionAttention raises a Needs Attention entry and leaves the
+	// bead open for the operator to judge. This is the default.
+	EmptyDiffActionAttention = "attention"
+	// EmptyDiffActionClose closes the bead with a note explaining that the
+	// work is already present on the base branch.
+	EmptyDiffActionClose = "close"
+)
+
+// ResolveEmptyDiffAction normalises a settings.empty_diff_action value. It
+// returns the action to apply and whether the raw value was recognised; an
+// empty value is a valid "use the default" and reports ok=true, while an
+// unrecognised value falls back to EmptyDiffActionAttention with ok=false so
+// the caller can warn about the typo instead of silently closing beads.
+func ResolveEmptyDiffAction(raw string) (action string, ok bool) {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "":
+		return EmptyDiffActionAttention, true
+	case EmptyDiffActionAttention:
+		return EmptyDiffActionAttention, true
+	case EmptyDiffActionClose:
+		return EmptyDiffActionClose, true
+	default:
+		return EmptyDiffActionAttention, false
+	}
+}
+
+// ResolvedEmptyDiffAction returns the effective empty-diff action, falling back
+// to EmptyDiffActionAttention for unset or unrecognised values.
+func (s SettingsConfig) ResolvedEmptyDiffAction() string {
+	action, _ := ResolveEmptyDiffAction(s.EmptyDiffAction)
+	return action
 }
 
 // Kiln preview environment defaults. See docs/plans/preview-environments.md.
