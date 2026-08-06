@@ -58,7 +58,7 @@ function setApiResponses(beadDetail: BeadDetailResponse | null) {
 // actually about. `enabled: false` keeps the preview surface off the page
 // entirely.
 function previewsResponse(): Response {
-  return new Response(JSON.stringify({ enabled: false, anvils: [], previews: [] }), {
+  return new Response(JSON.stringify({ enabled: false, anvils: [], quest_anvils: [], previews: [] }), {
     status: 200,
     headers: { 'Content-Type': 'application/json' },
   })

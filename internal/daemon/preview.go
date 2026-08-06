@@ -538,7 +538,11 @@ func (d *Daemon) handlePreviewStop(p ipc.PreviewActionPayload) ipc.Response {
 // polls this endpoint, so counting a poll as activity would keep every preview
 // alive forever and turn the idle reaper off in practice.
 func (d *Daemon) handlePreviewList() ipc.Response {
-	out := ipc.PreviewListResponse{Anvils: []string{}, Previews: []ipc.PreviewInfo{}}
+	out := ipc.PreviewListResponse{
+		Anvils:      []string{},
+		QuestAnvils: []string{},
+		Previews:    []ipc.PreviewInfo{},
+	}
 	cfg := d.cfg.Load()
 	var idle time.Duration
 	if cfg != nil {
@@ -552,6 +556,7 @@ func (d *Daemon) handlePreviewList() ipc.Response {
 	}
 	out.Enabled = true
 	out.Anvils = previewableAnvils(cfg)
+	out.QuestAnvils = previewQuestAnvilNames(cfg)
 	now := time.Now()
 	for _, env := range mgr.List() {
 		out.Previews = append(out.Previews, previewInfo(env.Record(), env.EntryURL(), idle, now))

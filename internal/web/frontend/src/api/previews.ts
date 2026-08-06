@@ -1,7 +1,8 @@
 // Typed client for the Kiln preview endpoints. Kept in its own module (rather
 // than in api.ts) because the whole preview surface — trigger button, status
-// chip, bead-detail panel, previews overview — reads from these four calls, and
-// the wire shapes mirror internal/web/preview_handlers.go field for field.
+// chip, bead-detail panel, previews overview, quest runs — reads from these
+// calls, and the wire shapes mirror internal/web/preview_handlers.go and
+// preview_quest_handlers.go field for field.
 
 import { ApiError, type QueuedBody } from '../api'
 
@@ -56,6 +57,12 @@ export interface PreviewSummary {
 export interface PreviewsListResponse {
   enabled: boolean
   anvils: string[]
+  /**
+   * Anvils that additionally opted into running their E2E quests against a
+   * preview (`preview_quests`). Gates the "Run quests" action the same way
+   * `anvils` gates the Preview one.
+   */
+  quest_anvils: string[]
   previews: PreviewSummary[]
 }
 
@@ -119,6 +126,7 @@ export async function fetchPreviews(signal?: AbortSignal): Promise<PreviewsListR
   return {
     enabled: body.enabled === true,
     anvils: body.anvils ?? [],
+    quest_anvils: body.quest_anvils ?? [],
     previews: body.previews ?? [],
   }
 }
@@ -182,4 +190,125 @@ export function pollURLFor(queued: QueuedBody | null | undefined): string | null
   if (queued.poll_url) return queued.poll_url
   if (queued.request_id) return `/api/requests/${encodeURIComponent(queued.request_id)}`
   return null
+}
+
+// --- preview quest runs ----------------------------------------------------
+//
+// Running the anvil's E2E quests against a live preview. The wire shapes mirror
+// internal/web/preview_quest_handlers.go.
+//
+// A run is informational: it reports what a browser found on a preview of one
+// branch, and nothing on the backend reads the result back. A failed run never
+// blocks a merge, a pipeline stage or a PR — which is why the UI styles it as a
+// warning rather than an error.
+
+// QuestRunStatus is the lifecycle of one run. `skipped` means a gate said no
+// (the anvil never opted in, the preview went unhealthy mid-flight, the anvil
+// declares no quests) and `error` means the run itself fell over, so neither is
+// a statement about the application.
+export type QuestRunStatus = 'running' | 'passed' | 'failed' | 'skipped' | 'error' | (string & {})
+
+// QuestScreenshot mirrors Go's web.QuestScreenshot: an image the run captured,
+// addressed by an endpoint on this server rather than by its path on disk.
+export interface QuestScreenshot {
+  name: string
+  url: string
+}
+
+// QuestOutcomeSummary mirrors Go's web.QuestOutcomeSummary — one quest's verdict.
+export interface QuestOutcomeSummary {
+  name: string
+  passed: boolean
+  /** Index of the step that failed, or -1 when none did. */
+  failed_step: number
+  error_message?: string
+  duration_seconds: number
+  file_path?: string
+  screenshots: QuestScreenshot[]
+}
+
+// QuestRunSummary mirrors Go's web.QuestRunSummary — one whole run.
+export interface QuestRunSummary {
+  run_id: string
+  bead_id: string
+  anvil?: string
+  preview_id?: string
+  base_url?: string
+  status: QuestRunStatus
+  /** Why a `skipped` run never ran. */
+  skip_reason?: string
+  /** Why an `error` run never got a verdict. */
+  error?: string
+  started_at: string
+  finished_at: string | null
+  duration_seconds: number
+  quests: QuestOutcomeSummary[]
+}
+
+// QuestRunResponse is the body of the run GETs. `found` is false when the bead
+// has never had a run, which renders as "no runs yet" rather than an error.
+export interface QuestRunResponse {
+  found: boolean
+  run?: QuestRunSummary
+}
+
+// QuestRunStartResponse is the 202 body of a dispatched run.
+export interface QuestRunStartResponse {
+  started: boolean
+  run_id: string
+  message?: string
+  run?: QuestRunSummary
+}
+
+// questRunPath is the endpoint for a bead's latest run.
+function questRunPath(beadID: string): string {
+  return `/api/bead/${encodeURIComponent(beadID)}/quests`
+}
+
+// fetchQuestRun loads a bead's most recent quest run.
+export async function fetchQuestRun(
+  beadID: string,
+  signal?: AbortSignal,
+): Promise<QuestRunResponse> {
+  const res = await fetch(questRunPath(beadID), { credentials: 'include', signal })
+  if (res.status === 401) {
+    throw new ApiError(401, 'unauthorized')
+  }
+  if (!res.ok) {
+    const body = (await res.json().catch(() => ({}))) as { error?: string }
+    throw new ApiError(res.status, body.error ?? `HTTP ${res.status}`)
+  }
+  const body = (await res.json()) as Partial<QuestRunResponse>
+  return { found: body.found === true, run: body.run }
+}
+
+// startQuestRun dispatches a run against the bead's live preview and returns as
+// soon as the daemon has accepted it — the browser work then proceeds
+// asynchronously, and the caller polls fetchQuestRun for the outcome.
+//
+// A 403 here is the backend's answer to a button that should not have been
+// offered: the anvil never opted in, or the preview is not healthy.
+export async function startQuestRun(beadID: string): Promise<QuestRunStartResponse> {
+  const res = await fetch(questRunPath(beadID), {
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'X-Forge-Action': '1', 'Content-Type': 'application/json' },
+    body: '{}',
+  })
+  if (res.status === 401) {
+    throw new ApiError(401, 'unauthorized')
+  }
+  const text = await res.text()
+  let parsed: unknown = null
+  if (text) {
+    try {
+      parsed = JSON.parse(text)
+    } catch {
+      parsed = null
+    }
+  }
+  if (!res.ok) {
+    throw new ApiError(res.status, (parsed as { error?: string })?.error ?? `HTTP ${res.status}`)
+  }
+  return (parsed ?? {}) as QuestRunStartResponse
 }

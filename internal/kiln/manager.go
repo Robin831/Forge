@@ -239,6 +239,18 @@ type Environment struct {
 	lastActive time.Time
 }
 
+// AttachInstance binds a running instance to an environment, which is what
+// makes Status, EntryURL, Ports and Record answer from the live services rather
+// than from the "still starting" defaults.
+//
+// Manager.Start does this itself; it is exported for the callers that consume
+// an *Environment without a manager behind it — chiefly tests of the daemon and
+// web layers, which need a preview that reports healthy without spawning real
+// processes. That is also why Instance is an exported interface.
+func (e *Environment) AttachInstance(inst Instance) {
+	e.instance = inst
+}
+
 // Status returns the preview's overall status.
 func (e *Environment) Status() string {
 	if e.instance == nil {

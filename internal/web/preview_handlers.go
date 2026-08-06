@@ -66,10 +66,14 @@ type PreviewSummary struct {
 // `.forge/preview.yaml` in their main checkout). The SPA gates its per-bead
 // Preview affordance on it, which is why it rides along with the list the
 // dashboard already polls instead of being a flag on every bead/PR payload.
+// QuestAnvils names the anvils that additionally opted into running their E2E
+// quests against a preview (`preview_quests`). It gates the "Run quests" action
+// the same way Anvils gates the Preview one.
 type PreviewsListResponse struct {
-	Enabled  bool             `json:"enabled"`
-	Anvils   []string         `json:"anvils"`
-	Previews []PreviewSummary `json:"previews"`
+	Enabled     bool             `json:"enabled"`
+	Anvils      []string         `json:"anvils"`
+	QuestAnvils []string         `json:"quest_anvils"`
+	Previews    []PreviewSummary `json:"previews"`
 }
 
 // validPreviewService restricts a service name to the manifest's own character
@@ -138,12 +142,16 @@ func (s *Server) handlePreviewsList(w http.ResponseWriter, r *http.Request) {
 	idle := time.Duration(payload.IdleTimeoutSeconds) * time.Second
 	now := time.Now()
 	out := PreviewsListResponse{
-		Enabled:  payload.Enabled,
-		Anvils:   payload.Anvils,
-		Previews: make([]PreviewSummary, 0, len(payload.Previews)),
+		Enabled:     payload.Enabled,
+		Anvils:      payload.Anvils,
+		QuestAnvils: payload.QuestAnvils,
+		Previews:    make([]PreviewSummary, 0, len(payload.Previews)),
 	}
 	if out.Anvils == nil {
 		out.Anvils = []string{}
+	}
+	if out.QuestAnvils == nil {
+		out.QuestAnvils = []string{}
 	}
 	for _, p := range payload.Previews {
 		out.Previews = append(out.Previews, previewSummary(r, p, payload.PublicHost, idle, now))

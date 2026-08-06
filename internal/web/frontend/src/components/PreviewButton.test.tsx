@@ -61,7 +61,7 @@ async function mount(props: Partial<React.ComponentProps<typeof PreviewButton>> 
 beforeEach(() => {
   vi.useFakeTimers()
   resetPreviewsStore()
-  previews = { enabled: true, anvils: ['forge'], previews: [] }
+  previews = { enabled: true, anvils: ['forge'], quest_anvils: [], previews: [] }
   posts = []
 
   vi.stubGlobal(
@@ -94,13 +94,13 @@ describe('PreviewButton gating', () => {
   })
 
   it('renders nothing when the anvil declares no preview manifest', async () => {
-    previews = { enabled: true, anvils: ['other'], previews: [] }
+    previews = { enabled: true, anvils: ['other'], quest_anvils: [], previews: [] }
     await mount()
     expect(screen.queryByTestId('preview-controls-Forge-abc1')).not.toBeInTheDocument()
   })
 
   it('renders nothing when Kiln is disabled daemon-wide', async () => {
-    previews = { enabled: false, anvils: [], previews: [] }
+    previews = { enabled: false, anvils: [], quest_anvils: [], previews: [] }
     await mount()
     expect(screen.queryByTestId('preview-controls-Forge-abc1')).not.toBeInTheDocument()
   })

@@ -56,6 +56,11 @@ type QuestOutcome struct {
 	ErrorMessage string        `json:"error_message,omitempty"`
 	Duration     time.Duration `json:"duration"`
 	FilePath     string        `json:"file_path,omitempty"`
+	// Screenshots are filesystem paths to the images this quest captured, in
+	// step order. A UI turns them into thumbnails; a screenshot taken before the
+	// failing step is often the only evidence of what the app actually looked
+	// like, so they are kept for failed quests too.
+	Screenshots []string `json:"screenshots,omitempty"`
 }
 
 // QuestRunResult is the outcome of running an anvil's quests once.
@@ -223,6 +228,7 @@ func (m *Monitor) RunQuestsForPreview(ctx context.Context, anvilID, headSHA, bas
 			ErrorMessage: res.ErrorMessage,
 			Duration:     res.Duration,
 			FilePath:     expanded.FilePath,
+			Screenshots:  res.Screenshots,
 		}
 		result.Quests = append(result.Quests, outcome)
 

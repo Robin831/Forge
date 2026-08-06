@@ -22,6 +22,11 @@ type QuestResult struct {
 	FailedStep   int
 	ErrorMessage string
 	Duration     time.Duration
+	// Screenshots are the filesystem paths of the images the quest's
+	// `screenshot` steps captured, in step order. They are what a preview quest
+	// run surfaces as thumbnails, which is why they are carried here rather than
+	// left behind in the adventurer's own result type.
+	Screenshots []string
 }
 
 // QuestExecutor executes a quest and returns the result. This interface

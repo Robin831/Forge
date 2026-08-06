@@ -63,7 +63,7 @@ async function settle() {
 beforeEach(() => {
   vi.useFakeTimers()
   resetPreviewsStore()
-  previews = { enabled: true, anvils: ['forge'], previews: [] }
+  previews = { enabled: true, anvils: ['forge'], quest_anvils: [], previews: [] }
   requestState = 'pending'
   requestMessage = undefined
   posts = []
@@ -119,14 +119,14 @@ describe('usePreview gating', () => {
   })
 
   it('is unavailable when the anvil has no preview manifest', async () => {
-    previews = { enabled: true, anvils: ['other'], previews: [] }
+    previews = { enabled: true, anvils: ['other'], quest_anvils: [], previews: [] }
     const { result } = render()
     await settle()
     expect(result.current.available).toBe(false)
   })
 
   it('is unavailable when Kiln is disabled daemon-wide', async () => {
-    previews = { enabled: false, anvils: [], previews: [] }
+    previews = { enabled: false, anvils: [], quest_anvils: [], previews: [] }
     const { result } = render()
     await settle()
     expect(result.current.enabled).toBe(false)
