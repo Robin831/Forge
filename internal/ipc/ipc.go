@@ -623,14 +623,44 @@ type RequestTracker struct {
 	pending  map[string]chan CompletionResult
 	idSeq    uint64
 	idPrefix string
+
+	// outcomes retains the observable state (pending → ok/error) of recent
+	// async requests so a client holding only a request_id — the Hearth web
+	// UI after a 202, say — can find out what actually happened instead of
+	// assuming success. Bounded by maxOutcomes (oldest-first eviction via
+	// order) and outcomeTTL so a long-lived daemon cannot accumulate records
+	// indefinitely. See requests.go.
+	outcomes    map[string]RequestOutcome
+	order       []string
+	maxOutcomes int
+	outcomeTTL  time.Duration
+	// now is injectable so TTL expiry is testable without sleeping.
+	now func() time.Time
 }
 
 // NewRequestTracker creates a tracker. The prefix is prepended to generated
-// request IDs (e.g. "forge-") for easy identification in logs.
+// request IDs (e.g. "forge-") for easy identification in logs. Outcome
+// retention uses the default bounds (DefaultMaxRequestOutcomes /
+// DefaultRequestOutcomeTTL).
 func NewRequestTracker(prefix string) *RequestTracker {
+	return NewRequestTrackerWithLimits(prefix, DefaultMaxRequestOutcomes, DefaultRequestOutcomeTTL)
+}
+
+// NewRequestTrackerWithLimits creates a tracker with explicit outcome
+// retention bounds. Non-positive values fall back to the defaults.
+func NewRequestTrackerWithLimits(prefix string, maxOutcomes int, ttl time.Duration) *RequestTracker {
+	if maxOutcomes <= 0 {
+		maxOutcomes = DefaultMaxRequestOutcomes
+	}
+	if ttl <= 0 {
+		ttl = DefaultRequestOutcomeTTL
+	}
 	return &RequestTracker{
-		pending:  make(map[string]chan CompletionResult),
-		idPrefix: prefix,
+		pending:     make(map[string]chan CompletionResult),
+		idPrefix:    prefix,
+		outcomes:    make(map[string]RequestOutcome),
+		maxOutcomes: maxOutcomes,
+		outcomeTTL:  ttl,
 	}
 }
 
@@ -643,9 +673,15 @@ func (rt *RequestTracker) Track() (string, <-chan CompletionResult) {
 		rt.pending = make(map[string]chan CompletionResult)
 	}
 	rt.idSeq++
-	id := fmt.Sprintf("%s%d-%d", rt.idPrefix, time.Now().UnixMilli(), rt.idSeq)
+	now := rt.nowFunc()
+	id := fmt.Sprintf("%s%d-%d", rt.idPrefix, now.UnixMilli(), rt.idSeq)
 	ch := make(chan CompletionResult, 1)
 	rt.pending[id] = ch
+	rt.recordOutcomeLocked(RequestOutcome{
+		RequestID: id,
+		State:     RequestStatePending,
+		UpdatedAt: now,
+	})
 	return id, ch
 }
 
@@ -656,6 +692,11 @@ func (rt *RequestTracker) Complete(requestID string, result CompletionResult) bo
 	ch, ok := rt.pending[requestID]
 	if ok {
 		delete(rt.pending, requestID)
+		// Retain the terminal outcome so a client that holds only the
+		// request_id can still resolve it after the channel is drained.
+		outcome := OutcomeFromResult(requestID, result)
+		outcome.UpdatedAt = rt.nowFunc()
+		rt.recordOutcomeLocked(outcome)
 	}
 	rt.mu.Unlock()
 	if !ok {
@@ -673,6 +714,9 @@ func (rt *RequestTracker) Cancel(requestID string) {
 	ch, ok := rt.pending[requestID]
 	if ok {
 		delete(rt.pending, requestID)
+		// A cancelled request never produced a result, so drop the retained
+		// record: "unknown" is honest, a stuck "pending" is not.
+		rt.dropOutcomeLocked(requestID)
 	}
 	rt.mu.Unlock()
 	if ok {

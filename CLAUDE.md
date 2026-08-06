@@ -233,6 +233,10 @@ browser → internal/web (Hearth 2.0, in-process HTTP server, gated by FORGE_WEB
                                               → pause_bead / resume_bead[_with_message]
   → PR + queue actions: merge/close/approve/fix-ci/fix-comments/fix-conflicts,
       queue retry/dispatch/clarify/stop, bead close/label/note/comment
+  → async outcomes: an action the daemon runs in the background answers 202 with
+      {request_id, poll_url}; the SPA polls GET /api/requests/{request_id}
+      → request_status (pending → ok/error, unknown once evicted) so a failed
+      write surfaces as an error toast instead of a phantom success
 
 Beads-Forge sessions (session capture, forgechat):
   browser → POST /forge/sessions → state persists a Beads-Forge session
@@ -271,6 +275,7 @@ The daemon exposes a named pipe (Windows: `\\.\pipe\forge`) or Unix socket. Mess
 | `get_ingots` | List ingot records (bead lifecycle snapshots). |
 | `get_ingot` | Fetch a single ingot with test results. |
 | `wicket_status` | Wicket issue-triage monitor status and effective interval. |
+| `request_status` | Resolve the `request_id` from a `queued` response to its outcome (`pending`/`ok`/`error`, or `unknown` when evicted). |
 
 **Daemon control**
 | Command | Description |

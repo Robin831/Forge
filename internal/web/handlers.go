@@ -5,8 +5,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
+
+	"github.com/go-chi/chi/v5"
 
 	"github.com/Robin831/Forge/internal/ingot"
 	"github.com/Robin831/Forge/internal/ipc"
@@ -284,16 +287,87 @@ func (s *Server) writeIPCResponse(w http.ResponseWriter, resp ipc.Response) {
 		}
 		_, _ = w.Write(resp.Payload)
 	case "queued":
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusAccepted)
-		body := map[string]any{"queued": true, "request_id": resp.RequestID}
+		writeQueuedResponse(w, resp, nil)
+	case "error":
+		var body struct {
+			Message string `json:"message"`
+		}
+		_ = json.Unmarshal(resp.Payload, &body)
+		if body.Message == "" {
+			body.Message = "command failed"
+		}
+		writeError(w, http.StatusInternalServerError, body.Message)
+	default:
+		writeError(w, http.StatusInternalServerError, "unexpected response type "+resp.Type)
+	}
+}
+
+// requestStatusPath is the URL a client polls to resolve the outcome of a
+// queued command. It is handed to the SPA in every 202 body so the frontend
+// never has to build the path itself.
+func requestStatusPath(requestID string) string {
+	return "/api/requests/" + url.PathEscape(requestID)
+}
+
+// writeQueuedResponse renders the 202 Accepted body for an async ("queued")
+// IPC response. It is the single source of truth for that body across every
+// call site so they cannot drift: `queued`, the daemon's `request_id`, and a
+// `poll_url` the SPA polls to convert the pending action into a definitive
+// success or error. Extra fields (e.g. the resolved dispatch tag) are merged
+// in without being able to clobber the correlation fields.
+func writeQueuedResponse(w http.ResponseWriter, resp ipc.Response, extra map[string]any) {
+	body := make(map[string]any, len(extra)+4)
+	for k, v := range extra {
+		body[k] = v
+	}
+	body["queued"] = true
+	body["request_id"] = resp.RequestID
+	if resp.RequestID != "" {
+		body["poll_url"] = requestStatusPath(resp.RequestID)
+	}
+	if len(resp.Payload) > 0 {
+		var qp ipc.QueuedPayload
+		if err := json.Unmarshal(resp.Payload, &qp); err == nil && qp.Message != "" {
+			body["message"] = qp.Message
+		}
+	}
+	writeJSON(w, http.StatusAccepted, body)
+}
+
+// handleRequestStatus serves GET /api/requests/{request_id}, resolving the
+// handle returned with a 202 to the outcome of the queued command. States are
+// pending / ok / error / unknown; the response is always 200 so the SPA can
+// distinguish "the write failed" (error) from "we no longer know" (unknown,
+// e.g. the record aged out of the daemon's bounded store) — neither of which
+// may be rendered as success.
+func (s *Server) handleRequestStatus(w http.ResponseWriter, r *http.Request) {
+	requestID := chi.URLParam(r, "request_id")
+	if strings.TrimSpace(requestID) == "" {
+		writeError(w, http.StatusBadRequest, "request_id is required")
+		return
+	}
+	payload, err := json.Marshal(ipc.RequestStatusPayload{RequestID: requestID})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to encode payload: "+err.Error())
+		return
+	}
+	resp := s.handler(ipc.Command{Type: "request_status", Payload: payload})
+	switch resp.Type {
+	case "ok", "status":
+		var out ipc.RequestStatusResponse
 		if len(resp.Payload) > 0 {
-			var qp ipc.QueuedPayload
-			if err := json.Unmarshal(resp.Payload, &qp); err == nil && qp.Message != "" {
-				body["message"] = qp.Message
+			if err := json.Unmarshal(resp.Payload, &out); err != nil {
+				writeError(w, http.StatusInternalServerError, "invalid request status payload")
+				return
 			}
 		}
-		_ = json.NewEncoder(w).Encode(body)
+		if out.RequestID == "" {
+			out.RequestID = requestID
+		}
+		if out.State == "" {
+			out.State = ipc.RequestStateUnknown
+		}
+		writeJSON(w, http.StatusOK, out)
 	case "error":
 		var body struct {
 			Message string `json:"message"`

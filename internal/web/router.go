@@ -54,6 +54,10 @@ func (s *Server) routes() http.Handler {
 		r.Get("/queue", s.handleQueue)
 		r.Get("/workers", s.handleWorkers)
 		r.Get("/events", s.handleEvents)
+		// Resolves the request_id returned with a 202 to the outcome of the
+		// queued command, so an async failure surfaces in the UI instead of
+		// being silently discarded behind an optimistic success toast.
+		r.Get("/requests/{request_id}", s.handleRequestStatus)
 		r.Get("/activity/stream", s.sseCapped(s.handleActivityStream))
 		r.Get("/worker/{id}/log", s.handleWorkerLogTail)
 		r.Get("/worker/{id}/stream", s.sseCapped(s.handleWorkerLogStream))

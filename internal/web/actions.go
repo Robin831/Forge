@@ -224,14 +224,11 @@ func (s *Server) handleQueueApplyDispatchTag(w http.ResponseWriter, r *http.Requ
 	case "ok", "status":
 		writeJSON(w, http.StatusOK, map[string]any{"tag": tag})
 	case "queued":
-		out := map[string]any{"queued": true, "tag": tag, "request_id": resp.RequestID}
-		if len(resp.Payload) > 0 {
-			var qp ipc.QueuedPayload
-			if err := json.Unmarshal(resp.Payload, &qp); err == nil && qp.Message != "" {
-				out["message"] = qp.Message
-			}
-		}
-		writeJSON(w, http.StatusAccepted, out)
+		// The label write shells out to bd in the background, so the 202 is
+		// only an acknowledgement of queuing. writeQueuedResponse hands back
+		// the request_id + poll_url the SPA uses to find out whether the
+		// write actually landed (a wedged anvil fails every bd write).
+		writeQueuedResponse(w, resp, map[string]any{"tag": tag})
 	case "error":
 		var errBody struct {
 			Message string `json:"message"`

@@ -489,10 +489,94 @@ export async function apiGet<T>(path: string, signal?: AbortSignal): Promise<T> 
   return (await res.json()) as T
 }
 
-// apiPost dispatches a JSON-bodied POST to an action endpoint. Both 200
-// (synchronous "ok") and 202 (async "queued") are treated as success since
-// the daemon runs queued shellouts in the background. A 4xx/5xx response is
-// surfaced as ApiError with the daemon's error message when available.
+// RequestState mirrors internal/ipc's request outcome states. `pending` means
+// the daemon is still running the queued command; `ok`/`error` are terminal;
+// `unknown` means the daemon no longer holds a record for the id (it aged out
+// of the bounded store) — which is explicitly not a success.
+export type RequestState = 'pending' | 'ok' | 'error' | 'unknown'
+
+// RequestStatus is the body of GET /api/requests/{request_id}.
+export interface RequestStatus {
+  request_id: string
+  state: RequestState
+  message?: string
+  updated_at?: string
+}
+
+// QueuedBody is the 202 Accepted body every async action endpoint returns.
+// `poll_url` points at the request-status endpoint for `request_id`.
+export interface QueuedBody {
+  queued?: boolean
+  request_id?: string
+  poll_url?: string
+  message?: string
+}
+
+// queued_unresolved marks a response whose queued command never reached a
+// terminal state before we stopped polling (or whose record had already been
+// evicted). Callers must not present it as success — see useAction.
+export interface UnresolvedQueued {
+  queued_unresolved: true
+  queued_state: RequestState
+}
+
+// Polling budget for resolving a queued command. bd shell-outs are typically
+// sub-second; 15s of polling covers a loaded daemon without leaving a button
+// spinning indefinitely.
+const QUEUED_POLL_INTERVAL_MS = 400
+const QUEUED_POLL_BUDGET_MS = 15_000
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+// fetchRequestStatus resolves a single request_id to its current state. A
+// failed or unparseable lookup reads as `unknown` rather than throwing: we
+// must never turn a bookkeeping hiccup into a phantom action failure.
+export async function fetchRequestStatus(pollUrl: string): Promise<RequestStatus> {
+  try {
+    const res = await fetch(pollUrl, { credentials: 'include' })
+    if (!res.ok) {
+      return { request_id: '', state: 'unknown' }
+    }
+    const body = (await res.json()) as RequestStatus
+    if (!body || typeof body.state !== 'string') {
+      return { request_id: '', state: 'unknown' }
+    }
+    return body
+  } catch {
+    return { request_id: '', state: 'unknown' }
+  }
+}
+
+// resolveQueuedRequest polls the request-status endpoint until the queued
+// command reaches a terminal state or the budget expires. A timeout returns
+// `pending` so the caller can report "queued, outcome unknown" — never
+// success.
+export async function resolveQueuedRequest(
+  pollUrl: string,
+  budgetMs = QUEUED_POLL_BUDGET_MS,
+): Promise<RequestStatus> {
+  const deadline = Date.now() + budgetMs
+  let last: RequestStatus = { request_id: '', state: 'pending' }
+  for (;;) {
+    last = await fetchRequestStatus(pollUrl)
+    if (last.state !== 'pending') return last
+    if (Date.now() >= deadline) return last
+    await sleep(QUEUED_POLL_INTERVAL_MS)
+  }
+}
+
+// apiPost dispatches a JSON-bodied POST to an action endpoint.
+//
+// A 200 ("ok") is a synchronous success. A 202 ("queued") means the daemon
+// only accepted the command — the bd/gh shell-out that does the actual work
+// runs in the background and can still fail (a wedged anvil fails every write).
+// So a 202 carrying a request_id is not treated as success: we poll the
+// request-status endpoint and either return normally (state ok), throw an
+// ApiError carrying the daemon's failure message (state error), or return the
+// body tagged `queued_unresolved` when the outcome could not be determined.
+// A 4xx/5xx response is surfaced as ApiError with the daemon's message.
 export async function apiPost<T = unknown>(path: string, body?: unknown): Promise<T> {
   const headers: Record<string, string> = { 'X-Forge-Action': '1' }
   if (body !== undefined) headers['Content-Type'] = 'application/json'
@@ -519,7 +603,36 @@ export async function apiPost<T = unknown>(path: string, body?: unknown): Promis
       (parsed as { error?: string })?.error ?? `HTTP ${res.status}`
     throw new ApiError(res.status, msg)
   }
+  if (res.status === 202) {
+    const queued = (parsed ?? {}) as QueuedBody
+    const requestID = queued.request_id
+    if (requestID) {
+      const pollUrl = queued.poll_url ?? `/api/requests/${encodeURIComponent(requestID)}`
+      const outcome = await resolveQueuedRequest(pollUrl)
+      if (outcome.state === 'error') {
+        throw new ApiError(500, outcome.message || 'the queued command failed')
+      }
+      if (outcome.state !== 'ok') {
+        return {
+          ...(queued as object),
+          queued_unresolved: true,
+          queued_state: outcome.state,
+        } as T
+      }
+    }
+  }
   return (parsed ?? {}) as T
+}
+
+// isUnresolvedQueued reports whether an action result came back from apiPost
+// without a confirmed outcome. Such a result must be reported neutrally
+// ("queued, outcome unknown"), not as success.
+export function isUnresolvedQueued(result: unknown): result is UnresolvedQueued {
+  return (
+    typeof result === 'object' &&
+    result !== null &&
+    (result as UnresolvedQueued).queued_unresolved === true
+  )
 }
 
 export interface ActionRequest {

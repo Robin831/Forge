@@ -6047,6 +6047,11 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 		reqID, _ := d.reqTracker.Track()
 		go func() {
 			bdUpdateOK := false
+			// bdUpdateErr is reported as the request's terminal outcome so a
+			// failed bd write cannot present as a successful retry in the UI
+			// (Forge-4r2n). It stays nil when there is no bd write to do
+			// (anvil without a configured path) — that is not a failure.
+			var bdUpdateErr error
 			if anvilCfg, ok := d.cfg.Load().Anvils[rp.Anvil]; ok && anvilCfg.Path != "" {
 				resetCtx, resetCancel := context.WithTimeout(d.runCtx, executil.DefaultBdTimeout)
 				defer resetCancel()
@@ -6059,6 +6064,7 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 				output, err := d.restoreBeadAfterPause(resetCtx, rp.BeadID, anvilCfg)
 				if err != nil {
 					d.logger.Warn("failed to reset bead status after retry reset", "bead", rp.BeadID, "error", err, "output", string(output))
+					bdUpdateErr = fmt.Errorf("retry state reset but bd update failed: %w", err)
 				} else {
 					bdUpdateOK = true
 				}
@@ -6077,6 +6083,10 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 			retryMsg := "retry reset"
 			if hadCircuitBreaker {
 				retryMsg = "retry state reset"
+			}
+			if bdUpdateErr != nil {
+				d.completeAsync(reqID, errorResponse(bdUpdateErr.Error()))
+				return
 			}
 			d.completeAsync(reqID, okResponse(map[string]string{"message": retryMsg}))
 		}()
@@ -6782,6 +6792,31 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 			}
 			return errorResponse(fmt.Sprintf("ingot %s found in multiple anvils (%s): use --anvil to disambiguate", p.BeadID, strings.Join(anvils, ", ")))
 		}
+
+	case "request_status":
+		// Resolve the request_id handed back with a "queued" response to its
+		// terminal outcome. This is what stops an async failure from being
+		// silently discarded: the caller (Hearth 2.0 after a 202) polls here
+		// and converts a pending action into success or a visible error.
+		var p ipc.RequestStatusPayload
+		if err := json.Unmarshal(cmd.Payload, &p); err != nil {
+			return errorResponse("invalid payload: " + err.Error())
+		}
+		if strings.TrimSpace(p.RequestID) == "" {
+			return errorResponse("request_id is required")
+		}
+		out := ipc.RequestStatusResponse{RequestID: p.RequestID, State: ipc.RequestStateUnknown}
+		// An unknown or evicted ID is reported as "unknown", not as an error:
+		// the record is bounded, so a stale tab must not read a dropped
+		// record as a failure.
+		if outcome, ok := d.reqTracker.Outcome(p.RequestID); ok {
+			out.State = outcome.State
+			out.Message = outcome.Message
+			if !outcome.UpdatedAt.IsZero() {
+				out.UpdatedAt = outcome.UpdatedAt.Format(time.RFC3339)
+			}
+		}
+		return okResponse(out)
 
 	case "wicket_status":
 		cfg := d.cfg.Load()
