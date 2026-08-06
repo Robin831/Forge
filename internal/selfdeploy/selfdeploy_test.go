@@ -3,11 +3,13 @@ package selfdeploy
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 // fakeHeadSHA is what the fake `git rev-parse HEAD` reports.
@@ -99,7 +101,9 @@ func (s *fakeSink) has(event string) bool {
 }
 
 // setup returns a Deployer wired against a temp dir with an existing "live"
-// binary, plus the fakes so tests can assert on them.
+// binary, plus the fakes so tests can assert on them. workers is the number of
+// permanently-active workers the drain check reports; a non-zero value means the
+// deploy can only ever end in a drain timeout, so the wait budget is kept tiny.
 func setup(t *testing.T, workers int, failOn map[string]error) (*Deployer, *fakeCommander, *fakeRestarter, *fakeSink, string) {
 	t.Helper()
 	dir := t.TempDir()
@@ -110,10 +114,14 @@ func setup(t *testing.T, workers int, failOn map[string]error) (*Deployer, *fake
 	cmd := &fakeCommander{failOn: failOn}
 	rest := &fakeRestarter{}
 	sink := &fakeSink{}
+	ids := make([]string, workers)
+	for i := range ids {
+		ids[i] = fmt.Sprintf("Forge-w%d", i)
+	}
 	d := New(
-		Config{RepoPath: dir, BinaryPath: binPath},
+		Config{RepoPath: dir, BinaryPath: binPath, MaxDrainWait: time.Nanosecond},
 		cmd, rest, sink,
-		func() (int, error) { return workers, nil },
+		func() ([]string, error) { return ids, nil },
 	)
 	return d, cmd, rest, sink, binPath
 }
@@ -127,12 +135,15 @@ func readFile(t *testing.T, path string) string {
 	return string(b)
 }
 
-func TestDeploy_SkipsWhenWorkersActive(t *testing.T) {
+func TestDeploy_SkipsWhenWorkersNeverDrain(t *testing.T) {
 	d, cmd, rest, sink, binPath := setup(t, 2, nil)
 
 	err := d.Deploy(context.Background())
-	if !errors.Is(err, ErrWorkersActive) {
-		t.Fatalf("want ErrWorkersActive, got %v", err)
+	if !errors.Is(err, ErrDrainTimeout) {
+		t.Fatalf("want ErrDrainTimeout, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "Forge-w0") {
+		t.Fatalf("drain timeout must name the active workers, got %q", err)
 	}
 	if cmd.ran("git pull") || cmd.ran("go build") {
 		t.Fatalf("no build/pull should run while workers active; calls=%v", cmd.calls)
@@ -278,6 +289,12 @@ func TestDeploy_DefaultsApplied(t *testing.T) {
 	}
 	if d.cfg.BuildTarget != "./cmd/forge" {
 		t.Errorf("BuildTarget default = %q", d.cfg.BuildTarget)
+	}
+	if d.cfg.MaxDrainWait != DefaultMaxDrainWait {
+		t.Errorf("MaxDrainWait default = %s", d.cfg.MaxDrainWait)
+	}
+	if d.cfg.DrainInterval != DefaultDrainInterval {
+		t.Errorf("DrainInterval default = %s", d.cfg.DrainInterval)
 	}
 }
 

@@ -792,8 +792,11 @@ self_deploy:
   restart_args: []          # optional: args before "restart <unit>" (e.g. ["--user"])
   branch: main              # optional: base branch a merge must target (default "main")
   build_target: ./cmd/forge # optional: go build target (default "./cmd/forge")
-  drain_timeout: 30m        # optional: max wait for workers to finish (default 30m)
+  max_drain_wait: 30m       # optional: how long to wait for workers to finish (default 30m)
 ```
+
+`max_drain_wait` was previously called `drain_timeout`. The old key is still
+read, so existing configs keep working; `max_drain_wait` wins when both are set.
 
 **Restart privileges / user** — the restart runs `<restart_command>
 <restart_args...> restart <unit_name>`. Wire it to however the daemon is allowed
@@ -829,10 +832,17 @@ mid-flight is still diagnosable.
   and whose base branch matches `self_deploy.branch`. A merged PR with no
   recorded base branch is skipped rather than assumed to target `branch`, so an
   unrelated merge cannot trigger a production restart.
-- **Drain guardrail** — dispatch is paused and the daemon waits until no worker
-  is active (including operator-paused workers, which still hold a worktree).
-  If workers do not drain within `drain_timeout`, the deploy is deferred (a
-  `self_deploy_skipped` event is logged) and any pause it introduced is undone.
+- **Drain guardrail** — dispatch is paused, then the drain check is re-run every
+  10s until no worker is active (including operator-paused workers, which still
+  hold a worktree). Because a deploy is triggered by a merge — exactly when a
+  Smith is most likely to still be mid-run — the wait is bounded rather than
+  sampled once: the deploy lands in the first gap that opens. If workers are
+  still active after `max_drain_wait`, the deploy is deferred (a
+  `self_deploy_skipped` event is logged with the elapsed time and the beads that
+  held it up) and any pause the deploy introduced is undone. The pause is undone
+  on *every* non-restart exit — drain timeout, build failure, rollback — so a
+  failed deploy can never leave the daemon paused; a pause that predates the
+  deploy is an operator decision and is left alone.
 - **Verify before swap** — the freshly built binary must pass `forge version`
   and `forge --help` (exit 0). If verification fails, the live binary is left
   untouched.
@@ -1223,7 +1233,7 @@ The config is validated at load time. Errors are reported as a list:
 - If an anvil sets `temper.lint_required: true`, then `temper.lint` (or `temper.steps`) must be set
 - Within `temper.steps`: each step `name` must be non-empty and unique; each `command` must be non-empty unless `verify_no_conflict_markers` is set (scan-only step); each step `timeout` must be non-negative
 - If `self_deploy.enabled` is true, `self_deploy.anvil` must be non-empty and match a configured anvil
-- `self_deploy.drain_timeout` must not be negative (omit or set to 0 to use the 30m default)
+- `self_deploy.max_drain_wait` must not be negative (omit or set to 0 to use the 30m default); the deprecated `self_deploy.drain_timeout` is validated the same way
 
 ## Hot Reload
 

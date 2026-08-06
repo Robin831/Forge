@@ -2431,35 +2431,37 @@ func (d *Daemon) runSelfDeploy(sd config.SelfDeployConfig) {
 		ctx = context.Background()
 	}
 
-	// Pause dispatch so no new workers start while we drain. Preserve the prior
-	// pause state so a deploy that never restarts (drain timeout / build failure)
-	// does not silently resume a user's manual pause.
+	// Pause dispatch so no new workers start while the deploy drains, then arrange
+	// the resume up front: every exit path below — drain timeout, build failure,
+	// rollback, panic — runs it, so a failed deploy can never leave the daemon
+	// permanently paused. Two exemptions are deliberate:
+	//   - a pause that predates this deploy belongs to the operator, so it stays;
+	//   - once the restart has been requested the swap has already happened, and
+	//     resuming would let a worker start in the seconds before systemd stops
+	//     the process. The restart path must therefore not depend on the deferred
+	//     resume running, and it does not: nothing after it needs dispatch.
 	wasPaused := d.dispatchPaused.Load()
 	d.dispatchPaused.Store(true)
-	restorePause := func() {
-		if !wasPaused {
-			d.dispatchPaused.Store(false)
+	restartRequested := false
+	defer func() {
+		if restartRequested || wasPaused {
+			return
 		}
-	}
+		d.dispatchPaused.Store(false)
+	}()
 
-	d.logger.Info("self-deploy: dispatch paused; draining workers before rebuild", "anvil", sd.Anvil)
-
-	if !d.waitForDrain(ctx, sd.ResolvedDrainTimeout()) {
-		d.logger.Warn("self-deploy: drain did not complete before timeout; deferring deploy",
-			"anvil", sd.Anvil, "timeout", sd.ResolvedDrainTimeout())
-		_ = d.db.LogEvent(state.EventSelfDeploySkipped,
-			fmt.Sprintf("self-deploy deferred: workers did not drain within %s", sd.ResolvedDrainTimeout()), "", sd.Anvil)
-		restorePause()
-		return
-	}
+	maxDrainWait := sd.ResolvedMaxDrainWait()
+	d.logger.Info("self-deploy: dispatch paused; draining workers before rebuild",
+		"anvil", sd.Anvil, "max_drain_wait", maxDrainWait)
 
 	deployer := selfdeploy.New(
 		selfdeploy.Config{
-			RepoPath:    sd.ResolvedRepoPath(anvilCfg.Path),
-			BinaryPath:  sd.ResolvedBinaryPath(),
-			UnitName:    sd.ResolvedUnitName(),
-			Branch:      sd.ResolvedBranch(),
-			BuildTarget: sd.ResolvedBuildTarget(),
+			RepoPath:     sd.ResolvedRepoPath(anvilCfg.Path),
+			BinaryPath:   sd.ResolvedBinaryPath(),
+			UnitName:     sd.ResolvedUnitName(),
+			Branch:       sd.ResolvedBranch(),
+			BuildTarget:  sd.ResolvedBuildTarget(),
+			MaxDrainWait: maxDrainWait,
 		},
 		selfdeploy.ExecCommander{},
 		selfdeploy.SystemctlRestarter{
@@ -2471,58 +2473,59 @@ func (d *Daemon) runSelfDeploy(sd config.SelfDeployConfig) {
 			Logger: d.logger,
 		},
 		selfDeployEventSink{db: d.db, anvil: sd.Anvil},
-		d.activeWorkerCount,
+		d.activeWorkerIDs,
 	)
 
+	// Deploy owns the bounded drain wait: it re-checks activeWorkerIDs on a
+	// ticker until the forge is idle or maxDrainWait is spent, and only then
+	// pulls, builds and swaps.
 	if err := deployer.Deploy(ctx); err != nil {
-		d.logger.Warn("self-deploy failed", "anvil", sd.Anvil, "error", err)
-		// Deploy leaves the live binary intact (or rolled back) on failure, so it
-		// is safe to resume normal operation.
-		restorePause()
+		switch {
+		case errors.Is(err, selfdeploy.ErrDrainTimeout):
+			// Deferred, not failed: the deployer already logged a skipped event
+			// carrying the elapsed time and the workers that held it up.
+			d.logger.Warn("self-deploy: workers did not drain; deferring deploy",
+				"anvil", sd.Anvil, "max_drain_wait", maxDrainWait, "error", err)
+		case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+			d.logger.Info("self-deploy: aborted before the swap", "anvil", sd.Anvil, "error", err)
+		default:
+			d.logger.Warn("self-deploy failed", "anvil", sd.Anvil, "error", err)
+		}
+		// Deploy leaves the live binary intact (or rolled back) on failure, so the
+		// deferred resume can safely return the daemon to normal operation.
 		return
 	}
 	// On success the restart typically terminates this process; if it returned
 	// nil without doing so we still leave dispatch paused pending the restart.
+	restartRequested = true
 	d.logger.Info("self-deploy: new binary installed and restart requested", "anvil", sd.Anvil)
 }
 
-// activeWorkerCount returns the number of workers that would be disrupted by a
-// restart: all non-terminal dispatch/lifecycle workers plus operator-paused
-// workers (which still hold a worktree and would resume into a running Smith).
-func (d *Daemon) activeWorkerCount() (int, error) {
+// activeWorkerIDs identifies the workers that would be disrupted by a restart:
+// all non-terminal dispatch/lifecycle workers plus operator-paused workers
+// (which still hold a worktree and would resume into a running Smith). Workers
+// are named by bead where known, since that is what an operator recognises when
+// a deploy reports what is holding it up.
+func (d *Daemon) activeWorkerIDs() ([]string, error) {
 	active, err := d.db.ActiveWorkers()
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
 	paused, err := d.db.PausedWorkers()
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
-	return len(active) + len(paused), nil
-}
-
-// waitForDrain blocks until activeWorkerCount reports zero, the timeout elapses,
-// or ctx is cancelled. It returns true only when the workers fully drained.
-func (d *Daemon) waitForDrain(ctx context.Context, timeout time.Duration) bool {
-	deadline := time.Now().Add(timeout)
-	ticker := time.NewTicker(5 * time.Second)
-	defer ticker.Stop()
-	for {
-		n, err := d.activeWorkerCount()
-		if err != nil {
-			d.logger.Warn("self-deploy: worker drain check failed", "error", err)
-		} else if n == 0 {
-			return true
-		}
-		if time.Now().After(deadline) {
-			return false
-		}
-		select {
-		case <-ctx.Done():
-			return false
-		case <-ticker.C:
+	ids := make([]string, 0, len(active)+len(paused))
+	for _, group := range [][]state.Worker{active, paused} {
+		for _, w := range group {
+			if w.BeadID != "" {
+				ids = append(ids, w.BeadID)
+				continue
+			}
+			ids = append(ids, w.ID)
 		}
 	}
+	return ids, nil
 }
 
 // selfDeployEventSink adapts state.DB.LogEvent to the selfdeploy.EventSink
