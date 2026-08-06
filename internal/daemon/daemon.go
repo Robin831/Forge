@@ -32,6 +32,7 @@ import (
 	"time"
 
 	"github.com/Robin831/Forge/internal/adventurer"
+	"github.com/Robin831/Forge/internal/anvilhealth"
 	"github.com/Robin831/Forge/internal/assay"
 	"github.com/Robin831/Forge/internal/bellows"
 	"github.com/Robin831/Forge/internal/burnish"
@@ -275,6 +276,13 @@ type Daemon struct {
 	// `forge status` read freshness from this in-memory map via IPC.
 	lastPollMu  sync.Mutex
 	lastPollMap map[string]anvilPollSnapshot
+
+	// anvilHealth probes anvils for a beads database left mid-merge with
+	// unresolved conflicts (a "wedged" anvil). Swappable in tests.
+	anvilHealth *anvilhealth.Checker
+	// wedgedWarned rate-limits the repeated "still wedged" WARN per anvil.
+	// map[anvilName]time.Time of the last emitted warning.
+	wedgedWarned sync.Map
 
 	// Cost limit: tracks which date we last logged the cost_limit_hit event
 	// to avoid spamming the event log every poll cycle.
@@ -525,6 +533,7 @@ func New(cfg *config.Config, configPath string) (*Daemon, error) {
 		lastPollMap:           make(map[string]anvilPollSnapshot),
 		queueTimestamps:       make(map[string]queueTimestamp),
 		authEscalated:         make(map[string]bool),
+		anvilHealth:           anvilhealth.New(),
 	}
 	d.lifecycleCond = sync.NewCond(&sync.Mutex{})
 	d.pausedSince.Store(time.Time{})
@@ -2951,6 +2960,15 @@ func (d *Daemon) pollAndDispatch(ctx context.Context, fullPoll bool) {
 		}
 	}
 
+	// Detect anvils whose beads database is left mid-merge with unresolved
+	// conflicts. While wedged, every bd write against the anvil is rolled back,
+	// so polling "successfully" and dispatching work there is theatre. Full poll
+	// only: a wedge lasts minutes to hours, so there is no value in paying for
+	// the check on every fast cycle.
+	if effectiveFullPoll {
+		d.checkAnvilHealth(ctx, cfg)
+	}
+
 	// Always poll so the Hearth TUI queue cache stays current even when all
 	// smith slots are occupied. Capacity is checked below before dispatching.
 	// Stagger anvil polls to avoid simultaneous bd/git command bursts.
@@ -3164,6 +3182,12 @@ func (d *Daemon) pollAndDispatch(ctx context.Context, fullPoll bool) {
 		return
 	}
 
+	// Preload wedged anvils once per cycle. Dispatching into an anvil whose beads
+	// database is mid-merge cannot succeed — the first bd write is rolled back —
+	// so those beads are skipped with a real reason rather than burned through
+	// the retry budget.
+	wedgedAnvils := d.wedgedAnvilSet()
+
 	// We snapshot DB counts ONCE here and track in-cycle dispatches separately.
 	// Previously, the loop re-queried the DB each iteration and subtracted the
 	// in-cycle count from the max. This double-counted workers whose goroutines
@@ -3290,6 +3314,15 @@ func (d *Daemon) pollAndDispatch(ctx context.Context, fullPoll bool) {
 
 		// Skip beads that need human attention (needs_human=1)
 		if _, broken := needsHumanSet[bead.ID+"\x00"+bead.Anvil]; broken {
+			d.releaseBeadSlot(bead.ID)
+			continue
+		}
+
+		// Skip every bead in a wedged anvil. The anvil itself is already surfaced
+		// in needs-attention with the conflict detail, so this stays at Debug to
+		// avoid one line per queued bead per poll.
+		if _, wedged := wedgedAnvils[bead.Anvil]; wedged {
+			d.logger.Debug("skipping bead in wedged anvil", "bead", bead.ID, "anvil", bead.Anvil)
 			d.releaseBeadSlot(bead.ID)
 			continue
 		}
@@ -5139,6 +5172,26 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 				})
 			}
 		}
+		// Wedged anvils (beads database mid-merge with unresolved conflicts).
+		// Empty for a healthy forge, so the field is absent from the payload.
+		var wedgedAnvils []ipc.WedgedAnvilItem
+		if rows, err := d.db.WedgedAnvils(); err != nil {
+			d.logger.Debug("status: wedged-anvil lookup failed", "error", err)
+		} else {
+			for _, r := range rows {
+				wedgedAnvils = append(wedgedAnvils, ipc.WedgedAnvilItem{
+					Anvil:           r.Anvil,
+					ConflictTables:  r.ConflictTables,
+					ConflictCount:   r.ConflictCount,
+					Branch:          r.Branch,
+					Ahead:           r.Ahead,
+					Behind:          r.Behind,
+					DivergenceKnown: r.DivergenceKnown,
+					Detail:          r.Detail,
+					DetectedAt:      r.DetectedAt,
+				})
+			}
+		}
 		payload := ipc.StatusPayload{
 			Running:        true,
 			PID:            os.Getpid(),
@@ -5162,6 +5215,7 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 			CopilotRequestLimit:    copilotLimit,
 			CopilotLimitReached:    copilotLimit > 0 && copilotReqs >= float64(copilotLimit),
 			AnvilLastPoll:          anvilLastPoll,
+			WedgedAnvils:           wedgedAnvils,
 			MaxTotalSmiths:         d.cfg.Load().Settings.MaxTotalSmiths,
 		}
 		// Surface when the manual dispatch pause began (not the cost-limit pause).
@@ -5602,6 +5656,18 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 		if needed {
 			d.releaseBeadSlot(targetBead.ID)
 			return errorResponse(fmt.Sprintf("bead %q needs clarification; use 'forge queue unclarify --anvil %s %s' to clear", targetBead.ID, targetBead.Anvil, targetBead.ID))
+		}
+
+		// Reject rather than accept-and-discard when the target anvil's beads
+		// database is mid-merge. Every bd write there is rolled back, so the
+		// dispatch would fail at its first claim; the caller gets the real reason
+		// instead of a hollow acknowledgement.
+		if reason := d.wedgedAnvilError(targetBead.Anvil); reason != "" {
+			d.releaseBeadSlot(targetBead.ID)
+			_ = d.db.LogEvent(state.EventDispatchBlockedAnvilWedged,
+				fmt.Sprintf("Manual dispatch of %s refused: %s", targetBead.ID, reason),
+				targetBead.ID, targetBead.Anvil)
+			return errorResponse(fmt.Sprintf("cannot dispatch %q: %s", targetBead.ID, reason))
 		}
 
 		// Manual dispatch resets the dispatch circuit breaker so the bead can be retried,
@@ -8589,6 +8655,19 @@ func (d *Daemon) updateAnvilPaths(old, new *config.Config) {
 		}
 	}
 	d.lastPollMu.Unlock()
+
+	// Same for the wedged-anvil WARN rate limiter. The persisted anvil_health
+	// rows are pruned by the poll-time check itself.
+	d.wedgedWarned.Range(func(key, _ any) bool {
+		name, ok := key.(string)
+		if !ok {
+			return true
+		}
+		if _, still := new.Anvils[name]; !still {
+			d.wedgedWarned.Delete(name)
+		}
+		return true
+	})
 
 	// Rebuild per-anvil VCS providers
 	newProviders := buildVCSProviders(new, d.db, d.logger)

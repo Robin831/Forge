@@ -116,6 +116,11 @@ type StatusPayload struct {
 	// persisted as events, so Hearth and `forge status` consume this field for
 	// fresh per-anvil timestamps instead of querying the events table.
 	AnvilLastPoll []AnvilPollItem `json:"anvil_last_poll,omitempty"`
+	// WedgedAnvils lists anvils whose beads database is mid-merge with
+	// unresolved conflicts. While an anvil is listed here every bd write against
+	// it fails, so nothing dispatched to it can succeed. Empty in the healthy
+	// case, so older clients that ignore the field see no change.
+	WedgedAnvils []WedgedAnvilItem `json:"wedged_anvils,omitempty"`
 	// MaxTotalSmiths is the configured global cap on concurrent Smith workers.
 	// Hearth 2.0 uses this to size the "Idle" placeholder slots in the
 	// Workers pane (max_total_smiths - active_workers).
@@ -130,6 +135,25 @@ type AnvilPollItem struct {
 	Timestamp time.Time `json:"timestamp"`
 	OK        bool      `json:"ok"`                // true when the last poll completed without error
 	Message   string    `json:"message,omitempty"` // human-readable summary, e.g. "5 ready" or the error text
+}
+
+// WedgedAnvilItem reports an anvil whose beads (Dolt) working set is left
+// mid-merge with unresolved conflicts. It is carried inside
+// StatusPayload.WedgedAnvils.
+type WedgedAnvilItem struct {
+	Anvil string `json:"anvil"`
+	// ConflictTables lists the conflicted tables with per-table counts,
+	// e.g. "issues (3), labels (1)".
+	ConflictTables string `json:"conflict_tables,omitempty"`
+	ConflictCount  int    `json:"conflict_count,omitempty"`
+	// Branch is the anvil's active beads branch; Ahead/Behind are its divergence
+	// from the upstream branch and are only meaningful when DivergenceKnown.
+	Branch          string    `json:"branch,omitempty"`
+	Ahead           int       `json:"ahead,omitempty"`
+	Behind          int       `json:"behind,omitempty"`
+	DivergenceKnown bool      `json:"divergence_known,omitempty"`
+	Detail          string    `json:"detail,omitempty"`
+	DetectedAt      time.Time `json:"detected_at,omitempty"`
 }
 
 // KillWorkerPayload is the payload for a "kill_worker" command.

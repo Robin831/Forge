@@ -574,6 +574,20 @@ CREATE TABLE IF NOT EXISTS daemon_settings (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL DEFAULT ''
 );
+
+CREATE TABLE IF NOT EXISTS anvil_health (
+    anvil            TEXT PRIMARY KEY,
+    wedged           INTEGER NOT NULL DEFAULT 0,
+    conflict_tables  TEXT NOT NULL DEFAULT '',
+    conflict_count   INTEGER NOT NULL DEFAULT 0,
+    branch           TEXT NOT NULL DEFAULT '',
+    ahead            INTEGER NOT NULL DEFAULT 0,
+    behind           INTEGER NOT NULL DEFAULT 0,
+    divergence_known INTEGER NOT NULL DEFAULT 0,
+    detail           TEXT NOT NULL DEFAULT '',
+    detected_at      TEXT NOT NULL DEFAULT '',
+    updated_at       TEXT NOT NULL DEFAULT ''
+);
 `
 
 // dbTimeLayout is the canonical, fixed-width layout used for timestamps
@@ -2321,6 +2335,16 @@ const (
 	// without re-running Smith, clearing the needs_human escalation.
 	EventPRCreateRecovered EventType = "pr_create_recovered"
 
+	// EventAnvilWedged fires when an anvil's beads (Dolt) working set is found
+	// mid-merge with unresolved conflicts, meaning every bd write against that
+	// anvil is rolled back. EventAnvilRecovered fires once the conflicts are
+	// resolved and the anvil is writable again.
+	EventAnvilWedged    EventType = "anvil_wedged"
+	EventAnvilRecovered EventType = "anvil_recovered"
+	// EventDispatchBlockedAnvilWedged fires when dispatch is skipped because the
+	// target anvil is wedged — the work would fail at its first bd write.
+	EventDispatchBlockedAnvilWedged EventType = "dispatch_blocked_anvil_wedged"
+
 	// Crucible events — parent bead orchestration with children on feature branches.
 	EventCrucibleStarted         EventType = "crucible_started"
 	EventCrucibleChildDispatched EventType = "crucible_child_dispatched"
@@ -3384,7 +3408,22 @@ type NeedsAttentionBead struct {
 	// actions to the correct DB operation.
 	PRID     int
 	PRNumber int
+	// Kind distinguishes the entry's subject. Empty (AttentionKindBead) for the
+	// bead/PR entries that make up the bulk of the list; AttentionKindAnvil for
+	// an entry that describes an unusable anvil rather than a single bead, which
+	// consumers use to suppress bead-scoped actions.
+	Kind string
 }
+
+// Needs-attention entry kinds. See NeedsAttentionBead.Kind.
+const (
+	// AttentionKindBead is the zero value: the entry is about a bead or its PR.
+	AttentionKindBead = ""
+	// AttentionKindAnvil marks an anvil-level entry (e.g. a wedged beads
+	// database). It has no bead ID and cannot be retried or dismissed — it
+	// clears itself when the underlying condition is resolved.
+	AttentionKindAnvil = "anvil"
+)
 
 // NeedsAttentionBeads returns all beads with needs_human=1, clarification_needed=1,
 // status=stalled, or status=paused, enriched with title from queue_cache or workers
@@ -3516,6 +3555,25 @@ func (db *DB) NeedsAttentionBeads(maxCI, maxRev, maxRebase int) ([]NeedsAttentio
 			Reason:   ep.Reason,
 			PRID:     ep.ID,
 			PRNumber: ep.Number,
+		})
+	}
+
+	// Append wedged anvils. These are anvil-level, not bead-level: the beads
+	// database is mid-merge with unresolved conflicts, so every bd write against
+	// the anvil fails and nothing dispatched there can succeed. They carry no
+	// bead ID and are never dismissed by hand — the daemon clears them once the
+	// conflicts are resolved.
+	wedged, err := db.WedgedAnvils()
+	if err != nil {
+		return beads, fmt.Errorf("fetching wedged anvils: %w", err)
+	}
+	for _, wa := range wedged {
+		beads = append(beads, NeedsAttentionBead{
+			Anvil:      wa.Anvil,
+			Title:      fmt.Sprintf("Anvil %s: beads merge conflict", wa.Anvil),
+			Reason:     wa.Detail,
+			NeedsHuman: true,
+			Kind:       AttentionKindAnvil,
 		})
 	}
 

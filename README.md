@@ -277,6 +277,7 @@ Forge/
 │   └── main.go
 ├── internal/
 │   ├── adventurer/       # Headless browser quest executor
+│   ├── anvilhealth/      # Wedged-anvil detection (beads DB mid-merge with conflicts)
 │   ├── bellows/          # PR monitoring (CI fix, review fix, rebase)
 │   ├── changelog/        # Changelog fragment parsing & assembly
 │   ├── quench/           # CI failure fix worker (quench)
