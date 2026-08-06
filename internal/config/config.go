@@ -609,6 +609,13 @@ type SettingsConfig struct {
 	// When false, scheduled scanning and "forge scan" are disabled regardless
 	// of VulncheckInterval. Default: true.
 	VulncheckEnabled *bool `mapstructure:"vulncheck_enabled" yaml:"vulncheck_enabled,omitempty"`
+	// AnvilHealthCheck controls the wedged-anvil check run once per full poll
+	// per anvil: a single dolt_conflicts query that detects a beads database
+	// left mid-merge with unresolved conflicts (every bd write against such an
+	// anvil is rolled back). When wedged, the anvil is surfaced in
+	// needs-attention and skipped for dispatch until the conflicts clear.
+	// Default: true.
+	AnvilHealthCheck *bool `mapstructure:"anvil_health_check" yaml:"anvil_health_check,omitempty"`
 	// LogRetentionDays is how many days a preserved bead-log directory under
 	// ~/.forge/logs/<beadID>/ is kept after its newest file. The retention
 	// sweep removes older directories (unless the bead has a running worker).
@@ -1085,6 +1092,7 @@ func (s SettingsConfig) MarshalYAML() (interface{}, error) {
 		VulncheckInterval         string              `yaml:"vulncheck_interval,omitempty"`
 		VulncheckTimeout          string              `yaml:"vulncheck_timeout,omitempty"`
 		VulncheckEnabled          *bool               `yaml:"vulncheck_enabled,omitempty"`
+		AnvilHealthCheck          *bool               `yaml:"anvil_health_check,omitempty"`
 		LogRetentionDays          int                 `yaml:"log_retention_days"`
 		LogSweepInterval          string              `yaml:"log_sweep_interval,omitempty"`
 		GoRaceDetection           bool                `yaml:"go_race_detection"`
@@ -1157,6 +1165,7 @@ func (s SettingsConfig) MarshalYAML() (interface{}, error) {
 		MergeStrategy:             s.MergeStrategy,
 		StaleInterval:             durationString(s.StaleInterval),
 		VulncheckEnabled:          s.VulncheckEnabled,
+		AnvilHealthCheck:          s.AnvilHealthCheck,
 		LogRetentionDays:          s.LogRetentionDays,
 		GoRaceDetection:           s.GoRaceDetection,
 		TemperOutputCap:           s.TemperOutputCap,
@@ -1310,6 +1319,15 @@ func (s SettingsConfig) IsVulncheckEnabled() bool {
 		return true
 	}
 	return *s.VulncheckEnabled
+}
+
+// IsAnvilHealthCheckEnabled returns true unless anvil_health_check is explicitly
+// false. Defaults to true: the check is a single query per anvil per full poll.
+func (s SettingsConfig) IsAnvilHealthCheckEnabled() bool {
+	if s.AnvilHealthCheck == nil {
+		return true
+	}
+	return *s.AnvilHealthCheck
 }
 
 // IsAutoMergeCrucibleChildren returns true unless auto_merge_crucible_children

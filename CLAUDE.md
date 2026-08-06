@@ -102,6 +102,7 @@ Forge is a **Go orchestrator daemon** that autonomously drives Claude Code agent
 | `internal/burnish` | Review comment fix worker — addresses PR review feedback |
 | `internal/rebase` | Conflict rebase handling for merge conflicts |
 | `internal/poller` | Calls `bd ready` to get available beads from an anvil; detects Crucible candidates |
+| `internal/anvilhealth` | Wedged-anvil detection — one `dolt_conflicts` query per anvil to spot a beads database left mid-merge with unresolved conflicts (every `bd` write against it fails). Detection only; resolution stays with the operator |
 | `internal/worktree` | Creates/removes `git worktree` branches for each bead |
 | `internal/state` | SQLite at `~/.forge/state.db` — workers, prs, events, retries, costs |
 | `internal/cost` | Token usage and USD cost tracking per bead and per day |
@@ -200,6 +201,12 @@ vulncheck.Monitor (background, daily by default)
 logsweep.Monitor (background, daily by default)
   → deletes stale per-bead log dirs under ~/.forge/logs/<beadID>/
   → skips beads with a running worker; never touches the live daemon.log
+
+anvilhealth check (once per FULL poll, per anvil; anvil_health_check)
+  → SELECT `table`, num_conflicts FROM dolt_conflicts
+  → non-empty → raise needs-attention (tables, count, ahead/behind), WARN, skip dispatch
+  → empty     → clear the flag automatically (no operator action)
+  → query error → state unknown: leave the previous flag untouched
 ```
 
 ### Two Front Ends: Hearth (TUI) vs Hearth 2.0 (web GUI)

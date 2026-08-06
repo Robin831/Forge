@@ -53,6 +53,13 @@ const (
 	// via the OrphanRecoveryFailed notifier method; generic webhooks also
 	// receive it via the WebhookDispatcher.
 	EventOrphanRecoveryFailed EventType = "orphan_recovery_failed"
+	// EventAnvilWedged is emitted once per wedge when an anvil's beads database
+	// is found mid-merge with unresolved conflicts: every bd write against it is
+	// rolled back, so nothing dispatched there can succeed until a human
+	// resolves the conflict. EventAnvilRecovered is its counterpart, emitted
+	// when the conflicts are gone and the anvil accepts work again.
+	EventAnvilWedged    EventType = "anvil_wedged"
+	EventAnvilRecovered EventType = "anvil_recovered"
 )
 
 // Notifier sends notifications to Teams.

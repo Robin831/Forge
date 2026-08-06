@@ -84,6 +84,22 @@ export interface LogTailResponse {
   lines: string[]
 }
 
+// WedgedAnvil mirrors `ipc.WedgedAnvilItem`: an anvil whose beads (Dolt)
+// working set is mid-merge with unresolved conflicts. While an anvil is listed
+// here every bd write against it is rolled back, so nothing dispatched to it
+// can succeed until an operator resolves the conflict by hand.
+export interface WedgedAnvil {
+  anvil: string
+  conflict_tables?: string
+  conflict_count?: number
+  branch?: string
+  ahead?: number
+  behind?: number
+  divergence_known?: boolean
+  detail?: string
+  detected_at?: string
+}
+
 export interface StatusResponse {
   running: boolean
   pid: number
@@ -100,6 +116,7 @@ export interface StatusResponse {
   copilot_request_limit?: number
   copilot_limit_reached?: boolean
   max_total_smiths?: number
+  wedged_anvils?: WedgedAnvil[]
 }
 
 export interface CrucibleStatus {

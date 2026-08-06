@@ -34,6 +34,7 @@ import (
 
 	"github.com/Robin831/Forge/internal/ingot"
 	"github.com/Robin831/Forge/internal/ipc"
+	"github.com/Robin831/Forge/internal/state"
 )
 
 // Panel identifies a TUI panel.
@@ -103,6 +104,7 @@ const (
 	AttentionRebaseExhausted                     // Rebase attempts exhausted
 	AttentionClarification                       // Bead flagged as needing clarification
 	AttentionStalled                             // Worker stalled (no log activity)
+	AttentionAnvilWedged                         // Anvil's beads database is mid-merge with unresolved conflicts
 )
 
 // NeedsAttentionItem represents a bead requiring human attention.
@@ -117,7 +119,15 @@ type NeedsAttentionItem struct {
 	PRID             int // Non-zero when item originates from an exhausted PR
 	PRNumber         int
 	LastWardenReject string // Most recent warden_reject message, if any
+	// Kind mirrors state.NeedsAttentionBead.Kind. state.AttentionKindAnvil marks
+	// an anvil-level entry (no bead, no PR) whose only resolution is fixing the
+	// anvil itself, so the bead-scoped actions are suppressed for it.
+	Kind string
 }
+
+// IsAnvil reports whether this entry describes an unusable anvil rather than a
+// bead or PR.
+func (i NeedsAttentionItem) IsAnvil() bool { return i.Kind == state.AttentionKindAnvil }
 
 // ReadyToMergeItem represents a PR ready to merge.
 type ReadyToMergeItem struct {
@@ -1074,6 +1084,14 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Open action menu for selected Needs Attention bead
 			if m.focused == PanelNeedsAttention && len(m.needsAttention) > 0 &&
 				m.needsAttnVP.cursor < len(m.needsAttention) {
+				// Anvil-level entries (e.g. a wedged beads database) have no
+				// bead to retry, dismiss or re-review: the only fix is resolving
+				// the conflict in the anvil, after which Forge clears the entry
+				// on its own. Explain that instead of offering dead actions.
+				if sel := m.needsAttention[m.needsAttnVP.cursor]; sel.IsAnvil() {
+					m.setStatus(fmt.Sprintf("Anvil %s is wedged — resolve the beads merge conflict; this clears automatically", sel.Anvil), false)
+					return m, nil
+				}
 				m.actionTarget = new(NeedsAttentionItem)
 				*m.actionTarget = m.needsAttention[m.needsAttnVP.cursor]
 				item := m.actionTarget
@@ -1180,7 +1198,13 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			} else if m.focused == PanelNeedsAttention && len(m.needsAttention) > 0 &&
 				m.needsAttnVP.cursor < len(m.needsAttention) {
 				item := m.needsAttention[m.needsAttnVP.cursor]
-				m.openDescriptionViewer(item.BeadID, item.Title, item.Description)
+				if item.IsAnvil() {
+					// No bead description exists; show the full conflict detail,
+					// which is what the operator needs and is truncated in the row.
+					m.openDescriptionViewer(item.Anvil, item.Title, item.Reason)
+				} else {
+					m.openDescriptionViewer(item.BeadID, item.Title, item.Description)
+				}
 			}
 
 		case "m":
@@ -1262,6 +1286,11 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			} else if m.focused == PanelNeedsAttention && len(m.needsAttention) > 0 &&
 				m.needsAttnVP.cursor < len(m.needsAttention) {
 				item := m.needsAttention[m.needsAttnVP.cursor]
+				// Anvil-level entries have no bead to annotate.
+				if item.IsAnvil() {
+					m.setStatus(fmt.Sprintf("Anvil %s is wedged — no bead to annotate", item.Anvil), false)
+					return m, nil
+				}
 				m.openNotesOverlay(item.BeadID, item.Anvil, item.Title)
 			}
 
@@ -2596,6 +2625,12 @@ func (m *Model) removeNeedsAttentionItem(beadID, anvil string, prID ...int) {
 		prid = prID[0]
 	}
 	for i, item := range m.needsAttention {
+		// Anvil-level entries are never the target of a bead/PR action and also
+		// carry an empty bead ID, so they must not be matched by the beadID==""
+		// fallback below.
+		if item.IsAnvil() {
+			continue
+		}
 		var matched bool
 		// For non-bead PRs, prefer matching by PRID (and anvil) so that multiple
 		// exhausted PRs in the same anvil are removed deterministically.
@@ -3803,6 +3838,8 @@ func attentionReasonIcon(cat AttentionReason) string {
 		return lipgloss.NewStyle().Foreground(colorInfo).Render("? CLARIFY")
 	case AttentionStalled:
 		return lipgloss.NewStyle().Foreground(colorDanger).Render("◼ STALLED")
+	case AttentionAnvilWedged:
+		return lipgloss.NewStyle().Foreground(colorDanger).Render("⛔ WEDGED")
 	default:
 		return lipgloss.NewStyle().Foreground(colorMuted).Render("⚠ UNKNOWN")
 	}
@@ -3845,6 +3882,9 @@ func (m *Model) renderNeedsAttention(width, height int) string {
 			} else if item.Title != "" {
 				label += " " + item.Title
 			}
+			// Anvil-level entries have no bead ID; trim so the row does not
+			// start with a stray space.
+			label = strings.TrimSpace(label)
 			if item.FailureCount > 0 {
 				label += dimStyle.Render(fmt.Sprintf(" [%d failures]", item.FailureCount))
 			}

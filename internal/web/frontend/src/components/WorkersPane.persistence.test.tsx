@@ -230,17 +230,13 @@ describe('WorkersPane persistence', () => {
     // The separate tests above verify each storage path in isolation; this one
     // proves they compose — the unmount/remount cycle doesn't drop one because
     // the other was also touched, and the first paint after pop carries both.
-    vi.useFakeTimers()
-    // delay: null disables userEvent's internal inter-event setTimeout. Under
-    // fake timers those delay timers are never auto-flushed (advanceTimers is
-    // unreliable with the synchronous vi.advanceTimersByTime), so click/type
-    // would hang until the 5s per-test timeout. With delay: null the
-    // interactions dispatch synchronously and only our own rAF + 150ms debounce
-    // timers remain for vi.runAllTimers() to flush.
-    const user = userEvent.setup({
-      advanceTimers: vi.advanceTimersByTime,
-      delay: null,
-    })
+    // The click runs on real timers. userEvent wraps every interaction in
+    // React's async act(), which yields to the macrotask queue; under fake
+    // timers nothing advances that queue from inside the await, so the click
+    // never settles and the test hangs until its timeout. Fake timers are
+    // installed further down, once the only thing left to drive is our own
+    // rAF + 150ms debounce — exactly the split the two isolated tests above use.
+    const user = userEvent.setup()
 
     const { router } = renderApp(TEST_WORKERS)
 
@@ -248,6 +244,10 @@ describe('WorkersPane persistence', () => {
     const forgeHeader = screen.getByTestId('workers-group-forge')
     await user.click(forgeHeader)
     expect(forgeHeader).toHaveAttribute('aria-expanded', 'false')
+
+    // From here on we drive rAF (shimmed as setTimeout in jsdom) and the
+    // useUIState debounce by hand, so switch to fake timers.
+    vi.useFakeTimers()
 
     // Set a scroll position — written to sessionStorage via the rAF-throttled
     // onScroll handler. jsdom has no layout engine, so we shim scrollTop on

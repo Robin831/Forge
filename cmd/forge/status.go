@@ -87,6 +87,28 @@ var statusCmd = &cobra.Command{
 						}
 						tw.Flush()
 
+						// A wedged anvil cannot accept any work: every bd write
+						// against it is rolled back until the merge conflict is
+						// resolved. Print it prominently rather than as one more
+						// tab-aligned row.
+						if len(s.WedgedAnvils) > 0 {
+							fmt.Printf("\nWedged Anvils (beads merge conflict — dispatch blocked):\n")
+							for _, wa := range s.WedgedAnvils {
+								line := fmt.Sprintf("  ⚠ %s — conflicts: %s", wa.Anvil, wa.ConflictTables)
+								if wa.DivergenceKnown {
+									branch := wa.Branch
+									if branch == "" {
+										branch = "local"
+									}
+									line += fmt.Sprintf("; %s ahead %d / behind %d", branch, wa.Ahead, wa.Behind)
+								}
+								if !wa.DetectedAt.IsZero() {
+									line += fmt.Sprintf("; wedged for %s", time.Since(wa.DetectedAt).Round(time.Second))
+								}
+								fmt.Println(line)
+							}
+						}
+
 						if len(s.Quotas) > 0 {
 							fmt.Printf("\nProvider Quotas:\n")
 							tw = tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)

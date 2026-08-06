@@ -13,6 +13,7 @@ import DispatchToggle from '../components/DispatchToggle'
 import QueuePane from '../components/QueuePane'
 import WorkerPanelGrid from '../components/WorkerPanelGrid'
 import NeedsAttentionPane from '../components/NeedsAttentionPane'
+import WedgedAnvilsBanner from '../components/WedgedAnvilsBanner'
 import LiveActivity from '../components/LiveActivity'
 import WorkerLogModal from '../components/WorkerLogModal'
 import CruciblesPane from '../components/CruciblesPane'
@@ -55,6 +56,11 @@ export default function DashboardPage() {
   return (
     <div className="flex min-h-full w-full flex-col gap-6 p-4 sm:p-6">
       <AppHeader daemonOnline={daemonHealthy} daemonLoading={status.loading} />
+
+      {/* A wedged anvil blocks every dispatch into it, so it is surfaced above
+          the fold rather than inside the bead-centric needs-attention pane
+          (which is keyed by bead id — a wedge belongs to no bead). */}
+      <WedgedAnvilsBanner anvils={status.data?.wedged_anvils ?? []} />
 
       <div className="flex flex-wrap items-center justify-between gap-3">
         {dispatchPaused ? (
