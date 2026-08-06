@@ -111,6 +111,7 @@ type Monitor struct {
 	smelterEnabled       func() bool                                          // when true, route learned rules to pending table instead of PR
 	assayConfig          func(anvil string) AssayGateConfig                   // resolved Assay gate config; nil disables the trigger
 	beadInFlight         func(beadID string) bool                             // reports whether a lifecycle fix worker is active for a bead; nil disables (tests)
+	cycleHook            func(ctx context.Context)                            // called at the start of every poll cycle, before any PR work; nil disables
 
 	// retryBackoff overrides the inline retry backoff used when wrapping gh
 	// status fetches in transient-failure retries. nil selects
@@ -214,6 +215,15 @@ func (m *Monitor) SetInFlightChecker(f func(beadID string) bool) {
 // beadID. Safe with no checker wired (returns false).
 func (m *Monitor) inFlight(beadID string) bool {
 	return m.beadInFlight != nil && m.beadInFlight(beadID)
+}
+
+// SetCycleHook registers a callback invoked at the top of every poll cycle,
+// before any PR is examined — including cycles where there are no open PRs at
+// all. It exists for per-cycle reconciliation that is not tied to a specific
+// PR (the merged-but-unclosed bead sweep). The hook runs on the poll goroutine,
+// so it must return promptly; anything slow belongs in a goroutine it owns.
+func (m *Monitor) SetCycleHook(f func(ctx context.Context)) {
+	m.cycleHook = f
 }
 
 // escalateFixExhausted flags a PR needs_human once when an auto-fix loop
@@ -511,6 +521,14 @@ func (m *Monitor) sweepOrphanedMonitoringWorkers() {
 // checkAll polls all open PRs and emits events for state changes.
 func (m *Monitor) checkAll(ctx context.Context) {
 	m.sweepOrphanedMonitoringWorkers()
+
+	// Runs before the open-PR query (and its len==0 early return) because the
+	// work it drives — closing beads whose PR already merged — outlives the PRs
+	// that triggered it: by the time a close is stuck and pending, the PR is no
+	// longer open and would never bring us back here.
+	if m.cycleHook != nil {
+		m.cycleHook(ctx)
+	}
 
 	prs, err := m.db.OpenPRs()
 	if err != nil {

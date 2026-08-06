@@ -601,6 +601,18 @@ CREATE TABLE IF NOT EXISTS previews (
 );
 
 CREATE INDEX IF NOT EXISTS idx_previews_status ON previews(status);
+
+CREATE TABLE IF NOT EXISTS pending_bead_closes (
+    bead_id     TEXT NOT NULL,
+    anvil       TEXT NOT NULL,
+    pr_number   INTEGER NOT NULL DEFAULT 0,
+    reason      TEXT NOT NULL DEFAULT '',
+    attempts    INTEGER NOT NULL DEFAULT 0,
+    last_error  TEXT NOT NULL DEFAULT '',
+    merged_at   TEXT NOT NULL DEFAULT '',
+    updated_at  TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (bead_id, anvil)
+);
 `
 
 // dbTimeLayout is the canonical, fixed-width layout used for timestamps
@@ -2347,6 +2359,15 @@ const (
 	// recovery opens (or registers) a PR for an already-pushed forge branch
 	// without re-running Smith, clearing the needs_human escalation.
 	EventPRCreateRecovered EventType = "pr_create_recovered"
+
+	// EventBeadCloseRetryExhausted fires when the close-after-merge path has
+	// burned its whole retry budget against a transient bd/Dolt failure. The
+	// close stays pending (pending_bead_closes) and is re-attempted on later
+	// Bellows cycles; the event exists so the stall is visible in the log even
+	// while it is still self-healing. EventBeadCloseRecovered fires when one of
+	// those later cycles finally closes the bead.
+	EventBeadCloseRetryExhausted EventType = "bead_close_retry_exhausted"
+	EventBeadCloseRecovered      EventType = "bead_close_recovered"
 
 	// EventAnvilWedged fires when an anvil's beads (Dolt) working set is found
 	// mid-merge with unresolved conflicts, meaning every bd write against that

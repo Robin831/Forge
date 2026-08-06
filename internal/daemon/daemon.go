@@ -113,6 +113,7 @@ type bellowsMonitorIface interface {
 	SetSmelterEnabled(f func() bool)
 	SetAssayConfig(f func(anvil string) bellows.AssayGateConfig)
 	SetInFlightChecker(f func(beadID string) bool)
+	SetCycleHook(f func(ctx context.Context))
 	UpdateAnvilPaths(paths map[string]string)
 	Refresh()
 	Run(ctx context.Context) error
@@ -367,6 +368,23 @@ type Daemon struct {
 	// parentCloser closes a bead with --force. Defaults to exec.Command;
 	// may be replaced in tests.
 	parentCloser func(anvilPath, beadID, reason string) error
+
+	// beadCloser runs `bd close`. nil selects the real exec-based
+	// implementation; tests replace it to inject transient bd failures.
+	beadCloser func(ctx context.Context, beadID, anvilPath, reason string) error
+
+	// bdCloseRetry bounds the close-after-merge retry burst. The zero value
+	// selects defaultBdRetryPolicy(); tests set a no-op sleeper.
+	bdCloseRetry bdRetryPolicy
+
+	// beadCloseInFlight collapses concurrent close attempts for the same
+	// "anvil\x00bead" so the Bellows merge event and the pending-close
+	// reconciler cannot run two bursts against one bead.
+	beadCloseInFlight sync.Map
+
+	// beadCloseReconciling guards the pending-close reconciler so successive
+	// Bellows cycles do not stack reconcilers when one outlives the interval.
+	beadCloseReconciling atomic.Bool
 
 	// queueTimestamps holds CreatedAt/UpdatedAt strings (as emitted by
 	// `bd ready --json` / `bd list --json`) keyed by "anvil/beadID". It is
@@ -1270,6 +1288,11 @@ func (d *Daemon) Run(ctx context.Context) error {
 		_, inFlight := d.activeBeads.Load(beadID)
 		return inFlight
 	})
+	// Re-attempt any close-after-merge that a previous cycle (or a previous
+	// daemon lifetime) could not complete. Registered as a cycle hook rather
+	// than an event handler because the triggering PR is already merged and
+	// will never emit another event.
+	d.bellowsMonitor.SetCycleHook(d.kickPendingBeadCloseReconcile)
 	d.bellowsMonitor.OnEvent(d.lifecycleMgr.HandleEvent)
 	d.bellowsMonitor.OnEvent(d.handleBellowsNotifications)
 	d.bellowsMonitor.OnEvent(d.handleBeadCloseOnMerge)
@@ -2250,6 +2273,13 @@ func (d *Daemon) handleBellowsNotifications(ctx context.Context, event bellows.P
 // The pipeline always defers bead close until the PR merges, expecting
 // bellows to close it. This handler fulfils that contract.
 // External PRs (ext-*) are skipped — they don't have real beads to close.
+//
+// The close runs on its own goroutine with a bounded retry burst: bellows
+// invokes handlers synchronously, and a transient dolt/beads failure here is
+// not cosmetic — the bead stays open, so every dependent bead behind it stays
+// blocked even though the work merged. Anything the burst cannot fix is
+// persisted as a pending close and re-attempted on later bellows cycles by
+// reconcilePendingBeadCloses.
 func (d *Daemon) handleBeadCloseOnMerge(ctx context.Context, event bellows.PREvent) {
 	if event.EventType != bellows.EventPRMerged {
 		return
@@ -2261,13 +2291,15 @@ func (d *Daemon) handleBeadCloseOnMerge(ctx context.Context, event bellows.PREve
 	if !ok || anvilCfg.Path == "" {
 		return
 	}
-	closeCtx, cancel := context.WithTimeout(context.Background(), executil.DefaultBdTimeout)
-	defer cancel()
-	if err := d.closeBead(closeCtx, event.BeadID, anvilCfg.Path, fmt.Sprintf("PR #%d merged", event.PRNumber)); err != nil {
-		d.logger.Warn("failed to close bead after PR merge", "bead", event.BeadID, "pr", event.PRNumber, "error", err)
-	} else {
-		d.logger.Info("bead closed after PR merge", "bead", event.BeadID, "pr", event.PRNumber)
-	}
+	beadID, anvil, anvilPath, prNumber := event.BeadID, event.Anvil, anvilCfg.Path, event.PRNumber
+	reason := fmt.Sprintf("PR #%d merged", prNumber)
+	go func() {
+		// Detached from the bellows poll context, which is cancelled at the end
+		// of the cycle and would abort the burst mid-backoff.
+		closeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), beadCloseBudget)
+		defer cancel()
+		_ = d.closeMergedBead(closeCtx, beadID, anvil, anvilPath, reason, prNumber, nil)
+	}()
 }
 
 // notifyWicketPRCreated informs the Wicket monitor that a PR has been created
@@ -2536,23 +2568,15 @@ func (d *Daemon) reconcileMergedBeads(ctx context.Context) {
 			continue
 		}
 
-		closeCtx, cancel := context.WithTimeout(ctx, executil.DefaultBdTimeout)
-		err := d.closeBead(closeCtx, pr.BeadID, anvilCfg.Path,
-			fmt.Sprintf("PR #%d merged (startup reconciliation)", pr.Number))
+		// Share the close-after-merge retry path so a transient dolt/beads
+		// failure here is retried and, if it still fails, left as a pending
+		// close for the next Bellows cycle rather than waiting for the next
+		// daemon restart.
+		closeCtx, cancel := context.WithTimeout(ctx, beadCloseBudget)
+		err := d.closeMergedBead(closeCtx, pr.BeadID, pr.Anvil, anvilCfg.Path,
+			fmt.Sprintf("PR #%d merged (startup reconciliation)", pr.Number), pr.Number, nil)
 		cancel()
-		if err != nil {
-			errStr := err.Error()
-			if strings.Contains(errStr, "already closed") || strings.Contains(errStr, "already_closed") {
-				// Bead was closed by another path between our status check
-				// and the close attempt — nothing to do.
-				d.logger.Debug("reconcileMergedBeads: bead already closed",
-					"bead", pr.BeadID, "pr", pr.Number)
-			} else {
-				// Genuine failure (bd missing, network issue, etc.) — surface it.
-				d.logger.Warn("reconcileMergedBeads: failed to close bead, will retry on next startup",
-					"bead", pr.BeadID, "pr", pr.Number, "error", err)
-			}
-		} else {
+		if err == nil {
 			closed++
 			d.logger.Info("reconcileMergedBeads: closed bead for merged PR",
 				"bead", pr.BeadID, "pr", pr.Number, "anvil", pr.Anvil)
@@ -5023,8 +5047,18 @@ func (d *Daemon) forgeBranchAheadOfMain(ctx context.Context, anvilPath, beadID, 
 	return "", false
 }
 
-// closeBead marks a bead as closed via bd close.
+// closeBead marks a bead as closed via bd close. It routes through the
+// injectable beadCloser so tests can simulate the transient dolt/beads
+// failures the close-after-merge retry path exists to survive.
 func (d *Daemon) closeBead(ctx context.Context, beadID, anvilPath, reason string) error {
+	if d.beadCloser != nil {
+		return d.beadCloser(ctx, beadID, anvilPath, reason)
+	}
+	return execBdClose(ctx, beadID, anvilPath, reason)
+}
+
+// execBdClose is the real `bd close` invocation.
+func execBdClose(ctx context.Context, beadID, anvilPath, reason string) error {
 	cmd := executil.HideWindow(exec.CommandContext(ctx, "bd", "close", beadID, "--reason="+reason, "--json"))
 	cmd.Dir = anvilPath
 	out, err := cmd.CombinedOutput()
