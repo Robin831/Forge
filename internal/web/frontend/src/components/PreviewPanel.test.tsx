@@ -73,7 +73,7 @@ beforeEach(() => {
   vi.useFakeTimers()
   vi.setSystemTime(new Date(NOW))
   resetPreviewsStore()
-  previews = { enabled: true, anvils: ['forge'], previews: [preview()] }
+  previews = { enabled: true, anvils: ['forge'], quest_anvils: [], previews: [preview()] }
   posts = []
   logRequests = []
   logLines = ['listening on :42001', 'ready']
@@ -112,7 +112,7 @@ describe('PreviewPanel gating', () => {
   })
 
   it('renders nothing when Kiln is disabled daemon-wide', async () => {
-    previews = { enabled: false, anvils: [], previews: [] }
+    previews = { enabled: false, anvils: [], quest_anvils: [], previews: [] }
     await mount()
     expect(screen.queryByTestId('preview-panel-Forge-abc1')).not.toBeInTheDocument()
   })

@@ -91,6 +91,16 @@ func (s *Server) routes() http.Handler {
 		r.Post("/bead/{bead_id}/preview/start", s.handlePreviewStart)
 		r.Post("/bead/{bead_id}/preview/stop", s.handlePreviewStop)
 
+		// E2E quests against a bead's preview. The POST dispatches a run and
+		// answers 202 with a run id (the browser work takes minutes); the GETs
+		// poll that run and serve the screenshots it captured. Results are
+		// purely informational — nothing downstream gates on them — so a failed
+		// run has no effect beyond what these endpoints report.
+		r.Post("/bead/{bead_id}/quests", s.handleQuestRunStart)
+		r.Get("/bead/{bead_id}/quests", s.handleQuestRunStatus)
+		r.Get("/bead/{bead_id}/quests/{run_id}", s.handleQuestRunStatus)
+		r.Get("/bead/{bead_id}/quests/{run_id}/screenshot/{index}", s.handleQuestScreenshot)
+
 		// Daemon-wide dispatch control (Hearth 2.0). Pause/resume the
 		// auto-dispatch of new workers without touching running ones.
 		r.Post("/dispatch/pause", s.handleDispatchPause)

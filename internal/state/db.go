@@ -2429,6 +2429,12 @@ const (
 	EventAdventurerFailed   EventType = "adventurer_failed"
 	EventTestBeadCreated    EventType = "test_bead_created"
 
+	// EventPreviewQuestRunDone fires when an on-demand quest run against a Kiln
+	// preview reaches a terminal status (passed/failed/skipped/error). It is a
+	// record of what was exercised, not a gate: nothing in the pipeline, Bellows
+	// or the merge path reads preview quest outcomes.
+	EventPreviewQuestRunDone EventType = "preview_quest_run_done"
+
 	// Smelter events — batch warden rule flushing.
 	EventSmelterStarted   EventType = "smelter_started"
 	EventSmelterFlushed   EventType = "smelter_flushed"

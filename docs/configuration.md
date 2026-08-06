@@ -1152,6 +1152,20 @@ Each run is tagged with the preview id and the head SHA it ran against, so
 downstream reporting can post results once per commit rather than once per
 attempt.
 
+**Running them from Hearth 2.0.** The bead-detail preview panel grows a **Run
+quests** button for anvils that opted in, and only while the preview is healthy
+— the same two gates the backend enforces, so the endpoint answers `403` to
+anyone who posts without them. A run is dispatched asynchronously: the panel
+gets a run id immediately and polls it, showing the overall status
+(running/passed/failed/skipped/errored), a row per quest with its failing step
+and message, and thumbnails of any screenshots the quests captured.
+
+**Results are informational.** Nothing reads a preview quest run back: no
+pipeline stage, no Bellows check and no merge gate consults it, and a run is
+never persisted to `state.db` — it lives in daemon memory for the life of the
+preview it describes. A red run is a prompt for whoever is reviewing the branch,
+not a block on it, which is what the panel says next to a failure.
+
 **Security note.** Preview URLs are served by the previewed application itself,
 not by Hearth, so they are **not** behind the Hearth login. The default
 `preview_bind_host: 127.0.0.1` keeps them reachable only from the Forge box.

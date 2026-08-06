@@ -68,7 +68,7 @@ beforeEach(() => {
   vi.useFakeTimers()
   vi.setSystemTime(new Date(NOW))
   resetPreviewsStore()
-  previews = { enabled: true, anvils: ['forge'], previews: [preview()] }
+  previews = { enabled: true, anvils: ['forge'], quest_anvils: [], previews: [preview()] }
   posts = []
 
   vi.stubGlobal(
@@ -162,14 +162,14 @@ describe('PreviewsPage', () => {
   })
 
   it('says previews are disabled rather than showing an empty list', async () => {
-    previews = { enabled: false, anvils: [], previews: [] }
+    previews = { enabled: false, anvils: [], quest_anvils: [], previews: [] }
     await mount()
     expect(screen.getByText(/Previews are disabled/)).toBeInTheDocument()
     expect(screen.queryByTestId('preview-row-Forge-abc1')).not.toBeInTheDocument()
   })
 
   it('distinguishes an enabled-but-empty fleet', async () => {
-    previews = { enabled: true, anvils: ['forge'], previews: [] }
+    previews = { enabled: true, anvils: ['forge'], quest_anvils: [], previews: [] }
     await mount()
     expect(screen.getByText(/No preview environments are running/)).toBeInTheDocument()
   })

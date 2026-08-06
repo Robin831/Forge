@@ -60,6 +60,8 @@ const UNKNOWN_GRACE_MS = 60_000
 export interface PreviewsSnapshot {
   enabled: boolean
   anvils: string[]
+  /** Anvils whose quests may be run against a preview (`preview_quests`). */
+  quest_anvils: string[]
   previews: PreviewSummary[]
   /** false until the first response lands — gates on it read as "not yet". */
   loaded: boolean
@@ -69,6 +71,7 @@ export interface PreviewsSnapshot {
 const EMPTY_SNAPSHOT: PreviewsSnapshot = {
   enabled: false,
   anvils: [],
+  quest_anvils: [],
   previews: [],
   loaded: false,
   error: null,
@@ -101,6 +104,7 @@ export function refreshPreviews(): Promise<void> {
       publish({
         enabled: data.enabled,
         anvils: data.anvils,
+        quest_anvils: data.quest_anvils,
         previews: data.previews,
         loaded: true,
         error: null,

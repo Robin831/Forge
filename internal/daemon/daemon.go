@@ -215,6 +215,16 @@ type Daemon struct {
 	// exercised without worktrees, ports or child processes.
 	newPreviewManager func(ctx context.Context, cfg *config.Config, anvils map[string]string) (previewManager, error)
 
+	// questRunStore holds the on-demand quest runs against previews for this
+	// daemon lifetime (see preview_quests.go). It is created lazily through
+	// d.questRuns(); questRunMu guards that construction.
+	questRunMu    sync.Mutex
+	questRunStore *questgiver.RunStore
+	// previewQuestRunner overrides where a preview quest run is dispatched.
+	// nil selects d.questgiverMonitor; tests replace it with a fake so the
+	// dispatch path can be exercised without a browser.
+	previewQuestRunner previewQuestRunner
+
 	// Wicket: GitHub issue triage monitor
 	// wicketMu guards wicketMonitor to prevent data races between the
 	// hot-reload callback (which may assign a new monitor) and the shutdown
@@ -1447,39 +1457,53 @@ func (d *Daemon) Run(ctx context.Context) error {
 		d.logger.Info("smelter disabled via configuration (smelter_enabled: false)")
 	}
 
-	// Start QuestGiver monitor (if enabled)
-	if d.config().Settings.IsQuestgiverEnabled() {
-		if d.config().Settings.QuestgiverInterval <= 0 {
-			d.logger.Error("QuestGiver enabled but questgiver_interval <= 0; skipping QuestGiver monitor")
-		} else {
-			qgAnvils := filterQuestgiverAnvils(monitorAnvils, d.cfg.Load().Anvils)
+	// Start QuestGiver. It serves two paths that are enabled independently: the
+	// scheduled scan (questgiver_enabled + questgiver_interval) and on-demand
+	// runs against a Kiln preview (per-anvil preview_quests). The monitor is
+	// therefore constructed when *either* wants it — an anvil that opted into
+	// preview quests must be able to run them even with scheduled scanning off,
+	// which is the whole point of the two flags being separate — while only the
+	// scan starts the polling loop.
+	questScanEnabled := d.config().Settings.IsQuestgiverEnabled() && d.config().Settings.QuestgiverInterval > 0
+	if d.config().Settings.IsQuestgiverEnabled() && d.config().Settings.QuestgiverInterval <= 0 {
+		d.logger.Error("QuestGiver enabled but questgiver_interval <= 0; skipping scheduled quest scans")
+	}
+	previewQuestPaths := previewQuestAnvils(d.cfg.Load())
+	if questScanEnabled || len(previewQuestPaths) > 0 {
+		qgAnvils := map[string]string{}
+		if questScanEnabled {
+			qgAnvils = filterQuestgiverAnvils(monitorAnvils, d.cfg.Load().Anvils)
 			for name := range monitorAnvils {
 				if _, ok := qgAnvils[name]; !ok {
 					d.logger.Info("Skipping anvil for questgiver (questgiver_enabled=false)", "anvil", name)
 				}
 			}
-			adventurerTimeout := d.config().Settings.AdventurerTimeout
-			newExec := func() questgiver.QuestExecutor {
-				return &adventurerExecutorAdapter{
-					exec: adventurer.New(adventurerTimeout, d.logger),
-				}
+		}
+		adventurerTimeout := d.config().Settings.AdventurerTimeout
+		newExec := func() questgiver.QuestExecutor {
+			return &adventurerExecutorAdapter{
+				exec: adventurer.New(adventurerTimeout, d.logger),
 			}
-			d.questgiverMonitor = questgiver.New(d.db,
-				d.config().Settings.QuestgiverInterval,
-				adventurerTimeout,
-				qgAnvils, newExec)
-			// Quests can also be run on demand against a preview
-			// environment, for the anvils that opted in with
-			// preview_quests. That path needs its own anvil set (it is not
-			// filtered by questgiver_enabled) and a way to check the
-			// preview is healthy before driving a browser at it.
-			d.questgiverMonitor.SetPreviewQuestAnvils(previewQuestAnvils(d.cfg.Load()))
-			d.questgiverMonitor.SetPreviewLookup(d.previewQuestLookup)
+		}
+		d.questgiverMonitor = questgiver.New(d.db,
+			d.config().Settings.QuestgiverInterval,
+			adventurerTimeout,
+			qgAnvils, newExec)
+		// Quests can also be run on demand against a preview environment, for
+		// the anvils that opted in with preview_quests. That path needs its own
+		// anvil set (it is not filtered by questgiver_enabled) and a way to
+		// check the preview is healthy before driving a browser at it.
+		d.questgiverMonitor.SetPreviewQuestAnvils(previewQuestPaths)
+		d.questgiverMonitor.SetPreviewLookup(d.previewQuestLookup)
+		if questScanEnabled {
 			go func() {
 				if err := d.questgiverMonitor.Run(ctx); err != nil && err != context.Canceled {
 					d.logger.Error("QuestGiver monitor error", "error", err)
 				}
 			}()
+		} else {
+			d.logger.Info("QuestGiver scheduled scans are off; monitor is up for preview quest runs only",
+				"preview_quest_anvils", len(previewQuestPaths))
 		}
 	}
 
@@ -7066,6 +7090,20 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 	case "previews", "preview_list":
 		return d.handlePreviewList()
 
+	case "preview_quest_run":
+		var p ipc.PreviewQuestRunPayload
+		if err := json.Unmarshal(cmd.Payload, &p); err != nil {
+			return errorResponse("invalid preview_quest_run payload")
+		}
+		return d.handlePreviewQuestRun(p)
+
+	case "preview_quest_status":
+		var p ipc.PreviewQuestStatusPayload
+		if err := json.Unmarshal(cmd.Payload, &p); err != nil {
+			return errorResponse("invalid preview_quest_status payload")
+		}
+		return d.handlePreviewQuestStatus(p)
+
 	case "wicket_status":
 		cfg := d.cfg.Load()
 		enabled := cfg.Settings.WicketEnabled
@@ -9258,6 +9296,7 @@ func (a *adventurerExecutorAdapter) Execute(ctx context.Context, quest *questgiv
 		FailedStep:   r.FailedStep,
 		ErrorMessage: r.ErrorMessage,
 		Duration:     r.Duration,
+		Screenshots:  r.Screenshots,
 	}
 }
 

@@ -82,8 +82,13 @@ type PreviewsResponse struct {
 	// It is what lets a client gate a "Preview" affordance per row without a
 	// probe request per bead — an anvil missing here would only ever answer a
 	// start with "no preview manifest".
-	Anvils   []string      `json:"anvils"`
-	Previews []PreviewInfo `json:"previews"`
+	Anvils []string `json:"anvils"`
+	// QuestAnvils names the anvils that additionally opted into running their
+	// E2E quests against a preview (`preview_quests: true`). It gates the "Run
+	// quests" affordance the same way Anvils gates the Preview one — from the
+	// list the dashboard already polls, rather than a probe per bead.
+	QuestAnvils []string      `json:"quest_anvils"`
+	Previews    []PreviewInfo `json:"previews"`
 }
 
 // PreviewListResponse is the response payload for the "preview_list" command.

@@ -1,12 +1,22 @@
 import { useState } from 'react'
-import { ExternalLink, MonitorPlay, Play, RotateCcw, ScrollText, Square } from 'lucide-react'
-import { usePreview } from '../hooks/usePreview'
+import {
+  ExternalLink,
+  FlaskConical,
+  MonitorPlay,
+  Play,
+  RotateCcw,
+  ScrollText,
+  Square,
+} from 'lucide-react'
+import { usePreview, usePreviewsList } from '../hooks/usePreview'
+import { usePreviewQuests } from '../hooks/usePreviewQuests'
 import { useNow } from '../hooks/useNow'
 import { useToast } from '../hooks/useToast'
 import { formatCountdown, formatDuration } from '../lib/previewFormat'
 import { relativeTime } from '../lib/format'
 import { EmptyState } from './Pane'
 import PreviewLogModal, { type PreviewLogTarget } from './PreviewLogModal'
+import PreviewQuestResults from './PreviewQuestResults'
 import PreviewServiceHealthBadge from './PreviewServiceHealth'
 import PreviewStatusChip from './PreviewStatusChip'
 
@@ -43,6 +53,21 @@ export default function PreviewPanel({ beadId, anvil, hasBranch = true }: Previe
         kind === 'start' ? `Starting preview for ${beadId}…` : `Stopping preview for ${beadId}…`,
         'info',
       ),
+  })
+
+  // The "Run quests" action is offered only when both gates the backend
+  // enforces are open: the anvil opted in with preview_quests, and the preview
+  // is healthy. Driving a browser at a half-started stack produces failures
+  // that say nothing about the branch, which is why the button is hidden rather
+  // than merely disabled — and why the endpoint answers 403 to anyone who
+  // posts anyway.
+  const snapshot = usePreviewsList()
+  const questsEnabled = !!anvil && snapshot.quest_anvils.includes(anvil)
+  const canRunQuests = questsEnabled && status === 'healthy'
+  const quests = usePreviewQuests(beadId, {
+    enabled: questsEnabled,
+    onError: (message) => toast.push(message, 'error'),
+    onStarted: () => toast.push(`Running quests against the preview for ${beadId}…`, 'info'),
   })
 
   if (!available || !hasBranch) return null
@@ -99,6 +124,21 @@ export default function PreviewPanel({ beadId, anvil, hasBranch = true }: Previe
               <ExternalLink size={13} aria-hidden />
               Open preview
             </a>
+          )}
+
+          {canRunQuests && (
+            <button
+              type="button"
+              onClick={() => void quests.start()}
+              disabled={quests.isRunning}
+              data-testid="preview-panel-run-quests"
+              aria-label={`Run quests against the preview for ${beadId}`}
+              title="Run this anvil's E2E quests against the preview. Results are informational and never block the PR."
+              className="inline-flex items-center gap-1.5 rounded-md border border-violet-600/30 bg-violet-600/15 px-2.5 py-1.5 text-xs font-medium text-violet-200 transition-colors hover:bg-violet-600/25 focus:outline-none focus-visible:ring-1 focus-visible:ring-violet-300 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <FlaskConical size={13} aria-hidden />
+              {quests.isRunning ? 'Running quests…' : 'Run quests'}
+            </button>
           )}
 
           {preview && status !== 'stopping' && (
@@ -232,6 +272,14 @@ export default function PreviewPanel({ beadId, anvil, hasBranch = true }: Previe
               </li>
             ))}
         </ul>
+      )}
+
+      {/* The latest quest run, when this bead has had one. It is rendered
+          whenever a run exists — including for a preview that has since gone
+          unhealthy, where the button is hidden but the last result is still the
+          most useful thing on the panel. */}
+      {quests.run && (
+        <PreviewQuestResults run={quests.run} testId={`preview-quests-${beadId}`} />
       )}
 
       <PreviewLogModal target={logTarget} onClose={() => setLogTarget(null)} />
