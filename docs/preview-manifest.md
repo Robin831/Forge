@@ -6,7 +6,10 @@ project declares in its preview manifest. This page documents that manifest.
 The feature as a whole is described in
 [docs/plans/preview-environments.md](plans/preview-environments.md); the global
 and per-anvil settings that gate it are in
-[configuration.md](configuration.md#preview-environments-kiln).
+[configuration.md](configuration.md#preview-environments-kiln). For complete
+worked manifests — a Go API + Vite client, and a .NET API + React client sharing
+an MSSQL server, with the per-preview database scripts that go with it — see
+[preview-manifests.md](preview-manifests.md).
 
 An anvil without a manifest simply offers no preview.
 

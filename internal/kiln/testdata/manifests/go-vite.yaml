@@ -1,0 +1,33 @@
+# Go API + Vite client — a project whose preview needs no database server.
+#
+# Copy to <anvil>/.forge/preview.yaml ON THE MAIN BRANCH and adjust the paths.
+version: 1
+
+services:
+  api:
+    command: "go run ./cmd/server"
+    env:
+      # Kiln allocates the port; the app is told which one it got.
+      PORT: "{{.Port}}"
+      APP_ENV: "preview"
+      # A SQLite file inside the preview worktree. The worktree is deleted when
+      # the preview stops, so the database dies with it — that is why this
+      # manifest needs no setup/teardown at all.
+      DATABASE_PATH: "./preview-{{.PreviewID}}.db"
+      SESSION_SECRET: "preview-only-{{.PreviewID}}"
+    health: "/healthz"
+    # `go run` compiles the whole module the first time a preview runs on a
+    # cold build cache. Be generous here rather than debugging a false failure.
+    ready_timeout: 180s
+
+  web:
+    command: "npm run dev -- --port {{.Port}} --strictPort"
+    dir: "web"
+    env:
+      # The api's port is not known until the preview starts, so the client is
+      # told where to find it instead of hardcoding one.
+      VITE_API_URL: "http://{{.Host}}:{{.ServicePort \"api\"}}"
+      BROWSER: "none"
+    # This service's URL is the preview link.
+    entry: true
+    ready_timeout: 90s
