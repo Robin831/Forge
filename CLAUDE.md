@@ -103,7 +103,7 @@ Forge is a **Go orchestrator daemon** that autonomously drives Claude Code agent
 | `internal/rebase` | Conflict rebase handling for merge conflicts |
 | `internal/poller` | Calls `bd ready` to get available beads from an anvil; detects Crucible candidates |
 | `internal/anvilhealth` | Wedged-anvil detection — one `dolt_conflicts` query per anvil to spot a beads database left mid-merge with unresolved conflicts (every `bd` write against it fails). Detection only; resolution stays with the operator |
-| `internal/worktree` | Creates/removes `git worktree` branches for each bead |
+| `internal/worktree` | Creates/removes `git worktree` branches for each bead. Also materializes Kiln's detached preview checkouts under `<anvil>/.previews/<beadID>` (`CreateDetached`/`RemoveDetached`) — separate directory, detached HEAD, never touches the worker worktree lifecycle |
 | `internal/state` | SQLite at `~/.forge/state.db` — workers, prs, events, retries, costs |
 | `internal/cost` | Token usage and USD cost tracking per bead and per day |
 | `internal/forge` | Core types and constants (version info) |
