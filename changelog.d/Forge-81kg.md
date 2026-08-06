@@ -1,0 +1,3 @@
+category: Fixed
+- **Head-scoped CI gate before CI-fix workers** - Bellows now evaluates CI against the PR's current head commit: conclusions from superseded commits are ignored, and a head with no finished runs counts as pending instead of failed, so a stale or wedged check can no longer spawn quench CI-fix workers. (Forge-81kg)
+- **Stuck CI surfaces instead of burning fix attempts** - A check queued for more than 30 minutes without starting (runner shortage, platform outage) raises an informational "CI appears stuck/outage" entry in Needs Attention — once per head, cleared automatically once CI settles — rather than dispatching fix workers against a failure that is not reproducible. (Forge-81kg)

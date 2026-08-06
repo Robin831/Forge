@@ -92,7 +92,7 @@ Forge is a **Go orchestrator daemon** that autonomously drives Claude Code agent
 | `internal/assay` | AI pull-request review engine ("Assay") — multi-pass PR diff review (Triage + Logic/Security/Conventions/Tests/Repo passes) with deduped, idempotent findings; triggered by Bellows on open PRs |
 | `internal/diff` | Shared unified-diff parsing/shaping primitives (size cap, generated-file filtering, changed-file extraction) used by both Warden and Assay |
 | `internal/hooks` | Pipeline hook execution — shell commands before/after each stage |
-| `internal/bellows` | Monitors open PRs for CI failures, review comments, and merge conflicts; gates Assay review runs |
+| `internal/bellows` | Monitors open PRs for CI failures, review comments, and merge conflicts; gates Assay review runs. The CI gate that feeds Quench is head-scoped (`ci.go`): check results reported against a superseded commit are discarded, a head whose runs have not finished is `pending` (never `failed`), and a check queued past 30 minutes is `stuck` — surfaced as a Needs Attention note instead of dispatching a fix worker |
 | `internal/crucible` | Orchestrates parent beads with children on feature branches — auto-detects, sequences, merges |
 | `internal/depcheck` | Multi-language dependency update scanner (Go, .NET, Node) — creates beads for outdated deps |
 | `internal/vulncheck` | Vulnerability scanning via `govulncheck` — creates prioritized beads |

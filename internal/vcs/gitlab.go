@@ -147,27 +147,36 @@ func (g *GitLabProvider) MergePR(ctx context.Context, worktreePath string, prNum
 
 // glabMRStatus is the JSON structure returned by glab mr view --output json.
 type glabMRStatus struct {
-	IID            int    `json:"iid"`
-	Title          string `json:"title"`
-	State          string `json:"state"`
-	MergeStatus    string `json:"merge_status"`
-	HasConflicts   bool   `json:"has_conflicts"`
-	HeadPipeline   *glabPipeline `json:"head_pipeline"`
-	WebURL         string `json:"web_url"`
-	SourceBranch   string `json:"source_branch"`
-	Draft          bool   `json:"draft"`
+	IID          int           `json:"iid"`
+	Title        string        `json:"title"`
+	State        string        `json:"state"`
+	MergeStatus  string        `json:"merge_status"`
+	HasConflicts bool          `json:"has_conflicts"`
+	HeadPipeline *glabPipeline `json:"head_pipeline"`
+	WebURL       string        `json:"web_url"`
+	SourceBranch string        `json:"source_branch"`
+	Draft        bool          `json:"draft"`
+	// SHA is the commit at the head of the source branch.
+	SHA string `json:"sha"`
 }
 
 // glabPipeline represents a GitLab CI pipeline status.
 type glabPipeline struct {
 	Status string    `json:"status"`
 	Jobs   []glabJob `json:"jobs"`
+	// SHA is the commit the pipeline ran against. GitLab keeps head_pipeline
+	// pointing at the last pipeline it created, which can lag behind the MR
+	// head when a push produced no new pipeline — consumers compare it against
+	// the MR head to discard results from superseded commits.
+	SHA string `json:"sha"`
 }
 
 // glabJob represents a single CI job in a pipeline.
 type glabJob struct {
-	Name   string `json:"name"`
-	Status string `json:"status"`
+	Name      string    `json:"name"`
+	Status    string    `json:"status"`
+	CreatedAt time.Time `json:"created_at"`
+	StartedAt time.Time `json:"started_at"`
 }
 
 // glabApproval is the JSON structure returned by the approvals API.
@@ -633,11 +642,14 @@ func (g *GitLabProvider) fetchMRView(ctx context.Context, worktreePath string, p
 		State:       mapGitLabState(mr.State),
 		Mergeable:   mapGitLabMergeable(mr.MergeStatus, mr.HasConflicts),
 		HeadRefName: mr.SourceBranch,
+		HeadSHA:     mr.SHA,
 		URL:         mr.WebURL,
 		Title:       mr.Title,
 	}
 
-	// Map pipeline status to CI check runs
+	// Map pipeline status to CI check runs. The pipeline SHA is carried onto
+	// every check so consumers can tell a result for the current head from one
+	// left over on a superseded commit.
 	if mr.HeadPipeline != nil {
 		if len(mr.HeadPipeline.Jobs) > 0 {
 			for _, job := range mr.HeadPipeline.Jobs {
@@ -645,6 +657,9 @@ func (g *GitLabProvider) fetchMRView(ctx context.Context, worktreePath string, p
 					Name:       job.Name,
 					Status:     mapGitLabJobStatus(job.Status),
 					Conclusion: mapGitLabJobConclusion(job.Status),
+					HeadSHA:    mr.HeadPipeline.SHA,
+					CreatedAt:  job.CreatedAt,
+					StartedAt:  job.StartedAt,
 				})
 			}
 		} else {
@@ -654,6 +669,7 @@ func (g *GitLabProvider) fetchMRView(ctx context.Context, worktreePath string, p
 					Name:       "pipeline",
 					Status:     mapGitLabJobStatus(mr.HeadPipeline.Status),
 					Conclusion: mapGitLabJobConclusion(mr.HeadPipeline.Status),
+					HeadSHA:    mr.HeadPipeline.SHA,
 				},
 			}
 		}
@@ -874,4 +890,3 @@ func urlEncode(path string) string {
 	}
 	return strings.Join(encoded, "%2F")
 }
-
