@@ -589,6 +589,19 @@ CREATE TABLE IF NOT EXISTS anvil_health (
     updated_at       TEXT NOT NULL DEFAULT ''
 );
 
+CREATE TABLE IF NOT EXISTS deploy_failures (
+    anvil         TEXT NOT NULL,
+    reason        TEXT NOT NULL,
+    unit          TEXT NOT NULL DEFAULT '',
+    detail        TEXT NOT NULL DEFAULT '',
+    attempted_sha TEXT NOT NULL DEFAULT '',
+    restored_sha  TEXT NOT NULL DEFAULT '',
+    rolled_back   INTEGER NOT NULL DEFAULT 0,
+    failed_at     TEXT NOT NULL DEFAULT '',
+    updated_at    TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (anvil, reason)
+);
+
 CREATE TABLE IF NOT EXISTS previews (
     bead_id        TEXT PRIMARY KEY,
     anvil          TEXT NOT NULL DEFAULT '',
@@ -3457,6 +3470,11 @@ const (
 	// database). It has no bead ID and cannot be retried or dismissed — it
 	// clears itself when the underlying condition is resolved.
 	AttentionKindAnvil = "anvil"
+	// AttentionKindDeploy marks a self-deploy entry: a deploy that was deferred,
+	// failed, or rolled back, so the running binary is not the merged code. Like
+	// the anvil kind it has no bead and no PR, and it clears itself once a later
+	// deploy gets past the same failure mode.
+	AttentionKindDeploy = "deploy"
 )
 
 // NeedsAttentionBeads returns all beads with needs_human=1, clarification_needed=1,
@@ -3613,6 +3631,25 @@ func (db *DB) NeedsAttentionBeads(maxCI, maxRev, maxRebase int) ([]NeedsAttentio
 			Reason:     wa.Detail,
 			NeedsHuman: true,
 			Kind:       AttentionKindAnvil,
+		})
+	}
+
+	// Append self-deploy failures. A deploy that was deferred, failed, or rolled
+	// back leaves the daemon running code that is not what was merged — a state
+	// that is invisible from the outside, since the daemon carries on exactly as
+	// before. Like wedged anvils these are not bead-scoped and are cleared by
+	// the deployer once a later deploy supersedes them.
+	deploys, err := db.DeployFailures()
+	if err != nil {
+		return nil, fmt.Errorf("fetching deploy failures: %w", err)
+	}
+	for _, df := range deploys {
+		beads = append(beads, NeedsAttentionBead{
+			Anvil:      df.Anvil,
+			Title:      deployAttentionTitle(df),
+			Reason:     df.Summary(),
+			NeedsHuman: true,
+			Kind:       AttentionKindDeploy,
 		})
 	}
 

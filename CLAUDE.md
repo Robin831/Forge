@@ -116,7 +116,7 @@ Forge is a **Go orchestrator daemon** that autonomously drives Claude Code agent
 | `internal/queueactions` | Shared business logic behind the queue resolution verbs (clarify, unclarify, retry, clear, stop) — single source of truth for the state mutations/audit entries used by both the CLI verbs and the IPC handlers; enforces multi-forge safety |
 | `internal/logsweep` | Daily retention sweep for preserved per-bead log directories under `~/.forge/logs/<beadID>/`; deletes stale dirs with no running worker |
 | `internal/logrotate` | Minimal size-based `io.Writer` log rotator used as the sink for the daemon's slog handler so `~/.forge/logs/daemon.log` cannot grow unbounded |
-| `internal/selfdeploy` | Rebuilds and restarts the Forge daemon from source after a merge lands on Forge's own repository (config-gated) |
+| `internal/selfdeploy` | Rebuilds and restarts the Forge daemon from source after a merge lands on Forge's own repository (config-gated). Deploys that end anywhere other than "new binary live and restarting" — drain timeout, failed swap, failed restart, rollback — are escalated through an injected `Emitter` into Hearth's Needs Attention list, since a rollback is otherwise invisible |
 | `internal/config` | Viper config loading — `forge.yaml` in cwd or `~/.forge/config.yaml` |
 | `internal/prompt` | Builds the Smith prompt from bead metadata + AGENTS.md/CLAUDE.md/README.md |
 | `internal/provider` | AI provider fallback chain (Claude, Gemini, Copilot) with rate limit handling |
@@ -263,6 +263,7 @@ Beads-Forge sessions (session capture, forgechat):
 - **bead_costs / daily_costs** — Token usage and USD estimates per bead and per day
 - **previews** — Kiln preview environments per bead: anvil, branch, status, worktree path, per-service JSON (name/port/health/pid/log), created/last-active timestamps
 - **pending_bead_closes** — beads whose PR merged but whose `bd close` has not yet succeeded: PR number, close reason, cumulative attempts, last error, merge time. Re-attempted every Bellows cycle until the bead closes
+- **deploy_failures** — self-deploys that did not go live, keyed by anvil + reason (`drain_timeout`, `swap_failed`, `restart_failed`, `rollback_failed`): attempted/restored build SHAs, rollback flag, detail, time. Surfaced as anvil-level Needs Attention entries and cleared by the deployer once a later deploy supersedes them
 
 ### IPC Protocol
 

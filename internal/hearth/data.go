@@ -19,10 +19,14 @@ import (
 // NeedsAttentionBead's fields. The classification is ordered by specificity:
 // clarification flag, circuit breaker prefix, reason text patterns, stalled.
 func classifyAttentionReason(b state.NeedsAttentionBead) AttentionReason {
-	// Anvil-level entries are classified by kind, not by reason text: the entry
-	// describes an unusable anvil, not a bead that failed.
-	if b.Kind == state.AttentionKindAnvil {
+	// Non-bead entries are classified by kind, not by reason text: they describe
+	// an unusable anvil or a self-deploy that never went live, not a bead that
+	// failed.
+	switch b.Kind {
+	case state.AttentionKindAnvil:
 		return AttentionAnvilWedged
+	case state.AttentionKindDeploy:
+		return AttentionSelfDeploy
 	}
 	if b.ClarificationNeeded {
 		return AttentionClarification
@@ -903,8 +907,9 @@ func FetchNeedsAttention(ds *DataSource) tea.Cmd {
 				PRNumber:       b.PRNumber,
 				Kind:           b.Kind,
 			}
-			// Anvil-level entries have no bead, so skip the per-row warden lookup.
-			if !item.IsAnvil() {
+			// Anvil- and deploy-level entries have no bead, so skip the per-row
+			// warden lookup.
+			if item.IsBeadScoped() {
 				item.LastWardenReject = ds.DB.LatestWardenRejectMessage(b.BeadID)
 			}
 			items = append(items, item)
