@@ -209,11 +209,11 @@ func TestRunSelfDeploy_DrainTimeoutDefersAndRestoresPause(t *testing.T) {
 		ID: "w-run", BeadID: "b1", Anvil: "forge", Status: state.WorkerRunning, StartedAt: time.Now(),
 	}))
 
-	require.False(t, d.dispatchPaused.Load(), "precondition: not paused")
+	require.False(t, d.dispatchIsPaused(), "precondition: not paused")
 
 	d.runSelfDeploy(sd)
 
-	assert.False(t, d.dispatchPaused.Load(), "pause introduced for the deploy must be undone on defer")
+	assert.False(t, d.dispatchIsPaused(), "pause introduced for the deploy must be undone on defer")
 	assert.True(t, hasEvent(t, db, state.EventSelfDeploySkipped), "a skipped event must be logged")
 }
 
@@ -235,11 +235,52 @@ func TestRunSelfDeploy_DrainTimeoutKeepsPriorPause(t *testing.T) {
 		ID: "w-run", BeadID: "b1", Anvil: "forge", Status: state.WorkerRunning, StartedAt: time.Now(),
 	}))
 
-	d.dispatchPaused.Store(true) // operator pause predates the deploy
+	d.setDispatchPaused(true, PauseReasonManual, "") // operator pause predates the deploy
 
 	d.runSelfDeploy(sd)
 
-	assert.True(t, d.dispatchPaused.Load(), "a pre-existing operator pause must survive a deferred deploy")
+	assert.True(t, d.dispatchIsPaused(), "a pre-existing operator pause must survive a deferred deploy")
+	assert.Equal(t, PauseReasonManual, d.dispatchPauseState().Reason,
+		"the operator's pause must be restored as manual, not relabelled as a self-deploy pause")
+}
+
+// TestPauseForSelfDeploy_LabelsAndRestores covers the pause a deploy holds for
+// its drain: while held it must be labelled a self-deploy — the bug being fixed
+// is `forge status` reporting it as "PAUSED (manual)", an operator action nobody
+// took — and on restore it must return exactly what it found.
+func TestPauseForSelfDeploy_LabelsAndRestores(t *testing.T) {
+	t.Run("unpaused daemon", func(t *testing.T) {
+		d := &Daemon{}
+
+		restore := d.pauseForSelfDeploy(30 * time.Minute)
+		assert.Equal(t, pauseState{Paused: true, Reason: PauseReasonSelfDeploy, Detail: "max 30m0s"},
+			d.dispatchPauseState(), "the drain pause names itself and carries its budget")
+
+		restore(false)
+		assert.Equal(t, pauseState{}, d.dispatchPauseState(),
+			"an unpaused daemon comes back unpaused, with no lingering reason")
+	})
+
+	t.Run("operator pause predates the deploy", func(t *testing.T) {
+		d := &Daemon{}
+		d.setDispatchPaused(true, PauseReasonManual, "")
+
+		restore := d.pauseForSelfDeploy(30 * time.Minute)
+		require.Equal(t, PauseReasonSelfDeploy, d.dispatchPauseState().Reason)
+
+		restore(false)
+		assert.Equal(t, pauseState{Paused: true, Reason: PauseReasonManual}, d.dispatchPauseState(),
+			"the operator's pause is restored as manual, never relabelled")
+	})
+
+	t.Run("restart requested keeps the pause", func(t *testing.T) {
+		d := &Daemon{}
+
+		restore := d.pauseForSelfDeploy(30 * time.Minute)
+		restore(true)
+		assert.True(t, d.dispatchIsPaused(),
+			"after the binary swap dispatch stays paused until systemd stops the process")
+	})
 }
 
 // TestRunSelfDeploy_MissingAnvilAborts verifies runSelfDeploy aborts (with a
@@ -250,7 +291,7 @@ func TestRunSelfDeploy_MissingAnvilAborts(t *testing.T) {
 
 	d.runSelfDeploy(sd)
 
-	assert.False(t, d.dispatchPaused.Load(), "must not pause when it aborts before draining")
+	assert.False(t, d.dispatchIsPaused(), "must not pause when it aborts before draining")
 	assert.True(t, hasEvent(t, db, state.EventSelfDeployFailed), "a failed event must be logged")
 }
 
@@ -269,7 +310,7 @@ func TestRunSelfDeploy_DeployFailureResumesDispatch(t *testing.T) {
 
 	d.runSelfDeploy(sd)
 
-	assert.False(t, d.dispatchPaused.Load(), "a failed deploy must not leave dispatch paused")
+	assert.False(t, d.dispatchIsPaused(), "a failed deploy must not leave dispatch paused")
 	assert.True(t, hasEvent(t, db, state.EventSelfDeployFailed), "a failed event must be logged")
 }
 

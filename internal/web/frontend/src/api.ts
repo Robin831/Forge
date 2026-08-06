@@ -111,6 +111,12 @@ export interface StatusResponse {
   daily_cost_limit?: number
   cost_limit_paused?: boolean
   dispatch_paused?: boolean
+  // Why dispatch is paused: 'manual' (operator) or 'self-deploy' (the drain a
+  // self-deploy takes before rebuilding). Absent/empty on a paused daemon means
+  // an older daemon — treat as manual. Unknown values are rendered verbatim.
+  dispatch_pause_reason?: string
+  // Reason-specific context, e.g. 'waiting on 2 workers, max 30m'.
+  dispatch_pause_detail?: string
   paused_since?: string
   copilot_premium_requests?: number
   copilot_request_limit?: number

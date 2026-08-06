@@ -9,7 +9,7 @@ import type {
   WorkersResponse,
 } from '../api'
 import AppHeader from '../components/AppHeader'
-import DispatchToggle from '../components/DispatchToggle'
+import DispatchToggle, { describePauseCause } from '../components/DispatchToggle'
 import QueuePane from '../components/QueuePane'
 import WorkerPanelGrid from '../components/WorkerPanelGrid'
 import NeedsAttentionPane from '../components/NeedsAttentionPane'
@@ -52,6 +52,8 @@ export default function DashboardPage() {
   const daemonHealthy = status.data?.running
   const dispatchPaused = status.data?.dispatch_paused ?? false
   const pausedSince = status.data?.paused_since
+  const pauseReason = status.data?.dispatch_pause_reason
+  const pauseDetail = status.data?.dispatch_pause_detail
 
   return (
     <div className="flex min-h-full w-full flex-col gap-6 p-4 sm:p-6">
@@ -65,13 +67,18 @@ export default function DashboardPage() {
       <div className="flex flex-wrap items-center justify-between gap-3">
         {dispatchPaused ? (
           <p className="text-sm text-amber-200/90">
-            Auto-dispatch is <strong>paused</strong>{pausedSince ? <>{' '}since {Number.isNaN(Date.parse(pausedSince)) ? pausedSince : new Date(pausedSince).toLocaleString()}</> : null}. Running
+            Auto-dispatch is <strong>paused</strong> ({describePauseCause(pauseReason, pauseDetail)}){pausedSince ? <>{' '}since {Number.isNaN(Date.parse(pausedSince)) ? pausedSince : new Date(pausedSince).toLocaleString()}</> : null}. Running
             workers continue; no new beads are dispatched. Resume to start dispatching again.
           </p>
         ) : (
           <span aria-hidden />
         )}
-        <DispatchToggle paused={dispatchPaused} pausedSince={pausedSince} />
+        <DispatchToggle
+          paused={dispatchPaused}
+          pausedSince={pausedSince}
+          reason={pauseReason}
+          detail={pauseDetail}
+        />
       </div>
 
       <section

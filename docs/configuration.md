@@ -917,6 +917,14 @@ console and stays out of the daemon's Ctrl-C group.
   (e.g. a transient `state.db` failure) is not evidence that the forge is idle,
   so polling continues; if no check succeeds for the whole window the deploy
   aborts with that error instead of being reported as a deferral.
+- **The drain pause names itself** — while the drain is held, `forge status`
+  reports `Dispatch  PAUSED (self-deploy drain, waiting on 2 workers, max 30m) —
+  running workers continue` rather than `PAUSED (manual)`, and Hearth and the web
+  dashboard show the same cause. The reason rides along the existing
+  `dispatch_paused` boolean as `dispatch_pause_reason` (`manual` | `self-deploy`)
+  and `dispatch_pause_detail` in the IPC/`/api/status` payload, so a client that
+  only reads the boolean is unaffected. A pause that predates the deploy is
+  restored with its own reason, so an operator pause is never relabelled.
 - **Verify before swap** — the freshly built binary must pass `forge version`
   and `forge --help` (exit 0). If verification fails, the live binary is left
   untouched.

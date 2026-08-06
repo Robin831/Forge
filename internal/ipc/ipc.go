@@ -101,6 +101,17 @@ type StatusPayload struct {
 	// remains allowed. The flag is persisted in state.db so it survives daemon
 	// restarts.
 	DispatchPaused bool `json:"dispatch_paused,omitempty"`
+	// DispatchPauseReason names what caused the pause: "manual" (operator) or
+	// "self-deploy" (the bounded drain a self-deploy takes before rebuilding).
+	// The boolean above stays authoritative, so clients that only know it are
+	// unaffected; this field is additive. Empty on a paused daemon means the
+	// daemon predates the field — treat it as "manual". Unknown values must be
+	// rendered verbatim (see FormatDispatchPause).
+	DispatchPauseReason string `json:"dispatch_pause_reason,omitempty"`
+	// DispatchPauseDetail carries reason-specific context for the pause line,
+	// e.g. "waiting on 2 workers, max 30m" during a self-deploy drain. Empty
+	// when there is nothing extra to say.
+	DispatchPauseDetail string `json:"dispatch_pause_detail,omitempty"`
 	// PausedSince reports when the manual dispatch pause began. It is only set
 	// when DispatchPaused is true (not for the cost-limit pause). Nil/omitted
 	// when dispatch is not manually paused or the start time is unknown.

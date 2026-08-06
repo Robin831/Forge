@@ -532,7 +532,11 @@ type Model struct {
 	daemonWorkers   int    // active worker count from daemon
 	daemonQueueSize int    // queue size from daemon
 	daemonUptime    string // daemon uptime string
-	healthTickCount int    // counts ticks; health IPC fires every healthTickDivisor ticks
+	// daemonPause is the rendered dispatch-pause line from the last health
+	// check (empty when dispatch is running). It names the cause, so a pause
+	// taken by a self-deploy drain is not shown as an operator action.
+	daemonPause     string
+	healthTickCount int // counts ticks; health IPC fires every healthTickDivisor ticks
 
 	// Status message (flashes briefly after an action)
 	statusMsg        string
@@ -1642,6 +1646,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.daemonWorkers = msg.Workers
 		m.daemonQueueSize = msg.QueueSize
 		m.daemonUptime = msg.Uptime
+		m.daemonPause = msg.DispatchPause
 
 	case toastDismissMsg:
 		newToasts := m.toasts[:0]
@@ -2015,6 +2020,13 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 // It is called by both View() and panelAtPos() to keep hit-testing in sync
 // without mutating model state inside View().
 func (m *Model) computeHeaderH() int {
+	return lipgloss.Height(headerStyle.Width(m.width).Render(m.headerText()))
+}
+
+// headerText builds the header bar contents: title, daemon connectivity and,
+// when auto-dispatch is paused, the pause line naming its cause. Shared by
+// View() and computeHeaderH() so hit-testing measures what is rendered.
+func (m *Model) headerText() string {
 	headerText := "🔥 The Forge — Hearth Dashboard"
 	if m.daemonConnected {
 		indicator := daemonConnectedStyle.Render("● Connected")
@@ -2025,7 +2037,10 @@ func (m *Model) computeHeaderH() int {
 	} else {
 		headerText += "  " + daemonDisconnectedStyle.Render("○ Disconnected")
 	}
-	return lipgloss.Height(headerStyle.Width(m.width).Render(headerText))
+	if m.daemonPause != "" {
+		headerText += "  " + lipgloss.NewStyle().Foreground(colorWarning).Render("⏸ "+m.daemonPause)
+	}
+	return headerText
 }
 
 // defaultFooterHints returns the help component's keybinding hint line for the
@@ -2050,17 +2065,7 @@ func (m *Model) View() string {
 	}
 
 	// Header with daemon health indicator
-	headerText := "🔥 The Forge — Hearth Dashboard"
-	if m.daemonConnected {
-		indicator := daemonConnectedStyle.Render("● Connected")
-		if m.daemonLastPoll != "" && m.daemonLastPoll != "n/a" {
-			indicator += dimStyle.Render(" (polled " + m.daemonLastPoll + ")")
-		}
-		headerText += "  " + indicator
-	} else {
-		headerText += "  " + daemonDisconnectedStyle.Render("○ Disconnected")
-	}
-	header := headerStyle.Width(m.width).Render(headerText)
+	header := headerStyle.Width(m.width).Render(m.headerText())
 	headerH := lipgloss.Height(header)
 
 	// Footer with status message or default hints

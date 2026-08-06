@@ -1,0 +1,2 @@
+category: Fixed
+- **Dispatch pause now names its cause** - A pause taken by a self-deploy drain no longer reports as `PAUSED (manual)`. `forge status`, Hearth and the web dashboard show `PAUSED (self-deploy drain, waiting on 2 workers, max 30m)`, backed by additive `dispatch_pause_reason` / `dispatch_pause_detail` fields on the status payload (the `dispatch_paused` boolean is unchanged for older clients). An operator pause that predates a deploy is restored as manual. (Forge-8xke)
