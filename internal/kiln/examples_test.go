@@ -104,7 +104,7 @@ func TestExampleManifestsAppearVerbatimInDocs(t *testing.T) {
 			t.Fatalf("reading %s: %v", path, err)
 		}
 		if !strings.Contains(doc, normalizeNewlines(string(data))) {
-			t.Errorf("%s does not contain %s verbatim — update the fenced YAML block in the doc to match the fixture", exampleManifestDoc, path)
+			t.Errorf("%s does not contain %s verbatim — update the fenced YAML block in the doc to match the fixture at %s", exampleManifestDoc, name, path)
 		}
 	}
 }
