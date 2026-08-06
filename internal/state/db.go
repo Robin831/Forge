@@ -2381,6 +2381,13 @@ const (
 	// branch would come back from every re-dispatch.
 	EventSmithEmptyResult EventType = "smith_empty_result"
 
+	// EventPreviewAutoStarted fires when Kiln brings a preview up on its own
+	// after a PR reaches ready-to-merge (per-anvil preview_auto:
+	// ready_to_merge). Manual starts are not logged — someone clicked a button
+	// and watched the outcome — while an automatic one would otherwise show up
+	// in the previews list with nothing to explain it.
+	EventPreviewAutoStarted EventType = "preview_auto_started"
+
 	// EventPRCreateRecovered fires when the manual create-PR-from-existing-branch
 	// recovery opens (or registers) a PR for an already-pushed forge branch
 	// without re-running Smith, clearing the needs_human escalation.

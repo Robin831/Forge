@@ -1,0 +1,2 @@
+category: Added
+- **Auto-preview on ready-to-merge** - New per-anvil `preview_auto` setting (default `off`). With `preview_auto: ready_to_merge`, Kiln starts a preview environment once Bellows announces one of the anvil's PRs ready to merge — once per transition, still bounded by `preview_max_concurrent` and the idle reaper, and skipped with a logged reason (no human-attention entry) when the cap is full. Successful automatic starts are recorded as `preview_auto_started` events. See the memory trade-off note in docs/configuration.md before enabling it. (Forge-eg0v)

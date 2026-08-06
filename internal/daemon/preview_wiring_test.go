@@ -28,6 +28,7 @@ type fakePreviewManager struct {
 	reaping      bool
 	reaperDone   bool
 	started      []kiln.StartOptions
+	startCtxErrs []error
 	stopped      []string
 	stopAllCalls int
 
@@ -67,10 +68,13 @@ func (f *fakePreviewManager) RunReaper(ctx context.Context) {
 	f.mu.Unlock()
 }
 
-func (f *fakePreviewManager) Start(_ context.Context, opts kiln.StartOptions) (*kiln.Environment, error) {
+func (f *fakePreviewManager) Start(ctx context.Context, opts kiln.StartOptions) (*kiln.Environment, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.started = append(f.started, opts)
+	// Recorded so a caller can prove it handed us a context that outlives the
+	// one it was invoked with (bellows cancels its poll context per cycle).
+	f.startCtxErrs = append(f.startCtxErrs, ctx.Err())
 	if f.startErr != nil {
 		return nil, f.startErr
 	}
@@ -101,6 +105,13 @@ func (f *fakePreviewManager) startedOptions() []kiln.StartOptions {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]kiln.StartOptions(nil), f.started...)
+}
+
+// startContextErrors reports ctx.Err() as observed at the start of each Start.
+func (f *fakePreviewManager) startContextErrors() []error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]error(nil), f.startCtxErrs...)
 }
 
 func (f *fakePreviewManager) Stop(_ context.Context, beadID string) error {

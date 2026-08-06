@@ -230,6 +230,15 @@ type AnvilConfig struct {
 	// entirely. An anvil without a .forge/preview.yaml manifest offers no
 	// preview regardless of this setting.
 	PreviewEnabled *bool `mapstructure:"preview_enabled" yaml:"preview_enabled,omitempty"`
+	// PreviewAuto opts this anvil into starting previews without being asked.
+	// Empty or "off" (the default) means previews only start on request;
+	// "ready_to_merge" starts one when Bellows announces a PR ready to merge.
+	// Automatic starts obey the same limits as manual ones: previews must be
+	// enabled for the anvil, the anvil needs a .forge/preview.yaml manifest,
+	// preview_max_concurrent still caps them, and the idle reaper still
+	// collects them. Default off because a preview costs real memory for as
+	// long as it runs.
+	PreviewAuto string `mapstructure:"preview_auto" yaml:"preview_auto,omitempty"`
 	// AutoMerge enables automatic merging of PRs when they reach the
 	// ready-to-merge state (CI passing, no conflicts, no unresolved
 	// threads, no pending reviews). External PRs (ext-*) are never
@@ -316,15 +325,16 @@ type AnvilConfig struct {
 // AutoMerge and WicketAutoDispatch are plain booleans (no inherit semantics);
 // they are always present as true/false.
 type AnvilSettings struct {
-	AutoMerge          bool  `json:"auto_merge"`
-	SchematicEnabled   *bool `json:"schematic_enabled"`
-	GolangciLint       *bool `json:"golangci_lint"`
-	GoRaceDetection    *bool `json:"go_race_detection"`
-	DepcheckEnabled    *bool `json:"depcheck_enabled"`
-	QuestgiverEnabled  *bool `json:"questgiver_enabled"`
-	PreviewEnabled     *bool `json:"preview_enabled"`
-	WicketEnabled      *bool `json:"wicket_enabled"`
-	WicketAutoDispatch bool  `json:"wicket_auto_dispatch"`
+	AutoMerge          bool   `json:"auto_merge"`
+	SchematicEnabled   *bool  `json:"schematic_enabled"`
+	GolangciLint       *bool  `json:"golangci_lint"`
+	GoRaceDetection    *bool  `json:"go_race_detection"`
+	DepcheckEnabled    *bool  `json:"depcheck_enabled"`
+	QuestgiverEnabled  *bool  `json:"questgiver_enabled"`
+	PreviewEnabled     *bool  `json:"preview_enabled"`
+	PreviewAuto        string `json:"preview_auto"`
+	WicketEnabled      *bool  `json:"wicket_enabled"`
+	WicketAutoDispatch bool   `json:"wicket_auto_dispatch"`
 
 	// Non-boolean per-anvil scalars (Forge-85wn). Plain values (no inherit
 	// semantics): MaxSmiths caps this anvil's concurrent workers; AutoDispatch
@@ -364,6 +374,7 @@ func (c *Config) AnvilSettingsMap() map[string]AnvilSettings {
 			DepcheckEnabled:         copyBool(anvil.DepcheckEnabled),
 			QuestgiverEnabled:       copyBool(anvil.QuestgiverEnabled),
 			PreviewEnabled:          copyBool(anvil.PreviewEnabled),
+			PreviewAuto:             anvil.PreviewAuto,
 			WicketEnabled:           copyBool(anvil.WicketEnabled),
 			WicketAutoDispatch:      anvil.WicketAutoDispatch,
 			MaxSmiths:               anvil.MaxSmiths,
@@ -1518,6 +1529,44 @@ const (
 	maxPreviewPort = 65535
 )
 
+// Accepted values for a per-anvil preview_auto. The zero value ("") is
+// equivalent to PreviewAutoOff, so an anvil that says nothing starts no
+// previews on its own.
+const (
+	// PreviewAutoOff starts previews only when something asks for one
+	// (the Hearth button, the preview_start IPC command). The default.
+	PreviewAutoOff = "off"
+	// PreviewAutoReadyToMerge starts a preview when Bellows announces one of
+	// the anvil's PRs ready to merge — the moment a human is most likely to
+	// want to look at the branch running.
+	PreviewAutoReadyToMerge = "ready_to_merge"
+)
+
+// PreviewAutoModes lists the accepted preview_auto values, for validation and
+// for the config API's enum options.
+var PreviewAutoModes = []string{PreviewAutoOff, PreviewAutoReadyToMerge}
+
+// normalizePreviewAuto lowercases and trims a configured preview_auto so
+// "Ready_To_Merge" and " ready_to_merge " resolve like the canonical spelling.
+// An empty value normalizes to PreviewAutoOff.
+func normalizePreviewAuto(raw string) string {
+	mode := strings.ToLower(strings.TrimSpace(raw))
+	if mode == "" {
+		return PreviewAutoOff
+	}
+	return mode
+}
+
+// IsValidPreviewAuto reports whether raw is an accepted preview_auto value
+// (empty counts: it means "off").
+func IsValidPreviewAuto(raw string) bool {
+	switch normalizePreviewAuto(raw) {
+	case PreviewAutoOff, PreviewAutoReadyToMerge:
+		return true
+	}
+	return false
+}
+
 // ResolvedPreviewMaxConcurrent returns the effective preview concurrency cap,
 // substituting the default for an unset (0) value.
 func (s SettingsConfig) ResolvedPreviewMaxConcurrent() int {
@@ -1591,6 +1640,35 @@ func (c *Config) IsPreviewEnabledForAnvil(name string) bool {
 		return *anvil.PreviewEnabled
 	}
 	return true
+}
+
+// PreviewAutoForAnvil returns the effective automatic-preview mode for the named
+// anvil, normalized to one of PreviewAutoModes.
+//
+// It answers PreviewAutoOff whenever previews cannot run for the anvil at all,
+// so callers need one check rather than two: an anvil that opted out of
+// previews (or a Forge with previews disabled globally) cannot have them
+// started automatically either. An unknown anvil or an unrecognized value is
+// also off — validation rejects a bad value at load time, and a typo in a
+// hot-reloaded config must not be read as "start previews".
+func (c *Config) PreviewAutoForAnvil(name string) string {
+	if c == nil || !c.IsPreviewEnabledForAnvil(name) {
+		return PreviewAutoOff
+	}
+	anvil, ok := c.Anvils[name]
+	if !ok {
+		return PreviewAutoOff
+	}
+	if mode := normalizePreviewAuto(anvil.PreviewAuto); mode == PreviewAutoReadyToMerge {
+		return mode
+	}
+	return PreviewAutoOff
+}
+
+// IsPreviewAutoReadyToMerge reports whether the named anvil starts a preview on
+// the ready-to-merge transition.
+func (c *Config) IsPreviewAutoReadyToMerge(name string) bool {
+	return c.PreviewAutoForAnvil(name) == PreviewAutoReadyToMerge
 }
 
 // ResolvedForgeID returns the forge instance identifier used to mark PRs Forge
@@ -2423,6 +2501,11 @@ func (c *Config) Validate() []string {
 			// valid
 		default:
 			errs = append(errs, fmt.Sprintf("anvil %q: invalid auto_dispatch %q (must be all|tagged|priority|off)", name, anvil.AutoDispatch))
+		}
+
+		if !IsValidPreviewAuto(anvil.PreviewAuto) {
+			errs = append(errs, fmt.Sprintf("anvil %q: invalid preview_auto %q (must be %s)",
+				name, anvil.PreviewAuto, strings.Join(PreviewAutoModes, "|")))
 		}
 
 		if anvil.AutoDispatch == "tagged" && anvil.AutoDispatchTag == "" {
