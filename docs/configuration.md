@@ -808,6 +808,21 @@ to restart its unit:
 - **User unit** (`systemctl --user`): `restart_args: [--user]` →
   `systemctl --user restart forge`.
 
+**Detached restart** — the daemon runs inside its own systemd unit, so a restart
+child spawned normally sits in that unit's cgroup and is SIGKILLed the moment
+`systemctl restart` stops the unit (observed as
+`sudo [systemctl restart forge]: signal: killed`, which Forge read as a failed
+restart and rolled a good binary back). The restart is therefore spawned
+detached: no context (so no deploy deadline or shutdown cancellation can reach
+it), `setsid` (so it leaves the daemon's process group), and wrapped in
+`systemd-run --scope --collect --unit=forge-selfdeploy-<sha>-<pid>` so it lives
+in its own transient scope outside the unit cgroup. When `systemd-run` is not on
+`PATH` the invocation falls back to `<restart_command> <restart_args...> restart
+--no-block <unit_name>`, which hands the job to PID 1 and returns immediately.
+Either way the exact argv, the build SHA, the binary path and the rollback path
+are logged to `daemon.log` *before* the spawn, so a restart that is killed
+mid-flight is still diagnosable.
+
 **How it behaves:**
 
 - Triggered only by a `pr_merged` event whose anvil matches `self_deploy.anvil`
@@ -822,7 +837,10 @@ to restart its unit:
   and `forge --help` (exit 0). If verification fails, the live binary is left
   untouched.
 - **Rollback** — the outgoing binary is preserved at `<binary_path>.prev`. If
-  the restart fails, the previous binary is restored automatically.
+  the restart cannot be spawned at all (missing executable, permission denied),
+  the previous binary is restored automatically. Once the detached restart has
+  started, Forge does not wait on it — a nil result means "restart requested",
+  not "restart completed".
 - **Events** — `self_deploy_started`, `self_deploy_success`,
   `self_deploy_rollback`, `self_deploy_failed`, and `self_deploy_skipped` are
   written to the event log.

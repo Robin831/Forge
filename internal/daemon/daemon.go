@@ -2380,9 +2380,11 @@ func (d *Daemon) selfDeployAccepts(event bellows.PREvent) bool {
 
 // runSelfDeploy pauses dispatch, drains active workers, then rebuilds and
 // restarts the daemon binary. It runs on its own goroutine and uses the daemon's
-// root context so a graceful shutdown cancels the build/restart cleanly. On a
-// successful restart the process is typically terminated by systemd and this
-// function never returns.
+// root context so a graceful shutdown cancels the drain/pull/build cleanly. The
+// final restart step is deliberately exempt: it runs detached and context-free
+// so that stopping forge.service cannot kill the process performing the restart
+// (see selfdeploy.SystemctlRestarter). On a successful restart the process is
+// typically terminated by systemd and this function never returns.
 func (d *Daemon) runSelfDeploy(sd config.SelfDeployConfig) {
 	anvilCfg, ok := d.config().Anvils[sd.Anvil]
 	if !ok || anvilCfg.Path == "" {
@@ -2431,6 +2433,10 @@ func (d *Daemon) runSelfDeploy(sd config.SelfDeployConfig) {
 		selfdeploy.SystemctlRestarter{
 			Cmd:         sd.ResolvedRestartCommand(),
 			PrependArgs: sd.RestartArgs,
+			// The restarter logs its intent (build SHA, binary, rollback path,
+			// argv) to daemon.log immediately before spawning, so a restart that
+			// is killed mid-flight is still diagnosable after the fact.
+			Logger: d.logger,
 		},
 		selfDeployEventSink{db: d.db, anvil: sd.Anvil},
 		d.activeWorkerCount,
