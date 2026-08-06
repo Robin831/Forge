@@ -14,7 +14,7 @@ import { useNow } from '../hooks/useNow'
 import { usePreview, usePreviewsList } from '../hooks/usePreview'
 import { useToast } from '../hooks/useToast'
 import { relativeTime } from '../lib/format'
-import { formatCountdown, formatDuration } from '../lib/previewFormat'
+import { formatDuration, previewIdleCountdown } from '../lib/previewFormat'
 
 const POLL_INTERVAL_MS = 5000
 
@@ -55,6 +55,7 @@ export default function PreviewsPage() {
                   key={p.bead_id}
                   preview={p}
                   now={now}
+                  fetchedAt={snap.fetchedAt}
                   onViewLog={(service, logUrl) =>
                     setLogTarget({ beadId: p.bead_id, service, logUrl })
                   }
@@ -77,13 +78,15 @@ export default function PreviewsPage() {
 interface PreviewRowProps {
   preview: PreviewSummary
   now: number
+  /** When the snapshot was fetched; the idle countdown ages from it. */
+  fetchedAt: number
   onViewLog: (service: string, logUrl: string) => void
 }
 
 // PreviewRow renders one live preview. It runs the shared per-bead hook so its
 // Stop button behaves exactly like the one on the bead page — including the
 // stopping chip while the teardown is in flight.
-function PreviewRow({ preview, now, onViewLog }: PreviewRowProps) {
+function PreviewRow({ preview, now, fetchedAt, onViewLog }: PreviewRowProps) {
   const toast = useToast()
   const { status, isBusy, stop } = usePreview(preview.bead_id, {
     anvil: preview.anvil,
@@ -94,7 +97,7 @@ function PreviewRow({ preview, now, onViewLog }: PreviewRowProps) {
   // The hook folds in whatever is in flight locally; fall back to the row's own
   // record so a preview still renders if the hook has not caught up.
   const shown = status === 'idle' ? mapPreviewStatus(preview.status) : status
-  const countdown = formatCountdown(preview.idle_deadline, now)
+  const countdown = previewIdleCountdown(preview, fetchedAt, now)
   const beadHref = `/bead/${encodeURIComponent(preview.bead_id)}${
     preview.anvil ? `?anvil=${encodeURIComponent(preview.anvil)}` : ''
   }`
@@ -163,6 +166,14 @@ function PreviewRow({ preview, now, onViewLog }: PreviewRowProps) {
           <>
             <span aria-hidden>·</span>
             <span title={preview.created_at}>started {relativeTime(preview.created_at)}</span>
+          </>
+        )}
+        {preview.resource_note && (
+          <>
+            <span aria-hidden>·</span>
+            <span data-testid={`preview-row-resource-note-${preview.bead_id}`}>
+              {preview.resource_note}
+            </span>
           </>
         )}
       </p>

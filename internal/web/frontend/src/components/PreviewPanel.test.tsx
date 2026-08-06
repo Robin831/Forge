@@ -49,6 +49,9 @@ function preview(overrides: Partial<PreviewSummary> = {}): PreviewSummary {
     created_at: '2026-08-06T09:58:55Z',
     last_active_at: '2026-08-06T09:58:55Z',
     idle_deadline: '2026-08-06T10:08:42Z',
+    // The same deadline the daemon reports as a countdown: 8m 12s from NOW.
+    idle_remaining_seconds: 492,
+    resource_note: '2 services, ports 42001, 42002',
     ...overrides,
   }
 }
@@ -153,16 +156,57 @@ describe('PreviewPanel service rows', () => {
     expect(within(api).queryByText('entry')).not.toBeInTheDocument()
   })
 
-  it('renders the idle countdown from the daemon-supplied deadline', async () => {
+  it('renders the idle countdown from the daemon-supplied seconds remaining', async () => {
+    await mount()
+    expect(screen.getByTestId('preview-panel-countdown')).toHaveTextContent('idles in 8m 12s')
+  })
+
+  it('ticks the countdown down between polls', async () => {
+    await mount()
+    // Under the 5s list poll, so nothing is refetched — the displayed value can
+    // only move if it is being aged locally from the fetched one.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(3000)
+    })
+    expect(screen.getByTestId('preview-panel-countdown')).toHaveTextContent('idles in 8m 09s')
+  })
+
+  it('reads a countdown that has run out as due now', async () => {
+    previews = { ...previews, previews: [preview({ idle_remaining_seconds: 0 })] }
+    await mount()
+    expect(screen.getByTestId('preview-panel-countdown')).toHaveTextContent('idles in due now')
+  })
+
+  it('falls back to the absolute deadline when the daemon sends no countdown', async () => {
+    previews = {
+      ...previews,
+      previews: [preview({ idle_remaining_seconds: null })],
+    }
     await mount()
     // 10:00:30 → 10:08:42 is 8m 12s.
     expect(screen.getByTestId('preview-panel-countdown')).toHaveTextContent('idles in 8m 12s')
   })
 
   it('omits the countdown when the idle reaper is disabled', async () => {
-    previews = { ...previews, previews: [preview({ idle_deadline: null })] }
+    previews = {
+      ...previews,
+      previews: [preview({ idle_deadline: null, idle_remaining_seconds: null })],
+    }
     await mount()
     expect(screen.queryByTestId('preview-panel-countdown')).not.toBeInTheDocument()
+  })
+
+  it('renders the resource note as secondary text', async () => {
+    await mount()
+    expect(screen.getByTestId('preview-panel-resource-note')).toHaveTextContent(
+      '2 services, ports 42001, 42002',
+    )
+  })
+
+  it('omits the resource note when the daemon sends none', async () => {
+    previews = { ...previews, previews: [preview({ resource_note: undefined })] }
+    await mount()
+    expect(screen.queryByTestId('preview-panel-resource-note')).not.toBeInTheDocument()
   })
 
   it('attributes a failed service and reports no uptime for it', async () => {

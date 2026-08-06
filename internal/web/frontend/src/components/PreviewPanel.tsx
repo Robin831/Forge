@@ -12,7 +12,7 @@ import { usePreview, usePreviewsList } from '../hooks/usePreview'
 import { usePreviewQuests } from '../hooks/usePreviewQuests'
 import { useNow } from '../hooks/useNow'
 import { useToast } from '../hooks/useToast'
-import { formatCountdown, formatDuration } from '../lib/previewFormat'
+import { formatDuration, previewIdleCountdown } from '../lib/previewFormat'
 import { relativeTime } from '../lib/format'
 import { EmptyState } from './Pane'
 import PreviewLogModal, { type PreviewLogTarget } from './PreviewLogModal'
@@ -45,15 +45,16 @@ export default function PreviewPanel({ beadId, anvil, hasBranch = true }: Previe
   const [logTarget, setLogTarget] = useState<PreviewLogTarget | null>(null)
   const now = useNow(1000)
 
-  const { available, status, preview, previewUrl, error, isBusy, start, stop } = usePreview(beadId, {
-    anvil,
-    onError: (message) => toast.push(message, 'error'),
-    onQueued: (kind) =>
-      toast.push(
-        kind === 'start' ? `Starting preview for ${beadId}…` : `Stopping preview for ${beadId}…`,
-        'info',
-      ),
-  })
+  const { available, status, preview, fetchedAt, previewUrl, error, isBusy, start, stop } =
+    usePreview(beadId, {
+      anvil,
+      onError: (message) => toast.push(message, 'error'),
+      onQueued: (kind) =>
+        toast.push(
+          kind === 'start' ? `Starting preview for ${beadId}…` : `Stopping preview for ${beadId}…`,
+          'info',
+        ),
+    })
 
   // The "Run quests" action is offered only when both gates the backend
   // enforces are open: the anvil opted in with preview_quests, and the preview
@@ -78,7 +79,7 @@ export default function PreviewPanel({ beadId, anvil, hasBranch = true }: Previe
   const triggerLabel = status === 'failed' ? 'Retry preview' : 'Start preview'
   const TriggerIcon = status === 'failed' ? RotateCcw : Play
   const canOpen = !!previewUrl && (status === 'healthy' || status === 'degraded')
-  const countdown = formatCountdown(preview?.idle_deadline, now)
+  const countdown = previewIdleCountdown(preview, fetchedAt, now)
   const services = preview?.services ?? []
 
   return (
@@ -175,6 +176,18 @@ export default function PreviewPanel({ beadId, anvil, hasBranch = true }: Previe
               <span aria-hidden>·</span>
               <span data-testid="preview-panel-countdown" title={preview.idle_deadline ?? undefined}>
                 idles in {countdown}
+              </span>
+            </>
+          )}
+          {/* What this preview is holding while it is up. Secondary to the
+              countdown — it answers "is it worth stopping?", not "when does it
+              stop itself" — so it trails the line and is dropped entirely when
+              the daemon sends no note. */}
+          {preview.resource_note && (
+            <>
+              <span aria-hidden>·</span>
+              <span data-testid="preview-panel-resource-note" className="text-slate-600">
+                {preview.resource_note}
               </span>
             </>
           )}

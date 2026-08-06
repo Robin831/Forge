@@ -66,6 +66,13 @@ export interface PreviewsSnapshot {
   /** false until the first response lands — gates on it read as "not yet". */
   loaded: boolean
   error: string | null
+  /**
+   * When these previews were fetched (epoch ms); 0 before the first response.
+   * It is the anchor the idle countdown decrements from, so it stays pinned to
+   * the last *successful* fetch — a failed poll keeps serving the previews it
+   * came with, and their countdown must keep running from when they were read.
+   */
+  fetchedAt: number
 }
 
 const EMPTY_SNAPSHOT: PreviewsSnapshot = {
@@ -75,6 +82,7 @@ const EMPTY_SNAPSHOT: PreviewsSnapshot = {
   previews: [],
   loaded: false,
   error: null,
+  fetchedAt: 0,
 }
 
 let snapshot: PreviewsSnapshot = EMPTY_SNAPSHOT
@@ -108,6 +116,7 @@ export function refreshPreviews(): Promise<void> {
         previews: data.previews,
         loaded: true,
         error: null,
+        fetchedAt: Date.now(),
       })
     } catch (err) {
       const message = err instanceof Error ? err.message : 'failed to load previews'
@@ -193,6 +202,12 @@ export interface UsePreviewResult {
   status: PreviewStatus
   /** The live preview record, or null when this bead has none. */
   preview: PreviewSummary | null
+  /**
+   * When the snapshot `preview` came from was fetched (epoch ms); 0 before the
+   * first response. Callers rendering the idle countdown need it to age the
+   * daemon's seconds-remaining between polls.
+   */
+  fetchedAt: number
   /** The entry URL to open, or null when there is nothing to open yet. */
   previewUrl: string | null
   /** Why the preview failed, when it did. */
@@ -366,6 +381,7 @@ export function usePreview(beadID: string, options: UsePreviewOptions = {}): Use
     available: snap.enabled && !!anvil && snap.anvils.includes(anvil),
     status,
     preview,
+    fetchedAt: snap.fetchedAt,
     previewUrl: preview?.entry_url ? preview.entry_url : null,
     error: failure ?? previewErrorText(preview),
     isBusy: pending !== null,
