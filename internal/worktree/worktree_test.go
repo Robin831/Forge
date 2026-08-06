@@ -834,8 +834,8 @@ func TestGitEnv_ConfinesGitFromOutsideWorktree(t *testing.T) {
 // deterministic even when the host shell has those vars set.
 func envWithoutGitVars() []string {
 	skip := map[string]bool{
-		"GIT_DIR":               true,
-		"GIT_WORK_TREE":         true,
+		"GIT_DIR":                 true,
+		"GIT_WORK_TREE":           true,
 		"GIT_CEILING_DIRECTORIES": true,
 	}
 	base := os.Environ()
@@ -1152,8 +1152,12 @@ func TestCreateFromBranch_RemoteOnly(t *testing.T) {
 		t.Fatalf("Remove: %v", err)
 	}
 	// Remove leaves the local branch (best-effort delete), so force-delete to
-	// simulate the remote-only case regardless.
-	_ = exec.Command("git", "-C", anvilDir, "branch", "-D", branch).Run()
+	// simulate the remote-only case regardless. The env scrub is not optional:
+	// a GIT_DIR/GIT_WORK_TREE in the ambient environment overrides -C, and this
+	// would then delete the branch from whatever repository those point at.
+	delBranch := exec.Command("git", "-C", anvilDir, "branch", "-D", branch)
+	delBranch.Env = envWithoutGitVars()
+	_ = delBranch.Run()
 
 	got, err := mgr.CreateFromBranch(ctx, anvilDir, "remote-only-bead", branch, origPath)
 	if err != nil {
@@ -1307,7 +1311,13 @@ func TestCreate_RecoversFromStaleRegistrationAfterKilledWorker(t *testing.T) {
 	if err := os.RemoveAll(wt.Path); err != nil {
 		t.Fatalf("removing worktree dir: %v", err)
 	}
-	if out, err := exec.Command("git", "-C", anvil, "worktree", "list").CombinedOutput(); err != nil {
+	// envWithoutGitVars is required here, not cosmetic: GIT_DIR/GIT_WORK_TREE in
+	// the ambient environment (Forge's own workers run with both set) override
+	// -C, so an unscrubbed list reports the surrounding repository's worktrees
+	// and the precondition fails on a test that is otherwise fine.
+	list := exec.Command("git", "-C", anvil, "worktree", "list")
+	list.Env = envWithoutGitVars()
+	if out, err := list.CombinedOutput(); err != nil {
 		t.Fatalf("worktree list: %v\n%s", err, out)
 	} else if !strings.Contains(string(out), "pr-4616") {
 		t.Fatalf("precondition failed: registration should still be present, got:\n%s", out)
