@@ -109,6 +109,18 @@ type StartRequest struct {
 	Manifest     *Manifest
 	// Env is the environment services inherit; nil means the daemon's own.
 	Env []string
+	// Setup, when non-nil, runs after ports are allocated and the manifest has
+	// been expanded but before any service is spawned. It exists as a callback
+	// rather than as something the caller does first because the manifest's
+	// setup command may reference `{{.ServicePort "name"}}` — it cannot be
+	// expanded until the ports it names have been allocated, and allocation is
+	// the runtime's job.
+	//
+	// A non-nil error aborts the start: ports are released, nothing is spawned,
+	// and the error is returned. The persisted record is left behind on purpose
+	// so whatever the setup command managed to create (a database, say) is
+	// still visible to the caller's rollback and to startup reconciliation.
+	Setup func(ctx context.Context, expanded *Manifest, env PreviewEnv) error
 }
 
 // Preview is a running preview environment: its allocated ports, supervised
@@ -143,8 +155,9 @@ type previewService struct {
 	proc    *ServiceProcess
 }
 
-// Start allocates ports, spawns every service and waits for their health
-// checks, then returns the resulting preview.
+// Start allocates ports, runs the request's setup callback, spawns every
+// service and waits for their health checks, then returns the resulting
+// preview.
 //
 // It blocks until every service is healthy or has failed, so the caller decides
 // how to report progress (the web layer runs it behind the 202 + request_id
@@ -232,9 +245,6 @@ func (r *Runtime) Start(ctx context.Context, req StartRequest) (*Preview, error)
 		return nil, err
 	}
 
-	procCtx, cancel := context.WithCancel(r.lifetime)
-	p.cancel = cancel
-
 	env := PreviewEnv{
 		PreviewID:    previewID,
 		BeadID:       req.BeadID,
@@ -244,6 +254,24 @@ func (r *Runtime) Start(ctx context.Context, req StartRequest) (*Preview, error)
 		AnvilPath:    req.AnvilPath,
 		Ports:        ports,
 	}
+
+	// Setup runs before the first service so a project can create the resources
+	// its services expect to find (a per-preview database being the motivating
+	// case). A failure here means the preview cannot work, so nothing is
+	// spawned at all.
+	if req.Setup != nil {
+		if err := req.Setup(ctx, expanded, env); err != nil {
+			r.ports.Release(allocated...)
+			p.setStatus(state.PreviewFailed)
+			if perr := r.persist(p); perr != nil {
+				r.logger.Warn("kiln: persisting failed preview record failed", "bead", req.BeadID, "error", perr)
+			}
+			return nil, err
+		}
+	}
+
+	procCtx, cancel := context.WithCancel(r.lifetime)
+	p.cancel = cancel
 
 	// Spawn in manifest order — it is the order the author wrote and costs
 	// nothing, since starting a process does not wait for it to be usable.
