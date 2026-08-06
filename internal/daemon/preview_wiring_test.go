@@ -5,6 +5,8 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"sort"
 	"sync"
 	"testing"
@@ -207,6 +209,33 @@ func TestPreviewAnvils_SkipsPathlessAnvils(t *testing.T) {
 		Settings: config.SettingsConfig{PreviewEnabled: true},
 	}
 	require.Equal(t, map[string]string{"forge": "/tmp/forge"}, previewAnvils(cfg))
+}
+
+// TestPreviewableAnvils_RequiresAManifest covers the extra gate the list
+// endpoint applies on top of previewAnvils: an anvil previews are enabled for
+// but which declares no `.forge/preview.yaml` could only ever answer a start
+// with "no preview manifest", so it must not be advertised to clients.
+func TestPreviewableAnvils_RequiresAManifest(t *testing.T) {
+	withManifest := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(withManifest, ".forge"), 0o755))
+	require.NoError(t, os.WriteFile(kiln.ManifestPath(withManifest), []byte("services:\n  web:\n    command: run\n"), 0o644))
+
+	cfg := &config.Config{
+		Anvils: map[string]config.AnvilConfig{
+			"withManifest": {Path: withManifest},
+			"noManifest":   {Path: t.TempDir()},
+			"optedOut":     {Path: withManifest, PreviewEnabled: boolPtr(false)},
+		},
+		Settings: config.SettingsConfig{PreviewEnabled: true},
+	}
+	require.Equal(t, []string{"withManifest"}, previewableAnvils(cfg))
+}
+
+// TestPreviewableAnvils_EmptyWhenPreviewsDisabled keeps the field an empty list
+// rather than nil, so the JSON stays an array the SPA can index.
+func TestPreviewableAnvils_EmptyWhenPreviewsDisabled(t *testing.T) {
+	require.Empty(t, previewableAnvils(previewConfig(false, nil)))
+	require.Empty(t, previewableAnvils(nil))
 }
 
 // TestStartPreviews_DisabledGlobally leaves the manager nil, so every consumer

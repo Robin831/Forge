@@ -52,6 +52,21 @@ function setApiResponses(beadDetail: BeadDetailResponse | null) {
   })
 }
 
+// The bead header mounts a PreviewButton, which reads the shared previews
+// snapshot. Tests that spy on fetch route that request explicitly so their mock
+// only has to describe the call they are actually about. `enabled: false` keeps
+// the button off the page entirely.
+function previewsResponse(): Response {
+  return new Response(JSON.stringify({ enabled: false, anvils: [], previews: [] }), {
+    status: 200,
+    headers: { 'Content-Type': 'application/json' },
+  })
+}
+
+function isPreviewsRequest(input: RequestInfo | URL): boolean {
+  return (typeof input === 'string' ? input : String(input)) === '/api/previews'
+}
+
 function renderPage() {
   return render(
     <MemoryRouter initialEntries={['/bead/Forge-test?anvil=forge']}>
@@ -148,8 +163,9 @@ describe('BeadDetailPage comment composer', () => {
     const user = userEvent.setup()
     setApiResponses(detail({ comments: [] }))
 
-    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
-      new Response(
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      if (isPreviewsRequest(input)) return previewsResponse()
+      return new Response(
         JSON.stringify({
           comment: {
             id: 'c-new',
@@ -159,8 +175,8 @@ describe('BeadDetailPage comment composer', () => {
           },
         }),
         { status: 201, headers: { 'Content-Type': 'application/json' } },
-      ),
-    )
+      )
+    })
 
     renderPage()
 
@@ -172,10 +188,10 @@ describe('BeadDetailPage comment composer', () => {
     await user.click(submit)
 
     await waitFor(() => {
-      expect(fetchSpy).toHaveBeenCalledTimes(1)
+      expect(fetchSpy.mock.calls.filter((c) => !isPreviewsRequest(c[0]))).toHaveLength(1)
     })
 
-    const [url, init] = fetchSpy.mock.calls[0]
+    const [url, init] = fetchSpy.mock.calls.find((c) => !isPreviewsRequest(c[0]))!
     expect(url).toBe('/api/bead/Forge-test/comment')
     expect((init as RequestInit | undefined)?.method).toBe('POST')
     const body = JSON.parse(((init as RequestInit | undefined)?.body as string) ?? '{}')
@@ -197,12 +213,13 @@ describe('BeadDetailPage comment composer', () => {
     const user = userEvent.setup()
     setApiResponses(detail({ comments: [] }))
 
-    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
-      new Response(JSON.stringify({ error: 'bd comments add failed: exit status 1' }), {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      if (isPreviewsRequest(input)) return previewsResponse()
+      return new Response(JSON.stringify({ error: 'bd comments add failed: exit status 1' }), {
         status: 502,
         headers: { 'Content-Type': 'application/json' },
-      }),
-    )
+      })
+    })
 
     renderPage()
 

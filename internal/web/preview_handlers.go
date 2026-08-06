@@ -61,8 +61,14 @@ type PreviewSummary struct {
 // PreviewsListResponse is the body of GET /api/previews. Enabled is false when
 // the daemon is running without a Kiln manager, which the SPA renders as
 // "previews are disabled" rather than "none are running".
+//
+// Anvils names the anvils a preview can be started for (previews enabled AND a
+// `.forge/preview.yaml` in their main checkout). The SPA gates its per-bead
+// Preview affordance on it, which is why it rides along with the list the
+// dashboard already polls instead of being a flag on every bead/PR payload.
 type PreviewsListResponse struct {
 	Enabled  bool             `json:"enabled"`
+	Anvils   []string         `json:"anvils"`
 	Previews []PreviewSummary `json:"previews"`
 }
 
@@ -133,7 +139,11 @@ func (s *Server) handlePreviewsList(w http.ResponseWriter, r *http.Request) {
 	now := time.Now()
 	out := PreviewsListResponse{
 		Enabled:  payload.Enabled,
+		Anvils:   payload.Anvils,
 		Previews: make([]PreviewSummary, 0, len(payload.Previews)),
+	}
+	if out.Anvils == nil {
+		out.Anvils = []string{}
 	}
 	for _, p := range payload.Previews {
 		out.Previews = append(out.Previews, previewSummary(r, p, payload.PublicHost, idle, now))

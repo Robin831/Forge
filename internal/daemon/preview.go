@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -66,6 +67,26 @@ func previewAnvils(cfg *config.Config) map[string]string {
 		return nil
 	}
 	return enabled
+}
+
+// previewableAnvils returns the sorted names of the anvils a preview can
+// actually be started for: previews are enabled for them (previewAnvils) and
+// their main checkout declares a manifest.
+//
+// The manifest check is a stat per anvil rather than a cached flag: an operator
+// who adds `.forge/preview.yaml` expects the Preview button to appear on the
+// next poll, not after a daemon restart, and a handful of stats per list call
+// is cheaper than the reload plumbing that would avoid them.
+func previewableAnvils(cfg *config.Config) []string {
+	enabled := previewAnvils(cfg)
+	names := make([]string, 0, len(enabled))
+	for name, path := range enabled {
+		if kiln.Exists(path) {
+			names = append(names, name)
+		}
+	}
+	sort.Strings(names)
+	return names
 }
 
 // previews returns the live preview manager, or nil when previews are disabled.
@@ -329,8 +350,9 @@ func (d *Daemon) handlePreviewStop(p ipc.PreviewActionPayload) ipc.Response {
 // polls this endpoint, so counting a poll as activity would keep every preview
 // alive forever and turn the idle reaper off in practice.
 func (d *Daemon) handlePreviewList() ipc.Response {
-	out := ipc.PreviewsResponse{Previews: []ipc.PreviewInfo{}}
-	if cfg := d.cfg.Load(); cfg != nil {
+	out := ipc.PreviewsResponse{Anvils: []string{}, Previews: []ipc.PreviewInfo{}}
+	cfg := d.cfg.Load()
+	if cfg != nil {
 		out.PublicHost = cfg.Settings.PreviewPublicHost
 		out.IdleTimeoutSeconds = int64(cfg.Settings.PreviewIdleTimeout / time.Second)
 	}
@@ -339,6 +361,7 @@ func (d *Daemon) handlePreviewList() ipc.Response {
 		return okResponse(out)
 	}
 	out.Enabled = true
+	out.Anvils = previewableAnvils(cfg)
 	for _, env := range mgr.List() {
 		rec := env.Record()
 		info := ipc.PreviewInfo{

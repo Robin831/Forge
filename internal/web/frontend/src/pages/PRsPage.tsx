@@ -22,6 +22,7 @@ import AppHeader from '../components/AppHeader'
 import ConfirmModal from '../components/ConfirmModal'
 import Pane, { EmptyState } from '../components/Pane'
 import PRFindingsPanel from '../components/PRFindingsPanel'
+import PreviewButton from '../components/PreviewButton'
 import {
   PR_SECTION_DESCRIPTIONS,
   PR_SECTION_EMPTY_MESSAGES,
@@ -579,6 +580,17 @@ function PRRow({
               busy={acting('close')}
               disabled={pr.id === undefined}
             />
+            {/* Previews are built from the PR's branch by the daemon, so an
+                external PR (no Forge worktree, no bead) has nothing to key one
+                on. PreviewButton hides itself when the anvil has no manifest. */}
+            {showBellowsActions && pr.bead_id && (
+              <PreviewButton
+                beadId={pr.bead_id}
+                anvil={pr.anvil}
+                hasBranch={!!pr.branch}
+                compact
+              />
+            )}
           </div>
         )}
 
