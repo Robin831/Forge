@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -30,7 +31,11 @@ func TestSanitizePreviewID(t *testing.T) {
 		{name: "forward slashes", beadID: "Forge/abc1", want: "Forge-abc1"},
 		{name: "backslashes", beadID: `Forge\abc1`, want: "Forge-abc1"},
 		{name: "spaces and colons", beadID: "Forge abc:1", want: "Forge-abc-1"},
-		{name: "traversal folded to segment", beadID: "../../etc", want: "------etc"},
+		// Dots survive (real bead IDs look like "Fhi.Metadata-krzku"); only the
+		// separators fold, which is what defuses the traversal — the result is
+		// one inert path segment, not a chain of parent-directory hops.
+		{name: "traversal folded to segment", beadID: "../../etc", want: "..-..-etc"},
+		{name: "traversal with backslashes", beadID: `..\..\etc`, want: "..-..-etc"},
 		{name: "empty", beadID: "", wantErr: true},
 		{name: "whitespace only", beadID: "   ", wantErr: true},
 		{name: "dot", beadID: ".", wantErr: true},
@@ -51,6 +56,11 @@ func TestSanitizePreviewID(t *testing.T) {
 			}
 			if got != tt.want {
 				t.Errorf("sanitizePreviewID(%q) = %q; want %q", tt.beadID, got, tt.want)
+			}
+			// The property that actually matters: whatever comes back is a
+			// single segment that cannot walk out of <anvil>/.previews/.
+			if strings.ContainsAny(got, `/\`) || got == "." || got == ".." {
+				t.Errorf("sanitizePreviewID(%q) = %q; want a single non-traversing path segment", tt.beadID, got)
 			}
 		})
 	}
