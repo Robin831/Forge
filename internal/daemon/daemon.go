@@ -203,6 +203,18 @@ type Daemon struct {
 	// QuestGiver monitor (E2E quest execution)
 	questgiverMonitor *questgiver.Monitor
 
+	// Kiln: preview environments for worker branches. previewMgr is nil when
+	// previews are disabled (globally, or by every anvil opting out) — see
+	// preview.go, where every consumer goes through d.previews() so a disabled
+	// Kiln degrades to "no previews" instead of a nil dereference. previewMu
+	// guards it against the racing startPreviews/stopPreviews paths.
+	previewMu  sync.Mutex
+	previewMgr previewManager
+	// newPreviewManager builds the Kiln manager. nil selects the real
+	// buildPreviewManager; tests replace it with a fake so the wiring can be
+	// exercised without worktrees, ports or child processes.
+	newPreviewManager func(ctx context.Context, cfg *config.Config, anvils map[string]string) (previewManager, error)
+
 	// Wicket: GitHub issue triage monitor
 	// wicketMu guards wicketMonitor to prevent data races between the
 	// hot-reload callback (which may assign a new monitor) and the shutdown
@@ -1136,6 +1148,12 @@ func (d *Daemon) Run(ctx context.Context) error {
 	// intentionally not persisted (recomputed from daily costs).
 	d.restoreDispatchPause()
 
+	// Start Kiln preview environments (no-op when previews are disabled).
+	// Reconciliation of previews orphaned by a previous daemon lifetime runs
+	// before IPC/web handlers come up, so no caller can observe — or Touch — a
+	// preview row whose processes are already gone.
+	d.startPreviews(ctx)
+
 	// Start IPC server
 	d.ipc = ipc.NewServer()
 	d.ipc.OnCommand(d.handleIPC)
@@ -1299,6 +1317,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 	d.bellowsMonitor.OnEvent(d.handleBeadCloseOnMerge)
 	d.bellowsMonitor.OnEvent(d.handleWicketPRMerged)
 	d.bellowsMonitor.OnEvent(d.handleSelfDeploy)
+	d.bellowsMonitor.OnEvent(d.handlePreviewTeardownOnPRClose)
 
 	// Reconcile: register any open PRs not yet tracked in the state DB.
 	// This handles PRs created before the current DB or after a DB reset.
@@ -1478,6 +1497,10 @@ func (d *Daemon) Run(ctx context.Context) error {
 			if wm != nil {
 				wm.Stop()
 			}
+			// Cancelling ctx already stopped the idle reaper; the previews it
+			// was watching still hold process groups and worktrees, so tear
+			// them down explicitly before the daemon exits.
+			d.stopPreviews(ctx)
 			killed := d.shutdownMgr.GracefulShutdown()
 			d.shutdownMgr.CleanupWorktrees()
 			d.wg.Wait() // wait for all dispatch goroutines

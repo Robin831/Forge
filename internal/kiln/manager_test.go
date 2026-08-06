@@ -561,6 +561,42 @@ func TestManagerStopIsIdempotent(t *testing.T) {
 	}
 }
 
+// TestManagerStopAllTearsDownEveryPreview covers what the daemon calls on
+// shutdown: every live preview released, and the registry left empty.
+func TestManagerStopAllTearsDownEveryPreview(t *testing.T) {
+	h := newHarness(t, ManagerConfig{MaxConcurrent: 3})
+	for _, bead := range []string{"Forge-aaa1", "Forge-bbb2"} {
+		if _, err := h.mgr.Start(context.Background(), h.opts(bead)); err != nil {
+			t.Fatalf("Start %s: %v", bead, err)
+		}
+	}
+
+	if err := h.mgr.StopAll(context.Background()); err != nil {
+		t.Fatalf("StopAll: %v", err)
+	}
+
+	if got := len(h.mgr.List()); got != 0 {
+		t.Errorf("%d previews survived StopAll, want 0", got)
+	}
+	if got := len(h.wts.removedPaths()); got != 2 {
+		t.Errorf("RemoveDetached called %d times, want 2", got)
+	}
+	for i, inst := range h.runner.instances {
+		if got := inst.stopCount(); got != 1 {
+			t.Errorf("instance %d stopped %d times, want 1", i, got)
+		}
+	}
+}
+
+// TestManagerStopAllWithNoPreviewsIsNoOp — shutting down a daemon that never
+// started a preview must not error.
+func TestManagerStopAllWithNoPreviewsIsNoOp(t *testing.T) {
+	h := newHarness(t, ManagerConfig{MaxConcurrent: 2})
+	if err := h.mgr.StopAll(context.Background()); err != nil {
+		t.Errorf("StopAll with no previews = %v, want nil", err)
+	}
+}
+
 func TestManagerStopFreesACapSlot(t *testing.T) {
 	h := newHarness(t, ManagerConfig{MaxConcurrent: 1})
 	if _, err := h.mgr.Start(context.Background(), h.opts("Forge-aaa1")); err != nil {
