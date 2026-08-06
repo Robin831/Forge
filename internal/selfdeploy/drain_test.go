@@ -220,6 +220,33 @@ func TestDeploy_DrainWaitCancelled(t *testing.T) {
 	}
 }
 
+// TestDeploy_IdleForgeDeploysUnderCancelledContext guards the other half of the
+// cancellation rule: cancellation aborts *waiting*, not a deploy that never had
+// to wait. Deploy is deliberately callable with an already-cancelled caller
+// context, so an idle forge must fall straight through to the swap and restart.
+func TestDeploy_IdleForgeDeploysUnderCancelledContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	var clock *fakeDrainClock
+	active := func() ([]string, error) {
+		clock.tick()
+		return nil, nil
+	}
+	d, c, _, rest, _, _ := drainDeployer(t, Config{MaxDrainWait: time.Hour}, active)
+	clock = c
+
+	if err := d.Deploy(ctx); err != nil {
+		t.Fatalf("Deploy with a cancelled caller context: %v", err)
+	}
+	if got := clock.count(); got != 1 {
+		t.Errorf("expected exactly one drain check, got %d", got)
+	}
+	if rest.called != 1 {
+		t.Errorf("expected the restart to run, got %d calls", rest.called)
+	}
+}
+
 // TestWaitForDrain_MaxShorterThanInterval verifies a max wait below the poll
 // interval still gets one check and then times out promptly, rather than
 // sleeping a full interval (or hanging) before noticing the budget is spent.

@@ -53,7 +53,9 @@ func (e *DrainTimeoutError) Summary() string {
 func (e *DrainTimeoutError) Unwrap() error { return ErrDrainTimeout }
 
 // waitForDrain blocks until no worker is active, the max wait elapses, or ctx is
-// cancelled. It returns nil once the forge is idle, a *DrainTimeoutError (which
+// cancelled while it is still waiting. It returns nil once the forge is idle
+// (including on the very first check, whatever ctx's state), a
+// *DrainTimeoutError (which
 // unwraps to ErrDrainTimeout) when the budget is spent with workers still
 // running, a wrapped ctx error on cancellation, or a wrapped check error when
 // the worker query never succeeded.
@@ -92,10 +94,11 @@ func (d *Deployer) waitForDrain(ctx context.Context, max time.Duration) error {
 		lastErr    error
 	)
 	for {
-		if err := ctx.Err(); err != nil {
-			return fmt.Errorf("selfdeploy: drain wait cancelled: %w", err)
-		}
-
+		// The check runs before ctx is consulted: cancellation only aborts the
+		// *waiting*, never a deploy that had nothing to wait for. Deploy is
+		// deliberately callable with an already-cancelled caller context (the
+		// daemon shutting itself down is how a restart is requested), so an
+		// idle forge must still fall straight through to the swap.
 		active, err := d.activeWorkers()
 		switch {
 		case err != nil:
