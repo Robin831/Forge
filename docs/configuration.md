@@ -108,6 +108,12 @@ settings:
   questgiver_enabled: false
   questgiver_interval: 24h
   adventurer_timeout: 5m            # Max time for a single quest execution
+  preview_enabled: false            # Kiln preview environments (master gate)
+  preview_max_concurrent: 2
+  preview_idle_timeout: 30m
+  preview_port_range: '42000-42999'
+  preview_bind_host: 127.0.0.1
+  preview_public_host: ''           # Hostname used in preview links; empty = bind host
   crucible_enabled: true
   crucible_poll_interval: 3m
   auto_merge_crucible_children: true
@@ -159,6 +165,7 @@ Each key under `anvils` is the anvil name. The name is used in CLI output, logs,
 | `depcheck_enabled` | bool\|null | null (enabled) | Per-anvil toggle for depcheck scanning. When null, depcheck runs as normal. Set to `false` to skip this anvil entirely. |
 | `auto_merge` | bool | `false` | When enabled, PRs that reach the ready-to-merge state (CI passing, no conflicts, no unresolved threads, no pending reviews) are automatically merged using the configured `merge_strategy`. External PRs (`ext-*`) are never auto-merged. |
 | `questgiver_enabled` | bool\|null | null (use global) | Per-anvil override for QuestGiver E2E quest scanning. When null, uses `settings.questgiver_enabled`. Set to `false` to opt this anvil out entirely. |
+| `preview_enabled` | bool\|null | null (use global) | Per-anvil override for Kiln preview environments. When null, uses `settings.preview_enabled`. Set to `false` to opt this anvil out entirely. An anvil without a `.forge/preview.yaml` manifest offers no preview regardless. See [Preview Environments (Kiln)](#preview-environments-kiln). |
 | `questgiver_setup_cmd` | string | | Shell command to run before executing quests for this anvil (e.g. `"podman compose up -d"`). Runs in the anvil's root directory. If the command fails, quest execution is aborted. Used by `forge quest run` and the QuestGiver monitor. |
 | `questgiver_teardown_cmd` | string | | Shell command to run after executing quests for this anvil (e.g. `"podman compose down"`). Runs in the anvil's root directory. Always runs even if quests fail; teardown failures are logged as warnings rather than errors. |
 | `wicket_enabled` | bool\|null | null (use global) | Per-anvil override for Wicket issue triage scanning. When null, uses `settings.wicket_enabled`. Set to `false` to opt this anvil out entirely. |
@@ -535,6 +542,12 @@ anvils:
 | `questgiver_enabled` | bool | `false` | | Enable the QuestGiver E2E quest monitor globally. When false, no quest scanning occurs. |
 | `questgiver_interval` | duration | `24h` | `0` | How often the QuestGiver polls anvils for quests. `0` disables. |
 | `adventurer_timeout` | duration | `5m` | | Maximum time allowed for a single quest execution by the headless-browser Adventurer (used by `forge quest run` and the QuestGiver monitor). Must not be negative. |
+| `preview_enabled` | bool | `false` | | Master gate for Kiln preview environments. When false, no preview can be started regardless of per-anvil settings or the presence of a manifest. See [Preview Environments (Kiln)](#preview-environments-kiln). |
+| `preview_max_concurrent` | int | `2` | `0` (use default) | Maximum number of previews running at once. Each preview costs real memory (database, API, dev server), hence the low default. |
+| `preview_idle_timeout` | duration | `30m` | `1m` or `0` | How long a preview may go unused before it is torn down. `0` disables the idle reaper, leaving previews running until stopped explicitly or until their PR merges/closes. |
+| `preview_port_range` | string | `"42000-42999"` | | Inclusive `"min-max"` TCP port range preview service ports are allocated from. Both ends must be within 1024-65535 and min must be less than max. |
+| `preview_bind_host` | string | `"127.0.0.1"` | | Address preview services bind to. The loopback default keeps previews reachable only from the Forge box; `0.0.0.0` exposes them to a LAN or VPN. **Preview URLs bypass the Hearth login**, so widen this only on a trusted network. |
+| `preview_public_host` | string | `""` (bind host) | | Hostname used when displaying preview links (e.g. the box's LAN or WireGuard name). Empty falls back to `preview_bind_host`. |
 | `wicket_enabled` | bool | `false` | | Enable the Wicket GitHub issue triage monitor globally. When false, no issue scanning occurs. |
 | `wicket_interval` | duration | `15m` | `1m` or `0` | How often Wicket polls repositories for new issues. `0` disables. |
 | `wicket_provider` | string | `""` (uses `providers`) | | AI provider used for triage decisions. When empty, the global `providers` chain is used. |
@@ -826,6 +839,52 @@ It exports `PATH` to include the Go toolchain (`/usr/local/go/bin`) plus
 context that does not inherit the login `PATH` (which previously failed with
 `go: command not found`).
 
+## Preview Environments (Kiln)
+
+**Kiln** starts on-demand preview environments for a worker's branch so a
+UI-heavy change can be looked at instead of only read as a diff. A preview is a
+detached checkout of the branch plus the services a project declares in its
+manifest — no containers, just supervised local subprocesses, the same model
+Smith, Temper and hooks use.
+
+Two things must be true before an anvil can produce a preview:
+
+1. `settings.preview_enabled` is `true` and the anvil has not set
+   `preview_enabled: false` (the per-anvil tri-state defaults to inheriting the
+   global value), and
+2. the anvil's **main checkout** contains `.forge/preview.yaml`.
+
+The manifest format — services, ports, health checks, template variables and
+the main-checkout-only rule — is documented in
+[preview-manifest.md](preview-manifest.md).
+
+```yaml
+settings:
+  preview_enabled: true          # master gate, default false
+  preview_max_concurrent: 2      # previews running at once
+  preview_idle_timeout: 30m      # tear down after this much inactivity; 0 disables
+  preview_port_range: '42000-42999'
+  preview_bind_host: 127.0.0.1   # 0.0.0.0 to reach previews from a LAN/VPN
+  preview_public_host: ''        # hostname shown in links; empty = bind host
+
+anvils:
+  my-api:
+    path: /home/robin/source/MyApi
+    preview_enabled: true        # null (omitted) inherits settings.preview_enabled
+```
+
+**Security note.** Preview URLs are served by the previewed application itself,
+not by Hearth, so they are **not** behind the Hearth login. The default
+`preview_bind_host: 127.0.0.1` keeps them reachable only from the Forge box.
+Setting `0.0.0.0` exposes every running preview to anything that can reach the
+box on the configured port range — only do that on a trusted network (LAN,
+WireGuard), and prefer putting a reverse proxy with its own auth in front if the
+network is not private.
+
+**Cost note.** A preview holds a database, an API process and a dev server open
+for as long as it runs, which is why `preview_max_concurrent` defaults to `2`
+and the idle reaper defaults to 30 minutes. Raise them deliberately.
+
 ## Wicket — GitHub Issue Triage
 
 **Wicket** is a background monitor that polls GitHub repositories for new issues, classifies them using an AI provider, and automatically creates beads, requests clarification from the issue author, or flags the issue for human review.
@@ -1078,6 +1137,12 @@ Environment variables with the `FORGE_` prefix override YAML values. Nested keys
 | `FORGE_SETTINGS_QUESTGIVER_ENABLED` | `settings.questgiver_enabled` |
 | `FORGE_SETTINGS_QUESTGIVER_INTERVAL` | `settings.questgiver_interval` |
 | `FORGE_SETTINGS_ADVENTURER_TIMEOUT` | `settings.adventurer_timeout` |
+| `FORGE_SETTINGS_PREVIEW_ENABLED` | `settings.preview_enabled` |
+| `FORGE_SETTINGS_PREVIEW_MAX_CONCURRENT` | `settings.preview_max_concurrent` |
+| `FORGE_SETTINGS_PREVIEW_IDLE_TIMEOUT` | `settings.preview_idle_timeout` |
+| `FORGE_SETTINGS_PREVIEW_PORT_RANGE` | `settings.preview_port_range` |
+| `FORGE_SETTINGS_PREVIEW_BIND_HOST` | `settings.preview_bind_host` |
+| `FORGE_SETTINGS_PREVIEW_PUBLIC_HOST` | `settings.preview_public_host` |
 | `FORGE_SETTINGS_WICKET_ENABLED` | `settings.wicket_enabled` |
 | `FORGE_SETTINGS_WICKET_INTERVAL` | `settings.wicket_interval` |
 | `FORGE_SETTINGS_WICKET_PROVIDER` | `settings.wicket_provider` |
@@ -1122,6 +1187,9 @@ The config is validated at load time. Errors are reported as a list:
 - `smelter_interval` must be >= 1h when enabled, or 0 to disable
 - `questgiver_interval` must be > 0 when questgiver is enabled, or 0 to disable
 - `adventurer_timeout` must not be negative
+- `preview_max_concurrent` must not be negative (omit or set to 0 to use the default)
+- `preview_idle_timeout` must be >= 1m when enabled, or 0 to disable the idle reaper
+- `preview_port_range` must be `"min-max"` with both ends within 1024-65535 and min < max
 - `depcheck_interval` must be >= 1h when enabled, or 0 to disable
 - `depcheck_timeout` must not be negative
 - `crucible_poll_interval` must be >= 30s when enabled, or 0 to disable two-tier polling

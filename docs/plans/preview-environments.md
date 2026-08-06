@@ -51,6 +51,9 @@ Design principles:
 
 ## Manifest Format
 
+Implemented in `internal/kiln`; the user-facing reference lives in
+[docs/preview-manifest.md](../preview-manifest.md).
+
 `<anvil>/.forge/preview.yaml`, next to `quests/` and `plans/`. **Loaded from
 the anvil's main checkout, not from the PR branch** — a PR must not be able to
 change what commands Kiln executes. (Consequence: a PR that changes how the
