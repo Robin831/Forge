@@ -294,6 +294,7 @@ Forge/
 │   ├── hotreload/        # fsnotify config watcher
 │   ├── ingot/            # Ingot data model & persistence (bead lifecycle)
 │   ├── ipc/              # Named pipe / Unix socket protocol
+│   ├── kiln/             # Preview environments: manifest schema, loader, templates
 │   ├── ledger/           # Interactive bead management TUI
 │   ├── lifecycle/        # Worker lifecycle management
 │   ├── notify/           # MS Teams webhook notifications

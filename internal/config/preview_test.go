@@ -1,0 +1,233 @@
+package config
+
+import (
+	"os"
+	"path/filepath"
+	"testing"
+	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+// writeConfig writes a forge.yaml into a temp dir and returns its path.
+func writeConfig(t *testing.T, body string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "forge.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(body), 0o644))
+	return path
+}
+
+func TestPreviewSettingsDefaults(t *testing.T) {
+	cfg, err := Load(writeConfig(t, "anvils: {}\n"))
+	require.NoError(t, err)
+
+	assert.False(t, cfg.Settings.PreviewEnabled, "previews are opt-in")
+	assert.Equal(t, DefaultPreviewMaxConcurrent, cfg.Settings.PreviewMaxConcurrent)
+	assert.Equal(t, DefaultPreviewIdleTimeout, cfg.Settings.PreviewIdleTimeout)
+	assert.Equal(t, DefaultPreviewPortRange, cfg.Settings.PreviewPortRange)
+	assert.Equal(t, DefaultPreviewBindHost, cfg.Settings.PreviewBindHost)
+	assert.Empty(t, cfg.Settings.PreviewPublicHost)
+
+	lo, hi, err := cfg.Settings.PreviewPortRangeBounds()
+	require.NoError(t, err)
+	assert.Equal(t, 42000, lo)
+	assert.Equal(t, 42999, hi)
+
+	assert.Empty(t, cfg.Validate())
+}
+
+func TestPreviewSettingsParse(t *testing.T) {
+	cfg, err := Load(writeConfig(t, `settings:
+  preview_enabled: true
+  preview_max_concurrent: 4
+  preview_idle_timeout: 45m
+  preview_port_range: "43000-43100"
+  preview_bind_host: "0.0.0.0"
+  preview_public_host: "devbox.local"
+`))
+	require.NoError(t, err)
+
+	assert.True(t, cfg.Settings.PreviewEnabled)
+	assert.Equal(t, 4, cfg.Settings.PreviewMaxConcurrent)
+	assert.Equal(t, 45*time.Minute, cfg.Settings.PreviewIdleTimeout)
+	assert.Equal(t, "0.0.0.0", cfg.Settings.ResolvedPreviewBindHost())
+	assert.Equal(t, "devbox.local", cfg.Settings.ResolvedPreviewPublicHost())
+	assert.Empty(t, cfg.Validate())
+
+	lo, hi, err := cfg.Settings.PreviewPortRangeBounds()
+	require.NoError(t, err)
+	assert.Equal(t, 43000, lo)
+	assert.Equal(t, 43100, hi)
+}
+
+func TestPreviewSettingsResolvers(t *testing.T) {
+	var zero SettingsConfig
+	assert.Equal(t, DefaultPreviewMaxConcurrent, zero.ResolvedPreviewMaxConcurrent())
+	assert.Equal(t, DefaultPreviewBindHost, zero.ResolvedPreviewBindHost())
+	// The public host falls back to the bind host so links are never hostless.
+	assert.Equal(t, DefaultPreviewBindHost, zero.ResolvedPreviewPublicHost())
+
+	s := SettingsConfig{PreviewMaxConcurrent: 3, PreviewBindHost: "0.0.0.0"}
+	assert.Equal(t, 3, s.ResolvedPreviewMaxConcurrent())
+	assert.Equal(t, "0.0.0.0", s.ResolvedPreviewPublicHost())
+}
+
+func TestParsePortRange(t *testing.T) {
+	tests := []struct {
+		name    string
+		raw     string
+		lo, hi  int
+		wantErr string
+	}{
+		{name: "valid", raw: "42000-42999", lo: 42000, hi: 42999},
+		{name: "whitespace tolerated", raw: " 42000 - 42999 ", lo: 42000, hi: 42999},
+		{name: "missing separator", raw: "42000", wantErr: `must be in the form "min-max"`},
+		{name: "non-numeric lower bound", raw: "abc-42999", wantErr: "invalid lower bound"},
+		{name: "non-numeric upper bound", raw: "42000-abc", wantErr: "invalid upper bound"},
+		{name: "privileged lower bound", raw: "80-8080", wantErr: "must stay within 1024-65535"},
+		{name: "upper bound out of range", raw: "42000-70000", wantErr: "must stay within 1024-65535"},
+		{name: "inverted", raw: "42999-42000", wantErr: "lower bound must be less than upper bound"},
+		{name: "equal bounds", raw: "42000-42000", wantErr: "lower bound must be less than upper bound"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			lo, hi, err := ParsePortRange(tc.raw)
+			if tc.wantErr != "" {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tc.wantErr)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tc.lo, lo)
+			assert.Equal(t, tc.hi, hi)
+		})
+	}
+}
+
+func TestPreviewValidation(t *testing.T) {
+	tests := []struct {
+		name     string
+		mutate   func(*Config)
+		expected string
+	}{
+		{
+			name:     "negative max concurrent",
+			mutate:   func(c *Config) { c.Settings.PreviewMaxConcurrent = -1 },
+			expected: "settings.preview_max_concurrent must not be negative (omit or set to 0 to use the default)",
+		},
+		{
+			name:     "negative idle timeout",
+			mutate:   func(c *Config) { c.Settings.PreviewIdleTimeout = -time.Minute },
+			expected: "settings.preview_idle_timeout must not be negative (set to 0 to disable the idle reaper)",
+		},
+		{
+			name:     "idle timeout below the minimum",
+			mutate:   func(c *Config) { c.Settings.PreviewIdleTimeout = 10 * time.Second },
+			expected: "settings.preview_idle_timeout must be >= 1m0s when enabled (or 0 to disable)",
+		},
+		{
+			name:     "malformed port range",
+			mutate:   func(c *Config) { c.Settings.PreviewPortRange = "42000" },
+			expected: `settings.preview_port_range: port range "42000" must be in the form "min-max" (e.g. "42000-42999")`,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := Defaults()
+			tc.mutate(&cfg)
+			assert.Contains(t, cfg.Validate(), tc.expected)
+		})
+	}
+
+	t.Run("zero idle timeout disables the reaper without error", func(t *testing.T) {
+		cfg := Defaults()
+		cfg.Settings.PreviewIdleTimeout = 0
+		assert.Empty(t, cfg.Validate())
+	})
+}
+
+func TestPreviewEnabledPerAnvilTriState(t *testing.T) {
+	cfg, err := Load(writeConfig(t, `anvils:
+  optin:
+    path: /tmp/optin
+    preview_enabled: true
+  optout:
+    path: /tmp/optout
+    preview_enabled: false
+  inherit:
+    path: /tmp/inherit
+settings:
+  preview_enabled: true
+`))
+	require.NoError(t, err)
+
+	require.NotNil(t, cfg.Anvils["optin"].PreviewEnabled)
+	assert.True(t, *cfg.Anvils["optin"].PreviewEnabled)
+	require.NotNil(t, cfg.Anvils["optout"].PreviewEnabled)
+	assert.False(t, *cfg.Anvils["optout"].PreviewEnabled)
+	assert.Nil(t, cfg.Anvils["inherit"].PreviewEnabled, "no override means inherit the global setting")
+
+	assert.True(t, cfg.IsPreviewEnabledForAnvil("optin"))
+	assert.False(t, cfg.IsPreviewEnabledForAnvil("optout"))
+	assert.True(t, cfg.IsPreviewEnabledForAnvil("inherit"))
+	assert.True(t, cfg.IsPreviewEnabledForAnvil("unknown-anvil"), "an unknown anvil inherits the global setting")
+
+	// The global gate wins over any per-anvil opt-in.
+	cfg.Settings.PreviewEnabled = false
+	assert.False(t, cfg.IsPreviewEnabledForAnvil("optin"))
+	assert.False(t, cfg.IsPreviewEnabledForAnvil("inherit"))
+}
+
+func TestAnvilSettingsMapCarriesPreviewTriState(t *testing.T) {
+	enabled := true
+	cfg := Defaults()
+	cfg.Anvils["set"] = AnvilConfig{Path: "/tmp/set", PreviewEnabled: &enabled}
+	cfg.Anvils["unset"] = AnvilConfig{Path: "/tmp/unset"}
+
+	settings := cfg.AnvilSettingsMap()
+	require.NotNil(t, settings["set"].PreviewEnabled)
+	assert.True(t, *settings["set"].PreviewEnabled)
+	assert.Nil(t, settings["unset"].PreviewEnabled)
+	// Deep copy: mutating the projection must not reach back into the config.
+	*settings["set"].PreviewEnabled = false
+	assert.True(t, *cfg.Anvils["set"].PreviewEnabled)
+}
+
+func TestSave_RoundTrip_PreviewSettings(t *testing.T) {
+	cfgPath := filepath.Join(t.TempDir(), "forge.yaml")
+
+	original := Defaults()
+	original.Settings.PreviewEnabled = true
+	original.Settings.PreviewMaxConcurrent = 3
+	original.Settings.PreviewIdleTimeout = 90 * time.Minute
+	original.Settings.PreviewPortRange = "43000-43999"
+	original.Settings.PreviewBindHost = "0.0.0.0"
+	original.Settings.PreviewPublicHost = "devbox.local"
+
+	require.NoError(t, Save(&original, cfgPath))
+
+	loaded, err := Load(cfgPath)
+	require.NoError(t, err)
+	assert.True(t, loaded.Settings.PreviewEnabled)
+	assert.Equal(t, 3, loaded.Settings.PreviewMaxConcurrent)
+	assert.Equal(t, 90*time.Minute, loaded.Settings.PreviewIdleTimeout)
+	assert.Equal(t, "43000-43999", loaded.Settings.PreviewPortRange)
+	assert.Equal(t, "0.0.0.0", loaded.Settings.PreviewBindHost)
+	assert.Equal(t, "devbox.local", loaded.Settings.PreviewPublicHost)
+}
+
+func TestSave_RoundTrip_PreviewIdleTimeoutZero(t *testing.T) {
+	cfgPath := filepath.Join(t.TempDir(), "forge.yaml")
+
+	original := Defaults()
+	original.Settings.PreviewIdleTimeout = 0
+
+	require.NoError(t, Save(&original, cfgPath))
+
+	loaded, err := Load(cfgPath)
+	require.NoError(t, err)
+	assert.Zero(t, loaded.Settings.PreviewIdleTimeout, "an explicit 0 must survive a save/load round trip")
+}

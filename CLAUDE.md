@@ -124,6 +124,7 @@ Forge is a **Go orchestrator daemon** that autonomously drives Claude Code agent
 | `internal/changelog` | Changelog fragment parsing and assembly |
 | `internal/lifecycle` | Worker lifecycle management |
 | `internal/retry` | Exponential backoff and retry logic |
+| `internal/kiln` | **Kiln** — on-demand preview environments for worker branches. Currently the declarative half: the `.forge/preview.yaml` manifest schema, loader (read from the anvil's MAIN checkout only) and template expansion (`{{.Port}}`, `{{.ServicePort "name"}}`, `{{.PreviewID}}`, `{{.Host}}`). See [docs/preview-manifest.md](docs/preview-manifest.md) |
 | `internal/questgiver` | E2E quest discovery and execution |
 | `internal/adventurer` | Headless browser quest executor (drives quest steps via rod) |
 | `internal/smelter` | Batches pending warden rules into PRs |

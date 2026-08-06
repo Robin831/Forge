@@ -18,6 +18,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -195,6 +196,12 @@ type AnvilConfig struct {
 	// quests for this anvil. When nil (default), the global setting is used.
 	// Set to false to skip this anvil entirely.
 	QuestgiverEnabled *bool `mapstructure:"questgiver_enabled" yaml:"questgiver_enabled,omitempty"`
+	// PreviewEnabled controls whether Kiln preview environments may be
+	// started for this anvil. When nil (default), the global
+	// settings.preview_enabled applies. Set to false to opt this anvil out
+	// entirely. An anvil without a .forge/preview.yaml manifest offers no
+	// preview regardless of this setting.
+	PreviewEnabled *bool `mapstructure:"preview_enabled" yaml:"preview_enabled,omitempty"`
 	// AutoMerge enables automatic merging of PRs when they reach the
 	// ready-to-merge state (CI passing, no conflicts, no unresolved
 	// threads, no pending reviews). External PRs (ext-*) are never
@@ -287,6 +294,7 @@ type AnvilSettings struct {
 	GoRaceDetection    *bool `json:"go_race_detection"`
 	DepcheckEnabled    *bool `json:"depcheck_enabled"`
 	QuestgiverEnabled  *bool `json:"questgiver_enabled"`
+	PreviewEnabled     *bool `json:"preview_enabled"`
 	WicketEnabled      *bool `json:"wicket_enabled"`
 	WicketAutoDispatch bool  `json:"wicket_auto_dispatch"`
 
@@ -327,6 +335,7 @@ func (c *Config) AnvilSettingsMap() map[string]AnvilSettings {
 			GoRaceDetection:         copyBool(anvil.GoRaceDetection),
 			DepcheckEnabled:         copyBool(anvil.DepcheckEnabled),
 			QuestgiverEnabled:       copyBool(anvil.QuestgiverEnabled),
+			PreviewEnabled:          copyBool(anvil.PreviewEnabled),
 			WicketEnabled:           copyBool(anvil.WicketEnabled),
 			WicketAutoDispatch:      anvil.WicketAutoDispatch,
 			MaxSmiths:               anvil.MaxSmiths,
@@ -716,6 +725,30 @@ type SettingsConfig struct {
 	// AdventurerTimeout is the maximum time allowed for a single quest
 	// execution. Defaults to 5 minutes.
 	AdventurerTimeout time.Duration `mapstructure:"adventurer_timeout" yaml:"adventurer_timeout,omitempty"`
+
+	// PreviewEnabled is the master gate for Kiln preview environments. When
+	// false (default), no preview can be started regardless of per-anvil
+	// settings or the presence of a .forge/preview.yaml manifest.
+	PreviewEnabled bool `mapstructure:"preview_enabled" yaml:"preview_enabled"`
+	// PreviewMaxConcurrent caps how many previews may run at once. Previews
+	// cost real memory (a database, an API and a dev server each), so the cap
+	// is deliberately low. 0 means DefaultPreviewMaxConcurrent.
+	PreviewMaxConcurrent int `mapstructure:"preview_max_concurrent" yaml:"preview_max_concurrent,omitempty"`
+	// PreviewIdleTimeout is how long a preview may go unused before it is
+	// torn down. 0 disables the idle reaper (previews then run until stopped
+	// or until their PR merges/closes). Defaults to 30m.
+	PreviewIdleTimeout time.Duration `mapstructure:"preview_idle_timeout" yaml:"preview_idle_timeout,omitempty"`
+	// PreviewPortRange is the inclusive "min-max" TCP port range previews
+	// allocate service ports from. Defaults to DefaultPreviewPortRange.
+	PreviewPortRange string `mapstructure:"preview_port_range" yaml:"preview_port_range,omitempty"`
+	// PreviewBindHost is the address preview services bind to. Defaults to
+	// 127.0.0.1 (loopback only); set it to 0.0.0.0 to reach previews from a
+	// LAN or VPN. Preview URLs bypass the Hearth login, so widen this only on
+	// a trusted network.
+	PreviewBindHost string `mapstructure:"preview_bind_host" yaml:"preview_bind_host,omitempty"`
+	// PreviewPublicHost is the hostname used when displaying preview links
+	// (e.g. the box's WireGuard or LAN name). Empty means PreviewBindHost.
+	PreviewPublicHost string `mapstructure:"preview_public_host" yaml:"preview_public_host,omitempty"`
 
 	// WicketEnabled controls whether the Wicket issue triage monitor is
 	// active globally. When false (default), no issue scanning occurs.
@@ -1118,6 +1151,13 @@ func (s SettingsConfig) MarshalYAML() (interface{}, error) {
 		QuestgiverInterval          string  `yaml:"questgiver_interval,omitempty"`
 		AdventurerTimeout           string  `yaml:"adventurer_timeout,omitempty"`
 
+		PreviewEnabled       bool   `yaml:"preview_enabled"`
+		PreviewMaxConcurrent int    `yaml:"preview_max_concurrent,omitempty"`
+		PreviewIdleTimeout   string `yaml:"preview_idle_timeout,omitempty"`
+		PreviewPortRange     string `yaml:"preview_port_range,omitempty"`
+		PreviewBindHost      string `yaml:"preview_bind_host,omitempty"`
+		PreviewPublicHost    string `yaml:"preview_public_host,omitempty"`
+
 		WicketEnabled             bool                    `yaml:"wicket_enabled"`
 		WicketInterval            string                  `yaml:"wicket_interval"`
 		WicketProvider            string                  `yaml:"wicket_provider,omitempty"`
@@ -1184,6 +1224,12 @@ func (s SettingsConfig) MarshalYAML() (interface{}, error) {
 		CopilotWardenSampleRate:     s.CopilotWardenSampleRate,
 		SmelterEnabled:              s.SmelterEnabled,
 		QuestgiverEnabled:           s.QuestgiverEnabled,
+
+		PreviewEnabled:       s.PreviewEnabled,
+		PreviewMaxConcurrent: s.PreviewMaxConcurrent,
+		PreviewPortRange:     s.PreviewPortRange,
+		PreviewBindHost:      s.PreviewBindHost,
+		PreviewPublicHost:    s.PreviewPublicHost,
 
 		WicketEnabled:             s.WicketEnabled,
 		WicketProvider:            s.WicketProvider,
@@ -1255,6 +1301,9 @@ func (s SettingsConfig) MarshalYAML() (interface{}, error) {
 	if s.AdventurerTimeout > 0 {
 		sh.AdventurerTimeout = durationString(s.AdventurerTimeout)
 	}
+	// Always emit PreviewIdleTimeout so an intentional 0 (idle reaper off) is
+	// persisted rather than silently reverting to the 30m default on reload.
+	sh.PreviewIdleTimeout = durationString(s.PreviewIdleTimeout)
 	// Always emit WicketInterval so an intentional 0 (disable scheduled polling)
 	// is persisted and not silently dropped back to the 15m default on next load.
 	sh.WicketInterval = durationString(s.WicketInterval)
@@ -1355,6 +1404,104 @@ func (s SettingsConfig) IsQuestgiverEnabled() bool {
 		return false
 	}
 	return *s.QuestgiverEnabled
+}
+
+// Kiln preview environment defaults. See docs/plans/preview-environments.md.
+const (
+	// DefaultPreviewMaxConcurrent is the number of previews allowed to run
+	// simultaneously when preview_max_concurrent is unset.
+	DefaultPreviewMaxConcurrent = 2
+	// DefaultPreviewIdleTimeout is how long an unused preview survives when
+	// preview_idle_timeout is unset.
+	DefaultPreviewIdleTimeout = 30 * time.Minute
+	// DefaultPreviewPortRange is the port range previews allocate from when
+	// preview_port_range is unset.
+	DefaultPreviewPortRange = "42000-42999"
+	// DefaultPreviewBindHost keeps preview services on loopback unless the
+	// operator opts into a wider bind address.
+	DefaultPreviewBindHost = "127.0.0.1"
+	// MinPreviewIdleTimeout is the smallest accepted non-zero idle timeout.
+	MinPreviewIdleTimeout = time.Minute
+	// minPreviewPort is the lowest port a preview range may start at
+	// (privileged ports are off limits).
+	minPreviewPort = 1024
+	// maxPreviewPort is the highest port a preview range may end at.
+	maxPreviewPort = 65535
+)
+
+// ResolvedPreviewMaxConcurrent returns the effective preview concurrency cap,
+// substituting the default for an unset (0) value.
+func (s SettingsConfig) ResolvedPreviewMaxConcurrent() int {
+	if s.PreviewMaxConcurrent <= 0 {
+		return DefaultPreviewMaxConcurrent
+	}
+	return s.PreviewMaxConcurrent
+}
+
+// ResolvedPreviewBindHost returns the address preview services bind to,
+// substituting the loopback default for an unset value.
+func (s SettingsConfig) ResolvedPreviewBindHost() string {
+	if host := strings.TrimSpace(s.PreviewBindHost); host != "" {
+		return host
+	}
+	return DefaultPreviewBindHost
+}
+
+// ResolvedPreviewPublicHost returns the hostname used in displayed preview
+// links, falling back to the bind host when preview_public_host is unset.
+func (s SettingsConfig) ResolvedPreviewPublicHost() string {
+	if host := strings.TrimSpace(s.PreviewPublicHost); host != "" {
+		return host
+	}
+	return s.ResolvedPreviewBindHost()
+}
+
+// PreviewPortRangeBounds parses preview_port_range into its inclusive lower
+// and upper bounds, applying DefaultPreviewPortRange when unset.
+func (s SettingsConfig) PreviewPortRangeBounds() (int, int, error) {
+	raw := strings.TrimSpace(s.PreviewPortRange)
+	if raw == "" {
+		raw = DefaultPreviewPortRange
+	}
+	return ParsePortRange(raw)
+}
+
+// ParsePortRange parses a "min-max" port range (e.g. "42000-42999"), returning
+// its inclusive bounds. Both ends must be unprivileged ports and min < max.
+func ParsePortRange(raw string) (int, int, error) {
+	parts := strings.Split(strings.TrimSpace(raw), "-")
+	if len(parts) != 2 {
+		return 0, 0, fmt.Errorf("port range %q must be in the form \"min-max\" (e.g. %q)", raw, DefaultPreviewPortRange)
+	}
+	lo, err := strconv.Atoi(strings.TrimSpace(parts[0]))
+	if err != nil {
+		return 0, 0, fmt.Errorf("port range %q: invalid lower bound %q", raw, strings.TrimSpace(parts[0]))
+	}
+	hi, err := strconv.Atoi(strings.TrimSpace(parts[1]))
+	if err != nil {
+		return 0, 0, fmt.Errorf("port range %q: invalid upper bound %q", raw, strings.TrimSpace(parts[1]))
+	}
+	if lo < minPreviewPort || hi > maxPreviewPort {
+		return 0, 0, fmt.Errorf("port range %q must stay within %d-%d", raw, minPreviewPort, maxPreviewPort)
+	}
+	if lo >= hi {
+		return 0, 0, fmt.Errorf("port range %q: lower bound must be less than upper bound", raw)
+	}
+	return lo, hi, nil
+}
+
+// IsPreviewEnabledForAnvil reports whether Kiln previews may run for the named
+// anvil: the global preview_enabled gate must be on, and the anvil must not
+// have opted out via its own preview_enabled: false. An unknown anvil name, or
+// one without an explicit override, inherits the global setting.
+func (c *Config) IsPreviewEnabledForAnvil(name string) bool {
+	if !c.Settings.PreviewEnabled {
+		return false
+	}
+	if anvil, ok := c.Anvils[name]; ok && anvil.PreviewEnabled != nil {
+		return *anvil.PreviewEnabled
+	}
+	return true
 }
 
 // ResolvedForgeID returns the forge instance identifier used to mark PRs Forge
@@ -1634,6 +1781,13 @@ func Defaults() Config {
 			SmelterInterval:      8 * time.Hour,
 			QuestgiverInterval:   24 * time.Hour,
 			AdventurerTimeout:    5 * time.Minute,
+			// Kiln preview environments: off by default; the rest of the
+			// values only matter once preview_enabled is turned on.
+			PreviewEnabled:       false,
+			PreviewMaxConcurrent: DefaultPreviewMaxConcurrent,
+			PreviewIdleTimeout:   DefaultPreviewIdleTimeout,
+			PreviewPortRange:     DefaultPreviewPortRange,
+			PreviewBindHost:      DefaultPreviewBindHost,
 			// Copilot combined Smith+Warden mode settings.
 			CopilotWardenSampleRate: 0.1,
 			// Wicket issue triage monitor defaults.
@@ -1730,6 +1884,12 @@ func Load(configFile string) (*Config, error) {
 	v.SetDefault("settings.smelter_interval", "8h")
 	v.SetDefault("settings.questgiver_interval", "24h")
 	v.SetDefault("settings.adventurer_timeout", "5m")
+	v.SetDefault("settings.preview_enabled", false)
+	v.SetDefault("settings.preview_max_concurrent", DefaultPreviewMaxConcurrent)
+	v.SetDefault("settings.preview_idle_timeout", DefaultPreviewIdleTimeout.String())
+	v.SetDefault("settings.preview_port_range", DefaultPreviewPortRange)
+	v.SetDefault("settings.preview_bind_host", DefaultPreviewBindHost)
+	v.SetDefault("settings.preview_public_host", "")
 	v.SetDefault("settings.copilot_warden_sample_rate", 0.1)
 	v.SetDefault("settings.wicket_enabled", false)
 	v.SetDefault("settings.wicket_interval", "15m")
@@ -1908,6 +2068,13 @@ func Load(configFile string) (*Config, error) {
 			return nil, fmt.Errorf("invalid adventurer_timeout %q: %w", raw, err)
 		}
 		cfg.Settings.AdventurerTimeout = d
+	}
+	if raw := v.GetString("settings.preview_idle_timeout"); raw != "" {
+		d, err := time.ParseDuration(raw)
+		if err != nil {
+			return nil, fmt.Errorf("invalid preview_idle_timeout %q: %w", raw, err)
+		}
+		cfg.Settings.PreviewIdleTimeout = d
 	}
 	if raw := v.GetString("settings.wicket_interval"); raw != "" {
 		d, err := time.ParseDuration(raw)
@@ -2115,6 +2282,18 @@ func (c *Config) Validate() []string {
 	}
 	if c.Settings.AdventurerTimeout < 0 {
 		errs = append(errs, "settings.adventurer_timeout must not be negative")
+	}
+
+	if c.Settings.PreviewMaxConcurrent < 0 {
+		errs = append(errs, "settings.preview_max_concurrent must not be negative (omit or set to 0 to use the default)")
+	}
+	if c.Settings.PreviewIdleTimeout < 0 {
+		errs = append(errs, "settings.preview_idle_timeout must not be negative (set to 0 to disable the idle reaper)")
+	} else if c.Settings.PreviewIdleTimeout > 0 && c.Settings.PreviewIdleTimeout < MinPreviewIdleTimeout {
+		errs = append(errs, fmt.Sprintf("settings.preview_idle_timeout must be >= %s when enabled (or 0 to disable)", MinPreviewIdleTimeout))
+	}
+	if _, _, err := c.Settings.PreviewPortRangeBounds(); err != nil {
+		errs = append(errs, fmt.Sprintf("settings.preview_port_range: %s", err))
 	}
 
 	if c.Settings.CruciblePollInterval < 0 {
