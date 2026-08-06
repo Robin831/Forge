@@ -50,3 +50,41 @@ export function formatCountdown(
   if (remainingMs <= 0) return 'due now'
   return formatDuration(Math.ceil(remainingMs / 1000))
 }
+
+// IdleCountdownSource is the part of a preview record the countdown reads: the
+// daemon's own seconds-remaining, with the absolute deadline as a fallback.
+export interface IdleCountdownSource {
+  idle_remaining_seconds?: number | null
+  idle_deadline?: string | null
+}
+
+// previewIdleCountdown renders how long a preview has left before the idle
+// reaper takes it.
+//
+// It prefers the daemon's `idle_remaining_seconds` over `idle_deadline` because
+// that number is relative: it needs no agreement between the daemon's clock and
+// the browser's, which an absolute deadline does — a laptop a minute fast reads
+// a fresh preview as already due. The value is anchored at `fetchedAt` (when
+// the snapshot carrying it landed) and decremented by the elapsed time since,
+// so it keeps ticking between the list's five-second polls.
+//
+// Returns null when there is nothing to count down to (the reaper is disabled),
+// so callers render nothing rather than a fake "never"; a countdown that has
+// run out reads `due now`, since the reaper collects on its own ticker.
+export function previewIdleCountdown(
+  preview: IdleCountdownSource | null | undefined,
+  fetchedAt: number,
+  now: number = Date.now(),
+): string | null {
+  if (!preview) return null
+  const remaining = preview.idle_remaining_seconds
+  if (typeof remaining === 'number' && Number.isFinite(remaining)) {
+    // A fetchedAt of 0 (nothing fetched yet) or one in the future contributes
+    // no elapsed time rather than a nonsense offset.
+    const elapsedMs = fetchedAt > 0 ? Math.max(0, now - fetchedAt) : 0
+    const remainingMs = remaining * 1000 - elapsedMs
+    if (remainingMs <= 0) return 'due now'
+    return formatDuration(Math.ceil(remainingMs / 1000))
+  }
+  return formatCountdown(preview.idle_deadline, now)
+}

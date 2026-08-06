@@ -56,6 +56,22 @@ type PreviewSummary struct {
 	// IdleDeadline is when the reaper will tear this preview down unless it is
 	// touched again. null when the idle reaper is disabled.
 	IdleDeadline *time.Time `json:"idle_deadline"`
+	// IdleRemainingSeconds is the same deadline as a countdown, forwarded
+	// verbatim from the preview manager (via ipc.PreviewInfo) rather than
+	// recomputed here: the manager is the single source of truth for it, and
+	// `forge preview list` reads the identical field off the same payload.
+	// null exactly when IdleDeadline is null — the reaper is disabled, which is
+	// not the same as 0 ("the next reaper tick collects this").
+	//
+	// A client rendering a live countdown should prefer this over IdleDeadline:
+	// it is relative, so it survives a browser clock that disagrees with the
+	// daemon's, and the absolute deadline stays for tooltips and sorting.
+	IdleRemainingSeconds *int64 `json:"idle_remaining_seconds"`
+	// ResourceNote is a one-line summary of what the preview holds while it is
+	// up (its supervised services and their ports), also straight from the
+	// manager. Kiln applies no memory or CPU limits, so the honest note is the
+	// footprint itself rather than a limit that was never set.
+	ResourceNote string `json:"resource_note,omitempty"`
 }
 
 // PreviewsListResponse is the body of GET /api/previews. Enabled is false when
@@ -164,15 +180,20 @@ func (s *Server) handlePreviewsList(w http.ResponseWriter, r *http.Request) {
 // service and the host the entry link should point at.
 func previewSummary(r *http.Request, p ipc.PreviewInfo, publicHost string, idle time.Duration, now time.Time) PreviewSummary {
 	summary := PreviewSummary{
-		BeadID:       p.BeadID,
-		Anvil:        p.Anvil,
-		Branch:       p.Branch,
-		Status:       p.Status,
-		Services:     make([]PreviewServiceStatus, 0, len(p.Services)),
-		EntryURL:     previewEntryURL(r, p, publicHost),
-		CreatedAt:    p.CreatedAt,
-		LastActiveAt: p.LastActiveAt,
+		BeadID:               p.BeadID,
+		Anvil:                p.Anvil,
+		Branch:               p.Branch,
+		Status:               p.Status,
+		Services:             make([]PreviewServiceStatus, 0, len(p.Services)),
+		EntryURL:             previewEntryURL(r, p, publicHost),
+		CreatedAt:            p.CreatedAt,
+		LastActiveAt:         p.LastActiveAt,
+		IdleRemainingSeconds: p.IdleRemainingSeconds,
+		ResourceNote:         p.ResourceNote,
 	}
+	// The absolute form of the countdown the manager already sent. Both derive
+	// from last-activity plus the idle timeout, so this condition is the same
+	// one the manager nils IdleRemainingSeconds on and the two cannot disagree.
 	if idle > 0 && !p.LastActiveAt.IsZero() {
 		deadline := p.LastActiveAt.Add(idle)
 		summary.IdleDeadline = &deadline

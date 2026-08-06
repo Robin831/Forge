@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -297,10 +298,14 @@ func samplePreview(created, lastActive time.Time) ipc.PreviewInfo {
 func TestPreviewsList_MapsDTOWithLogURLsAndIdleDeadline(t *testing.T) {
 	created := time.Now().Add(-90 * time.Second).UTC()
 	lastActive := time.Now().Add(-30 * time.Second).UTC()
+	info := samplePreview(created, lastActive)
+	remaining := int64(1770)
+	info.IdleRemainingSeconds = &remaining
+	info.ResourceNote = "2 services, ports 42001, 42002"
 	srv := newServerWithDefaults(t, previewsHandler(t, ipc.PreviewsResponse{
 		Enabled:            true,
 		IdleTimeoutSeconds: 1800,
-		Previews:           []ipc.PreviewInfo{samplePreview(created, lastActive)},
+		Previews:           []ipc.PreviewInfo{info},
 	}))
 
 	out := decodePreviews(t, getPreviews(t, srv, "hearth.example:9000"))
@@ -337,6 +342,55 @@ func TestPreviewsList_MapsDTOWithLogURLsAndIdleDeadline(t *testing.T) {
 	if want := lastActive.Add(30 * time.Minute); !p.IdleDeadline.Equal(want) {
 		t.Errorf("idle_deadline = %v, want %v", p.IdleDeadline, want)
 	}
+	// The countdown and the resource note are the manager's, not this layer's:
+	// they must survive the mapping byte for byte so the dashboard and
+	// `forge preview list` read the same numbers.
+	if p.IdleRemainingSeconds == nil {
+		t.Fatal("expected idle_remaining_seconds to be forwarded")
+	}
+	if *p.IdleRemainingSeconds != 1770 {
+		t.Errorf("idle_remaining_seconds = %d, want 1770", *p.IdleRemainingSeconds)
+	}
+	if p.ResourceNote != "2 services, ports 42001, 42002" {
+		t.Errorf("resource_note = %q, want the manager's summary", p.ResourceNote)
+	}
+}
+
+// TestPreviewsList_IdleFieldsSerialize pins the wire shape the SPA reads: both
+// fields are present under the names the IPC payload uses, and the countdown is
+// an explicit null (not an omitted key) when the reaper is disabled, so the
+// client can tell "no deadline" from "due now".
+func TestPreviewsList_IdleFieldsSerialize(t *testing.T) {
+	created := time.Now().Add(-time.Minute).UTC()
+	info := samplePreview(created, created)
+	remaining := int64(600)
+	info.IdleRemainingSeconds = &remaining
+	info.ResourceNote = "2 services, ports 42001, 42002"
+	srv := newServerWithDefaults(t, previewsHandler(t, ipc.PreviewsResponse{
+		Enabled:            true,
+		IdleTimeoutSeconds: 1800,
+		Previews:           []ipc.PreviewInfo{info},
+	}))
+
+	rec := getPreviews(t, srv, "hearth.example:9000")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		Previews []map[string]json.RawMessage `json:"previews"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("parse previews response: %v", err)
+	}
+	if len(body.Previews) != 1 {
+		t.Fatalf("expected 1 preview, got %d", len(body.Previews))
+	}
+	if got := string(body.Previews[0]["idle_remaining_seconds"]); got != "600" {
+		t.Errorf("idle_remaining_seconds = %s, want 600", got)
+	}
+	if got := string(body.Previews[0]["resource_note"]); got != `"2 services, ports 42001, 42002"` {
+		t.Errorf("resource_note = %s", got)
+	}
 }
 
 func TestPreviewsList_NoIdleDeadlineWhenReaperDisabled(t *testing.T) {
@@ -346,9 +400,19 @@ func TestPreviewsList_NoIdleDeadlineWhenReaperDisabled(t *testing.T) {
 		IdleTimeoutSeconds: 0,
 		Previews:           []ipc.PreviewInfo{samplePreview(now, now)},
 	}))
-	out := decodePreviews(t, getPreviews(t, srv, "hearth.example:9000"))
+	rec := getPreviews(t, srv, "hearth.example:9000")
+	out := decodePreviews(t, rec)
 	if out.Previews[0].IdleDeadline != nil {
 		t.Errorf("idle_deadline = %v, want null when the reaper is off", out.Previews[0].IdleDeadline)
+	}
+	// The manager reports no countdown either — and it stays an explicit null
+	// rather than disappearing from the payload.
+	if out.Previews[0].IdleRemainingSeconds != nil {
+		t.Errorf("idle_remaining_seconds = %v, want null when the reaper is off",
+			out.Previews[0].IdleRemainingSeconds)
+	}
+	if !strings.Contains(rec.Body.String(), `"idle_remaining_seconds":null`) {
+		t.Errorf("expected an explicit null countdown in %s", rec.Body.String())
 	}
 }
 

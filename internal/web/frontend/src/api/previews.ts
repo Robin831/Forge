@@ -48,6 +48,16 @@ export interface PreviewSummary {
   last_active_at: string
   /** When the idle reaper tears this down; null when the reaper is disabled. */
   idle_deadline: string | null
+  /**
+   * The same deadline as a countdown in seconds, straight from the daemon's
+   * preview manager. Prefer it over `idle_deadline` for a live countdown: it is
+   * relative, so it does not go wrong when the browser clock disagrees with the
+   * daemon's. null when the reaper is disabled; 0 means the next reaper tick
+   * takes this preview.
+   */
+  idle_remaining_seconds: number | null
+  /** One line naming what the preview holds while up (services and ports). */
+  resource_note?: string
 }
 
 // PreviewsListResponse is the body of GET /api/previews. `enabled` false means

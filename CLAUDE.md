@@ -255,17 +255,26 @@ browser → internal/web (Hearth 2.0, in-process HTTP server, gated by FORGE_WEB
       PreviewSummary/PreviewServiceStatus DTOs in internal/web/preview_handlers.go
       (the frontend contract) with an entry URL built from preview_public_host
       falling back to the request's Host, plus `anvils` (the previewable
-      anvils) so the SPA can gate its Preview button; GET
+      anvils) so the SPA can gate its Preview button; `idle_remaining_seconds`
+      and `resource_note` are forwarded verbatim from the preview manager's
+      payload — same field names `preview_list` reports over IPC, computed once
+      in the manager and never per transport — alongside `idle_deadline`, the
+      absolute form of the same countdown; GET
       /preview/{id}/log/{service} tails
       ~/.forge/logs/<beadID>/preview-<service>.log
       SPA side: src/api/previews.ts is the typed client, src/hooks/usePreview.ts
       the shared per-bead state machine plus usePreviewsList for the whole fleet
-      (one polled previews snapshot for every consumer), <PreviewButton> the
+      (one polled previews snapshot for every consumer, stamped with the
+      `fetchedAt` the idle countdown ages from), <PreviewButton> the
       compact trigger + status chip mounted on worker cards and PR rows,
       <PreviewPanel> the full per-bead surface on the bead detail page
       (per-service port/health/uptime/log rows, Open preview, idle countdown,
-      start/stop), and /previews (PreviewsPage, nav entry gated on Kiln being
-      enabled) the fleet view of every running preview. <PreviewLogModal> tails
+      resource note, start/stop), and /previews (PreviewsPage, nav entry gated
+      on Kiln being enabled) the fleet view of every running preview.
+      lib/previewFormat.previewIdleCountdown is the one countdown renderer both
+      surfaces call: it prefers the relative `idle_remaining_seconds` (immune to
+      a browser clock that disagrees with the daemon's) and falls back to
+      `idle_deadline`. <PreviewLogModal> tails
       one service log — plain monospace, not LogViewer, since preview output is
       raw process stdout rather than a claude stream-json transcript
   → Preview quest runs (QuestGiver): POST /bead/{id}/quests → preview_quest_run

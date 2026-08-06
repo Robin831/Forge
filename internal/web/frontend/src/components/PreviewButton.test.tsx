@@ -37,6 +37,7 @@ function preview(overrides: Partial<PreviewSummary> = {}): PreviewSummary {
     created_at: '2026-08-06T10:00:00Z',
     last_active_at: '2026-08-06T10:00:00Z',
     idle_deadline: null,
+    idle_remaining_seconds: null,
     ...overrides,
   }
 }

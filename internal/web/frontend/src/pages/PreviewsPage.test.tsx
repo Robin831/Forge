@@ -46,6 +46,9 @@ function preview(overrides: Partial<PreviewSummary> = {}): PreviewSummary {
     created_at: '2026-08-06T09:58:55Z',
     last_active_at: '2026-08-06T09:58:55Z',
     idle_deadline: '2026-08-06T10:08:42Z',
+    // The same deadline the daemon reports as a countdown: 8m 12s from NOW.
+    idle_remaining_seconds: 492,
+    resource_note: '1 service, ports 42001',
     ...overrides,
   }
 }
@@ -119,24 +122,36 @@ describe('PreviewsPage', () => {
     expect(within(other).queryByTestId('preview-row-open-Forge-def2')).not.toBeInTheDocument()
   })
 
-  it('counts down to each preview idle deadline and keeps ticking', async () => {
+  it('counts down each preview to its idle deadline and keeps ticking', async () => {
     await mount()
     expect(screen.getByTestId('preview-row-countdown-Forge-abc1')).toHaveTextContent(
       'idles in 8m 12s',
     )
 
+    // Under the 5s list poll: the value can only move by being aged locally
+    // from the seconds-remaining the daemon last sent.
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(60_000)
+      await vi.advanceTimersByTimeAsync(3000)
     })
     expect(screen.getByTestId('preview-row-countdown-Forge-abc1')).toHaveTextContent(
-      'idles in 7m 12s',
+      'idles in 8m 09s',
     )
   })
 
   it('omits the countdown when the idle reaper is disabled', async () => {
-    previews = { ...previews, previews: [preview({ idle_deadline: null })] }
+    previews = {
+      ...previews,
+      previews: [preview({ idle_deadline: null, idle_remaining_seconds: null })],
+    }
     await mount()
     expect(screen.queryByTestId('preview-row-countdown-Forge-abc1')).not.toBeInTheDocument()
+  })
+
+  it('renders the resource note for each preview', async () => {
+    await mount()
+    expect(screen.getByTestId('preview-row-resource-note-Forge-abc1')).toHaveTextContent(
+      '1 service, ports 42001',
+    )
   })
 
   it('links each row to the bead detail page, carrying the anvil', async () => {
