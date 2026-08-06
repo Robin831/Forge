@@ -242,6 +242,34 @@ func jsonHasEmptyPreviewArray(t *testing.T, body string) bool {
 	return string(raw.Previews) == "[]"
 }
 
+func TestPreviewsList_PassesThroughPreviewableAnvils(t *testing.T) {
+	srv := newServerWithDefaults(t, previewsHandler(t, ipc.PreviewsResponse{
+		Enabled: true,
+		Anvils:  []string{"forge", "hytte"},
+	}))
+	out := decodePreviews(t, getPreviews(t, srv, "hearth.example:9000"))
+	if len(out.Anvils) != 2 || out.Anvils[0] != "forge" || out.Anvils[1] != "hytte" {
+		t.Errorf("anvils: got %v, want [forge hytte]", out.Anvils)
+	}
+}
+
+// The SPA gates its Preview button on this list, so an absent one has to reach
+// the browser as [] — a null would be a type error at the consumer, not an
+// empty gate.
+func TestPreviewsList_AnvilsSerializeAsArrayWhenAbsent(t *testing.T) {
+	srv := newServerWithDefaults(t, previewsHandler(t, ipc.PreviewsResponse{Enabled: false}))
+	rec := getPreviews(t, srv, "hearth.example:9000")
+	var raw struct {
+		Anvils json.RawMessage `json:"anvils"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &raw); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if string(raw.Anvils) != "[]" {
+		t.Errorf("expected anvils to serialize as [], got %s", raw.Anvils)
+	}
+}
+
 func TestPreviewsList_DisabledReportsEnabledFalse(t *testing.T) {
 	srv := newServerWithDefaults(t, previewsHandler(t, ipc.PreviewsResponse{Enabled: false}))
 	out := decodePreviews(t, getPreviews(t, srv, "hearth.example:9000"))

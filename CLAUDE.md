@@ -244,8 +244,14 @@ browser → internal/web (Hearth 2.0, in-process HTTP server, gated by FORGE_WEB
       (queued, so both answer 202); GET /previews → previews, mapped to the
       PreviewSummary/PreviewServiceStatus DTOs in internal/web/preview_handlers.go
       (the frontend contract) with an entry URL built from preview_public_host
-      falling back to the request's Host; GET /preview/{id}/log/{service} tails
+      falling back to the request's Host, plus `anvils` (the previewable
+      anvils) so the SPA can gate its Preview button; GET
+      /preview/{id}/log/{service} tails
       ~/.forge/logs/<beadID>/preview-<service>.log
+      SPA side: src/api/previews.ts is the typed client, src/hooks/usePreview.ts
+      the shared per-bead state machine (one polled previews snapshot for every
+      consumer), and <PreviewButton> the trigger + status chip mounted on
+      worker cards, PR rows and the bead-detail header
   → async outcomes: an action the daemon runs in the background answers 202 with
       {request_id, poll_url}; the SPA polls GET /api/requests/{request_id}
       → request_status (pending → ok/error, unknown once evicted) so a failed
@@ -366,7 +372,7 @@ The daemon exposes a named pipe (Windows: `\\.\pipe\forge`) or Unix socket. Mess
 |---------|-------------|
 | `preview_start` | Start a bead's preview environment (queued; anvil required, branch defaults to `forge/<beadID>`). |
 | `preview_stop` | Tear a bead's preview down (queued; keyed by bead id alone). |
-| `previews` | List live previews with per-service ports/health, plus `preview_public_host` and `preview_idle_timeout` so clients build links and deadlines themselves. |
+| `previews` | List live previews with per-service ports/health, plus `preview_public_host` and `preview_idle_timeout` so clients build links and deadlines themselves, and `anvils` — the anvils a preview can be started for (previews enabled AND a `.forge/preview.yaml` in their main checkout), which is how a client gates a per-bead Preview affordance without a probe per row. |
 
 **Security**
 | Command | Description |

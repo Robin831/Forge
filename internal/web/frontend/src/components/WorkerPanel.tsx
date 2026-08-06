@@ -22,6 +22,7 @@ import { useUIState } from '../hooks/useUIState'
 import { parseTranscript, type TranscriptEntry } from '../lib/logParse'
 import ConfirmModal from './ConfirmModal'
 import LogViewer from './LogViewer'
+import PreviewButton from './PreviewButton'
 import SteerComposer from './SteerComposer'
 
 interface WorkerPanelProps {
@@ -262,6 +263,19 @@ export default function WorkerPanel({
         >
           {formatElapsed(worker.started_at, now)}
         </span>
+
+        {/* Preview trigger. Most useful on a ready-to-merge card — the branch
+            is final and the operator wants to look at it before merging — but
+            it is offered for any worker with a branch, since the preview is
+            built from the branch tip and never touches the worktree. It hides
+            itself when the anvil declares no preview manifest. */}
+        <PreviewButton
+          beadId={worker.bead_id}
+          anvil={worker.anvil}
+          hasBranch={!!worker.branch}
+          compact
+          className="shrink-0"
+        />
 
         {onExpand && (
           <button

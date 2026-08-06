@@ -54,6 +54,12 @@ type PreviewsResponse struct {
 	PublicHost string `json:"public_host,omitempty"`
 	// IdleTimeoutSeconds is settings.preview_idle_timeout; 0 means the idle
 	// reaper is disabled and previews have no deadline.
-	IdleTimeoutSeconds int64         `json:"idle_timeout_seconds,omitempty"`
-	Previews           []PreviewInfo `json:"previews"`
+	IdleTimeoutSeconds int64 `json:"idle_timeout_seconds,omitempty"`
+	// Anvils names every anvil a preview can actually be started for: previews
+	// are enabled for it AND its main checkout declares a `.forge/preview.yaml`.
+	// It is what lets a client gate a "Preview" affordance per row without a
+	// probe request per bead — an anvil missing here would only ever answer a
+	// start with "no preview manifest".
+	Anvils   []string      `json:"anvils"`
+	Previews []PreviewInfo `json:"previews"`
 }

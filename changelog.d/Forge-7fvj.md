@@ -1,0 +1,3 @@
+category: Added
+- **Preview button and status chip in Hearth 2.0** - Worker cards, PR rows and the bead detail header now offer a one-click Kiln preview: start, a live starting/healthy/degraded/failed chip, an Open link to the entry URL, and Stop. The button only appears when previews are enabled, the bead's anvil declares a `.forge/preview.yaml`, and the bead still has a branch or open PR. (Forge-7fvj)
+- **Previewable anvils in the previews payload** - `GET /api/previews` (and the `previews` IPC command) now carry an `anvils` list naming the anvils a preview can actually be started for, so clients gate per-bead preview controls without a probe request per row. (Forge-7fvj)

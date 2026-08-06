@@ -33,6 +33,7 @@ import BeadLogsSection from '../components/BeadLogsSection'
 import ConfirmModal from '../components/ConfirmModal'
 import DepsGraphView from '../components/DepsGraphView'
 import Pane, { EmptyState } from '../components/Pane'
+import PreviewButton from '../components/PreviewButton'
 import SteerComposer from '../components/SteerComposer'
 import WorkerLogModal from '../components/WorkerLogModal'
 import { useAction } from '../hooks/useAction'
@@ -51,6 +52,11 @@ const STATUS_BADGE: Record<string, string> = {
 function badgeClass(s: string): string {
   return STATUS_BADGE[s] ?? 'bg-slate-800 text-slate-300 border-slate-700'
 }
+
+// TERMINAL_PR_STATUSES are the state.db PR statuses after which the branch is
+// gone: merged (deleted on merge) or closed (abandoned). Mirrors the daemon's
+// nonTerminalPRStatuses set, inverted.
+const TERMINAL_PR_STATUSES = new Set(['merged', 'closed'])
 
 function workerToInfo(beadID: string, anvil: string, w: BeadDetailWorker): WorkerInfo {
   return {
@@ -158,6 +164,18 @@ export default function BeadDetailPage() {
       ) ?? null,
     [data?.workers],
   )
+
+  // A preview is a detached checkout of the bead's branch, so it needs one that
+  // still exists. A non-terminal PR is the strongest evidence; a merged or
+  // closed one means the branch is gone (or about to be). Failing both, a
+  // worker row that recorded a branch is enough — that is the mid-pipeline case
+  // where no PR has been opened yet.
+  const hasPreviewableBranch = useMemo(() => {
+    const prs = data?.prs ?? []
+    if (prs.some((p) => p.branch && !TERMINAL_PR_STATUSES.has(p.status))) return true
+    if (prs.some((p) => TERMINAL_PR_STATUSES.has(p.status))) return false
+    return (data?.workers ?? []).some((w) => !!w.branch)
+  }, [data?.prs, data?.workers])
 
   const graphRoot = useMemo<BeadBrief | null>(
     () =>
@@ -289,7 +307,12 @@ export default function BeadDetailPage() {
           )}
         </div>
         {resolvedAnvil && (
-          <div className="mt-4 flex flex-wrap gap-2">
+          <div className="mt-4 flex flex-wrap items-center gap-2">
+            <PreviewButton
+              beadId={beadID}
+              anvil={resolvedAnvil}
+              hasBranch={hasPreviewableBranch}
+            />
             <button
               type="button"
               onClick={() => setDialog({ kind: 'note' })}
