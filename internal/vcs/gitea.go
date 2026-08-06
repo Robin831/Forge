@@ -154,7 +154,7 @@ func (g *GiteaProvider) MergePR(ctx context.Context, worktreePath string, prNumb
 	log.Printf("[gitea] Merging PR #%d with strategy %s", prNumber, strategy)
 
 	payload := giteaMergePRRequest{
-		Do:                    strategy,
+		Do:                     strategy,
 		DeleteBranchAfterMerge: true,
 	}
 
@@ -471,6 +471,7 @@ func (g *GiteaProvider) fetchPRView(ctx context.Context, ri giteaRepoInfo, prNum
 		State:       state,
 		Mergeable:   mapGiteaMergeable(pr.Mergeable, pr.State),
 		HeadRefName: pr.Head.Ref,
+		HeadSHA:     pr.Head.SHA,
 		URL:         pr.HTMLURL,
 		Title:       pr.Title,
 	}, pr.Head.SHA, nil
@@ -498,6 +499,10 @@ func (g *GiteaProvider) fetchCIStatus(ctx context.Context, ri giteaRepoInfo, hea
 			Name:       s.Context,
 			Status:     mapGiteaStatusState(s.Status),
 			Conclusion: mapGiteaStatusConclusion(s.Status),
+			// The endpoint is keyed by the head commit, so every status it
+			// returns belongs to headSHA by construction.
+			HeadSHA:   headSHA,
+			CreatedAt: s.CreatedAt,
 		})
 	}
 	return checks, nil
@@ -570,8 +575,8 @@ type giteaBranch struct {
 }
 
 type giteaReview struct {
-	ID   int    `json:"id"`
-	Body string `json:"body"`
+	ID    int    `json:"id"`
+	Body  string `json:"body"`
 	State string `json:"state"`
 	User  struct {
 		Login string `json:"login"`
@@ -601,13 +606,14 @@ type giteaReviewComment struct {
 }
 
 type giteaCombinedStatus struct {
-	State    string         `json:"state"`
+	State    string        `json:"state"`
 	Statuses []giteaStatus `json:"statuses"`
 }
 
 type giteaStatus struct {
-	Context string `json:"context"`
-	Status  string `json:"status"`
+	Context   string    `json:"context"`
+	Status    string    `json:"status"`
+	CreatedAt time.Time `json:"created_at"`
 }
 
 // --- Gitea API helpers ---

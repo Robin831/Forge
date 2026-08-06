@@ -277,19 +277,19 @@ func ForPlatform(platform string) (Provider, error) {
 type Platform string
 
 const (
-	GitHub     Platform = "github"
-	GitLab    Platform = "gitlab"
-	Gitea     Platform = "gitea"
-	Bitbucket Platform = "bitbucket"
+	GitHub      Platform = "github"
+	GitLab      Platform = "gitlab"
+	Gitea       Platform = "gitea"
+	Bitbucket   Platform = "bitbucket"
 	AzureDevOps Platform = "azuredevops"
 )
 
 // ValidPlatforms is the set of recognised platform values.
 var ValidPlatforms = map[Platform]bool{
 	GitHub:      true,
-	GitLab:     true,
-	Gitea:      true,
-	Bitbucket:  true,
+	GitLab:      true,
+	Gitea:       true,
+	Bitbucket:   true,
 	AzureDevOps: true,
 }
 
@@ -399,26 +399,7 @@ func (s *PRStatus) IsClosed() bool {
 // or "WAITING". StatusContext items use State values like "PENDING" or "EXPECTED".
 func (s *PRStatus) CIsInProgress() bool {
 	for _, check := range s.StatusCheckRollup {
-		// Handle StatusContext items (State populated, Status empty).
-		if check.State != "" && check.Status == "" {
-			st := strings.ToUpper(check.State)
-			if st == "PENDING" || st == "EXPECTED" {
-				return true
-			}
-			continue // SUCCESS, FAILURE, ERROR are terminal states
-		}
-
-		st := strings.ToUpper(check.Status)
-		if st == "IN_PROGRESS" || st == "QUEUED" || st == "PENDING" || st == "WAITING" || st == "REQUESTED" {
-			return true
-		}
-		// A check marked COMPLETED but with no conclusion is in a transient
-		// state — treat it as still in progress until the conclusion arrives.
-		if st == "COMPLETED" && check.Conclusion == "" {
-			return true
-		}
-		// Unknown/empty status with no conclusion is likely in progress.
-		if st != "COMPLETED" && check.Conclusion == "" {
+		if check.InProgress() {
 			return true
 		}
 	}
@@ -434,17 +415,7 @@ func (s *PRStatus) CIsPassing() bool {
 		return true
 	}
 	for _, check := range s.StatusCheckRollup {
-		// Handle StatusContext items (State populated, Status empty).
-		if check.State != "" && check.Status == "" {
-			st := strings.ToUpper(check.State)
-			if st != "SUCCESS" {
-				return false // PENDING, EXPECTED, FAILURE, ERROR
-			}
-			continue
-		}
-
-		conclusion := strings.ToUpper(check.Conclusion)
-		if conclusion != "SUCCESS" && conclusion != "NEUTRAL" && conclusion != "SKIPPED" {
+		if !check.Passing() {
 			return false
 		}
 	}
@@ -493,6 +464,95 @@ type CheckRun struct {
 	// State and Context are populated for GitHub StatusContext items.
 	State   string // StatusContext: PENDING, SUCCESS, FAILURE, ERROR, EXPECTED
 	Context string // StatusContext: the check name (e.g., "ci/build")
+	// HeadSHA is the commit this check actually ran against, when the platform
+	// reports it (GitLab exposes the pipeline SHA, Gitea the commit the status
+	// belongs to). GitHub's statusCheckRollup is already scoped to the PR head
+	// commit and leaves this empty. An empty value means "unknown" — consumers
+	// must treat it as belonging to the current head rather than as a mismatch.
+	HeadSHA string `json:"headSha"`
+	// StartedAt and CompletedAt are the check run's timing as reported by the
+	// platform. A zero value means the platform did not report it — callers
+	// must not infer an age from it. CreatedAt is the StatusContext equivalent
+	// of StartedAt.
+	StartedAt   time.Time `json:"startedAt"`
+	CompletedAt time.Time `json:"completedAt"`
+	CreatedAt   time.Time `json:"createdAt"`
+}
+
+// DisplayName returns the check's human-readable name, handling both the
+// CheckRun (Name) and StatusContext (Context) schemas.
+func (c CheckRun) DisplayName() string {
+	if c.Name != "" {
+		return c.Name
+	}
+	return c.Context
+}
+
+// Started returns the best-known start time of the check: StartedAt when the
+// platform reported it, otherwise CreatedAt (StatusContext items only carry
+// the latter). A zero time means the platform reported neither.
+func (c CheckRun) Started() time.Time {
+	if !c.StartedAt.IsZero() {
+		return c.StartedAt
+	}
+	return c.CreatedAt
+}
+
+// InProgress reports whether this single check has not yet reached a terminal
+// state. See CIsInProgress for the aggregate view and the schema rationale.
+func (c CheckRun) InProgress() bool {
+	// Handle StatusContext items (State populated, Status empty).
+	if c.State != "" && c.Status == "" {
+		st := strings.ToUpper(c.State)
+		// SUCCESS, FAILURE, ERROR are terminal states.
+		return st == "PENDING" || st == "EXPECTED"
+	}
+
+	st := strings.ToUpper(c.Status)
+	if st == "IN_PROGRESS" || st == "QUEUED" || st == "PENDING" || st == "WAITING" || st == "REQUESTED" {
+		return true
+	}
+	// A check marked COMPLETED but with no conclusion is in a transient
+	// state — treat it as still in progress until the conclusion arrives.
+	if st == "COMPLETED" && c.Conclusion == "" {
+		return true
+	}
+	// Unknown/empty status with no conclusion is likely in progress.
+	return st != "COMPLETED" && c.Conclusion == ""
+}
+
+// Queued reports whether this check is waiting to start rather than actively
+// running. It is the subset of InProgress that indicates the platform has not
+// picked the work up yet — a long queue time points at a runner shortage or an
+// outage, whereas a long IN_PROGRESS time is just a slow build.
+func (c CheckRun) Queued() bool {
+	// StatusContext items carry no "running" state: PENDING/EXPECTED mean the
+	// result has not been reported yet.
+	if c.State != "" && c.Status == "" {
+		st := strings.ToUpper(c.State)
+		return st == "PENDING" || st == "EXPECTED"
+	}
+
+	switch strings.ToUpper(c.Status) {
+	case "QUEUED", "WAITING", "PENDING", "REQUESTED":
+		return true
+	default:
+		return false
+	}
+}
+
+// Passing reports whether this single check finished with a non-blocking
+// result. Checks that are still in progress are not passing (their empty
+// Conclusion matches nothing) — use InProgress to tell the two apart.
+func (c CheckRun) Passing() bool {
+	// Handle StatusContext items (State populated, Status empty).
+	if c.State != "" && c.Status == "" {
+		// PENDING, EXPECTED, FAILURE, ERROR all count as not passing.
+		return strings.EqualFold(c.State, "SUCCESS")
+	}
+
+	conclusion := strings.ToUpper(c.Conclusion)
+	return conclusion == "SUCCESS" || conclusion == "NEUTRAL" || conclusion == "SKIPPED"
 }
 
 // ReviewAuthor identifies the author of a review.

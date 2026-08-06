@@ -2276,6 +2276,7 @@ const (
 	EventTemperFailed         EventType = "temper_failed"
 	EventBellowsStarted       EventType = "bellows_started"
 	EventCIFailed             EventType = "ci_failed"
+	EventCIStuck              EventType = "ci_stuck"
 	EventQuenchStarted        EventType = "ci_fix_started"
 	EventQuenchSuccess        EventType = "ci_fix_success"
 	EventQuenchFailed         EventType = "ci_fix_failed"

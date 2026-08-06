@@ -113,6 +113,15 @@ type Monitor struct {
 	beadInFlight         func(beadID string) bool                             // reports whether a lifecycle fix worker is active for a bead; nil disables (tests)
 	cycleHook            func(ctx context.Context)                            // called at the start of every poll cycle, before any PR work; nil disables
 
+	// ciStuckNotified records the head SHA a "CI appears stuck" note was last
+	// raised for, keyed by "anvil/number", so a wedged run is surfaced once per
+	// head instead of on every poll. Guarded by mu.
+	ciStuckNotified map[string]string
+
+	// now returns the current time for CI age evaluation. nil selects
+	// time.Now; tests set it to pin the stuck threshold.
+	now func() time.Time
+
 	// retryBackoff overrides the inline retry backoff used when wrapping gh
 	// status fetches in transient-failure retries. nil selects
 	// github.DefaultRetryBackoff(); tests set a zero-delay backoff to avoid
@@ -175,7 +184,16 @@ func New(db *state.DB, vcsLookup func(anvil string) vcs.Provider, interval time.
 		learnMu:              make(map[string]*sync.Mutex),
 		learnSem:             make(chan struct{}, 4), // allow up to 4 concurrent auto-learn goroutines
 		wasUnmanaged:         make(map[string]bool),
+		ciStuckNotified:      make(map[string]string),
 	}
+}
+
+// nowFn returns the monitor's clock, defaulting to time.Now.
+func (m *Monitor) nowFn() time.Time {
+	if m.now != nil {
+		return m.now()
+	}
+	return time.Now()
 }
 
 // SetAutoMergeHandler registers a callback invoked when a PR transitions to
@@ -250,6 +268,70 @@ func (m *Monitor) escalateFixExhausted(pr *state.PR, reason string) {
 	// existing terminal escalation type for an exhausted fix loop.
 	_ = m.db.LogEvent(state.EventSmithFailed, fmt.Sprintf("PR #%d: %s", pr.Number, reason), pr.BeadID, pr.Anvil)
 	log.Printf("[bellows] PR #%d flagged needs_human: %s", pr.Number, reason)
+}
+
+// ciStuckAttentionPrefix marks the needs-attention entries raised by
+// noteCIStuck, so clearCIStuck can retract its own note without touching a flag
+// some other subsystem set (circuit breaker, crucible failure, bead close).
+const ciStuckAttentionPrefix = "CI appears stuck/outage: "
+
+// noteCIStuck raises an informational needs-attention entry for a PR whose head
+// has a check queued past stuckRunThreshold. This is the alternative to the old
+// behaviour during a CI outage: rather than reading a stale conclusion as a
+// failure and burning quench attempts on a problem that does not exist on the
+// head, we put the wedged run in front of the operator and wait. The note fires
+// once per (PR, head SHA) so a two-hour outage does not spam the panel, and
+// clearCIStuck retracts it as soon as CI settles.
+func (m *Monitor) noteCIStuck(pr *state.PR, ci ciResult) {
+	if m.db == nil {
+		return
+	}
+	key := fmt.Sprintf("%s/%d", pr.Anvil, pr.Number)
+	m.mu.Lock()
+	if seen, ok := m.ciStuckNotified[key]; ok && seen == ci.HeadSHA {
+		m.mu.Unlock()
+		return
+	}
+	m.ciStuckNotified[key] = ci.HeadSHA
+	m.mu.Unlock()
+
+	detail := fmt.Sprintf("PR #%d: %s (no CI fix worker dispatched)", pr.Number, ci.Reason)
+	if err := m.db.MarkNeedsHuman(pr.BeadID, pr.Anvil, ciStuckAttentionPrefix+detail); err != nil {
+		log.Printf("[bellows] PR #%d: failed to raise needs-attention for stuck CI: %v", pr.Number, err)
+		// Allow a later poll to retry the note rather than swallowing it.
+		m.mu.Lock()
+		delete(m.ciStuckNotified, key)
+		m.mu.Unlock()
+		return
+	}
+	_ = m.db.LogEvent(state.EventCIStuck, detail, pr.BeadID, pr.Anvil)
+	log.Printf("[bellows] %s%s", ciStuckAttentionPrefix, detail)
+}
+
+// clearCIStuck retracts the note raised by noteCIStuck once the head's CI is no
+// longer wedged. It only clears a flag carrying ciStuckAttentionPrefix, so an
+// unrelated needs-attention reason survives. The DB read happens on every settled
+// poll (not just when this monitor instance raised the note) so a note left
+// behind by a previous daemon lifetime is cleaned up too.
+func (m *Monitor) clearCIStuck(pr *state.PR) {
+	if m.db == nil {
+		return
+	}
+	key := fmt.Sprintf("%s/%d", pr.Anvil, pr.Number)
+	m.mu.Lock()
+	delete(m.ciStuckNotified, key)
+	m.mu.Unlock()
+
+	r, err := m.db.GetRetry(pr.BeadID, pr.Anvil)
+	if err != nil || r == nil || !r.NeedsHuman {
+		return
+	}
+	if !strings.HasPrefix(r.LastError, ciStuckAttentionPrefix) {
+		return
+	}
+	if err := m.db.ClearNeedsAttention(pr.BeadID, pr.Anvil); err != nil {
+		log.Printf("[bellows] PR #%d: failed to clear stuck-CI needs-attention: %v", pr.Number, err)
+	}
 }
 
 // lastReviewedSHA returns the head SHA most recently reviewed by Assay for the
@@ -642,9 +724,13 @@ func (m *Monitor) checkPR(ctx context.Context, pr *state.PR, dailyAssayCost *flo
 		pr.Title = status.Title
 	}
 
-	ciInProgress := status.CIsInProgress()
+	// Reduce the rollup to a verdict for the CURRENT head. Results carried over
+	// from superseded commits, and heads whose runs have not finished (or never
+	// started), stay out of the failure path entirely — see evaluateCI.
+	ci := evaluateCI(status.HeadSHA, status.StatusCheckRollup, m.nowFn())
+	ciInProgress := ci.inProgress()
 	newSnap := &prSnapshot{
-		CIPassing:            status.CIsPassing(),
+		CIPassing:            ci.passing(),
 		CIInProgress:         ciInProgress,
 		HasApproval:          status.HasApproval(),
 		NeedsChanges:         status.NeedsChanges(),
@@ -668,8 +754,23 @@ func (m *Monitor) checkPR(ctx context.Context, pr *state.PR, dailyAssayCost *flo
 	}
 	newSnap.AssayUpToDate = assayUpToDate
 
-	if ciInProgress {
-		log.Printf("[bellows] PR #%d (%s): CI checks still in progress, skipping failure evaluation", pr.Number, pr.Anvil)
+	switch ci.State {
+	case ciStuck:
+		// A wedged run or a platform outage. Surface it once for the operator
+		// instead of feeding a fix loop that cannot reproduce anything.
+		log.Printf("[bellows] PR #%d (%s): CI appears stuck/outage — %s; skipping failure evaluation",
+			pr.Number, pr.Anvil, ci.Reason)
+		m.noteCIStuck(pr, ci)
+	case ciPending:
+		log.Printf("[bellows] PR #%d (%s): CI pending — %s; skipping failure evaluation",
+			pr.Number, pr.Anvil, ci.Reason)
+		m.clearCIStuck(pr)
+	default:
+		if ci.StaleChecks > 0 {
+			log.Printf("[bellows] PR #%d (%s): ignored %d check result(s) from superseded commits; CI %s — %s",
+				pr.Number, pr.Anvil, ci.StaleChecks, ci.State, ci.Reason)
+		}
+		m.clearCIStuck(pr)
 	}
 
 	// Detect transitions and emit events. We re-acquire the lock and re-check the
@@ -1496,8 +1597,12 @@ func (m *Monitor) maybeEmitReviewNeeded(ctx context.Context, pr *state.PR, statu
 }
 
 // shortSHA truncates a commit OID to its first 8 characters for log/event
-// readability, returning the input unchanged when shorter.
+// readability, returning the input unchanged when shorter. An unreported head
+// renders as "(unknown)" rather than leaving an empty gap in the message.
 func shortSHA(sha string) string {
+	if sha == "" {
+		return "(unknown)"
+	}
 	if len(sha) > 8 {
 		return sha[:8]
 	}
