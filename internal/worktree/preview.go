@@ -236,6 +236,14 @@ func resolveBranchTip(ctx context.Context, anvilPath, branchName string) (string
 	return "", fmt.Errorf("branch not found locally or on origin: %w", lastErr)
 }
 
+// HeadSHA returns the commit a checkout currently has at HEAD. A preview
+// checkout is detached at a branch tip, so its HEAD is exactly the commit the
+// running services were built from — which is how a caller matches a live
+// preview to a PR head.
+func HeadSHA(ctx context.Context, dir string) (string, error) {
+	return revParse(ctx, dir, "HEAD^{commit}")
+}
+
 // revParse resolves a single revision to its SHA in the given repository.
 func revParse(ctx context.Context, dir, rev string) (string, error) {
 	cmdCtx, cancel := contextWithGitTimeout(ctx)

@@ -239,6 +239,13 @@ type AnvilConfig struct {
 	// collects them. Default off because a preview costs real memory for as
 	// long as it runs.
 	PreviewAuto string `mapstructure:"preview_auto" yaml:"preview_auto,omitempty"`
+	// PreviewQuests opts this anvil into running its QuestGiver E2E quests
+	// against a running preview environment instead of the anvil's fixed
+	// quest URL. Default false: a quest run drives a real browser against
+	// whatever the preview serves, so it only happens for anvils that asked
+	// for it. Requires previews to be enabled for the anvil — validation
+	// rejects preview_quests: true on an anvil that cannot run previews.
+	PreviewQuests bool `mapstructure:"preview_quests" yaml:"preview_quests,omitempty"`
 	// AutoMerge enables automatic merging of PRs when they reach the
 	// ready-to-merge state (CI passing, no conflicts, no unresolved
 	// threads, no pending reviews). External PRs (ext-*) are never
@@ -322,8 +329,8 @@ type AnvilConfig struct {
 // setting (or built-in default) applies. This distinction must survive the
 // JSON round-trip, so callers must NOT collapse nil to false.
 //
-// AutoMerge and WicketAutoDispatch are plain booleans (no inherit semantics);
-// they are always present as true/false.
+// AutoMerge, PreviewQuests and WicketAutoDispatch are plain booleans (no
+// inherit semantics); they are always present as true/false.
 type AnvilSettings struct {
 	AutoMerge          bool   `json:"auto_merge"`
 	SchematicEnabled   *bool  `json:"schematic_enabled"`
@@ -333,6 +340,7 @@ type AnvilSettings struct {
 	QuestgiverEnabled  *bool  `json:"questgiver_enabled"`
 	PreviewEnabled     *bool  `json:"preview_enabled"`
 	PreviewAuto        string `json:"preview_auto"`
+	PreviewQuests      bool   `json:"preview_quests"`
 	WicketEnabled      *bool  `json:"wicket_enabled"`
 	WicketAutoDispatch bool   `json:"wicket_auto_dispatch"`
 
@@ -375,6 +383,7 @@ func (c *Config) AnvilSettingsMap() map[string]AnvilSettings {
 			QuestgiverEnabled:       copyBool(anvil.QuestgiverEnabled),
 			PreviewEnabled:          copyBool(anvil.PreviewEnabled),
 			PreviewAuto:             anvil.PreviewAuto,
+			PreviewQuests:           anvil.PreviewQuests,
 			WicketEnabled:           copyBool(anvil.WicketEnabled),
 			WicketAutoDispatch:      anvil.WicketAutoDispatch,
 			MaxSmiths:               anvil.MaxSmiths,
@@ -1671,6 +1680,26 @@ func (c *Config) IsPreviewAutoReadyToMerge(name string) bool {
 	return c.PreviewAutoForAnvil(name) == PreviewAutoReadyToMerge
 }
 
+// IsPreviewQuestsEnabledForAnvil reports whether the named anvil opted into
+// running its E2E quests against a preview environment.
+//
+// Like PreviewAutoForAnvil it folds the preview gates in, so callers need one
+// check rather than three: an anvil whose previews are off (globally or per
+// anvil) has nothing to run quests against, and an unknown anvil is off. Load
+// time validation rejects preview_quests: true on an anvil that cannot run
+// previews, but a hot-reloaded config can still reach here in that state and
+// must not be read as "run quests".
+func (c *Config) IsPreviewQuestsEnabledForAnvil(name string) bool {
+	if c == nil || !c.IsPreviewEnabledForAnvil(name) {
+		return false
+	}
+	anvil, ok := c.Anvils[name]
+	if !ok {
+		return false
+	}
+	return anvil.PreviewQuests
+}
+
 // ResolvedForgeID returns the forge instance identifier used to mark PRs Forge
 // creates (`<!-- forge-managed: <id> -->`). Resolution order:
 //
@@ -2506,6 +2535,17 @@ func (c *Config) Validate() []string {
 		if !IsValidPreviewAuto(anvil.PreviewAuto) {
 			errs = append(errs, fmt.Sprintf("anvil %q: invalid preview_auto %q (must be %s)",
 				name, anvil.PreviewAuto, strings.Join(PreviewAutoModes, "|")))
+		}
+
+		// preview_quests has nothing to run against unless previews can run
+		// for this anvil, so say so at load time rather than silently doing
+		// nothing when someone clicks "run quests".
+		if anvil.PreviewQuests && !c.IsPreviewEnabledForAnvil(name) {
+			if !c.Settings.PreviewEnabled {
+				errs = append(errs, fmt.Sprintf("anvil %q: preview_quests requires settings.preview_enabled: true", name))
+			} else {
+				errs = append(errs, fmt.Sprintf("anvil %q: preview_quests requires preview_enabled for this anvil (it is set to false)", name))
+			}
 		}
 
 		if anvil.AutoDispatch == "tagged" && anvil.AutoDispatchTag == "" {

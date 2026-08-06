@@ -169,6 +169,7 @@ Each key under `anvils` is the anvil name. The name is used in CLI output, logs,
 | `questgiver_enabled` | bool\|null | null (use global) | Per-anvil override for QuestGiver E2E quest scanning. When null, uses `settings.questgiver_enabled`. Set to `false` to opt this anvil out entirely. |
 | `preview_enabled` | bool\|null | null (use global) | Per-anvil override for Kiln preview environments. When null, uses `settings.preview_enabled`. Set to `false` to opt this anvil out entirely. An anvil without a `.forge/preview.yaml` manifest offers no preview regardless. See [Preview Environments (Kiln)](#preview-environments-kiln). |
 | `preview_auto` | string | `"off"` | When to start a preview for this anvil without being asked. `off` = only on request; `ready_to_merge` = start one when a PR transitions to ready-to-merge. Still bounded by `preview_max_concurrent` and `preview_idle_timeout`; note the memory trade-off in [Automatic previews](#automatic-previews-preview_auto). |
+| `preview_quests` | bool | `false` | Opt this anvil into running its E2E quests against a running preview environment instead of its fixed quest URL. Requires previews to be enabled for the anvil (config validation rejects it otherwise); quests only run while the preview is healthy. See [Quests against previews (`preview_quests`)](#quests-against-previews-preview_quests). |
 | `questgiver_setup_cmd` | string | | Shell command to run before executing quests for this anvil (e.g. `"podman compose up -d"`). Runs in the anvil's root directory. If the command fails, quest execution is aborted. Used by `forge quest run` and the QuestGiver monitor. |
 | `questgiver_teardown_cmd` | string | | Shell command to run after executing quests for this anvil (e.g. `"podman compose down"`). Runs in the anvil's root directory. Always runs even if quests fail; teardown failures are logged as warnings rather than errors. |
 | `wicket_enabled` | bool\|null | null (use global) | Per-anvil override for Wicket issue triage scanning. When null, uses `settings.wicket_enabled`. Set to `false` to opt this anvil out entirely. |
@@ -1070,6 +1071,7 @@ anvils:
     path: /home/robin/source/MyApi
     preview_enabled: true        # null (omitted) inherits settings.preview_enabled
     preview_auto: ready_to_merge # off (default) | ready_to_merge
+    preview_quests: true         # run this anvil's E2E quests against the preview
 ```
 
 ### Automatic previews (`preview_auto`)
@@ -1113,6 +1115,42 @@ spare (the cap is what stops a burst of ready PRs from exhausting it — starts
 past the cap are dropped, not queued) and consider shortening
 `preview_idle_timeout`, since an auto-started preview has no one watching to
 stop it.
+
+### Quests against previews (`preview_quests`)
+
+An anvil's E2E quests (`<anvil>/.forge/quests/*.yaml`) normally run against the
+fixed `url` declared in each quest file. With `preview_quests: true` the same
+quests can be run against a live preview instead: the preview's entry service
+URL is substituted into the `{{.BaseURL}}` placeholder that quest steps use.
+
+```yaml
+# <anvil>/.forge/quests/login.yaml
+name: login-flow
+url: http://localhost:3000   # used when no preview URL is supplied
+steps:
+  - action: navigate
+    url: '{{.BaseURL}}/login'
+```
+
+`{{.BaseURL}}` is expanded in every step's `url` and `value`, with any trailing
+slash trimmed off the base so `{{.BaseURL}}/login` never produces a double
+slash. A quest that hardcodes absolute URLs still works — expansion only
+touches the placeholders.
+
+The gates are deliberately narrow, because a quest run drives a real browser
+against a real application:
+
+- `preview_quests` must be `true` for the anvil (default `false`), and previews
+  must be enabled for it — `preview_quests: true` on an anvil that cannot run
+  previews is a config validation error.
+- A preview for the requested head commit must exist and be **healthy** (every
+  service passing its health check). A missing, starting, degraded or failed
+  preview means the run is skipped with a reason rather than run against a
+  half-started stack.
+
+Each run is tagged with the preview id and the head SHA it ran against, so
+downstream reporting can post results once per commit rather than once per
+attempt.
 
 **Security note.** Preview URLs are served by the previewed application itself,
 not by Hearth, so they are **not** behind the Hearth login. The default
