@@ -458,6 +458,23 @@ func (m *Manager) Stop(ctx context.Context, beadID string) error {
 	return m.teardown(ctx, env)
 }
 
+// StopAll tears down every running preview and returns the joined errors. It is
+// what the daemon calls on shutdown: a preview's services are process groups the
+// daemon spawned and its checkout is a git worktree, so exiting without stopping
+// them leaks both.
+//
+// Each preview is stopped independently — one that fails to tear down does not
+// spare the rest.
+func (m *Manager) StopAll(ctx context.Context) error {
+	var errs []error
+	for _, env := range m.List() {
+		if err := m.Stop(ctx, env.BeadID); err != nil {
+			errs = append(errs, fmt.Errorf("kiln: stopping preview for %s: %w", env.BeadID, err))
+		}
+	}
+	return errors.Join(errs...)
+}
+
 // Touch bumps a preview's last-active time, in memory and in the row the idle
 // reaper reads. It is called when a preview starts and whenever the preview API
 // is used, and is a no-op for a bead with no preview.
