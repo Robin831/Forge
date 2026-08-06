@@ -224,6 +224,10 @@ type Daemon struct {
 	// nil selects d.questgiverMonitor; tests replace it with a fake so the
 	// dispatch path can be exercised without a browser.
 	previewQuestRunner previewQuestRunner
+	// previewQuestReporter overrides where a finished preview quest run is
+	// reported. nil selects a questgiver.Reporter on the real gh CLI; tests
+	// replace it so the reporting hand-off can be observed without GitHub.
+	previewQuestReporter previewQuestReporter
 
 	// Wicket: GitHub issue triage monitor
 	// wicketMu guards wicketMonitor to prevent data races between the
