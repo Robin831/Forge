@@ -249,9 +249,15 @@ browser → internal/web (Hearth 2.0, in-process HTTP server, gated by FORGE_WEB
       /preview/{id}/log/{service} tails
       ~/.forge/logs/<beadID>/preview-<service>.log
       SPA side: src/api/previews.ts is the typed client, src/hooks/usePreview.ts
-      the shared per-bead state machine (one polled previews snapshot for every
-      consumer), and <PreviewButton> the trigger + status chip mounted on
-      worker cards, PR rows and the bead-detail header
+      the shared per-bead state machine plus usePreviewsList for the whole fleet
+      (one polled previews snapshot for every consumer), <PreviewButton> the
+      compact trigger + status chip mounted on worker cards and PR rows,
+      <PreviewPanel> the full per-bead surface on the bead detail page
+      (per-service port/health/uptime/log rows, Open preview, idle countdown,
+      start/stop), and /previews (PreviewsPage, nav entry gated on Kiln being
+      enabled) the fleet view of every running preview. <PreviewLogModal> tails
+      one service log — plain monospace, not LogViewer, since preview output is
+      raw process stdout rather than a claude stream-json transcript
   → async outcomes: an action the daemon runs in the background answers 202 with
       {request_id, poll_url}; the SPA polls GET /api/requests/{request_id}
       → request_status (pending → ok/error, unknown once evicted) so a failed

@@ -8,6 +8,7 @@ import HistoryPage from './pages/HistoryPage'
 import PRsPage from './pages/PRsPage'
 import CostsPage from './pages/CostsPage'
 import BeadDetailPage from './pages/BeadDetailPage'
+import PreviewsPage from './pages/PreviewsPage'
 import ForgePage from './pages/ForgePage'
 import SettingsPage from './pages/SettingsPage'
 
@@ -80,6 +81,14 @@ export default function App() {
         element={
           <ProtectedRoute>
             <CostsPage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/previews"
+        element={
+          <ProtectedRoute>
+            <PreviewsPage />
           </ProtectedRoute>
         }
       />

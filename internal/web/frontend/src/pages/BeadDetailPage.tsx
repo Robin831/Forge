@@ -33,7 +33,7 @@ import BeadLogsSection from '../components/BeadLogsSection'
 import ConfirmModal from '../components/ConfirmModal'
 import DepsGraphView from '../components/DepsGraphView'
 import Pane, { EmptyState } from '../components/Pane'
-import PreviewButton from '../components/PreviewButton'
+import PreviewPanel from '../components/PreviewPanel'
 import SteerComposer from '../components/SteerComposer'
 import WorkerLogModal from '../components/WorkerLogModal'
 import { useAction } from '../hooks/useAction'
@@ -308,11 +308,6 @@ export default function BeadDetailPage() {
         </div>
         {resolvedAnvil && (
           <div className="mt-4 flex flex-wrap items-center gap-2">
-            <PreviewButton
-              beadId={beadID}
-              anvil={resolvedAnvil}
-              hasBranch={hasPreviewableBranch}
-            />
             <button
               type="button"
               onClick={() => setDialog({ kind: 'note' })}
@@ -337,6 +332,12 @@ export default function BeadDetailPage() {
           </p>
         )}
       </header>
+
+      {/* The full preview surface replaces the compact PreviewButton here: this
+          page has room for the per-service detail, and two sets of Open/Stop
+          controls on one page would be ambiguous. The button stays on the dense
+          surfaces (worker cards, PR rows). */}
+      <PreviewPanel beadId={beadID} anvil={resolvedAnvil} hasBranch={hasPreviewableBranch} />
 
       {activeWorker && (
         <SteerComposer

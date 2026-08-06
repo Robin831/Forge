@@ -1,6 +1,7 @@
-import { Activity, Coins, FlaskConical, GitPullRequest, Hammer, History, LayoutDashboard, LogOut, Package, Settings, Sparkles } from 'lucide-react'
+import { Activity, Coins, FlaskConical, GitPullRequest, Hammer, History, LayoutDashboard, LogOut, MonitorPlay, Package, Settings, Sparkles } from 'lucide-react'
 import { NavLink } from 'react-router'
 import { useAuth } from '../auth'
+import { usePreviewsList } from '../hooks/usePreview'
 
 interface NavItem {
   to: string
@@ -20,6 +21,12 @@ const navItems: NavItem[] = [
   { to: '/settings', label: 'Settings', icon: Settings },
 ]
 
+// The Previews tab is only meaningful when the daemon runs a Kiln manager, so
+// it is appended from the shared previews snapshot rather than hard-coded. The
+// snapshot is already polled by every preview button on the page, so gating the
+// nav on it costs nothing extra.
+const previewsNavItem: NavItem = { to: '/previews', label: 'Previews', icon: MonitorPlay }
+
 interface AppHeaderProps {
   daemonOnline?: boolean
   daemonLoading?: boolean
@@ -27,6 +34,8 @@ interface AppHeaderProps {
 
 export default function AppHeader({ daemonOnline, daemonLoading }: AppHeaderProps) {
   const { user, logout } = useAuth()
+  const previews = usePreviewsList()
+  const items = previews.enabled ? [...navItems, previewsNavItem] : navItems
 
   return (
     <header className="flex flex-wrap items-center gap-3">
@@ -42,7 +51,7 @@ export default function AppHeader({ daemonOnline, daemonLoading }: AppHeaderProp
         aria-label="Primary"
         className="ml-2 flex flex-wrap items-center gap-1 rounded-lg border border-slate-800 bg-slate-900/60 p-1 text-sm"
       >
-        {navItems.map(({ to, label, icon: Icon, end }) => (
+        {items.map(({ to, label, icon: Icon, end }) => (
           <NavLink
             key={to}
             to={to}

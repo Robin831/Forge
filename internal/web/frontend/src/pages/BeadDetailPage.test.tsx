@@ -52,10 +52,11 @@ function setApiResponses(beadDetail: BeadDetailResponse | null) {
   })
 }
 
-// The bead header mounts a PreviewButton, which reads the shared previews
-// snapshot. Tests that spy on fetch route that request explicitly so their mock
-// only has to describe the call they are actually about. `enabled: false` keeps
-// the button off the page entirely.
+// The page mounts a PreviewPanel (and AppHeader's Previews nav gate), both of
+// which read the shared previews snapshot. Tests that spy on fetch route that
+// request explicitly so their mock only has to describe the call they are
+// actually about. `enabled: false` keeps the preview surface off the page
+// entirely.
 function previewsResponse(): Response {
   return new Response(JSON.stringify({ enabled: false, anvils: [], previews: [] }), {
     status: 200,
