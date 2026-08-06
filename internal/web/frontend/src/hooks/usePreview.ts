@@ -154,6 +154,14 @@ export function resetPreviewsStore(): void {
   snapshot = EMPTY_SNAPSHOT
 }
 
+// usePreviewsList subscribes to the shared snapshot without singling out a
+// bead. The previews overview page and the nav gate read every live preview at
+// once, and they join the same poll the per-bead consumers already run rather
+// than opening a second one.
+export function usePreviewsList(): PreviewsSnapshot {
+  return useSyncExternalStore(subscribePreviews, getPreviewsSnapshot, getPreviewsSnapshot)
+}
+
 // --- the hook --------------------------------------------------------------
 
 // PendingAction is an in-flight start/stop: which verb, where to resolve its
