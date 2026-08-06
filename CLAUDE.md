@@ -180,6 +180,12 @@ bd ready (poller) → pipeline.Run()
     → Assay trigger gate → assay.Review (multi-pass AI PR review)
       → diff.* shapes the PR diff → Triage + parallel deep passes
       → dedupe/cap findings → post as PR review comments (idempotent per head SHA)
+    → on merge: bd close with bounded retry (transient dolt errors — Error 1213
+      serialization failures, i/o timeouts, lock timeouts — are retried)
+      → still failing → persisted in `pending_bead_closes` + needs-attention
+        ("merged but unclosed bead <ID> (PR #N) blocking M dependents")
+      → every later bellows cycle re-derives the bead's status and re-attempts,
+        clearing both once the close lands
   → worktree.Remove
 
 Crucible path (parent beads with children):
@@ -256,6 +262,7 @@ Beads-Forge sessions (session capture, forgechat):
 - **retries** — Exponential backoff tracking; `needs_human=1` after exhausting retries
 - **bead_costs / daily_costs** — Token usage and USD estimates per bead and per day
 - **previews** — Kiln preview environments per bead: anvil, branch, status, worktree path, per-service JSON (name/port/health/pid/log), created/last-active timestamps
+- **pending_bead_closes** — beads whose PR merged but whose `bd close` has not yet succeeded: PR number, close reason, cumulative attempts, last error, merge time. Re-attempted every Bellows cycle until the bead closes
 
 ### IPC Protocol
 
