@@ -6263,6 +6263,15 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 		if err != nil || branch == "" {
 			return errorResponse(fmt.Sprintf("no branch found for bead %s", fp.BeadID))
 		}
+		// Same gate as manual dispatch: a forced Smith run against a wedged anvil
+		// is guaranteed to lose its bookkeeping at the first bd write, so refuse
+		// with the real reason rather than spend a session on it. Checked before
+		// the activeBeads slot is claimed, so there is nothing to release.
+		if reason := d.wedgedAnvilError(fp.Anvil); reason != "" {
+			_ = d.db.LogEvent(state.EventDispatchBlockedAnvilWedged,
+				fmt.Sprintf("Force smith on %s refused: %s", fp.BeadID, reason), fp.BeadID, fp.Anvil)
+			return errorResponse(fmt.Sprintf("cannot force smith on %q: %s", fp.BeadID, reason))
+		}
 		_ = d.db.LogEvent(state.EventForceSmith, fmt.Sprintf("Force smith requested for %s (manual)", fp.BeadID), fp.BeadID, fp.Anvil)
 		d.logger.Info("force smith requested", "bead", fp.BeadID, "anvil", fp.Anvil, "branch", branch, "user_note", fp.UserNote)
 
@@ -6536,6 +6545,22 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 		anvilCfg, ok := d.cfg.Load().Anvils[pa.Anvil]
 		if !ok {
 			return errorResponse("unknown anvil: " + pa.Anvil)
+		}
+
+		// Refuse the verbs that spawn a claude session while the anvil's beads
+		// database is mid-merge. Their status and label writes are rolled back,
+		// so the run burns tokens and consumes a max_ci_fix_attempts /
+		// max_review_fix_attempts / max_rebase_attempts budget for nothing. The
+		// VCS-only verbs (merge, close, approve, open_browser, bellows
+		// assignment) touch no beads state and stay available.
+		switch pa.Action {
+		case "quench", "cifix", "burnish", "reviewfix", "rebase":
+			if reason := d.wedgedAnvilError(pa.Anvil); reason != "" {
+				_ = d.db.LogEvent(state.EventDispatchBlockedAnvilWedged,
+					fmt.Sprintf("PR #%d %s refused: %s", pa.PRNumber, pa.Action, reason),
+					pa.BeadID, pa.Anvil)
+				return errorResponse(fmt.Sprintf("cannot run %q on PR #%d: %s", pa.Action, pa.PRNumber, reason))
+			}
 		}
 
 		switch pa.Action {

@@ -8,6 +8,7 @@ import (
 
 	"github.com/Robin831/Forge/internal/anvilhealth"
 	"github.com/Robin831/Forge/internal/config"
+	"github.com/Robin831/Forge/internal/notify"
 	"github.com/Robin831/Forge/internal/state"
 )
 
@@ -34,7 +35,12 @@ const wedgedWarnInterval = 15 * time.Minute
 // Treating a failed probe as "healthy" would clear a real wedge the moment the
 // beads backend hiccuped, so it is never done.
 func (d *Daemon) checkAnvilHealth(ctx context.Context, cfg *config.Config) {
+	// Probing is the only thing that ever clears a flag, so turning the check
+	// off (or removing every anvil) must first release whatever it raised —
+	// otherwise a resolved wedge stays pinned in needs-attention and `forge
+	// status` forever while dispatch, gated on the same setting, proceeds.
 	if !cfg.Settings.IsAnvilHealthCheckEnabled() || len(cfg.Anvils) == 0 {
+		d.releaseAllWedgedAnvils()
 		return
 	}
 	checker := d.anvilHealth
@@ -43,10 +49,20 @@ func (d *Daemon) checkAnvilHealth(ctx context.Context, cfg *config.Config) {
 	}
 
 	// Drop rows for anvils that are no longer configured so a removed anvil
-	// cannot keep a stale needs-attention entry alive forever.
+	// cannot keep a stale needs-attention entry alive forever. Only anvils we
+	// actually probe are kept: one with no path is never checked, so keeping its
+	// row would strand its flag exactly like a removed anvil would.
 	names := make([]string, 0, len(cfg.Anvils))
-	for name := range cfg.Anvils {
+	for name, anvil := range cfg.Anvils {
+		if anvil.Path == "" {
+			continue
+		}
 		names = append(names, name)
+	}
+	if len(names) == 0 {
+		// Nothing probeable this cycle; same reasoning as the disabled case.
+		d.releaseAllWedgedAnvils()
+		return
 	}
 	if err := d.db.PruneAnvilHealth(names); err != nil {
 		d.logger.Debug("anvil health: pruning stale rows failed", "error", err)
@@ -64,6 +80,25 @@ func (d *Daemon) checkAnvilHealth(ctx context.Context, cfg *config.Config) {
 		}(name, anvil.Path)
 	}
 	wg.Wait()
+}
+
+// releaseAllWedgedAnvils clears every wedged flag and forgets the WARN
+// rate-limit clocks. Used when the check stops running at all, so no flag it
+// raised can outlive it. Silent when there was nothing to release.
+func (d *Daemon) releaseAllWedgedAnvils() {
+	n, err := d.db.ClearAllAnvilWedged()
+	if err != nil {
+		d.logger.Error("failed to clear wedged anvil flags", "error", err)
+		return
+	}
+	d.wedgedWarned.Range(func(key, _ any) bool {
+		d.wedgedWarned.Delete(key)
+		return true
+	})
+	if n > 0 {
+		d.logger.Info("anvil health check is not running — cleared wedged flags it can no longer reconcile",
+			"cleared", n)
+	}
 }
 
 // checkOneAnvilHealth probes a single anvil and reconciles its wedged flag.
@@ -123,9 +158,25 @@ func (d *Daemon) recordWedgedAnvil(name string, rep anvilhealth.Report) {
 	}
 
 	if first {
-		_ = d.db.LogEvent(state.EventAnvilWedged,
-			fmt.Sprintf("Anvil %s is wedged: %s", name, rep.Detail()), "", name)
+		msg := fmt.Sprintf("Anvil %s is wedged: %s", name, rep.Detail())
+		_ = d.db.LogEvent(state.EventAnvilWedged, msg, "", name)
+		// Notify once per wedge, like every other operator-attention condition
+		// (bead_failed, orphan_recovery_failed, daily_cost). A wedge blocks every
+		// dispatch into the anvil until a human resolves it, so an operator who
+		// watches the webhook channel rather than the logs must hear about it —
+		// the 2026-08-05 incident was precisely a silent one.
+		d.dispatchAnvilNotification(notify.EventAnvilWedged, name, msg)
 	}
+}
+
+// dispatchAnvilNotification fires an anvil-scoped webhook event. Dispatch itself
+// is fire-and-forget (one detached goroutine per target), so this does not block
+// the poll and needs no goroutine of its own; a nil dispatcher is a no-op, so an
+// unconfigured webhook costs nothing.
+func (d *Daemon) dispatchAnvilNotification(event notify.EventType, anvil, msg string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	d.dispatcher.Load().Dispatch(ctx, event, "", anvil, msg)
 }
 
 // clearWedgedAnvil clears the flag for an anvil whose conflicts are resolved.
@@ -143,8 +194,11 @@ func (d *Daemon) clearWedgedAnvil(name string) {
 		return
 	}
 	d.logger.Info("anvil recovered — beads merge conflicts resolved", "anvil", name)
-	_ = d.db.LogEvent(state.EventAnvilRecovered,
-		fmt.Sprintf("Anvil %s recovered: beads merge conflicts resolved", name), "", name)
+	msg := fmt.Sprintf("Anvil %s recovered: beads merge conflicts resolved", name)
+	_ = d.db.LogEvent(state.EventAnvilRecovered, msg, "", name)
+	// Symmetric with the wedge notification: an operator told an anvil was
+	// unusable needs to be told when it is usable again.
+	d.dispatchAnvilNotification(notify.EventAnvilRecovered, name, msg)
 }
 
 // shouldWarnWedged reports whether the periodic "still wedged" WARN is due for

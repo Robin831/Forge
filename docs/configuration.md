@@ -519,7 +519,7 @@ anvils:
 | `vulncheck_enabled` | bool | `true` | | Enable/disable vulnerability scanning entirely. When `false`, scheduled scanning and `forge scan` are disabled. |
 | `vulncheck_interval` | duration | `24h` | `0` | How often `govulncheck` runs on registered Go anvils. `0` disables. |
 | `vulncheck_timeout` | duration | `10m` | | Maximum time for a single govulncheck invocation per anvil. |
-| `anvil_health_check` | bool | `true` | | Detect a "wedged" anvil: one whose beads (Dolt) working set is left mid-merge with unresolved conflicts, so every `bd` write against it is rolled back. One `dolt_conflicts` query per anvil per **full** poll. A wedged anvil is surfaced in Needs Attention (naming the conflicted tables, the conflict count and the branch divergence), logged at WARN, and skipped for dispatch until the conflicts clear — at which point the entry clears automatically. When `false`, neither the check nor the dispatch gate runs. |
+| `anvil_health_check` | bool | `true` | | Detect a "wedged" anvil: one whose beads (Dolt) working set is left mid-merge with unresolved conflicts, so every `bd` write against it is rolled back. One `dolt_conflicts` query per anvil per **full** poll. A wedged anvil is surfaced in Needs Attention (naming the conflicted tables, the conflict count and the branch divergence), logged at WARN, and skipped for dispatch until the conflicts clear — at which point the entry clears automatically. First detection (and recovery) also fires the `anvil_wedged` / `anvil_recovered` generic webhook events. When `false`, neither the check nor the dispatch gate runs, and any flag the check had raised is released on the next full poll so a disabled check cannot strand an anvil in Needs Attention. |
 | `log_retention_days` | int | `30` | `0` | How many days a preserved bead-log directory under `~/.forge/logs/<beadID>/` is kept after its newest file. A daily sweep removes older directories (skipping any bead with a running worker) and clears the affected `workers.log_path` rows. `0` disables the sweep. Independent of `daemon.log` rotation. |
 | `log_sweep_interval` | duration | `24h` | `0` | How often the preserved bead-log retention sweep runs. `0` disables scheduled sweeps (the `log_retention_days` setting still governs per-pass behavior). Hot-reloadable via config file change; takes effect on daemon restart. |
 | `auto_learn_rules` | bool | `false` | | Automatically learn Warden review rules from Copilot comments when a PR is merged. Rules are saved to each anvil's `.forge/warden-rules.yaml`. |
@@ -1012,6 +1012,8 @@ Each entry in the list defines a generic JSON webhook target.
 | `worker_done` | ✓ | ✓ | A worker successfully completed its pipeline. |
 | `bead_decomposed` | ✓ | ✓ | Schematic split a bead into sub-beads; the parent is now blocked. |
 | `pr_ready_to_merge` | ✓ | ✓ | A PR passed CI and warden approval and is ready to merge. |
+| `anvil_wedged` | — | ✓ | An anvil's beads database was found mid-merge with unresolved conflicts; every `bd` write against it is rolled back until a human resolves it. Sent once per wedge. |
+| `anvil_recovered` | — | ✓ | A previously wedged anvil accepts work again. |
 | `release_published` | ✓ | — | New Forge release (Teams Adaptive Card, via `forge notify release`). |
 | `release` | — | ✓ | New Forge release (GenericPayload, via `forge notify release`). |
 

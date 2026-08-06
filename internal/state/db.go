@@ -3431,6 +3431,11 @@ const (
 // attempt limits. The maxCI/maxRev/maxRebase thresholds determine which PRs are
 // considered exhausted.
 //
+// The list is not exclusively bead-scoped: it also carries anvil-level entries
+// (Kind == AttentionKindAnvil) for anvils whose beads database is wedged. Those
+// have an empty BeadID and no PR, so consumers must branch on Kind rather than
+// assume every entry identifies a bead.
+//
 // Paused workers are surfaced here so an operator can resume or discard a bead that
 // was parked by a per-bead pause — in particular one whose parked pipeline goroutine
 // did not survive a daemon restart. A paused bead is, by definition, awaiting a human
@@ -3565,7 +3570,7 @@ func (db *DB) NeedsAttentionBeads(maxCI, maxRev, maxRebase int) ([]NeedsAttentio
 	// conflicts are resolved.
 	wedged, err := db.WedgedAnvils()
 	if err != nil {
-		return beads, fmt.Errorf("fetching wedged anvils: %w", err)
+		return nil, fmt.Errorf("fetching wedged anvils: %w", err)
 	}
 	for _, wa := range wedged {
 		beads = append(beads, NeedsAttentionBead{

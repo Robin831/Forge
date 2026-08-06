@@ -25,12 +25,16 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/Robin831/Forge/internal/executil"
 )
 
-// DefaultTimeout bounds a single health check (one to four small SQL queries
-// against the anvil's beads database). It is far below executil.DefaultBdTimeout
+// DefaultTimeout bounds a single health check. A healthy anvil costs exactly
+// one small SQL query (dolt_conflicts); a wedged one costs up to six —
+// dolt_conflicts, active_branch(), dolt_branches, the dolt_remotes fallback and
+// two dolt_log COUNT(*) calls (ahead and behind) — against the anvil's beads
+// database. The budget is far below executil.DefaultBdTimeout
 // because a wedged-anvil probe must never hold up a poll cycle: if the beads
 // backend is too slow to answer a COUNT(*), the check reports "unknown" and the
 // next full poll retries.
@@ -161,7 +165,9 @@ func (c *Checker) Check(ctx context.Context, anvilPath string) (Report, error) {
 
 	var rep Report
 	for _, row := range rows {
-		name := stringField(row, "conflict_table", "table")
+		// Sanitize at the boundary so every downstream renderer (TablesSummary,
+		// Detail, the persisted state row) is safe by construction.
+		name := sanitizeDisplay(stringField(row, "conflict_table", "table"))
 		if name == "" {
 			continue
 		}
@@ -178,8 +184,25 @@ func (c *Checker) Check(ctx context.Context, anvilPath string) (Report, error) {
 
 	// Divergence is informational. A failure here must never suppress the
 	// conflict report, so errors are swallowed and DivergenceKnown stays false.
-	c.fillDivergence(ctx, run, anvilPath, &rep)
+	fillDivergence(ctx, run, anvilPath, &rep)
 	return rep, nil
+}
+
+// sanitizeDisplay strips control characters from a value that originates in the
+// anvil's beads database before it reaches an operator-facing sink (the WARN
+// line, persisted events, IPC error strings, `forge status` output and the
+// Hearth TUI). Conflicted table names are not strictly operator-controlled — the
+// beads database syncs over a git remote — and coerceString fully JSON-unquotes
+// them, so an escaped ESC would otherwise reach a terminal as a live ANSI
+// sequence. Offending runes are replaced rather than dropped so the value stays
+// recognisable and the tampering is visible.
+func sanitizeDisplay(s string) string {
+	return strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) {
+			return '?'
+		}
+		return r
+	}, s)
 }
 
 // refPattern restricts branch and remote names to characters that are safe to
@@ -189,21 +212,21 @@ var refPattern = regexp.MustCompile(`^[A-Za-z0-9._/-]+$`)
 
 // fillDivergence best-effort populates Branch/Upstream/Ahead/Behind. Every step
 // is allowed to fail: the caller still reports the conflict without divergence.
-func (c *Checker) fillDivergence(ctx context.Context, run Runner, anvilPath string, rep *Report) {
-	branch := c.queryScalarString(ctx, run, anvilPath, "SELECT active_branch() AS branch")
+func fillDivergence(ctx context.Context, run Runner, anvilPath string, rep *Report) {
+	branch := queryScalarString(ctx, run, anvilPath, "SELECT active_branch() AS branch", "branch")
 	if branch == "" || !refPattern.MatchString(branch) {
 		return
 	}
 	rep.Branch = branch
 
-	upstream := c.upstreamRef(ctx, run, anvilPath, branch)
+	upstream := upstreamRef(ctx, run, anvilPath, branch)
 	if upstream == "" {
 		return
 	}
 	rep.Upstream = upstream
 
-	ahead, aheadOK := c.countCommits(ctx, run, anvilPath, upstream, branch)
-	behind, behindOK := c.countCommits(ctx, run, anvilPath, branch, upstream)
+	ahead, aheadOK := countCommits(ctx, run, anvilPath, upstream, branch)
+	behind, behindOK := countCommits(ctx, run, anvilPath, branch, upstream)
 	if !aheadOK || !behindOK {
 		return
 	}
@@ -213,7 +236,7 @@ func (c *Checker) fillDivergence(ctx context.Context, run Runner, anvilPath stri
 // upstreamRef resolves the remote-tracking ref for branch, e.g.
 // "remotes/origin/beads-sync". It prefers the branch's configured upstream and
 // falls back to the sole configured remote when no upstream is recorded.
-func (c *Checker) upstreamRef(ctx context.Context, run Runner, anvilPath, branch string) string {
+func upstreamRef(ctx context.Context, run Runner, anvilPath, branch string) string {
 	remote, remoteBranch := "", ""
 	if out, err := run(ctx, anvilPath, "SELECT remote, branch FROM dolt_branches WHERE name = active_branch()"); err == nil {
 		if rows, perr := parseRows(out); perr == nil && len(rows) > 0 {
@@ -225,7 +248,8 @@ func (c *Checker) upstreamRef(ctx context.Context, run Runner, anvilPath, branch
 		// No upstream configured for this branch — fall back to the first
 		// remote and assume a same-named branch, which is how bd's
 		// beads-sync remote is set up.
-		remote = c.queryScalarString(ctx, run, anvilPath, "SELECT name FROM dolt_remotes ORDER BY name LIMIT 1")
+		remote = queryScalarString(ctx, run, anvilPath,
+			"SELECT name AS remote FROM dolt_remotes ORDER BY name LIMIT 1", "remote", "name")
 	}
 	if remoteBranch == "" {
 		remoteBranch = branch
@@ -238,7 +262,7 @@ func (c *Checker) upstreamRef(ctx context.Context, run Runner, anvilPath, branch
 
 // countCommits returns the number of commits reachable from head but not from
 // base, i.e. git's `base..head` semantics.
-func (c *Checker) countCommits(ctx context.Context, run Runner, anvilPath, base, head string) (int, bool) {
+func countCommits(ctx context.Context, run Runner, anvilPath, base, head string) (int, bool) {
 	q := fmt.Sprintf("SELECT COUNT(*) AS n FROM dolt_log('%s..%s')", base, head)
 	out, err := run(ctx, anvilPath, q)
 	if err != nil {
@@ -251,9 +275,13 @@ func (c *Checker) countCommits(ctx context.Context, run Runner, anvilPath, base,
 	return int(intField(rows[0], "n")), true
 }
 
-// queryScalarString runs a single-column query and returns the first value, or
-// "" when the query fails or returns no rows.
-func (c *Checker) queryScalarString(ctx context.Context, run Runner, anvilPath, query string) string {
+// queryScalarString runs a query and returns the first row's value for the first
+// column name that is present, or "" when the query fails or returns no rows.
+// The column is selected by name rather than positionally: ranging over the row
+// map would pick an arbitrary column the moment a caller passed a multi-column
+// query. Several names may be given so a caller tolerates bd rendering the key
+// as either the alias or the bare column.
+func queryScalarString(ctx context.Context, run Runner, anvilPath, query string, columns ...string) string {
 	out, err := run(ctx, anvilPath, query)
 	if err != nil {
 		return ""
@@ -262,10 +290,7 @@ func (c *Checker) queryScalarString(ctx context.Context, run Runner, anvilPath, 
 	if err != nil || len(rows) == 0 {
 		return ""
 	}
-	for _, v := range rows[0] {
-		return coerceString(v)
-	}
-	return ""
+	return stringField(rows[0], columns...)
 }
 
 // BdSQL is the default Runner: `bd sql --json --readonly <query>` executed in

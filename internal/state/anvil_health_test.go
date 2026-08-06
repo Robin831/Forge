@@ -71,13 +71,6 @@ func TestAnvilHealth_MarkClearAndList(t *testing.T) {
 		t.Fatalf("timestamps not persisted: %+v", got)
 	}
 
-	if wedged, err := db.IsAnvilWedged("munin"); err != nil || !wedged {
-		t.Fatalf("IsAnvilWedged = %v, %v; want true, nil", wedged, err)
-	}
-	if wedged, err := db.IsAnvilWedged("other"); err != nil || wedged {
-		t.Fatalf("IsAnvilWedged(other) = %v, %v; want false, nil", wedged, err)
-	}
-
 	// Clear: the flag drops and the entry disappears from the list.
 	cleared, err = db.ClearAnvilWedged("munin")
 	if err != nil {
@@ -269,5 +262,79 @@ func TestNeedsAttentionBeads_IncludesWedgedAnvils(t *testing.T) {
 		if it.Kind == AttentionKindAnvil {
 			t.Fatalf("entry must clear automatically: %+v", it)
 		}
+	}
+}
+
+// TestAnvilHealth_ClearResetsEveryWedgeColumn pins that a cleared row holds no
+// leftovers from the wedge. WedgedAnvils only selects wedged = 1 so a half-reset
+// row is invisible today, but any future reader of last-known health would read
+// stale divergence as current.
+func TestAnvilHealth_ClearResetsEveryWedgeColumn(t *testing.T) {
+	db := openTestDB(t)
+
+	if _, _, err := db.MarkAnvilWedged(wedgedFixture("munin")); err != nil {
+		t.Fatalf("MarkAnvilWedged: %v", err)
+	}
+	if _, err := db.ClearAnvilWedged("munin"); err != nil {
+		t.Fatalf("ClearAnvilWedged: %v", err)
+	}
+
+	var (
+		wedged, divergenceKnown  int
+		tables, branch, detail   string
+		conflicts, ahead, behind int
+		detectedAt               string
+	)
+	err := db.conn.QueryRow(
+		`SELECT wedged, conflict_tables, conflict_count, branch, ahead, behind,
+		        divergence_known, detail, detected_at
+		   FROM anvil_health WHERE anvil = ?`, "munin",
+	).Scan(&wedged, &tables, &conflicts, &branch, &ahead, &behind,
+		&divergenceKnown, &detail, &detectedAt)
+	if err != nil {
+		t.Fatalf("reading cleared row: %v", err)
+	}
+	if wedged != 0 || tables != "" || conflicts != 0 || detail != "" || detectedAt != "" {
+		t.Fatalf("conflict columns not reset: wedged=%d tables=%q conflicts=%d detail=%q detectedAt=%q",
+			wedged, tables, conflicts, detail, detectedAt)
+	}
+	if branch != "" || ahead != 0 || behind != 0 || divergenceKnown != 0 {
+		t.Fatalf("divergence columns not reset: branch=%q ahead=%d behind=%d known=%d",
+			branch, ahead, behind, divergenceKnown)
+	}
+}
+
+// TestAnvilHealth_ClearAll covers the escape hatch the daemon uses when the
+// health check stops running: every flag is released, and a second call reports
+// nothing left to clear so the recovery is logged once.
+func TestAnvilHealth_ClearAll(t *testing.T) {
+	db := openTestDB(t)
+
+	if n, err := db.ClearAllAnvilWedged(); err != nil || n != 0 {
+		t.Fatalf("ClearAllAnvilWedged on an empty table = %d, %v; want 0, nil", n, err)
+	}
+
+	for _, anvil := range []string{"munin", "hugin"} {
+		if _, _, err := db.MarkAnvilWedged(wedgedFixture(anvil)); err != nil {
+			t.Fatalf("MarkAnvilWedged(%s): %v", anvil, err)
+		}
+	}
+
+	n, err := db.ClearAllAnvilWedged()
+	if err != nil {
+		t.Fatalf("ClearAllAnvilWedged: %v", err)
+	}
+	if n != 2 {
+		t.Fatalf("ClearAllAnvilWedged = %d; want 2", n)
+	}
+	rows, err := db.WedgedAnvils()
+	if err != nil {
+		t.Fatalf("WedgedAnvils: %v", err)
+	}
+	if len(rows) != 0 {
+		t.Fatalf("expected every flag cleared, got %d rows", len(rows))
+	}
+	if n, err := db.ClearAllAnvilWedged(); err != nil || n != 0 {
+		t.Fatalf("second ClearAllAnvilWedged = %d, %v; want 0, nil", n, err)
 	}
 }

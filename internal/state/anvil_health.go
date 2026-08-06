@@ -98,14 +98,20 @@ func (db *DB) MarkAnvilWedged(h AnvilHealth) (bool, time.Time, error) {
 	return first, detectedAt, nil
 }
 
+// clearWedgeColumns resets every wedge-derived column together. Leaving any of
+// them behind would produce a half-reset row: harmless for WedgedAnvils (which
+// only selects wedged = 1) but a trap for any future reader that reports
+// last-known health.
+const clearWedgeColumns = `SET wedged = 0, conflict_tables = '', conflict_count = 0,
+	        branch = '', ahead = 0, behind = 0, divergence_known = 0, detail = '',
+	        detected_at = '', updated_at = ?`
+
 // ClearAnvilWedged clears the wedged flag for an anvil. The returned bool is
 // true when the anvil was actually flagged, so callers can log the recovery
 // exactly once. Clearing an unknown or already-healthy anvil is a no-op.
 func (db *DB) ClearAnvilWedged(anvil string) (bool, error) {
 	res, err := db.conn.Exec(
-		`UPDATE anvil_health
-		    SET wedged = 0, conflict_tables = '', conflict_count = 0, detail = '',
-		        detected_at = '', updated_at = ?
+		`UPDATE anvil_health `+clearWedgeColumns+`
 		  WHERE anvil = ? AND wedged = 1`,
 		time.Now().Format(dbTimeLayout), anvil,
 	)
@@ -117,6 +123,28 @@ func (db *DB) ClearAnvilWedged(anvil string) (bool, error) {
 		return false, err
 	}
 	return n > 0, nil
+}
+
+// ClearAllAnvilWedged clears the wedged flag for every anvil and returns how
+// many rows were cleared. The daemon calls it when the health check is turned
+// off: the only code that clears a flag is the check itself, so a flag raised
+// before the setting was disabled would otherwise stay in needs-attention and
+// `forge status` forever while dispatch (which is gated on the same setting)
+// happily proceeds.
+func (db *DB) ClearAllAnvilWedged() (int, error) {
+	res, err := db.conn.Exec(
+		`UPDATE anvil_health `+clearWedgeColumns+`
+		  WHERE wedged = 1`,
+		time.Now().Format(dbTimeLayout),
+	)
+	if err != nil {
+		return 0, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, err
+	}
+	return int(n), nil
 }
 
 // WedgedAnvils returns every anvil currently flagged as wedged, oldest wedge
@@ -149,19 +177,6 @@ func (db *DB) WedgedAnvils() ([]AnvilHealth, error) {
 		out = append(out, h)
 	}
 	return out, rows.Err()
-}
-
-// IsAnvilWedged reports whether the given anvil is currently flagged as wedged.
-func (db *DB) IsAnvilWedged(anvil string) (bool, error) {
-	var wedged int
-	err := db.conn.QueryRow(`SELECT wedged FROM anvil_health WHERE anvil = ?`, anvil).Scan(&wedged)
-	if err == sql.ErrNoRows {
-		return false, nil
-	}
-	if err != nil {
-		return false, err
-	}
-	return wedged != 0, nil
 }
 
 // PruneAnvilHealth deletes rows for anvils that are no longer registered, so a
