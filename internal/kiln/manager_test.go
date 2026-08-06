@@ -271,6 +271,7 @@ type harness struct {
 	mgr    *Manager
 	runner *fakeRunner
 	wts    *fakeWorktrees
+	procs  *fakeProcesses
 	store  *state.DB
 	anvil  string
 	// manifest is what LoadManifest returns; tests mutate it before starting.
@@ -285,9 +286,15 @@ func newHarness(t *testing.T, cfg ManagerConfig) *harness {
 	h := &harness{
 		runner:   &fakeRunner{store: store},
 		wts:      &fakeWorktrees{root: anvil},
+		procs:    newFakeProcesses(),
 		store:    store,
 		anvil:    anvil,
 		manifest: testManifest(t),
+	}
+	// Reconciliation scans the configured anvils; the harness has exactly one,
+	// under the name h.opts() starts previews with.
+	if cfg.Anvils == nil {
+		cfg.Anvils = map[string]string{"forge": anvil}
 	}
 	// Preview logs land under the real ~/.forge/logs; point HOME at a temp dir
 	// so a lifecycle command in a test cannot write into the operator's.
@@ -298,6 +305,7 @@ func newHarness(t *testing.T, cfg ManagerConfig) *harness {
 		Runtime:   h.runner,
 		Worktrees: h.wts,
 		Store:     h.store,
+		Processes: h.procs,
 		Config:    cfg,
 		LoadManifest: func(string) (*Manifest, error) {
 			if h.loadErr != nil {
