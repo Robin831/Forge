@@ -795,8 +795,33 @@ self_deploy:
   max_drain_wait: 30m       # optional: how long to wait for workers to finish (default 30m)
 ```
 
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `enabled` | bool | `false` | Master switch. While false nothing is pulled, built, swapped or restarted. |
+| `anvil` | string | `""` | The registered anvil that is Forge's own repository. Required when `enabled`; a merge is only acted on when its event anvil matches. |
+| `repo_path` | path | the anvil's `path` | Source checkout to `git pull --ff-only` and build from. A leading `~` is expanded. |
+| `binary_path` | path | `~/bin/forge` | The live binary replaced on deploy. The outgoing binary is preserved at `<binary_path>.prev`. |
+| `unit_name` | string | `forge` | The systemd unit restarted after the swap. |
+| `restart_command` | string | `systemctl` | Executable used to restart the unit (see *Restart privileges* below). |
+| `restart_args` | []string | `[]` | Arguments inserted before `restart <unit_name>` — e.g. `[--user]`, or `[systemctl]` when `restart_command` is `sudo`. |
+| `branch` | string | `main` | Base branch a merged PR must target to trigger a deploy, and the branch pulled before building. |
+| `build_target` | string | `./cmd/forge` | The `go build` package target. |
+| `max_drain_wait` | duration | `30m` | How long the daemon keeps dispatch paused waiting for active workers to finish before giving up and resuming. The drain check is re-run every 10s for the whole window; the deploy proceeds as soon as the forge is idle. `0`/omitted uses the default; a negative value is rejected at load. |
+| `drain_timeout` | duration | — | **Deprecated** alias for `max_drain_wait`. |
+
 `max_drain_wait` was previously called `drain_timeout`. The old key is still
-read, so existing configs keep working; `max_drain_wait` wins when both are set.
+read, so existing configs keep working; `max_drain_wait` wins when both are set
+(a zero or negative value on either field falls through to the next candidate,
+so `max_drain_wait: 0` still means "use the 30m default", not "do not wait").
+Sizing it is a trade-off between how long a merged fix may sit undeployed and
+how long dispatch stays paused: the wait only ever ends early, so a generous
+value costs nothing when the forge is idle, and `smith_timeout` is a reasonable
+lower bound — anything shorter systematically loses to a Smith that started just
+before the merge.
+
+`self_deploy` is a top-level YAML block (a sibling of `settings`, like `assay`).
+The `FORGE_`-prefixed environment overrides documented below cover `settings.*`
+keys; configure self-deploy in the YAML file.
 
 **Restart privileges / user** — the restart runs `<restart_command>
 <restart_args...> restart <unit_name>`. Wire it to however the daemon is allowed
@@ -811,22 +836,68 @@ to restart its unit:
 - **User unit** (`systemctl --user`): `restart_args: [--user]` →
   `systemctl --user restart forge`.
 
-**Detached restart** — the daemon runs inside its own systemd unit, so a restart
-child spawned normally sits in that unit's cgroup and is SIGKILLed the moment
-`systemctl restart` stops the unit (observed as
-`sudo [systemctl restart forge]: signal: killed`, which Forge read as a failed
-restart and rolled a good binary back). The restart is therefore spawned
-detached: no context (so no deploy deadline or shutdown cancellation can reach
-it), `setsid` (so it leaves the daemon's process group), and wrapped in
-`systemd-run --scope --collect --unit=forge-selfdeploy-<sha>-<pid>` so it lives
-in its own transient scope outside the unit cgroup. When `systemd-run` is not on
-`PATH` the invocation falls back to `<restart_command> <restart_args...> restart
---no-block <unit_name>`, which hands the job to PID 1 and returns immediately.
-Either way the exact argv, the build SHA, the binary path and the rollback path
-are logged to `daemon.log` *before* the spawn, so a restart that is killed
-mid-flight is still diagnosable.
+Those are the logical invocations; the actual argv is wrapped so the restart
+survives the unit stop — see the next section.
 
-**How it behaves:**
+### Detached restart
+
+The daemon is asking systemd to stop the unit it is itself running in, so a
+restart child spawned the ordinary way is killed by its own request: it inherits
+the daemon's cgroup, and `systemctl restart` SIGKILLs everything in that cgroup
+before the restart completes. Forge saw this as
+`sudo [systemctl restart forge]: signal: killed` — a "failed" restart — and
+rolled a perfectly good binary back.
+
+The restart is therefore spawned fully detached, in three independent ways:
+
+- **No context.** The child is started with `exec.Command`, never
+  `exec.CommandContext`, so neither the deploy deadline nor daemon shutdown can
+  cancel it. It is never waited on, and its stdio is left nil (`/dev/null`)
+  rather than inheriting handles that close when the daemon dies.
+- **New session.** `setsid` (Unix) puts it in its own session and process group,
+  so signals aimed at the daemon's group miss it.
+- **Own cgroup.** The invocation is wrapped in `systemd-run --scope --collect`
+  with a transient unit named `forge-selfdeploy-<sha>-<pid>` (SHA truncated to
+  12 chars, PID appended so back-to-back deploys never collide on a scope name
+  systemd has not yet collected). The scope lives outside `forge.service`'s
+  cgroup, so stopping the unit no longer kills the process performing the
+  restart, and `--collect` makes systemd clean the scope up afterwards.
+
+The resulting argv depends on how the restart is wired:
+
+| Config | Restart argv |
+|--------|--------------|
+| defaults | `systemd-run --scope --collect --unit=forge-selfdeploy-<sha>-<pid> systemctl restart forge` |
+| `restart_command: sudo`, `restart_args: [systemctl]` | `sudo systemd-run --scope --collect --unit=… systemctl restart forge` |
+| `restart_args: [--user]` | `systemd-run --user --scope --collect --unit=… systemctl --user restart forge` |
+| `systemd-run` not on `PATH` | `systemctl restart --no-block forge` |
+
+Two details in that table matter. A privilege wrapper (`sudo`, `doas`,
+`pkexec`) stays in *front* of `systemd-run`, because creating a system scope
+needs the privileges the wrapper grants. And `--user` propagates to
+`systemd-run` as well, since a `systemctl --user` unit lives in the user manager
+and its scope has to be created there too.
+
+When `systemd-run` is unavailable the fallback is `restart --no-block`, which
+hands the job to PID 1 and returns immediately instead of waiting inside the
+doomed cgroup. It is weaker than a scope — it does not move the process out of
+the unit, it only stops it *waiting* there — but it is enough in practice: the
+child exits as soon as the job is enqueued, so the stop has nothing left to
+kill.
+
+Either way the exact argv, the mode used, the build SHA, the binary path and the
+rollback path are logged to `daemon.log` *before* the spawn, so a restart that
+is killed mid-flight is still diagnosable afterwards.
+
+Once the restart has been spawned Forge does not wait on it: a nil result means
+"restart requested", not "restart completed". Only a failure to *spawn* (missing
+executable, permission denied) counts as a failed restart and triggers rollback.
+
+Off Linux there is no unit cgroup to escape; the Windows build applies the same
+intent with `CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS` so the child keeps no
+console and stays out of the daemon's Ctrl-C group.
+
+### How it behaves
 
 - Triggered only by a `pr_merged` event whose anvil matches `self_deploy.anvil`
   and whose base branch matches `self_deploy.branch`. A merged PR with no
@@ -842,7 +913,10 @@ mid-flight is still diagnosable.
   held it up) and any pause the deploy introduced is undone. The pause is undone
   on *every* non-restart exit — drain timeout, build failure, rollback — so a
   failed deploy can never leave the daemon paused; a pause that predates the
-  deploy is an operator decision and is left alone.
+  deploy is an operator decision and is left alone. A drain check that *errors*
+  (e.g. a transient `state.db` failure) is not evidence that the forge is idle,
+  so polling continues; if no check succeeds for the whole window the deploy
+  aborts with that error instead of being reported as a deferral.
 - **Verify before swap** — the freshly built binary must pass `forge version`
   and `forge --help` (exit 0). If verification fails, the live binary is left
   untouched.
@@ -854,22 +928,91 @@ mid-flight is still diagnosable.
 - **Events** — `self_deploy_started`, `self_deploy_success`,
   `self_deploy_rollback`, `self_deploy_failed`, and `self_deploy_skipped` are
   written to the event log.
-- **Needs Attention** — a deploy that does not end with the new binary live and
-  restarting also raises an entry in Hearth's Needs Attention list, because the
-  event-log line alone is easy to miss: after a rollback the daemon keeps
-  running the old binary exactly as before, so the only other symptom is
-  `forge version` quietly disagreeing with `origin/main`. The entry names the
-  build that was attempted, the build that is running now, the failure, and the
-  time. One entry per failure mode (`drain_timeout`, `swap_failed`,
-  `restart_failed`, `rollback_failed`), so a later deferral cannot overwrite the
-  record of an earlier rollback. Entries are anvil-level — there is no bead to
-  retry or dismiss — and clear themselves: the drain-timeout entry as soon as a
-  later deploy drains, the rest once a deploy reaches its restart.
+- **Needs Attention** — a deploy that ends anywhere other than "new binary live
+  and restarting" also raises an entry in Hearth's Needs Attention list. See the
+  next section.
 - **Single-flight** — a second merge while a deploy is in progress is ignored;
   the in-flight deploy already pulls the latest tip.
 
 The systemd unit should use `Restart=always` (or an equivalent) so the daemon
 comes back after the restart terminates the running process.
+
+### Needs Attention on a failed or rolled-back deploy
+
+A failed deploy is otherwise silent. After a rollback the daemon keeps running
+the old binary exactly as before — same PID behaviour, same logs, no error on
+any dashboard — so the only symptom is `forge version` quietly disagreeing with
+`origin/main`, which nobody checks until a merged fix appears not to work. Every
+non-restart outcome is therefore persisted (in the `deploy_failures` table of
+`~/.forge/state.db`) and surfaced as a Needs Attention entry, badged
+`⚙ DEPLOY` in Hearth.
+
+| Reason | Title | State of the host | Cleared when |
+|--------|-------|-------------------|--------------|
+| `drain_timeout` | Self-deploy deferred: workers did not drain | Nothing was touched; the previously running build is still live and correct for the code it was built from. | The next deploy drains successfully. |
+| `swap_failed` | Self-deploy failed / rolled back: binary swap failed | The new binary could not be moved into place. The previous binary is restored when one existed. | The next deploy reaches its restart. |
+| `restart_failed` | Self-deploy rolled back: restart failed | The new binary was installed but the restart never started; the previous binary was put back. | The next deploy reaches its restart. |
+| `rollback_failed` | Self-deploy failed: restart AND rollback failed | The worst case: the on-disk binary is the new, never-started build while the running process is still the old one. A stop/start or a crash-restart will bring up the untested build. | The next deploy reaches its restart. |
+
+The title carries the targeted unit (`… (unit forge)`), and the detail line
+answers "is the merged fix live?" without a shell:
+
+```
+attempted 0f4be00a1b2c; restored a48fc6e91234; restart failed: exec: "systemctl": executable file not found in $PATH; at 2026-08-06T09:14:22Z
+```
+
+Fields are omitted when unknown — `restored …` only appears when a rollback
+actually put the previous binary back (so it is absent for both `drain_timeout`,
+where nothing moved, and `rollback_failed`, where the restore itself failed).
+
+There is **one entry per (anvil, failure mode)**, so a later deferral cannot
+overwrite the record of an earlier rollback: they describe different problems
+and the rollback is the more serious one. Repeating the same failure refreshes
+the existing entry rather than stacking duplicates.
+
+Entries are anvil-level, not bead-scoped — there is no worker to retry and no
+bead to dismiss. They clear themselves rather than needing an operator action:
+the `drain_timeout` entry the moment a later deploy drains, everything else once
+a deploy gets as far as requesting its restart. An entry that is still listed
+therefore means the condition still holds.
+
+### Spotting a stale binary
+
+The question a `⚙ DEPLOY` entry raises is always the same: *is the running
+binary the merged code?* Self-deploy builds with a plain `go build` (no
+`-ldflags`), so `Version` stays `dev` and `Build` is the 7-character VCS
+revision Go embeds from the checkout (with a `-dirty` suffix if the tree was
+modified at build time). That makes the check a two-line comparison:
+
+```bash
+forge version                                   # forge dev (build 0f4be00)
+git -C ~/source/Forge rev-parse --short=7 origin/main
+```
+
+If those disagree, the running daemon predates `origin/main`. Supporting
+evidence:
+
+```bash
+ls -l ~/bin/forge ~/bin/forge.prev              # .prev is the preserved outgoing binary
+grep self-deploy ~/.forge/logs/daemon.log | tail -20
+forge history events | grep self_deploy         # started / success / rollback / failed / skipped
+systemctl list-units 'forge-selfdeploy-*'       # a transient restart scope that never finished
+journalctl -u forge --since '1 hour ago'
+```
+
+- A successful deploy leaves the outgoing binary at `<binary_path>.prev`, so
+  `.prev` existing is normal.
+- A rollback *renames* `.prev` back over the live binary, so after a completed
+  rollback there is no `.prev` and `~/bin/forge` is the old build again.
+- After `rollback_failed` both exist and `~/bin/forge` is the **new** build that
+  was never started — restarting the unit will bring that untested binary up.
+  Decide deliberately: either finish the deploy (`systemctl restart forge`) or
+  put the old binary back (`mv -f ~/bin/forge.prev ~/bin/forge`) before anything
+  restarts the unit for you.
+
+Nothing retries automatically. A deferred or failed deploy is picked up by the
+next merge on `self_deploy.branch`; to deploy immediately, use the manual path
+below.
 
 ### Manual fallback — `restart.sh`
 
