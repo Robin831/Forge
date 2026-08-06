@@ -273,17 +273,13 @@ describe('PRsPage persistence', () => {
     // tests above verify each storage path in isolation; this one proves they
     // compose — touching multiple keys in one session doesn't cause any to be
     // dropped on the unmount/remount cycle and they all land before paint.
-    vi.useFakeTimers()
-    // delay: null disables userEvent's internal inter-event setTimeout. Under
-    // fake timers those delay timers are never auto-flushed (advanceTimers is
-    // unreliable with the synchronous vi.advanceTimersByTime), so type/click/
-    // selectOptions would hang until the 5s per-test timeout. With delay: null
-    // the interactions dispatch synchronously and only our own rAF + 150ms
-    // debounce timers remain for vi.runAllTimers() to flush.
-    const user = userEvent.setup({
-      advanceTimers: vi.advanceTimersByTime,
-      delay: null,
-    })
+    // The interactions below run on real timers. userEvent wraps every one in
+    // React's async act(), which yields to the macrotask queue; under fake
+    // timers nothing advances that queue from inside the await, so the first
+    // type/click never settles and the test hangs until its timeout. Fake
+    // timers are installed further down, once the only thing left to drive is
+    // our own rAF + 150ms debounce — the same split the isolated tests use.
+    const user = userEvent.setup()
 
     const { router } = renderApp()
 
@@ -297,6 +293,10 @@ describe('PRsPage persistence', () => {
     const externalToggle = screen.getByRole('button', { name: /External PRs/ })
     await user.click(externalToggle)
     expect(externalToggle).toHaveAttribute('aria-expanded', 'false')
+
+    // From here on we drive rAF (shimmed as setTimeout in jsdom) and the
+    // useUIState debounce by hand, so switch to fake timers.
+    vi.useFakeTimers()
 
     // Shim window.scrollY so the rAF-throttled onScroll handler observes 175
     // and the 150ms debounce writes it to sessionStorage.
