@@ -645,6 +645,15 @@ type SettingsConfig struct {
 	// TemperGitTimeout is the timeout for internal git invocations made during
 	// Temper verification (e.g. the VerifyClean status check). Default: 30s.
 	TemperGitTimeout time.Duration `mapstructure:"temper_git_timeout" yaml:"temper_git_timeout,omitempty"`
+	// WorktreeGitTimeout is the timeout for checkout-heavy git invocations made
+	// while preparing a worker worktree: `git worktree add`, `fetch`, `push`,
+	// `checkout`, `reset`, `clean` and `submodule`. Cheap metadata commands
+	// (rev-parse, show-ref, branch, config) keep their own tight 60s bound and
+	// are unaffected. A cold full-tree checkout of a large anvil under
+	// memory/disk pressure legitimately exceeds a minute, and the deadline
+	// SIGKILLs git, so too low a value burns a bead's first attempt. A value
+	// <= 0 falls back to worktree.DefaultGitCheckoutTimeout. Default: 5m.
+	WorktreeGitTimeout time.Duration `mapstructure:"worktree_git_timeout" yaml:"worktree_git_timeout,omitempty"`
 	// TemperOutputCap is the maximum number of bytes of combined stdout+stderr
 	// retained per Temper step. Output beyond the cap is head+tail truncated
 	// with an elision marker, bounding both memory and the warden/fix prompt
@@ -1131,6 +1140,7 @@ func (s SettingsConfig) MarshalYAML() (interface{}, error) {
 		GoRaceDetection           bool                `yaml:"go_race_detection"`
 		TemperStepTimeout         string              `yaml:"temper_step_timeout,omitempty"`
 		TemperGitTimeout          string              `yaml:"temper_git_timeout,omitempty"`
+		WorktreeGitTimeout        string              `yaml:"worktree_git_timeout,omitempty"`
 		TemperOutputCap           int                 `yaml:"temper_output_cap,omitempty"`
 		AutoLearnRules            bool                `yaml:"auto_learn_rules"`
 		CopilotDailyRequestLimit  int                 `yaml:"copilot_daily_request_limit,omitempty"`
@@ -1291,6 +1301,9 @@ func (s SettingsConfig) MarshalYAML() (interface{}, error) {
 	}
 	if s.TemperGitTimeout > 0 {
 		sh.TemperGitTimeout = durationString(s.TemperGitTimeout)
+	}
+	if s.WorktreeGitTimeout > 0 {
+		sh.WorktreeGitTimeout = durationString(s.WorktreeGitTimeout)
 	}
 	// Always emit SmelterInterval so an intentional 0 (disable scheduled runs)
 	// is persisted and not silently dropped back to the 8h default on next load.
@@ -1771,6 +1784,7 @@ func Defaults() Config {
 			StaleInterval:        5 * time.Minute,
 			TemperStepTimeout:    5 * time.Minute,
 			TemperGitTimeout:     30 * time.Second,
+			WorktreeGitTimeout:   5 * time.Minute,
 			TemperOutputCap:      DefaultTemperOutputCap,
 			DepcheckInterval:     168 * time.Hour, // weekly
 			DepcheckTimeout:      5 * time.Minute,
@@ -1872,6 +1886,7 @@ func Load(configFile string) (*Config, error) {
 	v.SetDefault("settings.stale_interval", "5m")
 	v.SetDefault("settings.temper_step_timeout", "5m")
 	v.SetDefault("settings.temper_git_timeout", "30s")
+	v.SetDefault("settings.worktree_git_timeout", "5m")
 	v.SetDefault("settings.temper_output_cap", DefaultTemperOutputCap)
 	v.SetDefault("settings.depcheck_interval", "168h")
 	v.SetDefault("settings.depcheck_timeout", "5m")
@@ -2012,6 +2027,13 @@ func Load(configFile string) (*Config, error) {
 			return nil, fmt.Errorf("invalid temper_git_timeout %q: %w", raw, err)
 		}
 		cfg.Settings.TemperGitTimeout = d
+	}
+	if raw := v.GetString("settings.worktree_git_timeout"); raw != "" {
+		d, err := time.ParseDuration(raw)
+		if err != nil {
+			return nil, fmt.Errorf("invalid worktree_git_timeout %q: %w", raw, err)
+		}
+		cfg.Settings.WorktreeGitTimeout = d
 	}
 	if raw := v.GetString("settings.depcheck_interval"); raw != "" {
 		d, err := time.ParseDuration(raw)
@@ -2247,6 +2269,12 @@ func (c *Config) Validate() []string {
 		errs = append(errs, "settings.burnish_verify_timeout must not be negative (omit or set to 0 to use the package default)")
 	} else if c.Settings.BurnishVerifyTimeout > 0 && c.Settings.BurnishVerifyTimeout < 30*time.Second {
 		errs = append(errs, "settings.burnish_verify_timeout must be >= 30s when set explicitly (omit or set to 0 to use the package default)")
+	}
+
+	if c.Settings.WorktreeGitTimeout < 0 {
+		errs = append(errs, "settings.worktree_git_timeout must not be negative (omit or set to 0 to use the default)")
+	} else if c.Settings.WorktreeGitTimeout > 0 && c.Settings.WorktreeGitTimeout < 30*time.Second {
+		errs = append(errs, "settings.worktree_git_timeout must be >= 30s when set explicitly (omit or set to 0 to use the default)")
 	}
 
 	if c.Settings.CopilotDailyRequestLimit < 0 {

@@ -7,6 +7,7 @@ package worktree
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -15,6 +16,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/Robin831/Forge/internal/executil"
@@ -882,7 +884,9 @@ func VerifyAndRecoverMain(ctx context.Context, repoPath string) (recovered bool,
 	}
 
 	// Attempt recovery with a bounded timeout, honoring caller cancellation.
-	recoveryCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	// The checkout tier applies: swapping the main checkout back to main/master
+	// rewrites the whole working tree and can take minutes on a large anvil.
+	recoveryCtx, cancel := context.WithTimeout(ctx, gitCheckoutTimeout())
 	defer cancel()
 
 	var checkoutErr error
@@ -916,10 +920,134 @@ func assertOnMainBranch(ctx context.Context, repoPath string) error {
 		"refusing to create worktree to prevent environment corruption", currentBranch)
 }
 
-// gitCmdOut runs a git command in the given directory with a timeout,
-// directing stdout and stderr to out.
+// Git command timeout tiers. Every git invocation in this package runs under a
+// context deadline; exceeding it makes exec.CommandContext SIGKILL the process,
+// which git reports as the useless "signal: killed".
+const (
+	// DefaultGitTimeout bounds cheap, metadata-only git commands (rev-parse,
+	// show-ref, branch, config, check-ref-format). These touch refs and config
+	// only, so a minute is already generous and a tight bound keeps a wedged
+	// git from stalling the poll loop.
+	DefaultGitTimeout = 60 * time.Second
+	// DefaultGitCheckoutTimeout bounds checkout-heavy git commands (worktree
+	// add/remove, fetch, push, checkout, reset, clean, submodule). A cold
+	// full-tree checkout of a large anvil under memory/disk pressure (dolt plus
+	// an active Smith, swap in use) legitimately takes several minutes; the old
+	// hardcoded 60s killed the first attempt of most beads and only the retry —
+	// with a warm page cache — succeeded.
+	DefaultGitCheckoutTimeout = 5 * time.Minute
+)
+
+// gitCheckoutTimeoutNanos holds the configured checkout-heavy timeout in
+// nanoseconds. Zero means "use DefaultGitCheckoutTimeout". It is package-level
+// (rather than a Manager field) because the git helpers are free functions
+// shared by the Manager, the preview helpers, and the remote-branch helpers.
+var gitCheckoutTimeoutNanos atomic.Int64
+
+// SetGitCheckoutTimeout configures the deadline applied to checkout-heavy git
+// commands (settings.worktree_git_timeout). A value <= 0 restores
+// DefaultGitCheckoutTimeout. Safe to call at any time, including from the
+// config hot-reload path.
+func SetGitCheckoutTimeout(d time.Duration) {
+	if d <= 0 {
+		if d < 0 {
+			slog.Warn("worktree: ignoring negative git checkout timeout",
+				"value", d, "using", DefaultGitCheckoutTimeout)
+		}
+		gitCheckoutTimeoutNanos.Store(0)
+		return
+	}
+	gitCheckoutTimeoutNanos.Store(int64(d))
+}
+
+// gitCheckoutTimeout returns the effective checkout-heavy timeout.
+func gitCheckoutTimeout() time.Duration {
+	if n := gitCheckoutTimeoutNanos.Load(); n > 0 {
+		return time.Duration(n)
+	}
+	return DefaultGitCheckoutTimeout
+}
+
+// heavyGitSubcommands are the git subcommands that read or write the whole
+// working tree (or talk to the network) and therefore scale with repository
+// size rather than being effectively constant-time.
+var heavyGitSubcommands = map[string]bool{
+	"checkout":  true,
+	"clean":     true,
+	"clone":     true,
+	"fetch":     true,
+	"pull":      true,
+	"push":      true,
+	"reset":     true,
+	"submodule": true,
+	"worktree":  true,
+}
+
+// gitTimeoutFor picks the timeout tier for a git invocation from its
+// subcommand: the configured checkout timeout for tree-sized/network work,
+// DefaultGitTimeout for everything else. `worktree prune` is the one exception
+// inside a heavy subcommand — it only rewrites administrative metadata.
+func gitTimeoutFor(args []string) time.Duration {
+	if len(args) == 0 {
+		return DefaultGitTimeout
+	}
+	sub := args[0]
+	if sub == "worktree" && len(args) > 1 && args[1] == "prune" {
+		return DefaultGitTimeout
+	}
+	if heavyGitSubcommands[sub] {
+		return gitCheckoutTimeout()
+	}
+	return DefaultGitTimeout
+}
+
+// GitTimeoutError reports a git command that was killed because it exceeded its
+// deadline. It exists so callers see which command ran out of time and how long
+// it got, instead of the bare "signal: killed" that exec.CommandContext
+// produces. Unwrap returns context.DeadlineExceeded so callers can classify the
+// failure with errors.Is.
+type GitTimeoutError struct {
+	// Args is the git argument vector (without the leading "git").
+	Args []string
+	// Elapsed is how long the command actually ran before being killed.
+	Elapsed time.Duration
+	// Limit is the deadline that fired — the tier timeout, or the caller's own
+	// deadline when that one was closer.
+	Limit time.Duration
+}
+
+func (e *GitTimeoutError) Error() string {
+	return fmt.Sprintf("git %s timed out after %s (limit %s)",
+		strings.Join(e.Args, " "),
+		e.Elapsed.Round(time.Millisecond),
+		e.Limit.Round(time.Millisecond))
+}
+
+func (e *GitTimeoutError) Unwrap() error { return context.DeadlineExceeded }
+
+// gitCmdOut runs a git command in the given directory, directing stdout and
+// stderr to out. The timeout is chosen per subcommand by gitTimeoutFor.
 func gitCmdOut(ctx context.Context, dir string, out io.Writer, args ...string) error {
-	cmdCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	return gitCmdOutTimeout(ctx, dir, out, gitTimeoutFor(args), args...)
+}
+
+// gitCmdOutTimeout runs a git command under an explicit timeout. When the
+// deadline fires it returns a *GitTimeoutError naming the command and the time
+// it got rather than the raw "signal: killed".
+func gitCmdOutTimeout(ctx context.Context, dir string, out io.Writer, timeout time.Duration, args ...string) error {
+	if timeout <= 0 {
+		timeout = DefaultGitTimeout
+	}
+	// The caller's own deadline wins when it is closer; report that as the
+	// limit so the message matches the deadline that actually fired.
+	limit := timeout
+	if dl, ok := ctx.Deadline(); ok {
+		if remaining := time.Until(dl); remaining < limit {
+			limit = remaining
+		}
+	}
+
+	cmdCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
 	cmd := executil.HideWindow(exec.CommandContext(cmdCtx, "git", args...))
@@ -927,8 +1055,22 @@ func gitCmdOut(ctx context.Context, dir string, out io.Writer, args ...string) e
 	cmd.Env = localGitEnv()
 	cmd.Stdout = out
 	cmd.Stderr = out
+	// git spawns helpers (git-remote-https, pack objects) that inherit the
+	// output pipes. Without a WaitDelay, killing git on deadline leaves Wait
+	// blocked on those pipes until the descendants exit, so the deadline would
+	// not actually bound the call.
+	cmd.WaitDelay = 10 * time.Second
 
-	return cmd.Run()
+	start := time.Now()
+	err := cmd.Run()
+	if err != nil && errors.Is(cmdCtx.Err(), context.DeadlineExceeded) {
+		return &GitTimeoutError{
+			Args:    append([]string(nil), args...),
+			Elapsed: time.Since(start),
+			Limit:   limit,
+		}
+	}
+	return err
 }
 
 // gitCmd runs a git command in the given directory with a timeout.
