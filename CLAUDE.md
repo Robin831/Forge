@@ -384,8 +384,8 @@ The daemon exposes a named pipe (Windows: `\\.\pipe\forge`) or Unix socket. Mess
 | Command | Description |
 |---------|-------------|
 | `preview_start` | Start a bead's preview environment (queued; anvil required, branch defaults to `forge/<beadID>`). |
-| `preview_stop` | Tear a bead's preview down (queued; keyed by bead id alone). |
-| `previews` | List live previews with per-service ports/health, plus `preview_public_host` and `preview_idle_timeout` so clients build links and deadlines themselves, and `anvils` — the anvils a preview can be started for (previews enabled AND a `.forge/preview.yaml` in their main checkout), which is how a client gates a per-bead Preview affordance without a probe per row. |
+| `preview_stop` | Tear a bead's preview down. Payload: `ipc.PreviewActionPayload` — `bead_id` required, anvil ignored. Answers `queued`; the tracked request completes with `ipc.PreviewStopResponse{stopped, bead_id, message}`. A bead with no live preview is rejected synchronously with `no preview running for bead <id>` (the automatic teardown paths call the manager directly, where stopping something already gone stays a no-op). |
+| `previews` / `preview_list` | One command under two names — the dashboard's and the CLI's. No payload; answers `ipc.PreviewListResponse` (an alias of `ipc.PreviewsResponse`): live previews with per-service ports/health, each carrying `entry_url`, the entry `port`, `idle_remaining_seconds` (null when the reaper is disabled) and a `resource_note` summarising the services/ports it holds; plus `preview_public_host` and `preview_idle_timeout` so clients build links and deadlines themselves, and `anvils` — the anvils a preview can be started for (previews enabled AND a `.forge/preview.yaml` in their main checkout), which is how a client gates a per-bead Preview affordance without a probe per row. |
 
 **Security**
 | Command | Description |

@@ -12,6 +12,7 @@ import (
 	"github.com/Robin831/Forge/internal/config"
 	"github.com/Robin831/Forge/internal/ipc"
 	"github.com/Robin831/Forge/internal/kiln"
+	"github.com/Robin831/Forge/internal/state"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -166,8 +167,19 @@ func TestHandlePreviewStart_Rejections(t *testing.T) {
 	}
 }
 
+// startFakePreview registers a live preview with the fake manager so a stop has
+// something to tear down.
+func startFakePreview(t *testing.T, mgr *fakePreviewManager, beadID string) {
+	t.Helper()
+	_, err := mgr.Start(context.Background(), kiln.StartOptions{
+		BeadID: beadID, Anvil: "forge", AnvilPath: "/tmp/forge", Branch: "forge/" + beadID,
+	})
+	require.NoError(t, err)
+}
+
 func TestHandlePreviewStop_QueuesAndStops(t *testing.T) {
 	mgr := newFakePreviewManager()
+	startFakePreview(t, mgr, "Forge-abc1")
 	d := newPreviewAPIDaemon(t, previewConfig(true, nil), mgr)
 
 	resp := d.handlePreviewStop(ipc.PreviewActionPayload{BeadID: "Forge-abc1"})
@@ -175,12 +187,21 @@ func TestHandlePreviewStop_QueuesAndStops(t *testing.T) {
 
 	outcome := awaitOutcome(t, d, resp.RequestID)
 	assert.Equal(t, ipc.RequestStateOK, outcome.State)
+	assert.Contains(t, outcome.Message, "Forge-abc1")
 	assert.Equal(t, []string{"Forge-abc1"}, mgr.stoppedBeads())
+
+	// The preview is gone, not merely marked stopped: listing reports nothing.
+	listResp := d.handlePreviewList()
+	require.Equal(t, "ok", listResp.Type)
+	var list ipc.PreviewListResponse
+	require.NoError(t, json.Unmarshal(listResp.Payload, &list))
+	assert.Empty(t, list.Previews)
 }
 
 func TestHandlePreviewStop_ReportsTeardownFailure(t *testing.T) {
 	mgr := newFakePreviewManager()
 	mgr.stopErr = errors.New("teardown script exited 1")
+	startFakePreview(t, mgr, "Forge-abc1")
 	d := newPreviewAPIDaemon(t, previewConfig(true, nil), mgr)
 
 	resp := d.handlePreviewStop(ipc.PreviewActionPayload{BeadID: "Forge-abc1"})
@@ -191,14 +212,58 @@ func TestHandlePreviewStop_ReportsTeardownFailure(t *testing.T) {
 	assert.Contains(t, outcome.Message, "teardown script exited 1")
 }
 
+// TestHandlePreviewStop_Rejections covers everything answered synchronously,
+// before any teardown is queued — including the mistyped bead id, which must
+// not read as "stopped".
 func TestHandlePreviewStop_Rejections(t *testing.T) {
-	d := newPreviewAPIDaemon(t, previewConfig(false, nil), nil)
-	resp := d.handlePreviewStop(ipc.PreviewActionPayload{BeadID: "Forge-abc1"})
-	assert.Equal(t, "error", resp.Type)
+	live := newFakePreviewManager()
+	startFakePreview(t, live, "Forge-abc1")
 
-	d = newPreviewAPIDaemon(t, previewConfig(true, nil), newFakePreviewManager())
-	resp = d.handlePreviewStop(ipc.PreviewActionPayload{})
-	assert.Equal(t, "error", resp.Type)
+	tests := []struct {
+		name    string
+		cfg     *config.Config
+		mgr     previewManager
+		payload ipc.PreviewActionPayload
+		wantMsg string
+	}{
+		{
+			name:    "previews disabled",
+			cfg:     previewConfig(false, nil),
+			mgr:     nil,
+			payload: ipc.PreviewActionPayload{BeadID: "Forge-abc1"},
+			wantMsg: "preview environments are disabled",
+		},
+		{
+			name:    "missing bead id",
+			cfg:     previewConfig(true, nil),
+			mgr:     live,
+			payload: ipc.PreviewActionPayload{},
+			wantMsg: "bead_id is required",
+		},
+		{
+			name:    "bead has no preview",
+			cfg:     previewConfig(true, nil),
+			mgr:     live,
+			payload: ipc.PreviewActionPayload{BeadID: "Forge-nope"},
+			wantMsg: "no preview running for bead Forge-nope",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			d := newPreviewAPIDaemon(t, tt.cfg, tt.mgr)
+			resp := d.handlePreviewStop(tt.payload)
+			require.Equal(t, "error", resp.Type)
+			var body struct {
+				Message string `json:"message"`
+			}
+			require.NoError(t, json.Unmarshal(resp.Payload, &body))
+			assert.Contains(t, body.Message, tt.wantMsg)
+			if fake, ok := tt.mgr.(*fakePreviewManager); ok {
+				assert.Empty(t, fake.stoppedBeads(), "a rejected stop must not reach the manager")
+			}
+		})
+	}
 }
 
 func TestHandlePreviewList_DisabledReportsSettingsOnly(t *testing.T) {
@@ -244,4 +309,152 @@ func TestHandlePreviewList_ReportsLivePreviews(t *testing.T) {
 	assert.Equal(t, "Forge-zzz9", out.Previews[1].BeadID)
 	assert.Equal(t, "forge", out.Previews[0].Anvil)
 	assert.Equal(t, "forge/Forge-abc1", out.Previews[0].Branch)
+}
+
+// TestHandlePreviewList_EnabledWithNoPreviews — an enabled Kiln with nothing
+// running answers with an empty JSON array, never null, so a client can range
+// over it without a nil check.
+func TestHandlePreviewList_EnabledWithNoPreviews(t *testing.T) {
+	d := newPreviewAPIDaemon(t, previewConfig(true, nil), newFakePreviewManager())
+
+	resp := d.handlePreviewList()
+	require.Equal(t, "ok", resp.Type)
+	assert.Contains(t, string(resp.Payload), `"previews":[]`)
+
+	var out ipc.PreviewListResponse
+	require.NoError(t, json.Unmarshal(resp.Payload, &out))
+	assert.True(t, out.Enabled)
+	assert.NotNil(t, out.Previews)
+	assert.Empty(t, out.Previews)
+}
+
+// TestHandleIPC_PreviewListAliasesPreviews — the CLI's command name and the web
+// dashboard's resolve to the same handler and the same payload.
+func TestHandleIPC_PreviewListAliasesPreviews(t *testing.T) {
+	mgr := newFakePreviewManager()
+	startFakePreview(t, mgr, "Forge-abc1")
+	d := newPreviewAPIDaemon(t, previewConfig(true, nil), mgr)
+
+	fromList := d.handleIPC(ipc.Command{Type: "preview_list"})
+	fromPreviews := d.handleIPC(ipc.Command{Type: "previews"})
+
+	require.Equal(t, "ok", fromList.Type)
+	assert.JSONEq(t, string(fromPreviews.Payload), string(fromList.Payload))
+
+	var out ipc.PreviewListResponse
+	require.NoError(t, json.Unmarshal(fromList.Payload, &out))
+	require.Len(t, out.Previews, 1)
+	assert.Equal(t, "Forge-abc1", out.Previews[0].BeadID)
+}
+
+// TestPreviewInfo_MapsRecord covers the fields the list derives rather than
+// copies: the entry port, the idle countdown and the resource note. It works
+// off a record because a *kiln.Environment carrying live services can only be
+// built by the manager itself.
+func TestPreviewInfo_MapsRecord(t *testing.T) {
+	now := time.Date(2026, 8, 6, 12, 0, 0, 0, time.UTC)
+	rec := state.Preview{
+		BeadID:       "Forge-abc1",
+		Anvil:        "forge",
+		Branch:       "forge/Forge-abc1",
+		Status:       state.PreviewRunning,
+		CreatedAt:    now.Add(-20 * time.Minute),
+		LastActiveAt: now.Add(-5 * time.Minute),
+		Services: []state.PreviewService{
+			{Name: "api", Port: 4310, Health: state.PreviewServiceHealthy},
+			{Name: "web", Port: 4311, Health: state.PreviewServiceHealthy, Entry: true},
+		},
+	}
+
+	info := previewInfo(rec, "http://forge.wg:4311", 30*time.Minute, now)
+
+	assert.Equal(t, "Forge-abc1", info.BeadID)
+	assert.Equal(t, state.PreviewRunning, info.Status)
+	assert.Equal(t, "http://forge.wg:4311", info.EntryURL)
+	// The entry service's port wins over the first allocated one.
+	assert.Equal(t, 4311, info.Port)
+	require.NotNil(t, info.IdleRemainingSeconds)
+	assert.Equal(t, int64(25*60), *info.IdleRemainingSeconds)
+	assert.Equal(t, "2 services, ports 4310, 4311", info.ResourceNote)
+	require.Len(t, info.Services, 2)
+	assert.Equal(t, "api", info.Services[0].Name)
+	assert.True(t, info.Services[1].Entry)
+}
+
+func TestPreviewEntryPort(t *testing.T) {
+	tests := []struct {
+		name     string
+		services []state.PreviewService
+		want     int
+	}{
+		{name: "no services", want: 0},
+		{
+			name:     "no ports allocated yet",
+			services: []state.PreviewService{{Name: "web", Entry: true}},
+			want:     0,
+		},
+		{
+			name:     "falls back to the first port when nothing is the entry",
+			services: []state.PreviewService{{Name: "api", Port: 4310}, {Name: "web", Port: 4311}},
+			want:     4310,
+		},
+		{
+			name:     "prefers the entry service",
+			services: []state.PreviewService{{Name: "api", Port: 4310}, {Name: "web", Port: 4311, Entry: true}},
+			want:     4311,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, previewEntryPort(state.Preview{Services: tt.services}))
+		})
+	}
+}
+
+func TestPreviewIdleRemaining(t *testing.T) {
+	now := time.Date(2026, 8, 6, 12, 0, 0, 0, time.UTC)
+
+	// The reaper is disabled: there is no deadline to count down to.
+	assert.Nil(t, previewIdleRemaining(state.Preview{LastActiveAt: now}, 0, now))
+	// Never touched: the same, rather than a countdown from the zero time.
+	assert.Nil(t, previewIdleRemaining(state.Preview{}, 30*time.Minute, now))
+
+	remaining := previewIdleRemaining(state.Preview{LastActiveAt: now.Add(-10 * time.Minute)}, 30*time.Minute, now)
+	require.NotNil(t, remaining)
+	assert.Equal(t, int64(20*60), *remaining)
+
+	// Past its deadline, waiting for the next reaper tick — clamped, not negative.
+	overdue := previewIdleRemaining(state.Preview{LastActiveAt: now.Add(-40 * time.Minute)}, 30*time.Minute, now)
+	require.NotNil(t, overdue)
+	assert.Equal(t, int64(0), *overdue)
+}
+
+func TestPreviewResourceNote(t *testing.T) {
+	tests := []struct {
+		name     string
+		services []state.PreviewService
+		want     string
+	}{
+		{name: "nothing supervised yet", want: "no services"},
+		{
+			name:     "singular",
+			services: []state.PreviewService{{Name: "web", Port: 4310}},
+			want:     "1 service, ports 4310",
+		},
+		{
+			name:     "ports still being allocated",
+			services: []state.PreviewService{{Name: "web"}, {Name: "api"}},
+			want:     "2 services, no ports allocated",
+		},
+		{
+			name:     "every allocated port is listed",
+			services: []state.PreviewService{{Name: "web", Port: 4310}, {Name: "api", Port: 4311}},
+			want:     "2 services, ports 4310, 4311",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, previewResourceNote(state.Preview{Services: tt.services}))
+		})
+	}
 }

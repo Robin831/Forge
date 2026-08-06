@@ -7052,7 +7052,10 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 		}
 		return d.handlePreviewStop(p)
 
-	case "previews":
+	// "previews" is the web dashboard's name for this read and "preview_list"
+	// the CLI's; they are one command with one payload (ipc.PreviewListResponse
+	// aliases ipc.PreviewsResponse), not two views of the same state.
+	case "previews", "preview_list":
 		return d.handlePreviewList()
 
 	case "wicket_status":
