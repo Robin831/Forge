@@ -242,7 +242,8 @@ func (d *Daemon) startPreviews(ctx context.Context) {
 
 	d.logger.Info("kiln preview manager started", "anvils", len(anvils),
 		"idle_timeout", cfg.Settings.PreviewIdleTimeout,
-		"max_concurrent", cfg.Settings.ResolvedPreviewMaxConcurrent())
+		"max_concurrent", cfg.Settings.ResolvedPreviewMaxConcurrent(),
+		"evict_lru", cfg.Settings.PreviewEvictLRU)
 }
 
 // buildPreviewManager assembles the real Kiln manager: a port allocator over
@@ -278,6 +279,7 @@ func (d *Daemon) buildPreviewManager(ctx context.Context, cfg *config.Config, an
 		Logger:    d.logger,
 		Config: kiln.ManagerConfig{
 			MaxConcurrent: cfg.Settings.ResolvedPreviewMaxConcurrent(),
+			EvictLRU:      cfg.Settings.PreviewEvictLRU,
 			IdleTimeout:   cfg.Settings.PreviewIdleTimeout,
 			PublicHost:    publicHost,
 			Anvils:        anvils,
@@ -388,6 +390,9 @@ func (d *Daemon) handlePreviewAutoStart(ctx context.Context, event bellows.PREve
 		Anvil:     anvilName,
 		AnvilPath: anvilCfg.Path,
 		Branch:    branch,
+		// Nobody asked for this one: a full box skips it rather than evicting
+		// a preview an operator started, even with preview_evict_lru on.
+		NoEvict: true,
 	}
 	prNumber := event.PRNumber
 

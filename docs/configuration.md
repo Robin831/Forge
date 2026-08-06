@@ -549,7 +549,8 @@ anvils:
 | `questgiver_interval` | duration | `24h` | `0` | How often the QuestGiver polls anvils for quests. `0` disables. |
 | `adventurer_timeout` | duration | `5m` | | Maximum time allowed for a single quest execution by the headless-browser Adventurer (used by `forge quest run` and the QuestGiver monitor). Must not be negative. |
 | `preview_enabled` | bool | `false` | | Master gate for Kiln preview environments. When false, no preview can be started regardless of per-anvil settings or the presence of a manifest. See [Preview Environments (Kiln)](#preview-environments-kiln). |
-| `preview_max_concurrent` | int | `2` | `0` (use default) | Maximum number of previews running at once. Each preview costs real memory (database, API, dev server), hence the low default. |
+| `preview_max_concurrent` | int | `2` | `0` (use default) | Maximum number of previews running at once. Each preview costs real memory (database, API, dev server), hence the low default. A start that hits the cap is **rejected**, not queued; the error names the limit and the beads holding the slots. See [When the cap is reached](#when-the-cap-is-reached-preview_max_concurrent-preview_evict_lru). |
+| `preview_evict_lru` | bool | `false` | | What happens when a preview is requested while `preview_max_concurrent` is already reached. `false` rejects the request. `true` stops the least recently used preview to make room. Automatic previews (`preview_auto`) never evict — they are skipped when the box is full either way. |
 | `preview_idle_timeout` | duration | `30m` | `1m` or `0` | How long a preview may go unused before it is torn down. `0` disables the idle reaper, leaving previews running until stopped explicitly or until their PR merges/closes. |
 | `preview_port_range` | string | `"42000-42999"` | | Inclusive `"min-max"` TCP port range preview service ports are allocated from. Both ends must be within 1024-65535 and min must be less than max. |
 | `preview_bind_host` | string | `"127.0.0.1"` | | Address preview services bind to. The loopback default keeps previews reachable only from the Forge box; `0.0.0.0` exposes them to a LAN or VPN. **Preview URLs bypass the Hearth login**, so widen this only on a trusted network. |
@@ -1061,6 +1062,7 @@ the per-preview database setup/teardown scripts that go with them are in
 settings:
   preview_enabled: true          # master gate, default false
   preview_max_concurrent: 2      # previews running at once
+  preview_evict_lru: false       # cap reached: false = reject, true = stop the LRU preview
   preview_idle_timeout: 30m      # tear down after this much inactivity; 0 disables
   preview_port_range: '42000-42999'
   preview_bind_host: 127.0.0.1   # 0.0.0.0 to reach previews from a LAN/VPN
@@ -1073,6 +1075,43 @@ anvils:
     preview_auto: ready_to_merge # off (default) | ready_to_merge
     preview_quests: true         # run this anvil's E2E quests against the preview
 ```
+
+### When the cap is reached (`preview_max_concurrent`, `preview_evict_lru`)
+
+`preview_max_concurrent` bounds how many previews run at once — started
+previews and starts still in flight both count, so two requests racing for the
+last slot cannot both win it.
+
+**The default is rejection.** A start over the cap fails immediately, before any
+worktree is checked out or any port is allocated, with an error naming the limit
+and the beads holding the slots:
+
+```
+kiln: preview limit reached (2 of 2 in use, preview_max_concurrent=2; held by:
+Forge-a1b2, Forge-c3d4) — stop one of those previews first, or set
+settings.preview_evict_lru to have Kiln evict the least recently used one
+```
+
+Rejection is the default because a preview is something a person asked for and
+may still be looking at. Requests are never queued: a preview that quietly
+starts ten minutes later, after whoever wanted it gave up, costs memory and
+serves nobody. `forge preview list` shows what holds the slots and
+`forge preview stop <bead-id>` frees one.
+
+**`preview_evict_lru: true` trades that for eviction.** A start that hits the
+cap stops the preview with the oldest last-active time — the same clock the
+idle reaper reads, bumped on start and on every preview API call — and takes
+its slot. Eviction is a full teardown (services killed, the manifest's
+`teardown` run, checkout removed, row deleted), not just a released slot. Two
+things are deliberately never evicted: a preview whose start is still in flight,
+and any preview at all on behalf of an **automatic** preview (`preview_auto`),
+which is skipped when the box is full rather than taking a slot away from a
+preview someone opened by hand.
+
+Turn it on when previews are opened and abandoned faster than the idle timeout
+reclaims them, and the alternative is an operator hunting for something to
+stop. Leave it off if a preview disappearing from under an open browser tab
+would be worse than a start that says no.
 
 ### Automatic previews (`preview_auto`)
 
@@ -1095,6 +1134,8 @@ reaper still tears the preview down after `preview_idle_timeout`. When the cap
 is already reached the auto-start is **skipped silently**: the reason is logged
 (`auto-preview skipped: preview_max_concurrent reached`) but nothing is raised
 for human attention, because nobody asked for that preview in the first place.
+That holds even with `preview_evict_lru` on — an automatic start never evicts a
+preview an operator started.
 A successful automatic start is recorded as a `preview_auto_started` event, so
 a preview appearing on its own is explainable from the event log. Previews are
 never auto-started for external (`ext-*`) PRs.
@@ -1434,6 +1475,7 @@ Environment variables with the `FORGE_` prefix override YAML values. Nested keys
 | `FORGE_SETTINGS_ADVENTURER_TIMEOUT` | `settings.adventurer_timeout` |
 | `FORGE_SETTINGS_PREVIEW_ENABLED` | `settings.preview_enabled` |
 | `FORGE_SETTINGS_PREVIEW_MAX_CONCURRENT` | `settings.preview_max_concurrent` |
+| `FORGE_SETTINGS_PREVIEW_EVICT_LRU` | `settings.preview_evict_lru` |
 | `FORGE_SETTINGS_PREVIEW_IDLE_TIMEOUT` | `settings.preview_idle_timeout` |
 | `FORGE_SETTINGS_PREVIEW_PORT_RANGE` | `settings.preview_port_range` |
 | `FORGE_SETTINGS_PREVIEW_BIND_HOST` | `settings.preview_bind_host` |

@@ -85,6 +85,9 @@ func TestHandlePreviewAutoStart_OptedInAnvilStarts(t *testing.T) {
 		Anvil:     "forge",
 		AnvilPath: anvilPath,
 		Branch:    "forge/Forge-abc1",
+		// Nobody asked for this preview, so it never evicts one that somebody
+		// did ask for — not even with settings.preview_evict_lru on.
+		NoEvict: true,
 	}}, mgr.startedOptions())
 }
 

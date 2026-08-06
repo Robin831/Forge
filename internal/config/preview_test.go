@@ -24,6 +24,7 @@ func TestPreviewSettingsDefaults(t *testing.T) {
 
 	assert.False(t, cfg.Settings.PreviewEnabled, "previews are opt-in")
 	assert.Equal(t, DefaultPreviewMaxConcurrent, cfg.Settings.PreviewMaxConcurrent)
+	assert.False(t, cfg.Settings.PreviewEvictLRU, "a full box rejects rather than evicting by default")
 	assert.Equal(t, DefaultPreviewIdleTimeout, cfg.Settings.PreviewIdleTimeout)
 	assert.Equal(t, DefaultPreviewPortRange, cfg.Settings.PreviewPortRange)
 	assert.Equal(t, DefaultPreviewBindHost, cfg.Settings.PreviewBindHost)
@@ -41,6 +42,7 @@ func TestPreviewSettingsParse(t *testing.T) {
 	cfg, err := Load(writeConfig(t, `settings:
   preview_enabled: true
   preview_max_concurrent: 4
+  preview_evict_lru: true
   preview_idle_timeout: 45m
   preview_port_range: "43000-43100"
   preview_bind_host: "0.0.0.0"
@@ -50,6 +52,7 @@ func TestPreviewSettingsParse(t *testing.T) {
 
 	assert.True(t, cfg.Settings.PreviewEnabled)
 	assert.Equal(t, 4, cfg.Settings.PreviewMaxConcurrent)
+	assert.True(t, cfg.Settings.PreviewEvictLRU)
 	assert.Equal(t, 45*time.Minute, cfg.Settings.PreviewIdleTimeout)
 	assert.Equal(t, "0.0.0.0", cfg.Settings.ResolvedPreviewBindHost())
 	assert.Equal(t, "devbox.local", cfg.Settings.ResolvedPreviewPublicHost())
@@ -202,6 +205,7 @@ func TestSave_RoundTrip_PreviewSettings(t *testing.T) {
 	original := Defaults()
 	original.Settings.PreviewEnabled = true
 	original.Settings.PreviewMaxConcurrent = 3
+	original.Settings.PreviewEvictLRU = true
 	original.Settings.PreviewIdleTimeout = 90 * time.Minute
 	original.Settings.PreviewPortRange = "43000-43999"
 	original.Settings.PreviewBindHost = "0.0.0.0"
@@ -213,6 +217,7 @@ func TestSave_RoundTrip_PreviewSettings(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, loaded.Settings.PreviewEnabled)
 	assert.Equal(t, 3, loaded.Settings.PreviewMaxConcurrent)
+	assert.True(t, loaded.Settings.PreviewEvictLRU)
 	assert.Equal(t, 90*time.Minute, loaded.Settings.PreviewIdleTimeout)
 	assert.Equal(t, "43000-43999", loaded.Settings.PreviewPortRange)
 	assert.Equal(t, "0.0.0.0", loaded.Settings.PreviewBindHost)

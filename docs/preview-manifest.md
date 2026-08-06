@@ -152,7 +152,10 @@ dropped for the same reason.
 - **Concurrency**: at most `preview_max_concurrent` previews run at once
   (default 2). A start over that limit is rejected outright rather than queued,
   so an operator who asked for a preview learns immediately that they need to
-  stop one first.
+  stop one first — the error names the beads holding the slots. Setting
+  `preview_evict_lru: true` instead stops the least recently used preview to
+  make room; see
+  [When the cap is reached](configuration.md#when-the-cap-is-reached-preview_max_concurrent-preview_evict_lru).
 - **Unwinding**: any failure after the preview worktree is created — `setup`,
   the runtime, or every service failing its health check — kills whatever
   started, runs `teardown`, removes the checkout and deletes the state row. The
