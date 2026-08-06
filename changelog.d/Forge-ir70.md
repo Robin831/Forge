@@ -1,0 +1,3 @@
+category: Added
+- **Kiln preview runtime** - Previews now allocate collision-safe ports from `preview_port_range`, start each manifest service in its own process group with the `FORGE_*` preview context injected, stream stdout/stderr to `~/.forge/logs/<beadID>/preview-<service>.log`, and health-check each service (HTTP path or port-open) so it settles into healthy or failed without taking its siblings down. (Forge-ir70)
+- **previews state table** - Preview environments are persisted in state.db (bead, anvil, branch, status, worktree path, per-service port/health/pid/log, created/last-active timestamps) so they survive a daemon restart and can be reconciled. (Forge-ir70)

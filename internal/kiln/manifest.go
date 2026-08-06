@@ -262,10 +262,21 @@ func (m *Manifest) Validate() error {
 	}
 
 	entries := 0
+	// Service names fold to a single env var each (FORGE_PREVIEW_PORT_<NAME>),
+	// so two names that differ only in case or in '-' vs '_' would silently
+	// share one port variable. Reject that rather than start a preview where
+	// one service is told the other's port.
+	portVars := make(map[string]string, len(m.Services))
 	for _, svc := range m.Services {
 		if err := svc.validate(); err != nil {
 			return err
 		}
+		portVar := PortEnvVar(svc.Name)
+		if prev, dup := portVars[portVar]; dup {
+			return fmt.Errorf("services %q and %q both map to %s — service names must differ by more than case or %q vs %q",
+				prev, svc.Name, portVar, "-", "_")
+		}
+		portVars[portVar] = svc.Name
 		if svc.Entry {
 			entries++
 		}

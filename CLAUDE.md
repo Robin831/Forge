@@ -124,7 +124,7 @@ Forge is a **Go orchestrator daemon** that autonomously drives Claude Code agent
 | `internal/changelog` | Changelog fragment parsing and assembly |
 | `internal/lifecycle` | Worker lifecycle management |
 | `internal/retry` | Exponential backoff and retry logic |
-| `internal/kiln` | **Kiln** — on-demand preview environments for worker branches. Currently the declarative half: the `.forge/preview.yaml` manifest schema, loader (read from the anvil's MAIN checkout only) and template expansion (`{{.Port}}`, `{{.ServicePort "name"}}`, `{{.PreviewID}}`, `{{.Host}}`). See [docs/preview-manifest.md](docs/preview-manifest.md) |
+| `internal/kiln` | **Kiln** — on-demand preview environments for worker branches. The declarative half: the `.forge/preview.yaml` manifest schema, loader (read from the anvil's MAIN checkout only) and template expansion (`{{.Port}}`, `{{.ServicePort "name"}}`, `{{.PreviewID}}`, `{{.Host}}`). The runtime half: collision-safe port allocation over `preview_port_range`, service supervision via `internal/executil` process groups (logs to `~/.forge/logs/<beadID>/preview-<service>.log`), per-service health checks (HTTP path or port-open) driving `starting → healthy \| failed`, and persistence of the whole thing in the `previews` table. The registry, concurrency cap, idle reaper and setup/teardown execution live in the daemon-level manager. See [docs/preview-manifest.md](docs/preview-manifest.md) |
 | `internal/questgiver` | E2E quest discovery and execution |
 | `internal/adventurer` | Headless browser quest executor (drives quest steps via rod) |
 | `internal/smelter` | Batches pending warden rules into PRs |
@@ -255,6 +255,7 @@ Beads-Forge sessions (session capture, forgechat):
 - **events** — Timestamped event log (bead_claimed, smith_done, warden_pass, etc.)
 - **retries** — Exponential backoff tracking; `needs_human=1` after exhausting retries
 - **bead_costs / daily_costs** — Token usage and USD estimates per bead and per day
+- **previews** — Kiln preview environments per bead: anvil, branch, status, worktree path, per-service JSON (name/port/health/pid/log), created/last-active timestamps
 
 ### IPC Protocol
 
