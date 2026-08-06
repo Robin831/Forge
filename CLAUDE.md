@@ -51,6 +51,9 @@ forge ledger                          # Open interactive bead management TUI
 forge quest list                      # List discovered E2E quests
 forge quest run <quest> --anvil <name>  # Execute a quest and report results
 forge wicket status                   # Show Wicket issue triage status
+forge preview list                    # List running Kiln preview environments
+forge preview list --json             # Raw preview_list payload
+forge preview stop <bead-id>          # Tear down a bead's preview environment
 forge scan                            # Run govulncheck on Go anvils
 forge scan --anvil <name>             # Scan a specific anvil
 forge autostart install               # Enable auto-start via Windows Task Scheduler
