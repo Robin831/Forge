@@ -167,6 +167,28 @@ RUN set -eux; \
     rm -rf /tmp/dolt.tar.gz /tmp/dolt-linux-${dolt_arch}; \
     dolt version
 
+# Install sqlcmd (go-sqlcmd, a single static binary — no ODBC stack, no EULA
+# env var). Kiln preview setup/teardown scripts use it to create and drop
+# per-preview MSSQL databases (e.g. Heimdall's scripts/preview-db-*.sh).
+# The tarball also carries sqlcmd_debug; extract only the binary we want.
+ARG SQLCMD_VERSION=v1.10.0
+RUN set -eux; \
+    arch=$(dpkg --print-architecture); \
+    case "$arch" in \
+        amd64) sqlcmd_arch=amd64 ;; \
+        arm64) sqlcmd_arch=arm64 ;; \
+        *) echo "unsupported arch: $arch" >&2; exit 1 ;; \
+    esac; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends bzip2; \
+    curl -fsSL "https://github.com/microsoft/go-sqlcmd/releases/download/${SQLCMD_VERSION}/sqlcmd-linux-${sqlcmd_arch}.tar.bz2" \
+        -o /tmp/sqlcmd.tar.bz2; \
+    tar -xjf /tmp/sqlcmd.tar.bz2 -C /usr/local/bin sqlcmd; \
+    chmod 0755 /usr/local/bin/sqlcmd; \
+    rm /tmp/sqlcmd.tar.bz2; \
+    sqlcmd --version; \
+    apt-get clean; rm -rf /var/lib/apt/lists/*
+
 # Install ttyd (a single static binary) so the devbox can expose a browser
 # terminal (xterm.js over websocket) behind the ingress — more resilient than
 # `kubectl exec`, whose stream gets cut by idle timeouts in the API-server path.
