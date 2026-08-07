@@ -1326,9 +1326,25 @@ An unauthenticated browser navigation is redirected to `/login` on the **apex of
 `preview_proxy_base`**, carrying the preview URL in a `next` parameter. That
 apex therefore has to be a host Hearth itself answers on — see
 [Deploying the preview proxy](preview-proxy-deployment.md) for what that means
-for DNS, an ingress and a certificate. The `next` parameter is currently
-informational: the dashboard does not bounce back to it after a successful
-login, so the flow is sign in, then reopen the preview from the dashboard.
+for DNS, an ingress and a certificate.
+
+The login consumes `next` and sends the browser back to the preview once a
+session exists, on both halves of the flow: the sign-in itself, and the `GET
+/login` of someone who turns out to already have a session. The parameter is
+never followed as given — it arrives from a link anyone can send, so it is
+honoured only when it names a preview hostname under the *current*
+`preview_proxy_base`. Anything else (another host, an embedded credential, a
+non-HTTP scheme, the apex itself) is dropped and the login lands on the
+dashboard as before; a bad `next` never fails the sign-in. Validation is done
+by the daemon, not the dashboard, and the browser only follows the URL the
+daemon hands back.
+
+One case deliberately declines the round trip: where the Hearth host and
+`preview_proxy_base` share no registrable parent, the session cookie is not
+widened to reach preview hostnames (see the two paths above), so following
+`next` would hit the gate again and bounce straight back to the login. Those
+deployments land on the dashboard instead, where the preview link carries a
+`_forge_token` that does work.
 
 ### Security posture: what a preview URL exposes
 

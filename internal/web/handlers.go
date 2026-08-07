@@ -23,14 +23,17 @@ func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 // handleLoginPage handles GET /login.
 //
 // Top-level browser navigations redirect authenticated users to the
-// dashboard and serve the SPA for unauthenticated users so the
-// LoginPage can render. Non-browser fetch clients (Accept: */*)
-// receive a JSON auth-status payload instead.
+// dashboard — or to the preview they were bounced here from, when the
+// request carries a `next` that survives validation (loginnext.go) — and
+// serve the SPA for unauthenticated users so the LoginPage can render.
+// Non-browser fetch clients (Accept: */*) receive a JSON auth-status
+// payload instead.
 func (s *Server) handleLoginPage(w http.ResponseWriter, r *http.Request) {
 	sess := SessionFromContext(r.Context())
 	if isBrowserNavigation(r) {
 		if sess != nil {
-			http.Redirect(w, r, "/", http.StatusSeeOther)
+			target := s.loginRedirectTargetOrRoot(r, r.URL.Query().Get(loginNextParam))
+			http.Redirect(w, r, target, http.StatusSeeOther)
 			return
 		}
 		s.staticH(w, r)
@@ -116,10 +119,18 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	s.throttle.recordSuccess(username)
 	s.logger.Info("web login ok", "user", username, "remote", ip)
-	writeJSON(w, http.StatusOK, map[string]any{
+	out := map[string]any{
 		"authenticated": true,
 		"user":          username,
-	})
+	}
+	// Where to go now. The response is JSON rather than a redirect because the
+	// SPA drives this POST with fetch, so the server decides the destination
+	// and the client only follows it. Absent or unusable `next`, the field is
+	// omitted and the SPA routes to the dashboard as before.
+	if target := s.loginRedirectTarget(r, r.FormValue(loginNextParam)); target != "" {
+		out["redirect"] = target
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 // handleLogout deletes the session row and clears the cookie.

@@ -8,11 +8,21 @@ import {
   type ReactNode,
 } from 'react'
 
+interface LoginResult {
+  ok: boolean
+  error?: string
+  // An absolute URL the server validated and wants the browser sent to after
+  // this sign-in — a preview hostname the operator was bounced away from. Only
+  // ever set when the login carried a `next`; the caller must not synthesise
+  // one, since the whole point is that the server decides where `next` may go.
+  redirect?: string
+}
+
 interface AuthState {
   authenticated: boolean
   user: string | null
   loading: boolean
-  login: (user: string, password: string) => Promise<{ ok: boolean; error?: string }>
+  login: (user: string, password: string, next?: string) => Promise<LoginResult>
   logout: () => Promise<void>
   refresh: () => Promise<void>
 }
@@ -56,8 +66,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [refresh])
 
   const login = useCallback(
-    async (username: string, password: string) => {
+    async (username: string, password: string, next?: string) => {
       const body = new URLSearchParams({ user: username, password })
+      // Forwarded verbatim: the server validates it against
+      // settings.preview_proxy_base and answers with a `redirect` only when it
+      // names a preview host, so a crafted `next` cannot bounce anyone
+      // off-site.
+      if (next) body.set('next', next)
       try {
         const res = await fetch('/login', {
           method: 'POST',
@@ -74,10 +89,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           const data = (await res.json().catch(() => ({}))) as { error?: string }
           return { ok: false, error: data.error ?? `HTTP ${res.status}` }
         }
-        const data = (await res.json()) as { authenticated?: boolean; user?: string }
+        const data = (await res.json()) as {
+          authenticated?: boolean
+          user?: string
+          redirect?: string
+        }
         setAuthenticated(!!data.authenticated)
         setUser(data.user ?? username)
-        return { ok: true }
+        return { ok: true, redirect: data.redirect }
       } catch (err) {
         return { ok: false, error: err instanceof Error ? err.message : 'Network error' }
       }

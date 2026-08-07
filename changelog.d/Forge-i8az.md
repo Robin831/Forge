@@ -1,0 +1,2 @@
+category: Fixed
+- **Hearth login returns to the preview you asked for** - Signing in after a proxied preview bounced you to the login now lands on that preview instead of the dashboard. The `next` parameter the preview proxy already emitted is consumed by both `/login` handlers, and is honoured only when the daemon can validate it as a preview hostname under the current `preview_proxy_base` — a crafted `next` cannot redirect anywhere else, and a rejected one falls back to the dashboard without failing the sign-in. (Forge-i8az)

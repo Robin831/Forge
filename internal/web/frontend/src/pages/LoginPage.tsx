@@ -1,21 +1,30 @@
 import { useEffect, useState, type FormEvent } from 'react'
-import { useNavigate } from 'react-router'
+import { useNavigate, useSearchParams } from 'react-router'
 import { Hammer, Loader2 } from 'lucide-react'
 import { useAuth } from '../auth'
 
 export default function LoginPage() {
   const { authenticated, loading, login } = useAuth()
   const navigate = useNavigate()
+  const [searchParams] = useSearchParams()
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [submitting, setSubmitting] = useState(false)
+  // Set once a cross-origin redirect to a preview is on its way, so the effect
+  // below does not race a client-side route change against it.
+  const [leaving, setLeaving] = useState(false)
+
+  // Where the operator was headed when the preview proxy sent them here. Passed
+  // to the server untouched and never followed on this side unless the server
+  // hands it back — see the note in auth.tsx.
+  const next = searchParams.get('next') ?? undefined
 
   useEffect(() => {
-    if (!loading && authenticated) {
+    if (!loading && authenticated && !leaving) {
       navigate('/', { replace: true })
     }
-  }, [authenticated, loading, navigate])
+  }, [authenticated, loading, leaving, navigate])
 
   // Don't flash the login form while the auth probe is in flight or while
   // a redirect to the dashboard is pending — show a spinner instead.
@@ -37,10 +46,18 @@ export default function LoginPage() {
     if (submitting) return
     setSubmitting(true)
     setError(null)
-    const result = await login(username, password)
+    const result = await login(username, password, next)
     if (!result.ok) {
       setError(result.error ?? 'login failed')
       setSubmitting(false)
+      return
+    }
+    if (result.redirect) {
+      // A preview hostname: a different origin, so the router cannot take us
+      // there and a full navigation is the only way. The URL was validated
+      // against settings.preview_proxy_base by the server that returned it.
+      setLeaving(true)
+      window.location.assign(result.redirect)
       return
     }
     navigate('/', { replace: true })
