@@ -1,0 +1,154 @@
+# Post-release images.
+#
+# Why this is a separate workflow instead of steps in release.yml:
+#
+#   The `-skybert` image is the FULL devbox image (dolt + bd from the
+#   Robin831/beads fork + claude + ttyd). It is a convenience image for the
+#   skybert cluster, NOT a release artifact — nothing in the release itself
+#   (binaries, checksums, SBOMs, GitHub release, Homebrew/Scoop taps, the
+#   minimal `ghcr.io/robin831/forge:<tag>` image) depends on it. Building it
+#   inline meant every release waited on a fat image nobody needs at release
+#   time, and a flaky base-image pull or a broken `bd` build turned a
+#   perfectly good release run red.
+#
+#   Running it here decouples the two completely: this workflow is triggered
+#   BY the Release run finishing, so it cannot delay the release, and its
+#   failures surface as their own red run against this workflow only. The
+#   Release run's conclusion is already final by the time this starts.
+#
+# Why `workflow_run` and not `on: release: [published]`:
+#
+#   GoReleaser publishes the GitHub release using `secrets.GITHUB_TOKEN`, and
+#   GitHub does not start workflow runs from events created by GITHUB_TOKEN.
+#   A `release: published` trigger would therefore silently never fire.
+#   `workflow_run` is exempt from that rule.
+#
+# Re-running a failed build by hand (no re-tag, no re-release needed):
+#
+#   gh workflow run post-release-images.yml -f tag=v1.2.3
+#
+name: Post-release images
+
+on:
+  workflow_run:
+    workflows: ["Release"]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to build the skybert image for (e.g. v1.2.3)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  skybert:
+    name: Full skybert image
+    runs-on: ubuntu-latest
+    # Skip when the Release run itself failed or was cancelled — there is no
+    # release to build a companion image for. Manual dispatches always run.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.event.workflow_run.conclusion == 'success'
+    steps:
+      # For workflow_run, `github.ref`/`github.sha` point at the default branch,
+      # not the released tag. The triggering run's `head_branch` is the tag name
+      # (release.yml only ever runs on `push: tags: v*`).
+      - name: Resolve release tag
+        id: rel
+        env:
+          EVENT: ${{ github.event_name }}
+          TAG_INPUT: ${{ inputs.tag }}
+          HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+        run: |
+          if [ "$EVENT" = "workflow_dispatch" ]; then
+            TAG="$TAG_INPUT"
+          else
+            TAG="$HEAD_BRANCH"
+          fi
+          case "$TAG" in
+            v*) ;;
+            *) echo "::error::could not resolve a release tag (got '${TAG}')"; exit 1 ;;
+          esac
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "Building post-release images for $TAG"
+
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ steps.rel.outputs.tag }}
+
+      # The COMMIT build-arg used to be `github.sha`; in this workflow that is
+      # the default-branch head, so read it back from the tagged checkout.
+      - name: Resolve release commit
+        id: sha
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Build the FULL cluster image. The GoReleaser images built by release.yml
+      # are the minimal alpine binary (Dockerfile.minimal); the skybert cluster
+      # needs the full Dockerfile (dolt + bd from the Robin831/beads fork +
+      # claude + ttyd). Pushed under a distinct `-skybert` tag so it never
+      # collides with the minimal images.
+      # Deploy (no laptop build): update-skybert.ps1 -SkipBuild -ImageTag <tag>-skybert
+      - name: Resolve full-image build args
+        id: fullargs
+        run: |
+          BEADS_REF=$(git ls-remote https://github.com/Robin831/beads main | cut -f1)
+          [ -n "$BEADS_REF" ] || { echo "could not resolve Robin831/beads main ref" >&2; exit 1; }
+          CLAUDE_VER=$(npm view @anthropic-ai/claude-code version)
+          [ -n "$CLAUDE_VER" ] || { echo "could not resolve claude-code version" >&2; exit 1; }
+          echo "beads_ref=$BEADS_REF" >> "$GITHUB_OUTPUT"
+          echo "claude=@$CLAUDE_VER" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push full skybert image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: ghcr.io/robin831/forge:${{ steps.rel.outputs.tag }}-skybert
+          build-args: |
+            VERSION=${{ steps.rel.outputs.tag }}
+            COMMIT=${{ steps.sha.outputs.sha }}
+            BEADS_REF=${{ steps.fullargs.outputs.beads_ref }}
+            CLAUDE_CODE_VERSION=${{ steps.fullargs.outputs.claude }}
+
+      - name: Verify baked bd matches the beads fork
+        run: |
+          IMG="ghcr.io/robin831/forge:${{ steps.rel.outputs.tag }}-skybert"
+          docker pull "$IMG"
+          BD_VER=$(docker run --rm --entrypoint bd "$IMG" version 2>&1 || true)
+          SHORT="${{ steps.fullargs.outputs.beads_ref }}"; SHORT="${SHORT:0:9}"
+          echo "bd: $BD_VER (want $SHORT)"
+          echo "$BD_VER" | grep -q "$SHORT" || { echo "baked bd != fork ref $SHORT" >&2; exit 1; }
+
+      # Kick off the forgeBench devbox image build for this release. This lives
+      # here rather than in release.yml because the devbox image is
+      # `FROM forge:<tag>-skybert` — dispatching it before the step above has
+      # pushed that tag would just build against a missing/stale image. Needs a
+      # PAT secret DEVBOX_DISPATCH_PAT with repo access to Robin831/forgeBench;
+      # skips gracefully if unset.
+      - name: Trigger devbox image build (forgeBench)
+        env:
+          GH_TOKEN: ${{ secrets.DEVBOX_DISPATCH_PAT }}
+          TAG: ${{ steps.rel.outputs.tag }}
+        run: |
+          if [ -z "${GH_TOKEN}" ]; then
+            echo "DEVBOX_DISPATCH_PAT not set - skipping devbox auto-build. Add the PAT secret to enable it."
+            exit 0
+          fi
+          gh api repos/Robin831/forgeBench/dispatches -f event_type=forge-released -f "client_payload[forge_tag]=${TAG}"
+          echo "Dispatched forge-released to forgeBench for ${TAG}"
