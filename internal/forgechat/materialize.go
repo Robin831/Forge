@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"os/exec"
 	"sort"
 	"strings"
 	"time"
@@ -56,7 +55,8 @@ type BdRunner func(ctx context.Context, dir string, args ...string) ([]byte, err
 // DefaultBdRunner is the production BdRunner. Inherits the parent process
 // environment so `bd` finds the same Dolt config as the daemon.
 func DefaultBdRunner(ctx context.Context, dir string, args ...string) ([]byte, error) {
-	cmd := executil.HideWindow(exec.CommandContext(ctx, "bd", args...))
+	cmd, cancel := executil.BdCommand(ctx, args...)
+	defer cancel()
 	if dir != "" {
 		cmd.Dir = dir
 	}

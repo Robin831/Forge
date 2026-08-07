@@ -68,6 +68,7 @@ settings:
   temper_step_timeout: 5m          # Default timeout for a Temper step (per-step timeout still overrides)
   temper_git_timeout: 30s          # Timeout for internal git calls during Temper (e.g. VerifyClean)
   worktree_git_timeout: 5m         # Timeout for checkout-heavy git calls when preparing a worktree
+  bd_timeout: 5m                   # Timeout for every bd subprocess (ready/show/create/update/close/sql)
   temper_output_cap: 262144        # Max bytes of combined stdout+stderr kept per step (head+tail truncated)
   claude_flags:
     - --dangerously-skip-permissions
@@ -526,6 +527,7 @@ anvils:
 | `temper_step_timeout` | duration | `5m` | | Default timeout applied to a Temper verification step whose own per-step `timeout` is unset. A per-step timeout still overrides this. Raise it for long-but-legitimate test suites so they finish instead of being killed and reported as a phantom failure (timeouts are retried once without Smith, then escalated). |
 | `temper_git_timeout` | duration | `30s` | | Timeout for internal git invocations made during Temper verification (e.g. the `VerifyClean` status check). |
 | `worktree_git_timeout` | duration | `5m` | `30s` (when set) | Timeout for **checkout-heavy** git invocations made while preparing a worker worktree: `worktree add`/`remove`, `fetch`, `pull`, `push`, `checkout`, `reset`, `clean`, `submodule`. Cheap metadata commands (`rev-parse`, `show-ref`, `branch`, `config`, `worktree prune`) keep their own tight `60s` bound and are unaffected. Accepts a Go duration string (`5m`, `600s`). Raised from the old hardcoded `60s` because a cold full-tree checkout of a large anvil under memory/disk pressure (dolt plus an active Smith, swap in use) legitimately takes longer, and the deadline **SIGKILLs** git — which wasted the first attempt of most beads and burned retry budget. On timeout the error now names the command and the elapsed time instead of reporting a bare `signal: killed`. Omitting the field (or setting it to `0`) falls back to the `5m` default; a non-zero value must be at least `30s`. |
+| `bd_timeout` | duration | `5m` | `30s` (when set) | Timeout applied to every `bd` subprocess Forge spawns — `bd ready` in the poll loop, plus `show`/`list`/`create`/`update`/`close`/`sql` from the pipeline, Bellows, Wicket, Depcheck, Schematic, the Ledger TUI and the web GUI. bd talks to a Dolt backend that may be remote, so one write can legitimately take tens of seconds; the deadline **SIGKILLs** bd, which used to surface as a bare `signal: killed` with no hint that a deadline had fired or which bd command it was. On timeout the error now names the command and the elapsed time. A caller with a tighter budget of its own (e.g. the 30s wedged-anvil probe) still wins, and that shorter budget is what the message reports. Omitting the field (or setting it to `0`) falls back to the `5m` default; a non-zero value must be at least `30s`. |
 | `temper_output_cap` | int (bytes) | `262144` | | Maximum bytes of combined stdout+stderr retained per Temper step. Output beyond the cap is head+tail truncated with an elision marker, bounding both memory and the warden/fix prompt that embeds the output. |
 | `depcheck_interval` | duration | `168h` | `1h` or `0` | How often the dependency checker scans anvils for outdated dependencies (Go, .NET, Node). `0` disables. |
 | `depcheck_timeout` | duration | `5m` | | Maximum time for a single depcheck invocation per anvil. |
@@ -1495,6 +1497,7 @@ Environment variables with the `FORGE_` prefix override YAML values. Nested keys
 | `FORGE_SETTINGS_TEMPER_STEP_TIMEOUT` | `settings.temper_step_timeout` |
 | `FORGE_SETTINGS_TEMPER_GIT_TIMEOUT` | `settings.temper_git_timeout` |
 | `FORGE_SETTINGS_WORKTREE_GIT_TIMEOUT` | `settings.worktree_git_timeout` |
+| `FORGE_SETTINGS_BD_TIMEOUT` | `settings.bd_timeout` |
 | `FORGE_SETTINGS_TEMPER_OUTPUT_CAP` | `settings.temper_output_cap` |
 | `FORGE_SETTINGS_DEPCHECK_INTERVAL` | `settings.depcheck_interval` |
 | `FORGE_SETTINGS_DEPCHECK_TIMEOUT` | `settings.depcheck_timeout` |

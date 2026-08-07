@@ -151,7 +151,7 @@ func (d *Daemon) closeBeadWithRetry(ctx context.Context, beadID, anvil, anvilPat
 
 	delay := policy.BaseDelay
 	for attempt := 1; attempt <= policy.MaxAttempts; attempt++ {
-		attemptCtx, cancel := context.WithTimeout(ctx, executil.DefaultBdTimeout)
+		attemptCtx, cancel := context.WithTimeout(ctx, executil.BdTimeout())
 		err = d.closeBead(attemptCtx, beadID, anvilPath, reason)
 		cancel()
 

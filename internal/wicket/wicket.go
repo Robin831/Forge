@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"os/exec"
 	"sort"
 	"strings"
 	"sync"
@@ -651,7 +650,8 @@ func (m *Monitor) handleCreateBead(ctx context.Context, anvil string, issue Issu
 	anvilCfg := m.cfg.Anvils[anvil]
 	m.mu.RUnlock()
 	if anvilCfg.WicketAutoDispatch && anvilCfg.AutoDispatchTag != "" {
-		labelCmd := executil.HideWindow(exec.CommandContext(ctx, "bd", "label", "add", beadID, anvilCfg.AutoDispatchTag))
+		labelCmd, labelCancel := executil.BdCommand(ctx, "label", "add", beadID, anvilCfg.AutoDispatchTag)
+		defer labelCancel()
 		if anvilPath != "" {
 			labelCmd.Dir = anvilPath
 		}

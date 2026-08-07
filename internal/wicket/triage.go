@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -34,7 +33,8 @@ var bdListRunner func(ctx context.Context, args []string, anvilPath string) (str
 
 func defaultBDListRunner(ctx context.Context, args []string, anvilPath string) (string, error) {
 	cmdArgs := append([]string{"list"}, args...)
-	cmd := executil.HideWindow(exec.CommandContext(ctx, "bd", cmdArgs...))
+	cmd, cancel := executil.BdCommand(ctx, cmdArgs...)
+	defer cancel()
 	if anvilPath != "" {
 		cmd.Dir = anvilPath
 	}
@@ -57,7 +57,7 @@ func defaultBDListRunner(ctx context.Context, args []string, anvilPath string) (
 // A 60-second timeout is applied to prevent a hung beads DB from stalling the
 // scan loop indefinitely.
 func fetchBeadSummaries(ctx context.Context, status string, limit int, anvilPath string) []BeadSummary {
-	tctx, cancel := context.WithTimeout(ctx, executil.DefaultBdTimeout)
+	tctx, cancel := context.WithTimeout(ctx, executil.BdTimeout())
 	defer cancel()
 
 	args := []string{"--status", status, "--json"}
@@ -576,9 +576,9 @@ func RunTriageWithComments(ctx context.Context, issue Issue, comments []Comment,
 		}
 
 		// Fetch all paths in parallel with a shared timeout derived from
-		// executil.DefaultBdTimeout so slow paths cannot stall the triage loop
+		// the configured bd timeout so slow paths cannot stall the triage loop
 		// indefinitely.
-		fetchCtx, cancel := context.WithTimeout(ctx, executil.DefaultBdTimeout)
+		fetchCtx, cancel := context.WithTimeout(ctx, executil.BdTimeout())
 		defer cancel()
 
 		type pathResult struct {

@@ -23,7 +23,6 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"syscall"
@@ -481,10 +480,8 @@ type inProgressBead struct {
 // last-updated timestamps and most-recent worker branch so callers can filter
 // by age and display the branch in dialogs.
 func (m *Manager) listInProgressBeads(anvilName, anvilPath string) ([]inProgressBead, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), executil.DefaultBdTimeout)
+	cmd, cancel := executil.BdCommand(context.Background(), "list", "--status=in_progress", "--json")
 	defer cancel()
-
-	cmd := executil.HideWindow(exec.CommandContext(ctx, "bd", "list", "--status=in_progress", "--json"))
 	cmd.Dir = anvilPath
 	// Capture stderr separately so that any warnings/progress lines written to
 	// stderr by bd do not corrupt the JSON we parse from stdout.
@@ -582,21 +579,21 @@ func (m *Manager) CleanupWorktrees() {
 // Clearing the assignee is required so the poller can re-dispatch the bead —
 // the poller filters out any bead with a non-empty assignee.
 func (m *Manager) resetBead(beadID, anvilPath string) error {
-	ctx, cancel := context.WithTimeout(context.Background(), executil.DefaultBdTimeout)
-	defer cancel()
-
 	// Clear labels so the poller does not auto-dispatch the recovered bead
 	// before a human reviews it. Without this, orphaned beads with the
 	// auto_dispatch_tag would immediately be re-claimed on the next poll,
 	// creating a zombie loop.
 	var stderrBuf bytes.Buffer
-	cmd := executil.HideWindow(exec.CommandContext(ctx, "bd", "update", beadID, "--status=open", "--assignee=", "--remove-label=forgeReady", "--json"))
+	cmd, cancel := executil.BdCommand(context.Background(), "update", beadID, "--status=open", "--assignee=", "--remove-label=forgeReady", "--json")
+	defer cancel()
 	cmd.Dir = anvilPath
 	cmd.Stderr = &stderrBuf
 	out, err := cmd.Output()
 	if err != nil {
-		if ctx.Err() == context.DeadlineExceeded {
-			return fmt.Errorf("bd update %s timed out: %w", beadID, context.DeadlineExceeded)
+		// A deadline kill already names the command and the time it got, so
+		// pass it through rather than restating it as a bare timeout.
+		if errors.Is(err, context.DeadlineExceeded) {
+			return fmt.Errorf("bd update %s: %w", beadID, err)
 		}
 
 		stdoutText := strings.TrimSpace(string(out))

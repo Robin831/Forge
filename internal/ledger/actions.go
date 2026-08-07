@@ -29,7 +29,7 @@ type ActionErrorMsg struct{ Err error }
 // NewBeadCmd creates a new bead via bd create.
 func NewBeadCmd(anvilPath, title, description, issueType string, priority int) tea.Cmd {
 	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), executil.DefaultBdTimeout)
+		ctx, cancel := context.WithTimeout(context.Background(), executil.BdTimeout())
 		defer cancel()
 
 		args := []string{
@@ -54,7 +54,7 @@ func NewBeadCmd(anvilPath, title, description, issueType string, priority int) t
 // EditBeadCmd updates a bead's title and description.
 func EditBeadCmd(anvilPath, beadID, title, description string) tea.Cmd {
 	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), executil.DefaultBdTimeout)
+		ctx, cancel := context.WithTimeout(context.Background(), executil.BdTimeout())
 		defer cancel()
 
 		args := []string{"update", beadID, "--title", title, "--description", description}
@@ -69,7 +69,7 @@ func EditBeadCmd(anvilPath, beadID, title, description string) tea.Cmd {
 // CloseBeadCmd closes a bead with an optional reason.
 func CloseBeadCmd(anvilPath, beadID, reason string) tea.Cmd {
 	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), executil.DefaultBdTimeout)
+		ctx, cancel := context.WithTimeout(context.Background(), executil.BdTimeout())
 		defer cancel()
 
 		args := []string{"close", beadID, "--json"}
@@ -87,7 +87,7 @@ func CloseBeadCmd(anvilPath, beadID, reason string) tea.Cmd {
 // ReopenBeadCmd reopens a closed bead.
 func ReopenBeadCmd(anvilPath, beadID string) tea.Cmd {
 	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), executil.DefaultBdTimeout)
+		ctx, cancel := context.WithTimeout(context.Background(), executil.BdTimeout())
 		defer cancel()
 
 		args := []string{"update", beadID, "--status=open"}
@@ -102,7 +102,7 @@ func ReopenBeadCmd(anvilPath, beadID string) tea.Cmd {
 // UpdateLabelCmd adds or removes a label from a bead.
 func UpdateLabelCmd(anvilPath, beadID, label string, remove bool) tea.Cmd {
 	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), executil.DefaultBdTimeout)
+		ctx, cancel := context.WithTimeout(context.Background(), executil.BdTimeout())
 		defer cancel()
 
 		flag := "--add-label"
@@ -121,7 +121,7 @@ func UpdateLabelCmd(anvilPath, beadID, label string, remove bool) tea.Cmd {
 // UpdatePriorityCmd changes a bead's priority.
 func UpdatePriorityCmd(anvilPath, beadID string, priority int) tea.Cmd {
 	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), executil.DefaultBdTimeout)
+		ctx, cancel := context.WithTimeout(context.Background(), executil.BdTimeout())
 		defer cancel()
 
 		args := []string{"update", beadID, "--priority", fmt.Sprintf("%d", priority)}
@@ -136,7 +136,7 @@ func UpdatePriorityCmd(anvilPath, beadID string, priority int) tea.Cmd {
 // AppendNotesCmd appends text to a bead's notes field.
 func AppendNotesCmd(anvilPath, beadID, notes string) tea.Cmd {
 	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), executil.DefaultBdTimeout)
+		ctx, cancel := context.WithTimeout(context.Background(), executil.BdTimeout())
 		defer cancel()
 
 		args := []string{"update", beadID, "--append-notes", notes}
@@ -151,7 +151,7 @@ func AppendNotesCmd(anvilPath, beadID, notes string) tea.Cmd {
 // UpdateNotesCmd replaces a bead's notes field.
 func UpdateNotesCmd(anvilPath, beadID, notes string) tea.Cmd {
 	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), executil.DefaultBdTimeout)
+		ctx, cancel := context.WithTimeout(context.Background(), executil.BdTimeout())
 		defer cancel()
 
 		args := []string{"update", beadID, "--notes", notes}
@@ -166,7 +166,7 @@ func UpdateNotesCmd(anvilPath, beadID, notes string) tea.Cmd {
 // UpdateAssigneeCmd assigns or unassigns a bead.
 func UpdateAssigneeCmd(anvilPath, beadID, assignee string) tea.Cmd {
 	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), executil.DefaultBdTimeout)
+		ctx, cancel := context.WithTimeout(context.Background(), executil.BdTimeout())
 		defer cancel()
 
 		args := []string{"update", beadID, "--assignee=" + assignee}
@@ -194,7 +194,7 @@ type DepRemovedMsg struct {
 // After this, beadID depends on depID (depID blocks beadID).
 func AddDepCmd(anvilPath, beadID, depID string) tea.Cmd {
 	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), executil.DefaultBdTimeout)
+		ctx, cancel := context.WithTimeout(context.Background(), executil.BdTimeout())
 		defer cancel()
 
 		_, err := bdExec(ctx, anvilPath, "dep", "add", beadID, depID)
@@ -209,7 +209,7 @@ func AddDepCmd(anvilPath, beadID, depID string) tea.Cmd {
 // This removes the relationship where beadID depends on depID.
 func RemoveDepCmd(anvilPath, beadID, depID string) tea.Cmd {
 	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), executil.DefaultBdTimeout)
+		ctx, cancel := context.WithTimeout(context.Background(), executil.BdTimeout())
 		defer cancel()
 
 		_, err := bdExec(ctx, anvilPath, "dep", "remove", beadID, depID)

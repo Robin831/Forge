@@ -328,18 +328,16 @@ func (s *Scanner) createConsolidatedBead(ctx context.Context, allResults []*Chec
 		}
 	}
 
-	cmdCtx, cancel := context.WithTimeout(ctx, 3*time.Minute)
-	defer cancel()
-
-	cmd := executil.HideWindow(exec.CommandContext(cmdCtx,
-		"bd", "create",
+	cmd, cancel := executil.BdCommandTimeout(ctx, 3*time.Minute,
+		"create",
 		fmt.Sprintf("--title=%s", title),
 		fmt.Sprintf("--description=%s", desc),
 		"--type=chore",
 		fmt.Sprintf("--priority=%s", priority),
 		fmt.Sprintf("--labels=%s", DepsUpdateLabel),
 		"--json",
-	))
+	)
+	defer cancel()
 	cmd.Dir = anvilPath
 
 	var stderr bytes.Buffer
@@ -392,14 +390,12 @@ func (s *Scanner) updateConsolidatedBead(ctx context.Context, existing *bdBead, 
 		return
 	}
 
-	cmdCtx, cancel := context.WithTimeout(ctx, 3*time.Minute)
-	defer cancel()
-
 	args := []string{"update", existing.ID, "--add-label", DepsUpdateLabel, "--json"}
 	if newDesc != existing.Description {
 		args = append(args, fmt.Sprintf("--description=%s", newDesc))
 	}
-	cmd := executil.HideWindow(exec.CommandContext(cmdCtx, "bd", args...))
+	cmd, cancel := executil.BdCommandTimeout(ctx, 3*time.Minute, args...)
+	defer cancel()
 	cmd.Dir = anvilPath
 
 	var stderr bytes.Buffer

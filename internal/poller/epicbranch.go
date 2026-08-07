@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"log"
-	"os/exec"
 	"strings"
 
 	"github.com/Robin831/Forge/internal/executil"
@@ -106,10 +105,8 @@ type parentBeadResponse struct {
 // (e.g. task blocks task) never generate a feature branch — only intentional
 // epic parents do.
 func lookupEpicBranch(ctx context.Context, parentID, anvilPath string) string {
-	cmdCtx, cancel := context.WithTimeout(ctx, executil.DefaultBdTimeout)
+	cmd, cancel := executil.BdCommand(ctx, "show", parentID, "--json")
 	defer cancel()
-
-	cmd := executil.HideWindow(exec.CommandContext(cmdCtx, "bd", "show", parentID, "--json"))
 	cmd.Dir = anvilPath
 
 	var stderr bytes.Buffer

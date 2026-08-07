@@ -19,7 +19,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os/exec"
 	"regexp"
 	"sort"
 	"strconv"
@@ -297,7 +296,10 @@ func queryScalarString(ctx context.Context, run Runner, anvilPath, query string,
 // the anvil directory. --readonly guarantees a probe can never mutate an
 // anvil's beads database.
 func BdSQL(ctx context.Context, dir, query string) ([]byte, error) {
-	cmd := executil.HideWindow(exec.CommandContext(ctx, "bd", "sql", "--json", "--readonly", "--quiet", query))
+	// The caller's own budget (DefaultTimeout) is far tighter than the
+	// configured bd timeout, so it is the deadline that actually fires here.
+	cmd, cancel := executil.BdCommand(ctx, "sql", "--json", "--readonly", "--quiet", query)
+	defer cancel()
 	cmd.Dir = dir
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr

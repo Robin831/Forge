@@ -168,7 +168,8 @@ type bdExecFunc func(ctx context.Context, anvilPath string, args ...string) ([]b
 
 // bdExec runs a bd command in the given anvil directory, hiding the console window.
 func bdExec(ctx context.Context, anvilPath string, args ...string) ([]byte, error) {
-	cmd := executil.HideWindow(exec.CommandContext(ctx, "bd", args...))
+	cmd, cancel := executil.BdCommand(ctx, args...)
+	defer cancel()
 	cmd.Dir = anvilPath
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -206,7 +207,8 @@ func isBdClosedJSON(out []byte) bool {
 // a non-null closed_at). This handles a known bd behaviour where it exits with
 // status 1 even though the close succeeded and the JSON output is correct.
 func bdCloseExec(ctx context.Context, anvilPath string, args ...string) ([]byte, error) {
-	cmd := executil.HideWindow(exec.CommandContext(ctx, "bd", args...))
+	cmd, cancel := executil.BdCommand(ctx, args...)
+	defer cancel()
 	cmd.Dir = anvilPath
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -216,7 +218,7 @@ func bdCloseExec(ctx context.Context, anvilPath string, args ...string) ([]byte,
 		return stdout.Bytes(), nil
 	}
 	// Only apply the JSON-success override for the specific exit-status-1 case
-	// when the context itself has not been canceled or expired.
+	// when neither the caller's context nor bd's own deadline has expired.
 	if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 && ctx.Err() == nil {
 		if out := stdout.Bytes(); isBdClosedJSON(out) {
 			return out, nil

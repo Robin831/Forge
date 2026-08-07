@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"os/exec"
 	"sort"
 	"strings"
 	"time"
@@ -274,9 +273,8 @@ func mapToSlice(m map[string]ModuleUpdate) []ModuleUpdate {
 
 // fetchSQL runs a bd sql query and returns the raw JSON output.
 func fetchSQL(ctx context.Context, anvilPath, query string) ([]byte, error) {
-	cmdCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+	cmd, cancel := executil.BdCommand(ctx, "sql", "--json", query)
 	defer cancel()
-	cmd := executil.HideWindow(exec.CommandContext(cmdCtx, "bd", "sql", "--json", query))
 	cmd.Dir = anvilPath
 	return cmd.Output()
 }

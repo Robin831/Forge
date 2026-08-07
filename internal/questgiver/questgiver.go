@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"os/exec"
 	"strings"
 	"sync"
 	"time"
@@ -221,9 +220,8 @@ func isDuplicate(ctx context.Context, anvilPath, questName string) bool {
 	prefix := "E2E failure: " + questName
 
 	for _, status := range []string{"open", "in_progress"} {
-		cmdCtx, cancel := context.WithTimeout(ctx, executil.DefaultBdTimeout)
-		cmd := executil.HideWindow(exec.CommandContext(cmdCtx,
-			"bd", "list", "--status="+status, "--limit", "0", "--json"))
+		cmd, cancel := executil.BdCommand(ctx,
+			"list", "--status="+status, "--limit", "0", "--json")
 		cmd.Dir = anvilPath
 		out, err := cmd.Output()
 		cancel()
@@ -271,12 +269,10 @@ func (m *Monitor) createBead(ctx context.Context, anvilName, anvilPath string, q
 		quest.Name, result.FailedStep, stepAction, result.ErrorMessage, quest.FilePath, quest.Name,
 	)
 
-	cmdCtx, cancel := context.WithTimeout(ctx, executil.DefaultBdTimeout)
+	cmd, cancel := executil.BdCommand(ctx,
+		"create", "--title", title, "--description", description,
+		"--type", "bug", "--priority=1", "--json")
 	defer cancel()
-
-	cmd := executil.HideWindow(exec.CommandContext(cmdCtx,
-		"bd", "create", "--title", title, "--description", description,
-		"--type", "bug", "--priority=1", "--json"))
 	cmd.Dir = anvilPath
 
 	out, err := cmd.CombinedOutput()
