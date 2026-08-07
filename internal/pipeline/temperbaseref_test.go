@@ -24,7 +24,7 @@ func gitIn(t *testing.T, dir string, args ...string) {
 // a daemon (or test binary) started from inside a Forge worker worktree. Any
 // git command that fails to strip these answers from the decoy instead of from
 // the path it was handed with -C.
-func decoyRepoEnv(t *testing.T, withOriginMain bool) string {
+func decoyRepoEnv(t *testing.T, withOriginMain bool) {
 	t.Helper()
 	decoy, _ := initGitRepo(t)
 	if withOriginMain {
@@ -32,7 +32,6 @@ func decoyRepoEnv(t *testing.T, withOriginMain bool) string {
 	}
 	t.Setenv("GIT_DIR", filepath.Join(decoy, ".git"))
 	t.Setenv("GIT_WORK_TREE", decoy)
-	return decoy
 }
 
 // TestResolveTemperBaseRef_IgnoresAmbientGitDir verifies that base-ref detection

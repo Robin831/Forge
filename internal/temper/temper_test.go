@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/Robin831/Forge/internal/config"
+	"github.com/Robin831/Forge/internal/executil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -549,15 +550,9 @@ func initGitRepo(t *testing.T, dir string) {
 	} {
 		cmd := exec.Command("git", args...)
 		cmd.Dir = dir
-		// Strip GIT_* env vars so the parent test environment doesn't leak.
-		var env []string
-		for _, e := range os.Environ() {
-			if strings.HasPrefix(e, "GIT_") {
-				continue
-			}
-			env = append(env, e)
-		}
-		cmd.Env = env
+		// Strip the git repo-location env vars so the parent test environment
+		// doesn't leak (same strip set the production helpers use).
+		cmd.Env = executil.CleanGitEnv()
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("git %v: %v\n%s", args, err, out)
 		}

@@ -4638,27 +4638,6 @@ func (d *Daemon) applyEmptyDiffOutcome(ctx context.Context, bead poller.Bead, an
 	d.releaseBeadClaim(bead.ID, bead.Anvil, false)
 }
 
-// cleanGitEnv returns a copy of os.Environ with git worktree env vars removed
-// so that git commands in the daemon use directory-based repository discovery
-// (via cmd.Dir) rather than inheriting overrides from an outer git worktree
-// (e.g. GIT_DIR / GIT_WORK_TREE set in a Forge worker subprocess).
-func cleanGitEnv() []string {
-	skip := map[string]bool{
-		"GIT_DIR":                 true,
-		"GIT_WORK_TREE":           true,
-		"GIT_CEILING_DIRECTORIES": true,
-	}
-	base := os.Environ()
-	out := make([]string, 0, len(base))
-	for _, e := range base {
-		k, _, _ := strings.Cut(e, "=")
-		if !skip[k] {
-			out = append(out, e)
-		}
-	}
-	return out
-}
-
 // preDispatchRemoteBranchCheck probes origin for the bead's forge branch
 // before the pipeline runs. It returns true when dispatch should proceed and
 // false when it must abort (the bead is either being handed off to bellows
@@ -4822,7 +4801,7 @@ func (d *Daemon) preDispatchRemoteBranchCheck(ctx context.Context, bead poller.B
 func (d *Daemon) branchHasChangelogFragment(ctx context.Context, anvilPath, sha, beadID string) (bool, error) {
 	cmd := executil.HideWindow(exec.CommandContext(ctx, "git", "ls-tree", "-r", "--name-only", sha, "--", "changelog.d/"))
 	cmd.Dir = anvilPath
-	cmd.Env = cleanGitEnv()
+	cmd.Env = executil.CleanGitEnv()
 	out, err := cmd.Output()
 	if err != nil {
 		return false, err
@@ -4951,7 +4930,7 @@ func (d *Daemon) recoverStrandedBranchPR(ctx context.Context, bead poller.Bead, 
 func (d *Daemon) localHeadSHA(ctx context.Context, worktreePath string) string {
 	cmd := executil.HideWindow(exec.CommandContext(ctx, "git", "rev-parse", "HEAD"))
 	cmd.Dir = worktreePath
-	cmd.Env = cleanGitEnv()
+	cmd.Env = executil.CleanGitEnv()
 	out, err := cmd.Output()
 	if err != nil {
 		return ""
@@ -5145,7 +5124,7 @@ func (d *Daemon) openPRForExistingBranch(ctx context.Context, beadID, anvilName 
 func (d *Daemon) forgeBranchAheadOfMain(ctx context.Context, anvilPath, beadID, epicBranch string) (string, bool) {
 	branchName := worktree.BranchName(beadID)
 
-	gitEnv := cleanGitEnv()
+	gitEnv := executil.CleanGitEnv()
 
 	// ls-remote is a lightweight ref-only query — no object transfer.
 	lsCmd := executil.HideWindow(exec.CommandContext(ctx, "git", "ls-remote", "--heads", "origin", "--", branchName))

@@ -18,6 +18,7 @@ import (
 
 	"github.com/Robin831/Forge/internal/bellows"
 	"github.com/Robin831/Forge/internal/config"
+	"github.com/Robin831/Forge/internal/executil"
 	"github.com/Robin831/Forge/internal/crucible"
 	"github.com/Robin831/Forge/internal/ipc"
 	"github.com/Robin831/Forge/internal/lifecycle"
@@ -4069,15 +4070,7 @@ func TestReconcileMergedBeads(t *testing.T) {
 // test git commands so they operate on the test repo (via cmd.Dir) rather than
 // the outer Forge worker process's repo (set via GIT_DIR / GIT_WORK_TREE).
 func cleanGitTestEnv() []string {
-	skip := map[string]bool{"GIT_DIR": true, "GIT_WORK_TREE": true, "GIT_INDEX_FILE": true, "GIT_CEILING_DIRECTORIES": true}
-	var out []string
-	for _, e := range os.Environ() {
-		k, _, _ := strings.Cut(e, "=")
-		if !skip[k] {
-			out = append(out, e)
-		}
-	}
-	return out
+	return executil.CleanGitEnv()
 }
 
 // initTestGitRepo sets up a bare "remote" repo and a local clone that serves

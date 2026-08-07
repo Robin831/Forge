@@ -6,29 +6,21 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
+	"github.com/Robin831/Forge/internal/executil"
 	"github.com/Robin831/Forge/internal/state"
 	"github.com/Robin831/Forge/internal/warden"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-// filteredEnv returns os.Environ() with GIT_DIR, GIT_WORK_TREE, and
-// GIT_CEILING_DIRECTORIES removed so that git subprocesses spawned in tests
-// are not accidentally confined to the worktree environment Forge runs in.
+// filteredEnv returns os.Environ() with the git repo-location vars removed so
+// that git subprocesses spawned in tests are not accidentally confined to the
+// worktree environment Forge runs in.
 func filteredEnv() []string {
-	env := os.Environ()
-	out := env[:0:0]
-	for _, e := range env {
-		if strings.HasPrefix(e, "GIT_DIR=") || strings.HasPrefix(e, "GIT_WORK_TREE=") || strings.HasPrefix(e, "GIT_CEILING_DIRECTORIES=") {
-			continue
-		}
-		out = append(out, e)
-	}
-	return out
+	return executil.CleanGitEnv()
 }
 
 func openTestDB(t *testing.T) *state.DB {

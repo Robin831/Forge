@@ -385,30 +385,14 @@ func matchesChangedFiles(patterns, changedFiles []string) bool {
 	return false
 }
 
-// cleanGitEnv returns os.Environ() with the git repo-override variables removed
-// so a `git -C <worktree>` invocation always targets that worktree rather than
-// any ambient repository set by a parent process (e.g. the Forge worker
-// worktree the daemon itself was started from).
-func cleanGitEnv() []string {
-	env := make([]string, 0, len(os.Environ()))
-	for _, e := range os.Environ() {
-		key, _, _ := strings.Cut(e, "=")
-		if key == "GIT_DIR" || key == "GIT_WORK_TREE" || key == "GIT_INDEX_FILE" {
-			continue
-		}
-		env = append(env, e)
-	}
-	return env
-}
-
 // verifyCleanCheck runs `git status --porcelain` against the given pathspecs
 // in the worktree and returns its trimmed output. Empty output means no
 // modifications, additions, or untracked files exist under those paths.
 //
 // A configurable timeout (gitTimeout, defaulting to DefaultGitTimeout) guards
-// against a stuck git invocation. GIT_DIR and GIT_WORK_TREE are stripped from
-// the environment so the -C flag reliably targets the correct repo even when
-// Forge itself runs inside a git worktree.
+// against a stuck git invocation. The git repo-location env vars are stripped
+// (executil.CleanGitEnv) so the -C flag reliably targets the correct repo even
+// when Forge itself runs inside a git worktree.
 func verifyCleanCheck(ctx context.Context, worktreePath string, pathspecs []string, gitTimeout time.Duration) (string, error) {
 	if len(pathspecs) == 0 {
 		return "", nil
@@ -422,7 +406,7 @@ func verifyCleanCheck(ctx context.Context, worktreePath string, pathspecs []stri
 	args := []string{"-C", worktreePath, "status", "--porcelain", "--"}
 	args = append(args, pathspecs...)
 	cmd := executil.HideWindow(exec.CommandContext(checkCtx, "git", args...))
-	cmd.Env = cleanGitEnv()
+	cmd.Env = executil.CleanGitEnv()
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -437,7 +421,7 @@ func verifyCleanCheck(ctx context.Context, worktreePath string, pathspecs []stri
 // It returns an error if git fails or times out, so callers can log a warning
 // and distinguish "no changes" from "couldn't compute changes".
 //
-// Like verifyCleanCheck it runs with the git repo-override env vars stripped:
+// Like verifyCleanCheck it runs with the git repo-location env vars stripped:
 // an inherited GIT_DIR would otherwise make the diff describe the ambient
 // repository's files instead of the worktree's.
 func ChangedFilesFromGit(ctx context.Context, worktreePath, baseBranch string) ([]string, error) {
@@ -445,7 +429,7 @@ func ChangedFilesFromGit(ctx context.Context, worktreePath, baseBranch string) (
 		return nil, nil
 	}
 	cmd := executil.HideWindow(exec.CommandContext(ctx, "git", "-C", worktreePath, "diff", "--name-only", baseBranch+"..HEAD"))
-	cmd.Env = cleanGitEnv()
+	cmd.Env = executil.CleanGitEnv()
 	out, err := cmd.Output()
 	if err != nil {
 		return nil, fmt.Errorf("git diff --name-only %s..HEAD: %w", baseBranch, err)
