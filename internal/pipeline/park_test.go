@@ -212,9 +212,13 @@ func TestPause_SmithTimeoutSuspendedWhileParked(t *testing.T) {
 	params, _, _ := baseParams(t, db)
 	params.WorkerID = "test-worker"
 
-	// A deliberately tiny smith budget: the pause below outlasts it several times
-	// over, so without deadline extension the resumed context would be expired.
-	params.SmithTimeout = 80 * time.Millisecond
+	// A deliberately small smith budget: the pause below outlasts it, so without
+	// deadline extension the resumed context would be expired. Not too small,
+	// though — the budget clock starts at Run() and is only suspended once the
+	// worker parks, so it must comfortably exceed worst-case time-to-park on a
+	// loaded CI runner (80ms flaked in CI on 2026-08-07: scheduling + SQLite
+	// writes outran the budget before the park suspended it).
+	params.SmithTimeout = 3 * time.Second
 
 	runningResult := &smith.Result{ExitCode: 0, SessionID: "sess-1", ResultSubtype: "success"}
 	params.SmithRunner = func(_ context.Context, _, _, _ string, _ provider.Provider, _ []string) (*smith.Process, error) {
@@ -254,7 +258,7 @@ func TestPause_SmithTimeoutSuspendedWhileParked(t *testing.T) {
 
 	// Stay parked well beyond the smith budget. If the deadline were not
 	// suspended, the pipeline context would expire during this sleep.
-	time.Sleep(240 * time.Millisecond)
+	time.Sleep(4 * time.Second)
 
 	// The parked pipeline must NOT have returned despite the elapsed budget.
 	select {
@@ -268,7 +272,7 @@ func TestPause_SmithTimeoutSuspendedWhileParked(t *testing.T) {
 	var outcome *Outcome
 	select {
 	case outcome = <-done:
-	case <-time.After(2 * time.Second):
+	case <-time.After(5 * time.Second):
 		t.Fatal("pipeline did not resume within the deadline")
 	}
 
