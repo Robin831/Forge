@@ -240,6 +240,22 @@ WORKDIR /home/forge
 # suspenders measure for users who override CMD.
 ENV FORGE_FOREGROUND=1
 
+# bd ships anonymous usage metrics ON, not off: internal/config sets
+# metrics.disabled=false with endpoint https://gastownhall-eventsapi.com/mp/collect.
+# It sends command names, bd version and OS platform under a machine-derived id
+# — no issue content — but it is still outbound third-party telemetry from an
+# FHI-operated container, so it is off by default here.
+#
+# This must be the env var, not `bd metrics off`. That writes
+# $HOME/.config/bd/config.yaml, and /home/forge is a PVC mount at runtime, so
+# anything baked into the image under that path is masked by the volume — the
+# setting would silently vanish on a fresh pod. BD_DISABLE_METRICS also
+# outranks the saved config, so a stale file on the volume cannot re-enable it.
+# The devbox image is FROM this one and inherits it.
+#
+# Set BD_DISABLE_METRICS=0 on a container to opt back in.
+ENV BD_DISABLE_METRICS=1
+
 # tini provides a proper PID 1: it reaps zombies (Smith → claude → helpers)
 # and forwards SIGTERM cleanly so graceful shutdown runs.
 ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/forge"]
