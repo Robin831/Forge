@@ -4,6 +4,7 @@ import { Link } from 'react-router'
 import type { StatusResponse } from '../api'
 import type { PreviewSummary } from '../api/previews'
 import { mapPreviewStatus } from '../api/previews'
+import AdHocPreviewForm from '../components/AdHocPreviewForm'
 import AppHeader from '../components/AppHeader'
 import Pane, { EmptyState } from '../components/Pane'
 import PreviewLogModal, { type PreviewLogTarget } from '../components/PreviewLogModal'
@@ -34,7 +35,15 @@ export default function PreviewsPage() {
     <div className="flex min-h-full flex-col gap-6 p-4 sm:p-6">
       <AppHeader daemonOnline={status.data?.running} daemonLoading={status.loading} />
 
-      <main>
+      <main className="flex flex-col gap-6">
+        {/*
+          The ad-hoc starter sits above the fleet, and only once the snapshot has
+          arrived saying Kiln is on: a form offering to start something the
+          daemon has switched off would be a worse answer than the disabled
+          message the pane below already gives.
+        */}
+        {snap.loaded && snap.enabled && <AdHocPreviewForm anvils={snap.anvils} />}
+
         <Pane
           title="Preview environments"
           icon={<MonitorPlay size={16} className="text-sky-400" aria-hidden />}
@@ -47,7 +56,7 @@ export default function PreviewsPage() {
           ) : !snap.enabled ? (
             <EmptyState message="Previews are disabled. Set preview_enabled in forge.yaml and give an anvil a .forge/preview.yaml manifest to use them." />
           ) : snap.previews.length === 0 ? (
-            <EmptyState message="No preview environments are running. Start one from a bead, a worker card or a PR row." />
+            <EmptyState message="No preview environments are running. Start one from the form above, or from a bead, a worker card or a PR row." />
           ) : (
             <ul className="divide-y divide-slate-800">
               {snap.previews.map((p) => (

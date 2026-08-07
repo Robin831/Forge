@@ -114,6 +114,47 @@ func TestPreviewStart_QueuedReturns202WithPollURL(t *testing.T) {
 	if payload.BeadID != "Forge-abc1" || payload.Anvil != "forge" {
 		t.Errorf("payload = %+v, want bead Forge-abc1 anvil forge", payload)
 	}
+	// No branch in the body means the daemon picks forge/<bead-id>; the handler
+	// must not invent one of its own.
+	if payload.Branch != "" {
+		t.Errorf("branch = %q, want empty so the daemon applies its default", payload.Branch)
+	}
+}
+
+// An ad-hoc preview names a branch that is not the bead's canonical one — and
+// the bead id it is filed under need never have existed in bd. This is the
+// browser half of `forge preview start kiln-smoke-1 --anvil forge --branch main`.
+func TestPreviewStart_ForwardsBranch(t *testing.T) {
+	h := &recordingHandler{resp: ipc.Response{
+		Type:      "queued",
+		RequestID: "forge-1-1",
+		Payload:   []byte(`{"message":"starting preview"}`),
+	}}
+	srv := newServerWithDefaults(t, h.handle)
+	cookie := loginAndGetCookie(t, srv)
+
+	rec := postAction(t, srv, cookie, "/api/bead/kiln-smoke-1/preview/start", map[string]string{
+		"anvil":  "forge",
+		"branch": "  main  ",
+	})
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	cmd, ok := h.lastCommand()
+	if !ok {
+		t.Fatal("no command dispatched")
+	}
+	var payload ipc.PreviewActionPayload
+	if err := json.Unmarshal(cmd.Payload, &payload); err != nil {
+		t.Fatalf("parse payload: %v", err)
+	}
+	if payload.BeadID != "kiln-smoke-1" {
+		t.Errorf("bead_id = %q, want kiln-smoke-1", payload.BeadID)
+	}
+	if payload.Branch != "main" {
+		t.Errorf("branch = %q, want the trimmed main", payload.Branch)
+	}
 }
 
 func TestPreviewStart_RequiresAnvil(t *testing.T) {

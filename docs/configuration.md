@@ -1414,8 +1414,9 @@ would be worse than a start that says no.
 ### Automatic previews (`preview_auto`)
 
 By default a preview starts only when someone asks for one — the Preview button
-in Hearth 2.0, or `preview_start` over IPC. An anvil can instead opt into
-starting one automatically:
+in Hearth 2.0, the ad-hoc form on its `/previews` page, `forge preview start`,
+or `preview_start` over IPC. An anvil can instead opt into starting one
+automatically:
 
 | Value | Behavior |
 |-------|----------|
