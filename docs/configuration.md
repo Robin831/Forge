@@ -559,8 +559,8 @@ anvils:
 | `preview_port_range` | string | `"42000-42999"` | | Inclusive `"min-max"` TCP port range preview service ports are allocated from. Both ends must be within 1024-65535 and min must be less than max. |
 | `preview_bind_host` | string | `"127.0.0.1"` | | Address preview services bind to. The loopback default keeps previews reachable only from the Forge box; `0.0.0.0` exposes them to a LAN or VPN. Kiln probes health here, but a service listens where its own command line says — reference this value as `{{.BindHost}}` in the manifest so the two cannot drift. Ports bound here bypass the Hearth login entirely (only the hostname-based proxy is gated — see `preview_proxy_auth`), so widen this only on a trusted network. |
 | `preview_public_host` | string | `""` (bind host) | | Hostname used when displaying preview links (e.g. the box's LAN or WireGuard name). Empty falls back to `preview_bind_host`. Ignored once `preview_proxy_base` is set: previews are then addressed by their own hostname, not by this one plus a port. |
-| `preview_proxy_base` | string | `""` (off) | | DNS suffix previews are addressed under when Forge fronts them by hostname instead of by port: a bead's preview answers on `<label>.<base>` and one of its services on `<label>--<service>.<base>`. See [Host-based preview routing](#host-based-preview-routing-preview_proxy_base). Empty (the default) switches host-based routing off and leaves preview links on `host:port`. |
-| `preview_proxy_auth` | string | `"session"` | `session`, `none` | Whether a request arriving on a preview hostname has to prove it comes from a signed-in Hearth operator. `session` (the default, and what an empty value means) gates every proxied request; `none` serves previews to anyone who can resolve the name. Only applies when `preview_proxy_base` is set. See [Auth gating for proxied previews](#auth-gating-for-proxied-previews-preview_proxy_auth). |
+| `preview_proxy_base` | string | `""` (off) | | DNS suffix previews are addressed under when Forge fronts them by hostname instead of by port: a bead's preview answers on `<label>.<base>` and one of its services on `<label>--<service>.<base>`. A bare DNS name — a scheme, port, path or leading dot is rejected at load time. Requires the Hearth web GUI (`FORGE_WEB_ENABLED`) plus wildcard DNS and a wildcard certificate ([Deploying the preview proxy](preview-proxy-deployment.md)). See [Host-based preview routing](#host-based-preview-routing-preview_proxy_base). Empty (the default) switches host-based routing off and leaves preview links on `host:port`. |
+| `preview_proxy_auth` | string | `"session"` | `session`, `none` | Whether a request arriving on a preview hostname has to prove it comes from a signed-in Hearth operator. `session` (the default, and what an empty value means) gates every proxied request; `none` serves previews to anyone who can resolve the name. Only applies when `preview_proxy_base` is set — it never gates the raw `preview_bind_host` ports. See [Auth gating for proxied previews](#auth-gating-for-proxied-previews-preview_proxy_auth) and [Security posture: what a preview URL exposes](#security-posture-what-a-preview-url-exposes). |
 | `wicket_enabled` | bool | `false` | | Enable the Wicket GitHub issue triage monitor globally. When false, no issue scanning occurs. |
 | `wicket_interval` | duration | `15m` | `1m` or `0` | How often Wicket polls repositories for new issues. `0` disables. |
 | `wicket_provider` | string | `""` (uses `providers`) | | AI provider used for triage decisions. When empty, the global `providers` chain is used. |
@@ -1096,10 +1096,42 @@ addressed as
 <label>--<service>.<base>   # a named service in the same preview
 ```
 
-where `<label>` is the bead id reduced to a DNS label — lowercased, every
-character that is not a letter or digit folded to `-`, runs collapsed, so
-`Forge-a1b2` becomes `forge-a1b2`. `--` separates the label from a service name
-because a label never contains one.
+where `<label>` is the bead id reduced to a DNS label and `<service>` a manifest
+service name reduced the same way. `--` separates the two because a label never
+contains one.
+
+**The label mapping rule.** A bead id becomes a hostname label by:
+
+1. trimming and lowercasing;
+2. keeping `a-z` and `0-9` as they are;
+3. folding every other character — `-`, `_`, `.`, `/`, a space — to a single
+   `-`, with runs collapsed into one and no leading or trailing `-`
+   (`_` is the character worth calling out: it is legal in the internal preview
+   id Kiln uses for environment variables and directory names, and illegal in a
+   hostname, so it is folded here and nowhere else);
+4. prefixing `p-` if the result would start with a digit, since a DNS label may
+   not;
+5. falling back to `preview` if nothing is left.
+
+| Bead id | Host label | Entry hostname under `preview.example.test` |
+|---------|-----------|---------------------------------------------|
+| `Forge-a1b2` | `forge-a1b2` | `forge-a1b2.preview.example.test` |
+| `Forge_a1b2` | `forge-a1b2` | *(collides with the row above — see below)* |
+| `Forge.a1b2` | `forge-a1b2` | *(collides with the row above — see below)* |
+| `WI-12` | `wi-12` | `wi-12.preview.example.test` |
+| `123-abc` | `p-123-abc` | `p-123-abc.preview.example.test` |
+
+Manifest service names get a narrower fold of their own — lowercased, with `.`
+and `_` turned into `-` — which is what the `--<service>` half of a hostname is
+built from and matched against. It is not injective either (`api_v1` and
+`api.v1` both become `api-v1`), but two services of one manifest colliding is a
+manifest bug in the same class as two of them declaring the same port, so it is
+fixed by renaming rather than detected at run time.
+
+Bead ids longer than 63 characters produce an over-long label, which is not a
+legal DNS label. Nothing truncates it — silently shortening would create a
+second, quieter source of the collisions described below — so such an id simply
+has no working preview hostname.
 
 ```yaml
 settings:
@@ -1110,7 +1142,11 @@ Requests then look like `forge-a1b2.preview.example.test` (the entry service)
 and `forge-a1b2--api.preview.example.test` (its `api` service). Making those
 names resolve is a DNS job: a wildcard record (`*.preview.example.test`)
 pointing at the Forge box, or the equivalent entries in a hosts file for a
-single-label base like `localtest`.
+single-label base like `localtest`. Both forms are exactly one label deep, so a
+single-level wildcard covers them — which is also what makes one wildcard TLS
+certificate enough. [Deploying the preview
+proxy](preview-proxy-deployment.md) works through the DNS, ingress and
+certificate prerequisites for a Kubernetes deployment.
 
 The Hearth 2.0 web server (`FORGE_WEB_ENABLED`) does the routing itself: a
 request whose `Host` matches one of the two forms above is forwarded to the
@@ -1233,6 +1269,58 @@ cookie that the shared-`Domain` mechanism above puts within its reach.
 Preview link tokens and grants are signed with a per-process secret, so they do
 not survive a daemon restart. Neither do previews (Kiln clears them on
 startup), so nothing is lost: reopen the preview from the dashboard.
+
+An unauthenticated browser navigation is redirected to `/login` on the **apex of
+`preview_proxy_base`**, carrying the preview URL in a `next` parameter. That
+apex therefore has to be a host Hearth itself answers on — see
+[Deploying the preview proxy](preview-proxy-deployment.md) for what that means
+for DNS, an ingress and a certificate. The `next` parameter is currently
+informational: the dashboard does not bounce back to it after a successful
+login, so the flow is sign in, then reopen the preview from the dashboard.
+
+### Security posture: what a preview URL exposes
+
+A preview hostname serves an **unreviewed branch build of somebody's
+application**, wired to whatever that branch's manifest starts — typically a dev
+server, an API process and a database seeded by the manifest's `setup` script.
+Anything that application can read, a preview URL can expose; anything it can
+write, a preview URL can drive. It is not a read-only rendering of a diff, and
+it runs on the Forge box with the daemon's own filesystem and network reach.
+
+Preview hostnames are also **predictable, not secret**. The label is a
+deterministic fold of the bead id (see the table above) and the base is fixed
+config, so anyone who knows or can guess a bead id knows the URL. Wildcard DNS
+answers for every name under the base whether a preview exists or not, and a
+certificate issued for `*.<base>` appears in public Certificate Transparency
+logs. Nothing about the address is a credential.
+
+What that adds up to, per mode:
+
+| | `preview_proxy_auth: session` (default) | `preview_proxy_auth: none` |
+|---|---|---|
+| Who can reach a preview | Anyone holding a valid Hearth session cookie for the shared parent domain, or a `_forge_token` link Hearth minted for a signed-in operator (exchanged for a per-preview cookie, 8h). | Anyone who can resolve the hostname and reach the listener — no credential of any kind. |
+| A stranger who knows the URL | Gets `401` (or a redirect to the Hearth login). Cannot tell whether the preview exists: authorisation runs *before* the lookup, so the 404-with-a-reason is only ever shown to an authorised caller. | Gets the application, at whatever privilege the branch build grants an anonymous visitor. |
+| Blast radius of one leaked link | Nothing at all where the session cookie is shared (the link carries no credential). Where it carries a `_forge_token`: that one preview, and only if the leak is opened within two minutes; the cookie it exchanges for is scoped to that single label. Neither is a Hearth session — no API call and no other preview. | Every running preview, since the hostnames are predictable — one leaked link is the whole fleet. |
+| Enumeration | A caller with no session cannot probe which beads have previews. | Anyone can walk bead ids and find every live preview. |
+| What the preview can do back | Cannot read Hearth's cookies (stripped before forwarding, and `HttpOnly` regardless). Under the shared-cookie path it *can* write a cookie at the shared parent — worst case, logging the operator out. Under the token path it cannot even do that. | Same, plus the application is exposed to unauthenticated input from anyone. |
+
+Use `none` only where the listener itself is already the boundary — a private
+LAN, a WireGuard network, a box no untrusted client can route to — and where a
+branch build being world-readable is acceptable for every anvil that can produce
+a preview, not just the ones you have in mind. **Do not use `none` where preview
+content includes non-public data**: a manifest whose `setup` restores a
+production-shaped dataset makes that dataset an anonymous HTTP fetch away, and
+the ports themselves have no separate defence.
+
+Two things the gate deliberately does **not** cover:
+
+- **The raw `preview_bind_host` ports.** Gating is a property of the hostname
+  proxy. A service's own port is unauthenticated in both modes, which is why the
+  bind host defaults to `127.0.0.1`; widening it to `0.0.0.0` reopens exactly the
+  exposure the proxy gate closes, on a network path that never sees the gate.
+- **The previewed application's own authentication.** Forge proves you are an
+  operator, not that you are authorised inside the app. Whatever the branch build
+  does with an anonymous visitor is what a signed-in operator gets too.
 
 ### When the cap is reached (`preview_max_concurrent`, `preview_evict_lru`)
 
@@ -1409,13 +1497,16 @@ which is what both the panel and the PR comment say next to a failure.
 | Screenshots named by path instead of shown in the PR comment | Expected. No screenshot uploader is wired (Forge has no artifact store), so the comment names the file on the Forge host. The panel's thumbnails are the way to look at them. |
 | Panel shows no run after a daemon restart | Runs are memory-only by design (see above). The PR comment from the last run survives; the run itself does not. |
 
-**Security note.** Preview URLs are served by the previewed application itself,
-not by Hearth, so they are **not** behind the Hearth login. The default
-`preview_bind_host: 127.0.0.1` keeps them reachable only from the Forge box.
-Setting `0.0.0.0` exposes every running preview to anything that can reach the
-box on the configured port range — only do that on a trusted network (LAN,
-WireGuard), and prefer putting a reverse proxy with its own auth in front if the
-network is not private.
+**Security note.** A preview served on its raw `preview_bind_host` port is
+served by the previewed application itself, not by Hearth, so it is **not**
+behind the Hearth login. The default `preview_bind_host: 127.0.0.1` keeps those
+ports reachable only from the Forge box. Setting `0.0.0.0` exposes every running
+preview to anything that can reach the box on the configured port range — only
+do that on a trusted network (LAN, WireGuard). The authenticated alternative is
+[host-based routing](#host-based-preview-routing-preview_proxy_base), where
+Hearth fronts previews itself and gates them on a session; what each mode
+exposes and to whom is spelled out in
+[Security posture: what a preview URL exposes](#security-posture-what-a-preview-url-exposes).
 
 **Cost note.** A preview holds a database, an API process and a dev server open
 for as long as it runs, which is why `preview_max_concurrent` defaults to `2`
@@ -1683,6 +1774,8 @@ Environment variables with the `FORGE_` prefix override YAML values. Nested keys
 | `FORGE_SETTINGS_PREVIEW_PORT_RANGE` | `settings.preview_port_range` |
 | `FORGE_SETTINGS_PREVIEW_BIND_HOST` | `settings.preview_bind_host` |
 | `FORGE_SETTINGS_PREVIEW_PUBLIC_HOST` | `settings.preview_public_host` |
+| `FORGE_SETTINGS_PREVIEW_PROXY_BASE` | `settings.preview_proxy_base` |
+| `FORGE_SETTINGS_PREVIEW_PROXY_AUTH` | `settings.preview_proxy_auth` |
 | `FORGE_SETTINGS_WICKET_ENABLED` | `settings.wicket_enabled` |
 | `FORGE_SETTINGS_WICKET_INTERVAL` | `settings.wicket_interval` |
 | `FORGE_SETTINGS_WICKET_PROVIDER` | `settings.wicket_provider` |
