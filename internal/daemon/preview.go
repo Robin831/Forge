@@ -194,6 +194,30 @@ func (d *Daemon) previews() previewManager {
 // previewsEnabled reports whether preview environments are running.
 func (d *Daemon) previewsEnabled() bool { return d.previews() != nil }
 
+// previewBeadForAnvil returns the bead holding a live preview on the named
+// anvil, or "" when it has none — the depcheck.PreviewLivenessFunc the daemon
+// injects so a dependency scan never runs `npm ci` in a checkout a preview is
+// linked into. The registry is the one Kiln already answers `previews` from, so
+// there is a single source of truth for "what is live".
+//
+// Ties are resolved by bead id (List is sorted): the caller only needs a name
+// for the log line, and any live preview is reason enough to skip.
+//
+// A preview whose start is still in flight is not in List and so does not
+// block — the same accepted race depcheck documents on its own side.
+func (d *Daemon) previewBeadForAnvil(anvil string) string {
+	mgr := d.previews()
+	if mgr == nil || anvil == "" {
+		return ""
+	}
+	for _, env := range mgr.List() {
+		if env != nil && env.Anvil == anvil {
+			return env.BeadID
+		}
+	}
+	return ""
+}
+
 // startPreviews constructs the Kiln manager when previews are enabled, clears
 // anything a previous daemon lifetime left running, and starts the idle reaper
 // under the daemon's run context. When previews are disabled it leaves

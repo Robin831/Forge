@@ -35,8 +35,13 @@ var runNpmCmdFn = runNpmCmd
 // Skips node_modules, .workers, .worktrees, .previews, bin, obj, and .git directories
 // (via findNpmProjects). Deduplicates packages across projects, keeping the
 // most severe update (major > minor > patch) when the same package appears
-// in multiple package.json files. Returns nil if no package.json found.
+// in multiple package.json files. Returns nil if no package.json found, or if a
+// live Kiln preview holds the anvil's node_modules (see previewHoldsNodeModules).
 func (s *Scanner) scanNpm(ctx context.Context, anvil, path string) *CheckResult {
+	if s.previewHoldsNodeModules(anvil) {
+		return nil
+	}
+
 	pkgDirs := findNpmProjects(path)
 	if len(pkgDirs) == 0 {
 		return nil
@@ -57,6 +62,15 @@ func (s *Scanner) scanNpm(ctx context.Context, anvil, path string) *CheckResult 
 	best := map[string]ModuleUpdate{}
 
 	for _, dir := range pkgDirs {
+		// Re-check immediately before the call whose first act is `npm ci`: a
+		// preview can start after the scan began. What is left is the window
+		// between this check and the spawn a few statements later, which is
+		// accepted — a preview starting inside it is no more likely than the
+		// pre-existing race with a worker's own npm build step.
+		if s.previewHoldsNodeModules(anvil) {
+			return nil
+		}
+
 		updates, err := runNpmOutdatedFn(ctx, s.timeout, dir)
 		if err != nil {
 			result.Error = fmt.Errorf("npm outdated in %s: %w", dir, err)
@@ -86,6 +100,31 @@ func (s *Scanner) scanNpm(ctx context.Context, anvil, path string) *CheckResult 
 	sortUpdates(result.Major)
 
 	return result
+}
+
+// previewHoldsNodeModules reports whether a live Kiln preview on this anvil
+// makes the npm scan unsafe, logging the bead holding it so a skipped cycle is
+// explainable from the log alone.
+//
+// runNpmOutdated syncs node_modules with `npm ci` before reading versions, and
+// `npm ci` begins by deleting node_modules. A preview's worktree has that same
+// node_modules linked into it (see internal/worktree/nodemodules.go), so the
+// delete reaches through the link: on Windows it aborts partway on the first
+// locked native module and leaves the checkout gutted, and on Linux it succeeds
+// while the preview's dev server keeps serving from deleted inodes. Both leave
+// every worktree linked to the checkout without its dependencies.
+//
+// The whole npm half of the cycle is skipped, not just the sync: reporting
+// versions read from a tree we deliberately refused to sync would be more
+// misleading than reporting nothing. .NET and Go scanning are unaffected —
+// neither deletes anything.
+func (s *Scanner) previewHoldsNodeModules(anvil string) bool {
+	bead := s.previewHolder(anvil)
+	if bead == "" {
+		return false
+	}
+	log.Printf("[depcheck] %s: skipping npm scan — Kiln preview for bead %s holds this checkout's node_modules", anvil, bead)
+	return true
 }
 
 // findNpmProjects walks the anvil directory for package.json files,
