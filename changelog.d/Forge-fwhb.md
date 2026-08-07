@@ -1,0 +1,2 @@
+category: Changed
+- **Dependency updates (06.08.2026)** - Bumped frontend npm packages lucide-react 1.28.0→1.29.0 and vite 8.2.0→8.2.1. The rest of the batch (@tailwindcss/vite, @testing-library/user-event, @types/react, @types/react-dom, @vitejs/plugin-react, react, react-dom, react-router, tailwindcss) was already at the target versions. The TypeScript 7 major remains deferred for manual review under Forge-ht4a. (Forge-fwhb)
