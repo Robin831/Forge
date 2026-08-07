@@ -136,7 +136,7 @@ Forge is a **Go orchestrator daemon** that autonomously drives Claude Code agent
 | `internal/adventurer` | Headless browser quest executor (drives quest steps via rod) |
 | `internal/smelter` | Batches pending warden rules into PRs |
 | `internal/watchdog` | Stale worker detection |
-| `internal/hotreload` | fsnotify watcher — reloads `forge.yaml` without restart |
+| `internal/hotreload` | fsnotify watcher — reloads `forge.yaml` without restart. `applyChanges` is both the "did anything reloadable move" gate and the log lines; anything it does not detect is never swapped in. The per-anvil Kiln tri-states (`preview_enabled`, `preview_auto`, `preview_quests`) are on it, since they resolve per request. What it cannot apply it reports rather than drops: `restartOnlyKeys` names the settings captured once at startup (the Kiln globals — manager, allocator and reaper are all built from them), and `reportIgnored` falls back to a generic WARN when the config differs but nothing reloadable moved, so an ignored edit never passes in silence |
 | `internal/notify` | MS Teams Adaptive Card webhooks |
 | `internal/shutdown` | Graceful shutdown: SIGINT drain, orphan worktree cleanup |
 | `internal/autostart` | Windows Task Scheduler integration |

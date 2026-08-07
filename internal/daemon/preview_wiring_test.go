@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -519,4 +520,58 @@ func TestPreviewBeadForAnvil(t *testing.T) {
 func TestPreviewBeadForAnvil_PreviewsDisabled(t *testing.T) {
 	d := newPreviewAPIDaemon(t, previewConfig(false, nil), nil)
 	assert.Empty(t, d.previewBeadForAnvil("heimdall"))
+}
+
+// TestWarnPreviewOptInWithoutManager covers the one preview edit a config
+// reload cannot honour on its own. The per-anvil tri-state is read per request,
+// so flipping it applies immediately — but only if a manager exists, and one is
+// built at startup only when some anvil already opts in. A Forge that started
+// with every anvil opted out must say so rather than answer "previews are
+// disabled" for a config that plainly enables them.
+func TestWarnPreviewOptInWithoutManager(t *testing.T) {
+	tests := []struct {
+		name    string
+		cfg     *config.Config
+		manager bool
+		wantLog string
+	}{
+		{
+			name:    "opted in after startup with no manager",
+			cfg:     previewConfig(true, boolPtr(true)),
+			wantLog: "forge",
+		},
+		{
+			name: "manager already running",
+			cfg:  previewConfig(true, boolPtr(true)),
+			// Nothing to warn about: the manager serves the new opt-in directly.
+			manager: true,
+		},
+		{
+			name: "still opted out",
+			cfg:  previewConfig(true, boolPtr(false)),
+		},
+		{
+			name: "previews off globally",
+			cfg:  previewConfig(false, boolPtr(true)),
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			d := &Daemon{logger: slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}))}
+			d.cfg.Store(tt.cfg)
+			if tt.manager {
+				d.previewMgr = newFakePreviewManager()
+			}
+
+			d.warnPreviewOptInWithoutManager(tt.cfg)
+
+			if tt.wantLog == "" {
+				assert.Empty(t, buf.String(), "no warning expected")
+				return
+			}
+			assert.Contains(t, buf.String(), "daemon restart is required")
+			assert.Contains(t, buf.String(), tt.wantLog)
+		})
+	}
 }

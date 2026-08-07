@@ -196,6 +196,34 @@ func (d *Daemon) previews() previewManager {
 // previewsEnabled reports whether preview environments are running.
 func (d *Daemon) previewsEnabled() bool { return d.previews() != nil }
 
+// warnPreviewOptInWithoutManager covers the one per-anvil preview edit a reload
+// cannot honour on its own: the manager is built at startup and only when some
+// anvil already opts in (startPreviews), so a Forge that started with previews
+// off for every anvil has no manager to hand the newly opted-in anvil to.
+//
+// The config swap itself is correct — IsPreviewEnabledForAnvil answers true
+// from the next reload on — but every entry point goes through the nil-safe
+// previews() first and answers "preview environments are disabled", which reads
+// like the edit was ignored. Naming the anvil and the restart is the whole
+// difference between a two-minute fix and an afternoon.
+func (d *Daemon) warnPreviewOptInWithoutManager(cfg *config.Config) {
+	if d.previews() != nil || cfg == nil || !cfg.Settings.PreviewEnabled {
+		return
+	}
+	anvils := previewAnvils(cfg)
+	if len(anvils) == 0 {
+		return
+	}
+	names := make([]string, 0, len(anvils))
+	for name := range anvils {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	d.logger.Warn("anvil(s) opted into Kiln previews but no preview manager is running; "+
+		"the manager is built at startup, so a daemon restart is required",
+		"anvils", strings.Join(names, ", "))
+}
+
 // previewBeadForAnvil returns the bead holding a live preview on the named
 // anvil, or "" when it has none — the depcheck.PreviewLivenessFunc the daemon
 // injects so a dependency scan never runs `npm ci` in a checkout a preview is

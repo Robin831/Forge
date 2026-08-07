@@ -22,7 +22,15 @@
 //   - anvils.<name>.auto_merge (takes effect on next ready-to-merge transition)
 //   - anvils.<name>.max_smiths (changes to existing anvils' concurrency limit)
 //   - anvils.<name>.path (changes to existing anvils' path; updates bellows and depcheck)
+//   - anvils.<name>.preview_enabled (read per preview_start, so the next start obeys it)
+//   - anvils.<name>.preview_auto (read on the next ready-to-merge transition)
+//   - anvils.<name>.preview_quests (read per quest run)
 //   - anvils.* adding or removing anvil entries (updates bellows and depcheck)
+//
+// Everything else is read once, at startup. A reload that touches such a
+// setting is reported — see restartOnlyKeys and reportIgnored — rather than
+// silently dropped: the whole point of the warning is that the file on disk and
+// the running daemon otherwise disagree with nothing to say so.
 package hotreload
 
 import (
@@ -30,6 +38,8 @@ import (
 	"log/slog"
 	"path/filepath"
 	"reflect"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -178,6 +188,10 @@ func (w *Watcher) reload() {
 	changes := applyChanges(oldCfg, newCfg)
 	if len(changes) == 0 {
 		w.mu.Unlock()
+		// Nothing hot-reloadable moved, so the running config stands — but the
+		// operator still edited something, and saying so is the difference
+		// between "I changed it and it did not work" and silence.
+		w.reportIgnored(oldCfg, newCfg, 0)
 		return
 	}
 
@@ -188,9 +202,99 @@ func (w *Watcher) reload() {
 		w.logger.Info("config updated", "field", change)
 	}
 
+	w.reportIgnored(oldCfg, newCfg, len(changes))
+
 	// Notify callbacks
 	for _, cb := range w.callbacks {
 		cb(oldCfg, newCfg)
+	}
+}
+
+// restartOnlyKey is one setting whose value the daemon captures at startup, so
+// that a later edit cannot take effect until the process restarts. value
+// renders it for the log line.
+type restartOnlyKey struct {
+	key   string
+	value func(*config.Config) string
+}
+
+// restartOnlyKeys are the settings known to be read once, at construction time,
+// and therefore not reachable by a reload. They are named individually because
+// a warning that names the key the operator just edited is actionable, while a
+// generic "something needs a restart" is not.
+//
+// The list is the Kiln/preview surface, which is where the boundary bites in
+// practice: the preview manager, its port allocator and its idle reaper are all
+// built once from these values (see internal/daemon/preview.go
+// buildPreviewManager). Extending it elsewhere is a matter of adding an entry —
+// anything not listed still produces the generic warning in reportIgnored when
+// it changes alone.
+//
+// Deliberately absent: preview_proxy_base and preview_proxy_auth, which the web
+// layer reads live through a closure over the current config (see
+// internal/daemon/web.go), and the per-anvil tri-states, which are read per
+// request and so are genuinely hot-reloadable.
+var restartOnlyKeys = []restartOnlyKey{
+	{"settings.preview_enabled", func(c *config.Config) string {
+		return strconv.FormatBool(c.Settings.PreviewEnabled)
+	}},
+	{"settings.preview_port_range", func(c *config.Config) string {
+		return c.Settings.PreviewPortRange
+	}},
+	{"settings.preview_bind_host", func(c *config.Config) string {
+		return c.Settings.ResolvedPreviewBindHost()
+	}},
+	{"settings.preview_public_host", func(c *config.Config) string {
+		return c.Settings.ResolvedPreviewPublicHost()
+	}},
+	{"settings.preview_max_concurrent", func(c *config.Config) string {
+		return strconv.Itoa(c.Settings.ResolvedPreviewMaxConcurrent())
+	}},
+	{"settings.preview_evict_lru", func(c *config.Config) string {
+		return strconv.FormatBool(c.Settings.PreviewEvictLRU)
+	}},
+	{"settings.preview_idle_timeout", func(c *config.Config) string {
+		return c.Settings.PreviewIdleTimeout.String()
+	}},
+}
+
+// restartRequiredChanges returns the restartOnlyKeys whose value differs
+// between the two configs, rendered as "key: old → new".
+func restartRequiredChanges(old, new *config.Config) []string {
+	if old == nil || new == nil {
+		return nil
+	}
+	var changed []string
+	for _, k := range restartOnlyKeys {
+		o, n := k.value(old), k.value(new)
+		if o != n {
+			changed = append(changed, fmt.Sprintf("%s: %s → %s", k.key, o, n))
+		}
+	}
+	return changed
+}
+
+// reportIgnored logs what the reload could not apply. applied is the number of
+// hot-reloadable changes the same reload did apply.
+//
+// A known restart-only setting is named. Anything else is caught by comparing
+// the two configs whole: an edit that moved nothing hot-reloadable still
+// changed the file, and the operator deserves to hear that it will not take
+// effect until a restart — even for a key this package has never heard of.
+//
+// A reload that applies nothing leaves w.current untouched, so the divergence
+// (and this warning) persists across later reloads until the daemon restarts.
+// That is the honest reading: the file and the running daemon really do still
+// disagree.
+func (w *Watcher) reportIgnored(old, new *config.Config, applied int) {
+	if restart := restartRequiredChanges(old, new); len(restart) > 0 {
+		w.logger.Warn("config change requires a daemon restart to take effect",
+			"keys", strings.Join(restart, ", "))
+		return
+	}
+	if applied == 0 && !reflect.DeepEqual(old, new) {
+		w.logger.Warn("config file changed but no hot-reloadable setting differs; " +
+			"a daemon restart is required to apply the edit")
 	}
 }
 
@@ -334,6 +438,22 @@ func applyChanges(old, new *config.Config) []string {
 			if !reflect.DeepEqual(oldAnvil.Assay, newAnvil.Assay) {
 				changes = append(changes, fmt.Sprintf("anvil %s assay config changed", name))
 			}
+			// The per-anvil preview tri-states are resolved per request
+			// (config.IsPreviewEnabledForAnvil and friends), so swapping the
+			// config in is all it takes for the next preview_start, automatic
+			// start or quest run to obey the new value.
+			if !boolPtrEqual(oldAnvil.PreviewEnabled, newAnvil.PreviewEnabled) {
+				changes = append(changes, fmt.Sprintf("anvil %s preview_enabled: %s → %s",
+					name, boolPtrString(oldAnvil.PreviewEnabled), boolPtrString(newAnvil.PreviewEnabled)))
+			}
+			if oldAnvil.PreviewAuto != newAnvil.PreviewAuto {
+				changes = append(changes, fmt.Sprintf("anvil %s preview_auto: %q → %q",
+					name, oldAnvil.PreviewAuto, newAnvil.PreviewAuto))
+			}
+			if oldAnvil.PreviewQuests != newAnvil.PreviewQuests {
+				changes = append(changes, fmt.Sprintf("anvil %s preview_quests: %v → %v",
+					name, oldAnvil.PreviewQuests, newAnvil.PreviewQuests))
+			}
 		} else {
 			changes = append(changes, fmt.Sprintf("anvil %s added", name))
 		}
@@ -345,6 +465,24 @@ func applyChanges(old, new *config.Config) []string {
 	}
 
 	return changes
+}
+
+// boolPtrEqual compares two tri-state booleans: unset (nil) is distinct from
+// both true and false, since it means "inherit the global setting".
+func boolPtrEqual(a, b *bool) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return *a == *b
+}
+
+// boolPtrString renders a tri-state boolean for a log line, naming the unset
+// case rather than printing a pointer address.
+func boolPtrString(b *bool) string {
+	if b == nil {
+		return "unset"
+	}
+	return strconv.FormatBool(*b)
 }
 
 // sliceEqual compares two string slices.

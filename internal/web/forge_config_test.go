@@ -1221,3 +1221,22 @@ func TestForgeAnvilConfig_PatchStringListRejectsEmptyElement(t *testing.T) {
 		t.Errorf("empty element: expected 400, got %d body=%s", rec.Code, rec.Body.String())
 	}
 }
+
+// TestForgeConfig_AnvilPreviewKeysAreHotReloadable guards the schema contract
+// the frontend renders from: the per-anvil Kiln tri-states are resolved per
+// request, so the daemon applies them live (internal/hotreload) and the settings
+// page must not tell the operator to restart.
+func TestForgeConfig_AnvilPreviewKeysAreHotReloadable(t *testing.T) {
+	hot := map[string]bool{}
+	for _, ak := range anvilKeySchema() {
+		hot[ak.Key] = ak.HotReloadable
+	}
+	for _, key := range []string{"preview_enabled", "preview_auto", "preview_quests", "auto_merge"} {
+		if !hot[key] {
+			t.Errorf("anvil key %s: expected hotReloadable=true", key)
+		}
+	}
+	if hot["schematic_enabled"] {
+		t.Errorf("anvil key schematic_enabled is read on the next run, not hot-reloaded")
+	}
+}

@@ -1243,6 +1243,9 @@ func (d *Daemon) Run(ctx context.Context) error {
 			d.updateSmelterSettings(old, new)
 			// Propagate config changes to Wicket monitor (interval, labels, etc.)
 			d.updateWicketConfig(new)
+			// A per-anvil preview opt-in applies from here on, but only if a
+			// preview manager exists to serve it.
+			d.warnPreviewOptInWithoutManager(new)
 			// Signal the poll loop to reset the crucible ticker when the interval changes.
 			if old.Settings.CruciblePollInterval != new.Settings.CruciblePollInterval {
 				select {

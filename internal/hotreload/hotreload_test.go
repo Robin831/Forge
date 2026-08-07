@@ -1,8 +1,12 @@
 package hotreload
 
 import (
+	"bytes"
+	"log/slog"
 	"slices"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/Robin831/Forge/internal/config"
 )
@@ -99,5 +103,196 @@ func TestApplyChanges_PerAnvilAssayConfig(t *testing.T) {
 	}
 	if ch := applyChanges(mk(true), mk(false)); len(ch) == 0 {
 		t.Error("per-anvil assay overlay change must be detected")
+	}
+}
+
+// previewAnvilConfig builds a config whose single anvil carries the three
+// per-anvil preview keys, with previews enabled globally.
+func previewAnvilConfig(enabled *bool, auto string, quests bool) *config.Config {
+	return &config.Config{
+		Anvils: map[string]config.AnvilConfig{
+			"munin": {Path: "/tmp/munin", PreviewEnabled: enabled, PreviewAuto: auto, PreviewQuests: quests},
+		},
+		Settings: config.SettingsConfig{PreviewEnabled: true},
+	}
+}
+
+func boolPtr(b bool) *bool { return &b }
+
+// TestApplyChanges_PerAnvilPreviewKeys is the bead's first acceptance criterion:
+// the three per-anvil preview tri-states are resolved per request, so detecting
+// them here is all it takes for the edit to apply without a restart.
+func TestApplyChanges_PerAnvilPreviewKeys(t *testing.T) {
+	cases := []struct {
+		name string
+		old  *config.Config
+		new  *config.Config
+		want string
+	}{
+		{
+			name: "opt in from opted out",
+			old:  previewAnvilConfig(boolPtr(false), "", false),
+			new:  previewAnvilConfig(boolPtr(true), "", false),
+			want: "anvil munin preview_enabled: false → true",
+		},
+		{
+			name: "opt out from inherited",
+			old:  previewAnvilConfig(nil, "", false),
+			new:  previewAnvilConfig(boolPtr(false), "", false),
+			want: "anvil munin preview_enabled: unset → false",
+		},
+		{
+			name: "clearing an override back to inherit",
+			old:  previewAnvilConfig(boolPtr(true), "", false),
+			new:  previewAnvilConfig(nil, "", false),
+			want: "anvil munin preview_enabled: true → unset",
+		},
+		{
+			name: "automatic previews turned on",
+			old:  previewAnvilConfig(nil, "", false),
+			new:  previewAnvilConfig(nil, config.PreviewAutoReadyToMerge, false),
+			want: `anvil munin preview_auto: "" → "ready_to_merge"`,
+		},
+		{
+			name: "preview quests opted into",
+			old:  previewAnvilConfig(nil, "", false),
+			new:  previewAnvilConfig(nil, "", true),
+			want: "anvil munin preview_quests: false → true",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			changes := applyChanges(tc.old, tc.new)
+			if !slices.Contains(changes, tc.want) {
+				t.Errorf("expected %q among changes, got %v", tc.want, changes)
+			}
+			if back := applyChanges(tc.new, tc.new); len(back) != 0 {
+				t.Errorf("identical config must not register a change, got %v", back)
+			}
+		})
+	}
+}
+
+// TestRestartRequiredChanges covers the second acceptance criterion: a global
+// preview setting the daemon reads once, at startup, is named in a warning
+// rather than silently ignored.
+func TestRestartRequiredChanges(t *testing.T) {
+	cases := []struct {
+		name   string
+		mutate func(*config.SettingsConfig)
+		want   string
+	}{
+		{"global gate", func(s *config.SettingsConfig) { s.PreviewEnabled = false }, "settings.preview_enabled: true → false"},
+		{"port range", func(s *config.SettingsConfig) { s.PreviewPortRange = "31000-31999" }, "settings.preview_port_range: 24000-24999 → 31000-31999"},
+		{"bind host", func(s *config.SettingsConfig) { s.PreviewBindHost = "0.0.0.0" }, "settings.preview_bind_host: 127.0.0.1 → 0.0.0.0"},
+		{"public host", func(s *config.SettingsConfig) { s.PreviewPublicHost = "box.local" }, "settings.preview_public_host: 127.0.0.1 → box.local"},
+		{"max concurrent", func(s *config.SettingsConfig) { s.PreviewMaxConcurrent = 5 }, "settings.preview_max_concurrent: 2 → 5"},
+		{"evict lru", func(s *config.SettingsConfig) { s.PreviewEvictLRU = true }, "settings.preview_evict_lru: false → true"},
+		{"idle timeout", func(s *config.SettingsConfig) { s.PreviewIdleTimeout = time.Hour }, "settings.preview_idle_timeout: 30m0s → 1h0m0s"},
+	}
+	base := config.SettingsConfig{
+		PreviewEnabled:     true,
+		PreviewPortRange:   config.DefaultPreviewPortRange,
+		PreviewBindHost:    config.DefaultPreviewBindHost,
+		PreviewIdleTimeout: config.DefaultPreviewIdleTimeout,
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			old := &config.Config{Settings: base}
+			changed := base
+			tc.mutate(&changed)
+			new := &config.Config{Settings: changed}
+
+			got := restartRequiredChanges(old, new)
+			if !slices.Contains(got, tc.want) {
+				t.Errorf("expected %q among restart-required keys, got %v", tc.want, got)
+			}
+			// The same edit must not be mistaken for something applied live.
+			if ch := applyChanges(old, new); len(ch) != 0 {
+				t.Errorf("restart-only key must not report as hot-reloaded, got %v", ch)
+			}
+			if same := restartRequiredChanges(old, old); len(same) != 0 {
+				t.Errorf("identical config must not require a restart, got %v", same)
+			}
+		})
+	}
+}
+
+// TestRestartRequiredChanges_PerAnvilKeysAreNotRestartOnly guards the boundary
+// from the other side: the keys this bead made hot-reloadable must never turn up
+// in the restart warning, or the operator is told to restart for nothing.
+func TestRestartRequiredChanges_PerAnvilKeysAreNotRestartOnly(t *testing.T) {
+	old := previewAnvilConfig(boolPtr(false), "", false)
+	new := previewAnvilConfig(boolPtr(true), config.PreviewAutoReadyToMerge, true)
+
+	if got := restartRequiredChanges(old, new); len(got) != 0 {
+		t.Errorf("per-anvil preview keys are hot-reloadable, got restart-required %v", got)
+	}
+}
+
+// TestReportIgnored covers the three outcomes of a reload: a named restart-only
+// key, an untracked edit that moved nothing hot-reloadable (the generic line),
+// and a reload that applied everything it saw (silence).
+func TestReportIgnored(t *testing.T) {
+	preview := func(enabled bool) *config.Config {
+		return &config.Config{Settings: config.SettingsConfig{PreviewEnabled: enabled}}
+	}
+	smiths := func(n int) *config.Config {
+		return &config.Config{Settings: config.SettingsConfig{MaxTotalSmiths: n}}
+	}
+	cases := []struct {
+		name       string
+		old        *config.Config
+		new        *config.Config
+		applied    int
+		wantWarn   bool
+		wantSubstr string
+	}{
+		{
+			name:       "named restart-only key",
+			old:        preview(false),
+			new:        preview(true),
+			wantWarn:   true,
+			wantSubstr: "settings.preview_enabled: false → true",
+		},
+		{
+			// A restart-only key this package does not know by name still has to
+			// produce a signal, even though it cannot be named.
+			name:       "untracked key changed alone",
+			old:        &config.Config{Settings: config.SettingsConfig{MergeStrategy: "squash"}},
+			new:        &config.Config{Settings: config.SettingsConfig{MergeStrategy: "merge"}},
+			wantWarn:   true,
+			wantSubstr: "daemon restart is required",
+		},
+		{
+			name:     "hot-reloadable change applied",
+			old:      smiths(2),
+			new:      smiths(4),
+			applied:  1,
+			wantWarn: false,
+		},
+		{
+			name:     "nothing changed at all",
+			old:      preview(true),
+			new:      preview(true),
+			wantWarn: false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
+			w := NewWatcher("forge.yaml", tc.old, logger)
+
+			w.reportIgnored(tc.old, tc.new, tc.applied)
+
+			out := buf.String()
+			if got := strings.Contains(out, "level=WARN"); got != tc.wantWarn {
+				t.Fatalf("warn logged = %v, want %v (log: %q)", got, tc.wantWarn, out)
+			}
+			if tc.wantSubstr != "" && !strings.Contains(out, tc.wantSubstr) {
+				t.Errorf("expected warning to name %q, got %q", tc.wantSubstr, out)
+			}
+		})
 	}
 }

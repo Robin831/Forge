@@ -1084,6 +1084,15 @@ anvils:
     preview_quests: true         # run this anvil's E2E quests against the preview
 ```
 
+The three **per-anvil** keys are hot-reloadable: they are resolved per request,
+so editing `forge.yaml` is enough for the next preview start, automatic start or
+quest run to obey the new value. The `settings.*` block above is read once, at
+startup — changing it logs a WARN naming the key and needs a daemon restart. See
+[Hot Reload](#hot-reload). The one exception worth knowing: if the daemon
+started with previews off for *every* anvil, no preview manager was built, so
+opting an anvil in later also needs a restart — the daemon warns when it spots
+exactly that.
+
 ### Choosing a preview port range (`preview_port_range`)
 
 Preview service ports come out of `preview_port_range` (default
@@ -1897,6 +1906,51 @@ The daemon watches `forge.yaml` via fsnotify. When the file changes, **only a su
 - `smelter_interval` changes the Smelter schedule; takes effect on the next scheduled run
 - `pricing` and `copilot_premium_multipliers` are re-applied to the cost estimator for subsequent cost calculations
 - `notifications.*` (webhook URL, enabled, events, etc.) are re-read and applied immediately
+- `anvils.<name>.preview_enabled` is re-read per preview start, so the next `forge preview start` (or Preview button) obeys the new value
+- `anvils.<name>.preview_auto` is re-read on the next ready-to-merge transition
+- `anvils.<name>.preview_quests` is re-read per quest run
+- Other per-anvil keys the daemon applies live: `auto_merge` (next ready-to-merge transition), `max_smiths`, `path`, `stage_providers`, `assay.*`, plus adding or removing an anvil entry
 - In-flight workers are **not** interrupted
 
-All other configuration changes (including `anvils.*`, `providers`, `rate_limit_backoff`, `daily_cost_limit`, `merge_strategy`, and scheduling fields not listed above) **require a daemon restart** to take effect.
+All other configuration changes (including `providers`, `rate_limit_backoff`, `daily_cost_limit`, `merge_strategy`, per-anvil keys not listed above, and scheduling fields not listed above) **require a daemon restart** to take effect.
+
+### Changes that need a restart are reported
+
+A reload that touches a setting the daemon read once, at startup, logs a WARN
+naming it rather than dropping it silently:
+
+```
+WARN config change requires a daemon restart to take effect keys="settings.preview_enabled: false → true"
+```
+
+The Kiln globals are named individually, because that is where the boundary
+bites in practice — the preview manager, its port allocator and its idle reaper
+are all built once from these values:
+
+| Restart-only setting | Why |
+|---|---|
+| `settings.preview_enabled` | The preview manager is constructed at startup only when this is on (and at least one anvil opts in); with it off there is nothing to hand a later opt-in to |
+| `settings.preview_port_range` | The port allocator holds live allocation state |
+| `settings.preview_bind_host` | Baked into the allocator and into every running service's manifest expansion |
+| `settings.preview_public_host` | Baked into running services' manifest expansion (displayed links do follow the new value) |
+| `settings.preview_max_concurrent`, `settings.preview_evict_lru`, `settings.preview_idle_timeout` | Captured by the manager and its reaper at construction |
+
+`settings.preview_proxy_base` and `settings.preview_proxy_auth` are **not** on
+that list: the web layer reads both live, so host-based routing and the preview
+auth mode do follow a reload.
+
+Any other edit that changes the file without moving a hot-reloadable setting
+gets a generic line — an ignored edit never passes without a trace:
+
+```
+WARN config file changed but no hot-reloadable setting differs; a daemon restart is required to apply the edit
+```
+
+One more case has its own warning: enabling `preview_enabled` for an anvil on a
+daemon that started with previews off for *every* anvil. The config change
+applies, but no preview manager was built to serve it, so previews still refuse
+until a restart:
+
+```
+WARN anvil(s) opted into Kiln previews but no preview manager is running; the manager is built at startup, so a daemon restart is required anvils=munin
+```
