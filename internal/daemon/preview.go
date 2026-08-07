@@ -444,7 +444,8 @@ func (d *Daemon) handlePreviewAutoStart(ctx context.Context, event bellows.PREve
 		}
 		d.logger.Info("auto-preview started on ready-to-merge",
 			"bead", opts.BeadID, "anvil", opts.Anvil, "pr", prNumber,
-			"branch", opts.Branch, "status", env.Status(), "entry_url", env.EntryURL())
+			"branch", opts.Branch, "status", env.Status(),
+			"entry_url", previewEntryURL(d.cfg.Load(), env.Record()))
 		if d.db != nil {
 			_ = d.db.LogEvent(state.EventPreviewAutoStarted,
 				fmt.Sprintf("preview auto-started for PR #%d (%s)", prNumber, env.Status()),
@@ -510,7 +511,7 @@ func (d *Daemon) handlePreviewStart(p ipc.PreviewActionPayload) ipc.Response {
 		d.completeAsync(reqID, okResponse(map[string]string{
 			"message":   fmt.Sprintf("preview for %s is %s", beadID, env.Status()),
 			"status":    env.Status(),
-			"entry_url": env.EntryURL(),
+			"entry_url": previewEntryURL(d.cfg.Load(), env.Record()),
 		}))
 	}()
 	resp, _ := ipc.NewQueuedResponse(reqID, "starting preview")
@@ -592,7 +593,8 @@ func (d *Daemon) handlePreviewList() ipc.Response {
 	out.QuestAnvils = previewQuestAnvilNames(cfg)
 	now := time.Now()
 	for _, env := range mgr.List() {
-		out.Previews = append(out.Previews, previewInfo(env.Record(), env.EntryURL(), idle, now))
+		rec := env.Record()
+		out.Previews = append(out.Previews, previewInfo(rec, previewEntryURL(cfg, rec), idle, now))
 	}
 	return okResponse(out)
 }
@@ -690,19 +692,11 @@ func previewServiceByLabel(rec state.Preview, label string) (state.PreviewServic
 		}
 	}
 	for _, svc := range rec.Services {
-		if foldServiceLabel(svc.Name) == label {
+		if kiln.ServiceLabel(svc.Name) == label {
 			return svc, true
 		}
 	}
 	return state.PreviewService{}, false
-}
-
-// foldServiceLabel renders a manifest service name as the DNS label it would be
-// addressed by: lowercased, with '.' and '_' folded to '-'.
-func foldServiceLabel(name string) string {
-	folded := strings.ToLower(strings.TrimSpace(name))
-	folded = strings.ReplaceAll(folded, "_", "-")
-	return strings.ReplaceAll(folded, ".", "-")
 }
 
 // previewEntryServiceName names the service previewEntryPort picked, so the
@@ -765,6 +759,31 @@ func previewInfo(rec state.Preview, entryURL string, idle time.Duration, now tim
 		})
 	}
 	return info
+}
+
+// previewEntryURL is the operator-facing link for a preview: what the previews
+// payload carries, what `forge preview list` prints and what a finished
+// preview_start reports.
+//
+// It is built from the settings rather than taken from the running preview
+// (kiln.Environment.EntryURL, which is always the direct host:port the service
+// binds) because which form is *the* link is a daemon-level decision: with
+// settings.preview_proxy_base configured previews are addressed by hostname and
+// the loopback port is frequently not reachable by whoever reads the link.
+// Reading the settings here also means a hot-reloaded preview_public_host is
+// picked up by previews that were already running when it changed.
+//
+// It mints no access token. The token belongs to the web layer's auth gate,
+// which has the secret and knows whether the caller's session cookie already
+// reaches the preview host; the token-carrying link is built there (see
+// internal/web.previewEntryURL) on top of this same builder.
+func previewEntryURL(cfg *config.Config, rec state.Preview) string {
+	opts := kiln.EntryURLOptions{BeadID: rec.BeadID, Port: previewEntryPort(rec)}
+	if cfg != nil {
+		opts.ProxyBase = cfg.Settings.ResolvedPreviewProxyBase()
+		opts.Host = cfg.Settings.ResolvedPreviewPublicHost()
+	}
+	return kiln.EntryURL(opts)
 }
 
 // previewEntryPort returns the port the preview's entry link points at: the

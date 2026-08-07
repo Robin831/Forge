@@ -411,6 +411,86 @@ func TestPreviewEntryPort(t *testing.T) {
 	}
 }
 
+// TestPreviewEntryURL — the operator-facing link. It is the one every client
+// that has no HTTP request of its own prints (`forge preview list`, the queued
+// start's outcome), so the proxy base has to win here and not only in the web
+// layer, or the CLI would keep handing out loopback ports nobody can reach.
+func TestPreviewEntryURL(t *testing.T) {
+	rec := state.Preview{
+		BeadID: "Forge-abc1",
+		Services: []state.PreviewService{
+			{Name: "api", Port: 4310},
+			{Name: "web", Port: 4311, Entry: true},
+		},
+	}
+
+	tests := []struct {
+		name     string
+		settings config.SettingsConfig
+		rec      state.Preview
+		want     string
+	}{
+		{
+			name:     "no proxy base: the entry port on the public host",
+			settings: config.SettingsConfig{PreviewPublicHost: "forge.wg"},
+			rec:      rec,
+			want:     "http://forge.wg:4311/",
+		},
+		{
+			name:     "no proxy base and no public host: the bind host",
+			settings: config.SettingsConfig{PreviewBindHost: "127.0.0.1"},
+			rec:      rec,
+			want:     "http://127.0.0.1:4311/",
+		},
+		{
+			name: "proxy base: the preview hostname, not the port",
+			settings: config.SettingsConfig{
+				PreviewPublicHost: "forge.wg",
+				PreviewProxyBase:  "preview.example.com",
+			},
+			rec:  rec,
+			want: "https://forge-abc1.preview.example.com/",
+		},
+		{
+			name:     "proxy base: a preview whose ports are not allocated yet still has a link",
+			settings: config.SettingsConfig{PreviewProxyBase: "preview.example.com"},
+			rec:      state.Preview{BeadID: "Forge-abc1"},
+			want:     "https://forge-abc1.preview.example.com/",
+		},
+		{
+			name:     "no proxy base and no ports: no link",
+			settings: config.SettingsConfig{PreviewPublicHost: "forge.wg"},
+			rec:      state.Preview{BeadID: "Forge-abc1"},
+			want:     "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := previewEntryURL(&config.Config{Settings: tt.settings}, tt.rec)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+// TestHandlePreviewList_EntryURLFollowsTheProxyBase — the whole path the CLI
+// reads: the payload `forge preview list` prints carries the proxy link.
+func TestHandlePreviewList_EntryURLFollowsTheProxyBase(t *testing.T) {
+	mgr := newFakePreviewManager()
+	startFakePreview(t, mgr, "Forge-abc1")
+	cfg := previewConfig(true, nil)
+	cfg.Settings.PreviewProxyBase = "preview.example.com"
+	d := newPreviewAPIDaemon(t, cfg, mgr)
+
+	resp := d.handlePreviewList()
+	require.Equal(t, "ok", resp.Type)
+	var out ipc.PreviewListResponse
+	require.NoError(t, json.Unmarshal(resp.Payload, &out))
+
+	require.Len(t, out.Previews, 1)
+	assert.Equal(t, "https://forge-abc1.preview.example.com/", out.Previews[0].EntryURL)
+}
+
 func TestPreviewIdleRemaining(t *testing.T) {
 	now := time.Date(2026, 8, 6, 12, 0, 0, 0, time.UTC)
 

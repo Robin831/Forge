@@ -40,13 +40,17 @@ type PreviewInfo struct {
 	Services     []PreviewServiceInfo `json:"services,omitempty"`
 	CreatedAt    time.Time            `json:"created_at"`
 	LastActiveAt time.Time            `json:"last_active_at"`
-	// EntryURL is the link to the preview's entry service exactly as Kiln built
-	// it — settings.preview_public_host when configured, else the bind host.
-	// Empty when no entry service has a port yet.
+	// EntryURL is the link an operator opens for this preview, built by the
+	// daemon (kiln.EntryURL): `https://<label>.<base>/` when
+	// settings.preview_proxy_base routes previews by hostname, else the entry
+	// service's port on settings.preview_public_host. Empty when neither form
+	// is available — no ports allocated yet, typically.
 	//
-	// The web layer deliberately rebuilds this host-side from the browser's own
-	// request (see internal/web.previewEntryURL); a CLI has no request to fall
-	// back on, so it prints this.
+	// The web layer rebuilds it from the same builder rather than printing this
+	// one, because it can do better with a request in hand: the browser's own
+	// scheme and port, and an access token when the auth gate needs one (see
+	// internal/web.previewEntryURL). A CLI has no request to fall back on, so
+	// it prints this.
 	EntryURL string `json:"entry_url,omitempty"`
 	// Port is the entry service's port — the one EntryURL points at — or the
 	// first allocated port when no service is marked as the entry. 0 while
