@@ -40,13 +40,13 @@ services:
     command: "dotnet run --project src/Api --no-launch-profile"
     dir: "."                        # relative to the preview worktree
     env:
-      ASPNETCORE_URLS: "http://127.0.0.1:{{.Port}}"
+      ASPNETCORE_URLS: "http://{{.BindHost}}:{{.Port}}"
       ConnectionStrings__Default: "Server=localhost;Database=app_preview_{{.PreviewID}}"
     health: "/healthz"              # GET on the allocated port; omit = port-open check
     ready_timeout: 120s
 
   client:
-    command: "npm run dev -- --port {{.Port}} --strictPort"
+    command: "npm run dev -- --host {{.BindHost}} --port {{.Port}} --strictPort"
     dir: "client"
     env:
       VITE_API_URL: "http://{{.Host}}:{{.ServicePort \"api\"}}"
@@ -96,6 +96,7 @@ templates expanded when a preview starts.
 | `{{.ServicePort "name"}}` | anywhere | The port allocated to any service in the manifest — how one service is told where another listens. |
 | `{{.PreviewID}}` | anywhere | The sanitized bead id for this preview, safe to use in database names. |
 | `{{.Host}}` | anywhere | The hostname preview URLs are built from (`preview_public_host`, falling back to `preview_bind_host`). |
+| `{{.BindHost}}` | anywhere | The address services are expected to listen on (`preview_bind_host`) — what a dev server's `--host` flag or `ASPNETCORE_URLS` wants, so it never has to be hardcoded. |
 
 `{{.Port}}` is meaningless outside a service, so `setup` and `teardown` must
 name a service explicitly via `{{.ServicePort "name"}}`.

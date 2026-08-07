@@ -22,13 +22,15 @@ services:
       dotnet run --project src/Api --no-launch-profile
     env:
       ASPNETCORE_ENVIRONMENT: "Preview"
-      ASPNETCORE_URLS: "http://127.0.0.1:{{.Port}}"
+      # {{.BindHost}} is preview_bind_host — Kestrel binds exactly where Kiln
+      # probes, whether that is loopback or 0.0.0.0 for a LAN.
+      ASPNETCORE_URLS: "http://{{.BindHost}}:{{.Port}}"
     health: "/health/ready"
     # First `dotnet run` after a checkout restores and builds.
     ready_timeout: 240s
 
   client:
-    command: "npm run dev -- --port {{.Port}} --strictPort"
+    command: "npm run dev -- --host {{.BindHost}} --port {{.Port}} --strictPort"
     dir: "src/Client"
     env:
       VITE_API_BASE_URL: "http://{{.Host}}:{{.ServicePort \"api\"}}"

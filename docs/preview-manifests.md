@@ -59,7 +59,9 @@ services:
     ready_timeout: 180s
 
   web:
-    command: "npm run dev -- --port {{.Port}} --strictPort"
+    # `--host {{.BindHost}}` follows preview_bind_host, so widening that setting
+    # to reach previews from a LAN does not also mean editing this manifest.
+    command: "npm run dev -- --host {{.BindHost}} --port {{.Port}} --strictPort"
     dir: "web"
     env:
       # The api's port is not known until the preview starts, so the client is
@@ -92,6 +94,11 @@ services:
   is rejected at load time, because in YAML that decodes to 180 nanoseconds.
 - **`web.dir: "web"`** — relative to the preview worktree; it may not be
   absolute and may not climb out with `..`.
+- **`web.command --host {{.BindHost}}`** — `preview_bind_host`, the address Kiln
+  expects services to listen on. Passing it through means the dev server binds
+  where Kiln probes, instead of the manifest hardcoding an address that
+  disagrees with the setting. See
+  [Bind host vs. public host](#bind-host-vs-public-host).
 - **`web.env.VITE_API_URL`** — `{{.ServicePort "api"}}` is how one service is
   told where another listens. Referencing a service the manifest does not
   declare is a load-time error, not a silently empty string. `{{.Host}}` is
@@ -141,13 +148,15 @@ services:
       dotnet run --project src/Api --no-launch-profile
     env:
       ASPNETCORE_ENVIRONMENT: "Preview"
-      ASPNETCORE_URLS: "http://127.0.0.1:{{.Port}}"
+      # {{.BindHost}} is preview_bind_host — Kestrel binds exactly where Kiln
+      # probes, whether that is loopback or 0.0.0.0 for a LAN.
+      ASPNETCORE_URLS: "http://{{.BindHost}}:{{.Port}}"
     health: "/health/ready"
     # First `dotnet run` after a checkout restores and builds.
     ready_timeout: 240s
 
   client:
-    command: "npm run dev -- --port {{.Port}} --strictPort"
+    command: "npm run dev -- --host {{.BindHost}} --port {{.Port}} --strictPort"
     dir: "src/Client"
     env:
       VITE_API_BASE_URL: "http://{{.Host}}:{{.ServicePort \"api\"}}"
@@ -392,15 +401,29 @@ A manifest change is picked up on the next preview start — no daemon restart.
 
 `{{.Host}}` is `preview_public_host` falling back to `preview_bind_host`: the
 name that belongs in a *URL*. It is not necessarily an address a server can
-bind. Services choose their own bind address in their own command line —
-`ASPNETCORE_URLS: "http://127.0.0.1:{{.Port}}"` above, or Vite's default
-localhost binding.
+bind. `{{.BindHost}}` is the other half — `preview_bind_host` itself, the
+address Kiln expects services to listen on and probes for health.
 
-If you set `preview_bind_host: 0.0.0.0` to reach previews from a LAN or VPN, the
-services must be told to bind wide too (`--host 0.0.0.0` for Vite,
-`http://0.0.0.0:{{.Port}}` for Kestrel) — the setting governs where Kiln probes
-and builds links, not where a third-party dev server listens. Remember that
-preview URLs bypass the Hearth login; see the security note in
+Kiln does not bind anything on a service's behalf: a third-party dev server
+listens wherever its own command line says. So if you set
+`preview_bind_host: 0.0.0.0` to reach previews from a LAN or VPN, the services
+have to be told to bind wide too — but use `{{.BindHost}}` rather than writing
+the address twice:
+
+```yaml
+services:
+  client:
+    command: "npm run dev -- --host {{.BindHost}} --port {{.Port}} --strictPort"
+  api:
+    command: "dotnet run --project src/Api --no-launch-profile"
+    env:
+      ASPNETCORE_URLS: "http://{{.BindHost}}:{{.Port}}"
+```
+
+Both examples above are written that way. A manifest that follows the setting
+keeps working the day someone widens or narrows `preview_bind_host`, where one
+that hardcodes `127.0.0.1` starts disagreeing with it. Remember that preview
+URLs bypass the Hearth login; see the security note in
 [configuration.md](configuration.md#preview-environments-kiln).
 
 ### Where the output goes

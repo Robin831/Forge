@@ -117,6 +117,7 @@ func (f *fakeRunner) Start(ctx context.Context, req StartRequest) (Instance, err
 		expanded, err := req.Manifest.Expand(Context{
 			PreviewID: SanitizePreviewID(req.BeadID),
 			Host:      "127.0.0.1",
+			BindHost:  "127.0.0.1",
 			Ports:     fakePorts(req.Manifest),
 		})
 		if err != nil {

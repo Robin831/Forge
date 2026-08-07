@@ -822,7 +822,9 @@ type SettingsConfig struct {
 	PreviewPortRange string `mapstructure:"preview_port_range" yaml:"preview_port_range,omitempty"`
 	// PreviewBindHost is the address preview services bind to. Defaults to
 	// 127.0.0.1 (loopback only); set it to 0.0.0.0 to reach previews from a
-	// LAN or VPN. Preview URLs bypass the Hearth login, so widen this only on
+	// LAN or VPN. Manifests reference it as {{.BindHost}} so a service is told
+	// what to listen on instead of hardcoding an address that disagrees with
+	// this setting. Preview URLs bypass the Hearth login, so widen this only on
 	// a trusted network.
 	PreviewBindHost string `mapstructure:"preview_bind_host" yaml:"preview_bind_host,omitempty"`
 	// PreviewPublicHost is the hostname used when displaying preview links

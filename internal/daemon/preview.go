@@ -282,6 +282,7 @@ func (d *Daemon) buildPreviewManager(ctx context.Context, cfg *config.Config, an
 			EvictLRU:      cfg.Settings.PreviewEvictLRU,
 			IdleTimeout:   cfg.Settings.PreviewIdleTimeout,
 			PublicHost:    publicHost,
+			BindHost:      bindHost,
 			Anvils:        anvils,
 		},
 	})
