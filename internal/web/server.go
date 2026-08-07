@@ -175,6 +175,13 @@ type Server struct {
 	// removal once the bus-based activity stream is proven stable.
 	ssePollFallback func() bool
 
+	// previewProxyBase supplies the live settings.preview_proxy_base for the
+	// host-based preview proxy. The daemon installs a closure reading its
+	// current config so hot-reloads take effect per request. nil (the default,
+	// and in tests) switches host-based routing off: PreviewProxyMiddleware then
+	// passes every request straight through. See SetPreviewProxyBase.
+	previewProxyBase func() string
+
 	// throttle rate-limits failed login attempts per username and per IP so
 	// online password guessing is slowed at the application layer (fail2ban
 	// cannot see Cloudflare-routed clients). Always non-nil after New.

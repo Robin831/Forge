@@ -111,3 +111,61 @@ type PreviewStopResponse struct {
 	BeadID  string `json:"bead_id"`
 	Message string `json:"message,omitempty"`
 }
+
+// PreviewResolvePayload is the payload for the "preview_resolve" command: turn
+// a preview host label (and optionally the `--<service>` selector that rode
+// along with it) into the loopback address that preview answers on.
+//
+// It exists for the host-based proxy in internal/web, which sees only a Host
+// header and has no access to the Kiln registry. Resolving in the daemon keeps
+// the registry the single source of truth and lets the same call bump the idle
+// clock, so proxied traffic counts as activity.
+type PreviewResolvePayload struct {
+	// Label is the leftmost hostname component — kiln.PreviewLabel of a bead id.
+	Label string `json:"label"`
+	// Service selects one named service of the preview. Empty means the
+	// manifest's entry service.
+	Service string `json:"service,omitempty"`
+}
+
+// Reasons a "preview_resolve" did not produce an address. A refusal is an "ok"
+// response carrying one of these rather than an IPC error: "that preview is not
+// running" is an answer, not a failure, and the proxy maps each onto its own
+// 404 body.
+const (
+	// PreviewResolveDisabled means the Kiln manager is not running at all
+	// (settings.preview_enabled is off).
+	PreviewResolveDisabled = "previews_disabled"
+	// PreviewResolveNoPreview means no live preview folds onto that label.
+	PreviewResolveNoPreview = "no_preview"
+	// PreviewResolveStopped means the preview exists but is not serving
+	// (stopped or failed).
+	PreviewResolveStopped = "stopped"
+	// PreviewResolveNoService means the preview has no service by that name.
+	PreviewResolveNoService = "no_service"
+	// PreviewResolveNoPort means the service has no port allocated yet.
+	PreviewResolveNoPort = "no_port"
+)
+
+// PreviewResolveResponse is the answer to a "preview_resolve".
+//
+// Found reports whether Host/Port name a reachable service. When it is false
+// Reason says why, using one of the PreviewResolve* constants, and BeadID /
+// Status are filled in whenever a preview was matched at all — so a caller can
+// tell "no such preview" apart from "that preview is stopped".
+type PreviewResolveResponse struct {
+	Found bool `json:"found"`
+	// BeadID is the bead whose preview the label resolved to, when one matched.
+	BeadID string `json:"bead_id,omitempty"`
+	// Service is the resolved service name (the entry service when the request
+	// named none).
+	Service string `json:"service,omitempty"`
+	// Host is the address to dial — the preview bind host, with a wildcard bind
+	// reported as loopback because a proxy has to connect somewhere concrete.
+	Host string `json:"host,omitempty"`
+	Port int    `json:"port,omitempty"`
+	// Status is the preview's state.Preview* status.
+	Status string `json:"status,omitempty"`
+	// Reason is one of the PreviewResolve* constants when Found is false.
+	Reason string `json:"reason,omitempty"`
+}

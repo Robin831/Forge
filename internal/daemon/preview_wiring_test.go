@@ -30,6 +30,7 @@ type fakePreviewManager struct {
 	started      []kiln.StartOptions
 	startCtxErrs []error
 	stopped      []string
+	touched      []string
 	stopAllCalls int
 
 	// envs is what List reports and what Start hands back, keyed by bead id.
@@ -106,6 +107,19 @@ func (f *fakePreviewManager) Get(beadID string) (*kiln.Environment, bool) {
 	defer f.mu.Unlock()
 	env, ok := f.envs[beadID]
 	return env, ok
+}
+
+func (f *fakePreviewManager) Touch(beadID string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.touched = append(f.touched, beadID)
+}
+
+// touchedBeads reports the beads whose idle clock was reset, in call order.
+func (f *fakePreviewManager) touchedBeads() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.touched...)
 }
 
 func (f *fakePreviewManager) startedOptions() []kiln.StartOptions {

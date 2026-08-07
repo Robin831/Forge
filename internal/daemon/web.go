@@ -88,6 +88,14 @@ func (d *Daemon) startWebServer(ctx context.Context) error {
 		return d.cfg.Load().Settings.SSEPollFallback
 	})
 
+	// Turn on host-based preview routing when settings.preview_proxy_base is
+	// configured. The closure reads d.cfg per request so switching the setting
+	// on or off takes effect on the next hot-reload rather than the next
+	// restart; an empty base leaves every request on the normal router.
+	srv.SetPreviewProxyBase(func() string {
+		return d.cfg.Load().Settings.ResolvedPreviewProxyBase()
+	})
+
 	// Plug in the Beads-Forge AI runner using the daemon's configured
 	// providers. We pick the head of the resolved list — fallbacks are not
 	// needed here because a turn is interactive and should fail fast.
