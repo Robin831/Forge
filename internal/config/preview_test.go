@@ -1,8 +1,10 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -29,6 +31,8 @@ func TestPreviewSettingsDefaults(t *testing.T) {
 	assert.Equal(t, DefaultPreviewPortRange, cfg.Settings.PreviewPortRange)
 	assert.Equal(t, DefaultPreviewBindHost, cfg.Settings.PreviewBindHost)
 	assert.Empty(t, cfg.Settings.PreviewPublicHost)
+	assert.Empty(t, cfg.Settings.PreviewProxyBase, "host-based routing is off unless a base is configured")
+	assert.False(t, cfg.Settings.IsPreviewProxyEnabled())
 
 	lo, hi, err := cfg.Settings.PreviewPortRangeBounds()
 	require.NoError(t, err)
@@ -47,10 +51,14 @@ func TestPreviewSettingsParse(t *testing.T) {
   preview_port_range: "43000-43100"
   preview_bind_host: "0.0.0.0"
   preview_public_host: "devbox.local"
+  preview_proxy_base: "Preview.Example.Test."
 `))
 	require.NoError(t, err)
 
 	assert.True(t, cfg.Settings.PreviewEnabled)
+	assert.Equal(t, "preview.example.test", cfg.Settings.ResolvedPreviewProxyBase(),
+		"the base is lowercased and loses its trailing root dot")
+	assert.True(t, cfg.Settings.IsPreviewProxyEnabled())
 	assert.Equal(t, 4, cfg.Settings.PreviewMaxConcurrent)
 	assert.True(t, cfg.Settings.PreviewEvictLRU)
 	assert.Equal(t, 45*time.Minute, cfg.Settings.PreviewIdleTimeout)
@@ -109,6 +117,64 @@ func TestParsePortRange(t *testing.T) {
 	}
 }
 
+func TestNormalizePreviewProxyBase(t *testing.T) {
+	tests := []struct {
+		name    string
+		raw     string
+		want    string
+		wantErr string
+	}{
+		{name: "empty means off", raw: ""},
+		{name: "whitespace only means off", raw: "   "},
+		{name: "plain name", raw: "preview.example.test", want: "preview.example.test"},
+		{name: "lowercased", raw: "Preview.Example.TEST", want: "preview.example.test"},
+		{name: "padded", raw: "  preview.example.test  ", want: "preview.example.test"},
+		{name: "trailing root dot dropped", raw: "preview.example.test.", want: "preview.example.test"},
+		{name: "single label allowed", raw: "localtest", want: "localtest"},
+		{name: "hyphens and digits", raw: "pr-1.dev-box.test", want: "pr-1.dev-box.test"},
+
+		{name: "leading dot", raw: ".foo.test", wantErr: "must not start with a dot"},
+		{name: "scheme", raw: "https://preview.test", wantErr: "without a scheme"},
+		{name: "port", raw: "preview.test:8080", wantErr: "without a port"},
+		{name: "path", raw: "preview.test/previews", wantErr: "without a path"},
+		{name: "empty label", raw: "a..b", wantErr: "has an empty label"},
+		{name: "leading hyphen in a label", raw: "-bad.test", wantErr: "must not start or end with a hyphen"},
+		{name: "trailing hyphen in a label", raw: "bad-.test", wantErr: "must not start or end with a hyphen"},
+		{name: "underscore", raw: "bad_label.test", wantErr: "not allowed in a DNS name"},
+		{name: "over-long label", raw: strings.Repeat("a", 64) + ".test", wantErr: "is longer than 63 characters"},
+		{
+			name:    "over-long name",
+			raw:     strings.TrimSuffix(strings.Repeat(strings.Repeat("a", 63)+".", 5), "."),
+			wantErr: "is longer than 253 characters",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := NormalizePreviewProxyBase(tc.raw)
+			if tc.wantErr != "" {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tc.wantErr)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, got)
+
+			// The resolver is the same normalization, and an invalid base
+			// resolves to "" (feature off) rather than to a broken host.
+			s := SettingsConfig{PreviewProxyBase: tc.raw}
+			assert.Equal(t, tc.want, s.ResolvedPreviewProxyBase())
+			assert.Equal(t, tc.want != "", s.IsPreviewProxyEnabled())
+		})
+	}
+
+	// An invalid base never leaks onto the request path: Validate rejects it at
+	// load time and the resolver reports the feature as off.
+	bad := SettingsConfig{PreviewProxyBase: ".foo.test"}
+	assert.Empty(t, bad.ResolvedPreviewProxyBase())
+	assert.False(t, bad.IsPreviewProxyEnabled())
+}
+
 func TestPreviewValidation(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -135,6 +201,22 @@ func TestPreviewValidation(t *testing.T) {
 			mutate:   func(c *Config) { c.Settings.PreviewPortRange = "42000" },
 			expected: `settings.preview_port_range: port range "42000" must be in the form "min-max" (e.g. "42000-42999")`,
 		},
+		{
+			name:     "proxy base with a leading dot",
+			mutate:   func(c *Config) { c.Settings.PreviewProxyBase = ".foo.test" },
+			expected: `settings.preview_proxy_base: ".foo.test" must not start with a dot`,
+		},
+		{
+			name:   "proxy base with an over-long label",
+			mutate: func(c *Config) { c.Settings.PreviewProxyBase = strings.Repeat("a", 64) + ".test" },
+			expected: fmt.Sprintf(`settings.preview_proxy_base: %q: label %q is longer than 63 characters`,
+				strings.Repeat("a", 64)+".test", strings.Repeat("a", 64)),
+		},
+		{
+			name:     "proxy base with a port",
+			mutate:   func(c *Config) { c.Settings.PreviewProxyBase = "preview.test:8080" },
+			expected: `settings.preview_proxy_base: "preview.test:8080" must be a bare DNS name without a port`,
+		},
 	}
 
 	for _, tc := range tests {
@@ -149,6 +231,14 @@ func TestPreviewValidation(t *testing.T) {
 		cfg := Defaults()
 		cfg.Settings.PreviewIdleTimeout = 0
 		assert.Empty(t, cfg.Validate())
+	})
+
+	t.Run("a valid proxy base validates", func(t *testing.T) {
+		for _, base := range []string{"", "preview.example.test", "Preview.Example.Test.", "localtest"} {
+			cfg := Defaults()
+			cfg.Settings.PreviewProxyBase = base
+			assert.Empty(t, cfg.Validate(), "preview_proxy_base %q must be accepted", base)
+		}
 	})
 }
 
@@ -210,6 +300,7 @@ func TestSave_RoundTrip_PreviewSettings(t *testing.T) {
 	original.Settings.PreviewPortRange = "43000-43999"
 	original.Settings.PreviewBindHost = "0.0.0.0"
 	original.Settings.PreviewPublicHost = "devbox.local"
+	original.Settings.PreviewProxyBase = "preview.example.test"
 
 	require.NoError(t, Save(&original, cfgPath))
 
@@ -222,6 +313,22 @@ func TestSave_RoundTrip_PreviewSettings(t *testing.T) {
 	assert.Equal(t, "43000-43999", loaded.Settings.PreviewPortRange)
 	assert.Equal(t, "0.0.0.0", loaded.Settings.PreviewBindHost)
 	assert.Equal(t, "devbox.local", loaded.Settings.PreviewPublicHost)
+	assert.Equal(t, "preview.example.test", loaded.Settings.PreviewProxyBase)
+}
+
+// TestPreviewProxyBaseEnvOverride pins the FORGE_ override convention for the
+// new key: an operator can point a box at a different base without editing the
+// file the daemon hot-reloads.
+func TestPreviewProxyBaseEnvOverride(t *testing.T) {
+	t.Setenv("FORGE_SETTINGS_PREVIEW_PROXY_BASE", "env.example.test")
+
+	cfg, err := Load(writeConfig(t, `settings:
+  preview_enabled: true
+  preview_proxy_base: "file.example.test"
+`))
+	require.NoError(t, err)
+	assert.Equal(t, "env.example.test", cfg.Settings.ResolvedPreviewProxyBase(),
+		"the environment overrides the configured base")
 }
 
 func TestSave_RoundTrip_PreviewIdleTimeoutZero(t *testing.T) {

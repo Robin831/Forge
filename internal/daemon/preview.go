@@ -307,6 +307,7 @@ func (d *Daemon) buildPreviewManager(ctx context.Context, cfg *config.Config, an
 			IdleTimeout:   cfg.Settings.PreviewIdleTimeout,
 			PublicHost:    publicHost,
 			BindHost:      bindHost,
+			ProxyBase:     cfg.Settings.ResolvedPreviewProxyBase(),
 			Anvils:        anvils,
 		},
 	})

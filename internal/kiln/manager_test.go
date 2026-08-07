@@ -402,6 +402,71 @@ func TestManagerStartRegistersAndPersists(t *testing.T) {
 	}
 }
 
+// TestManagerStartRejectsLabelCollision covers the diagnostic Kiln owes an
+// operator up front: under host-based routing, two bead ids that fold to one
+// DNS label are one address, so the second start is refused rather than left to
+// answer requests meant for the first.
+func TestManagerStartRejectsLabelCollision(t *testing.T) {
+	h := newHarness(t, ManagerConfig{MaxConcurrent: 4, ProxyBase: "preview.example.test"})
+
+	if _, err := h.mgr.Start(context.Background(), h.opts("Forge_aaa1")); err != nil {
+		t.Fatalf("first Start: %v", err)
+	}
+
+	_, err := h.mgr.Start(context.Background(), h.opts("Forge-aaa1"))
+	if err == nil {
+		t.Fatal("colliding Start succeeded, want a label rejection")
+	}
+	if !errors.Is(err, ErrPreviewLabelCollision) {
+		t.Errorf("error %v does not match ErrPreviewLabelCollision", err)
+	}
+	var collision *PreviewLabelCollisionError
+	if !errors.As(err, &collision) {
+		t.Fatalf("error %v is not a *PreviewLabelCollisionError", err)
+	}
+	if collision.Label != "forge-aaa1" {
+		t.Errorf("Label = %q, want forge-aaa1", collision.Label)
+	}
+	for _, want := range []string{"Forge_aaa1", "Forge-aaa1"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("message %q does not name %s", err.Error(), want)
+		}
+	}
+	// The refused start must not have touched anything.
+	if _, ok := h.mgr.Get("Forge-aaa1"); ok {
+		t.Error("the refused bead is in the registry")
+	}
+	if paths := h.wts.createdPaths(); len(paths) != 1 {
+		t.Errorf("CreateDetached called %d times, want 1 (no worktree for the refused start)", len(paths))
+	}
+
+	// A bead that folds to its own label still gets its preview back.
+	if _, err := h.mgr.Start(context.Background(), h.opts("Forge_aaa1")); err != nil {
+		t.Errorf("restarting the existing preview: %v", err)
+	}
+	// And an unrelated bead is unaffected.
+	if _, err := h.mgr.Start(context.Background(), h.opts("Forge-bbb2")); err != nil {
+		t.Errorf("unrelated Start: %v", err)
+	}
+}
+
+// TestManagerStartIgnoresLabelCollisionWithoutProxy pins the gate: with
+// preview_proxy_base unset nothing routes by hostname, so a folded label costs
+// nothing and must not cost a preview.
+func TestManagerStartIgnoresLabelCollisionWithoutProxy(t *testing.T) {
+	h := newHarness(t, ManagerConfig{MaxConcurrent: 4})
+
+	if _, err := h.mgr.Start(context.Background(), h.opts("Forge_aaa1")); err != nil {
+		t.Fatalf("first Start: %v", err)
+	}
+	if _, err := h.mgr.Start(context.Background(), h.opts("Forge-aaa1")); err != nil {
+		t.Fatalf("colliding Start with the proxy off: %v", err)
+	}
+	if got := len(h.mgr.List()); got != 2 {
+		t.Errorf("List() returned %d previews, want 2", got)
+	}
+}
+
 func TestManagerStartRejectsOverCap(t *testing.T) {
 	h := newHarness(t, ManagerConfig{MaxConcurrent: 1})
 

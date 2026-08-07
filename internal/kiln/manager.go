@@ -142,6 +142,12 @@ type ManagerConfig struct {
 	// so a teardown command sees the address its services were told to listen
 	// on. Zero value uses the loopback default.
 	BindHost string
+	// ProxyBase is settings.preview_proxy_base: the DNS suffix previews are
+	// addressed under when Forge routes them by hostname. Empty means
+	// host-based routing is off, which is also what makes the manager skip the
+	// label-collision check — with no hostname in play, two bead ids folding to
+	// one label costs nothing.
+	ProxyBase string
 	// Env is the environment preview commands inherit; nil means the daemon's
 	// own (os.Environ).
 	Env []string
@@ -565,6 +571,14 @@ func (m *Manager) reserve(beadID string) (*Environment, error) {
 	defer m.mu.Unlock()
 	if env, ok := m.envs[beadID]; ok {
 		return env, nil
+	}
+	// Under host-based routing the bead's label is its address, so a bead that
+	// folds onto a live preview's label has to be refused here — once both are
+	// up, every request for either lands on whichever the proxy resolves first.
+	if m.cfg.ProxyBase != "" {
+		if err := CheckPreviewLabelCollisions(append(m.slotHoldersLocked(), beadID)); err != nil {
+			return nil, err
+		}
 	}
 	// In-flight starts count: they already hold a worktree and (soon) ports.
 	inUse := len(m.envs) + len(m.starting)
