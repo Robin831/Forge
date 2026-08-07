@@ -266,6 +266,66 @@ forge queue clear BD-42 --anvil my-api
 |------|-------------|
 | `-a, --anvil` | Anvil name (required) |
 
+## Preview Environments (Kiln)
+
+Preview environments require `settings.preview_enabled` and a
+`.forge/preview.yaml` manifest in the anvil's main checkout — see
+[preview-manifest.md](preview-manifest.md) for the schema and the
+`preview_*` settings in [configuration.md](configuration.md).
+
+### `forge preview list`
+
+List every running preview with its status, entry URL, idle countdown and the
+resources (services and ports) it is holding.
+
+```bash
+forge preview list
+forge preview list --json     # raw preview_list payload
+```
+
+| Flag | Description |
+|------|-------------|
+| `--json` | Emit the daemon's payload verbatim (adds per-service health and the previewable anvils) |
+
+### `forge preview start <bead-id>`
+
+Start a preview environment: check the branch out into its own detached
+preview checkout, run the manifest's setup command and supervise the declared
+services. Waits for the daemon's outcome and prints the entry URL.
+
+```bash
+forge preview start Forge-abc1 --anvil forge
+forge preview start kiln-smoke-1 --anvil my-api --branch main
+```
+
+The bead id is a **registry key, not a lookup**. It names the preview, keys its
+logs under `~/.forge/logs/<bead-id>/` and derives its hostname label, but it
+does not have to exist as a bd issue — which is what makes this usable for
+ad-hoc work: smoke-testing a new manifest, verifying a deployment, or
+previewing a branch that has no bead yet. Such previews conventionally use ids
+like `kiln-smoke-1`.
+
+Without `--branch`, the bead's canonical `forge/<bead-id>` branch is previewed.
+
+A refusal — previews disabled globally or for the anvil, no manifest, the
+`preview_max_concurrent` cap already full — is printed as the daemon phrased it
+and exits non-zero. `forge preview stop <bead-id>` is the inverse.
+
+| Flag | Description |
+|------|-------------|
+| `-a, --anvil` | Anvil the branch lives in (required) |
+| `-b, --branch` | Branch to preview (default: `forge/<bead-id>`) |
+
+### `forge preview stop <bead-id>`
+
+Tear a preview down: kill its supervised services, run the manifest's teardown
+command and remove the preview checkout. A bead with no running preview is an
+error, not a silent success.
+
+```bash
+forge preview stop Forge-abc1
+```
+
 ## Scanning
 
 ### `forge scan`
