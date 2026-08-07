@@ -5,6 +5,7 @@ import userEvent from '@testing-library/user-event'
 import { createMemoryRouter, RouterProvider, useLocation } from 'react-router'
 import type { PRItem } from '../api'
 import { KEY_PREFIX } from '../hooks/useUIState'
+import { captureScrollWithFakeTimers } from '../test/uiStateTimers'
 
 const { useApiPollMock, usePRsDataMock } = vi.hoisted(() => ({
   useApiPollMock: vi.fn(),
@@ -206,10 +207,6 @@ describe('PRsPage persistence', () => {
   })
 
   it('captures window scroll position and restores it after back-navigation', async () => {
-    // Use fake timers so we can advance through rAF (shimmed as setTimeout in
-    // jsdom) and the 150ms useUIState debounce without real-time waits.
-    vi.useFakeTimers()
-
     const { router } = renderApp()
 
     // jsdom has no layout engine so window.scrollY always reads 0. Override
@@ -221,14 +218,12 @@ describe('PRsPage persistence', () => {
       get: () => _scrollY,
     })
 
-    // Dispatch the scroll event — triggers the rAF-throttled onScroll handler.
-    window.dispatchEvent(new Event('scroll'))
-
-    // Flush rAF (shimmed as setTimeout(0) in jsdom) and the 150ms debounce
-    // that runs inside the rAF callback. After this, sessionStorage has the
-    // captured scroll position (250).
-    await act(async () => {
-      vi.runAllTimers()
+    // Dispatch the scroll event under fake timers and flush rAF plus the 150ms
+    // debounce that runs inside the rAF callback. After this, sessionStorage
+    // has the captured scroll position (250) and we are back on real timers —
+    // the navigations below must not run on a frozen clock.
+    await captureScrollWithFakeTimers(() => {
+      window.dispatchEvent(new Event('scroll'))
     })
 
     // Navigate away — PRsPage unmounts. The debounce timer already fired so
@@ -258,7 +253,6 @@ describe('PRsPage persistence', () => {
       } else {
         delete (window as unknown as Record<string, unknown>).scrollY
       }
-      vi.useRealTimers()
     }
 
     // useLayoutEffect should have called scrollTo(0, 250) before paint.
@@ -273,12 +267,12 @@ describe('PRsPage persistence', () => {
     // tests above verify each storage path in isolation; this one proves they
     // compose — touching multiple keys in one session doesn't cause any to be
     // dropped on the unmount/remount cycle and they all land before paint.
-    // The interactions below run on real timers. userEvent wraps every one in
-    // React's async act(), which yields to the macrotask queue; under fake
+    // Everything here runs on real timers. userEvent wraps every interaction
+    // in React's async act(), which yields to the macrotask queue; under fake
     // timers nothing advances that queue from inside the await, so the first
-    // type/click never settles and the test hangs until its timeout. Fake
-    // timers are installed further down, once the only thing left to drive is
-    // our own rAF + 150ms debounce — the same split the isolated tests use.
+    // type/click never settles and the test hangs until its timeout. The fake
+    // clock is scoped to captureScrollWithFakeTimers below — the one flush
+    // that needs it — the same split the isolated tests use.
     const user = userEvent.setup()
 
     const { router } = renderApp()
@@ -294,10 +288,6 @@ describe('PRsPage persistence', () => {
     await user.click(externalToggle)
     expect(externalToggle).toHaveAttribute('aria-expanded', 'false')
 
-    // From here on we drive rAF (shimmed as setTimeout in jsdom) and the
-    // useUIState debounce by hand, so switch to fake timers.
-    vi.useFakeTimers()
-
     // Shim window.scrollY so the rAF-throttled onScroll handler observes 175
     // and the 150ms debounce writes it to sessionStorage.
     let _scrollY = 175
@@ -307,10 +297,10 @@ describe('PRsPage persistence', () => {
       get: () => _scrollY,
     })
 
-    window.dispatchEvent(new Event('scroll'))
-
-    await act(async () => {
-      vi.runAllTimers()
+    // Drive rAF (shimmed as setTimeout in jsdom) and the useUIState debounce
+    // on a frozen clock, then get real timers back for the navigations.
+    await captureScrollWithFakeTimers(() => {
+      window.dispatchEvent(new Event('scroll'))
     })
 
     // Navigate away — PRsPage fully unmounts (sibling routes); useUIState's

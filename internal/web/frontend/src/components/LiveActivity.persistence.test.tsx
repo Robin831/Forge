@@ -5,6 +5,7 @@ import userEvent from '@testing-library/user-event'
 import { createMemoryRouter, RouterProvider, useLocation } from 'react-router'
 import type { EventInfo } from '../api'
 import { KEY_PREFIX } from '../hooks/useUIState'
+import { captureScrollWithFakeTimers } from '../test/uiStateTimers'
 
 const { useEventSourceMock } = vi.hoisted(() => ({
   useEventSourceMock: vi.fn(),
@@ -150,10 +151,6 @@ describe('LiveActivity persistence', () => {
   })
 
   it('captures scroll position and restores it after back-navigation', async () => {
-    // Use fake timers to advance through rAF (shimmed as setTimeout in jsdom)
-    // and the 150ms useUIState debounce without real-time waits.
-    vi.useFakeTimers()
-
     const { router } = renderApp()
 
     // Locate the Pane's scrollable body (the div with role="region").
@@ -171,10 +168,10 @@ describe('LiveActivity persistence', () => {
       },
     })
 
-    scrollBody.dispatchEvent(new Event('scroll'))
-
-    await act(async () => {
-      vi.runAllTimers()
+    // Fake timers only for the rAF throttle + 150ms debounce; the navigations
+    // below need a real clock to settle.
+    await captureScrollWithFakeTimers(() => {
+      scrollBody.dispatchEvent(new Event('scroll'))
     })
 
     await act(async () => {

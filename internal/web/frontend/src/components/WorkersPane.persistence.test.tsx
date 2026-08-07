@@ -6,6 +6,7 @@ import { createMemoryRouter, RouterProvider, useLocation } from 'react-router'
 import WorkersPane from './WorkersPane'
 import type { WorkerInfo } from '../api'
 import { KEY_PREFIX } from '../hooks/useUIState'
+import { captureScrollWithFakeTimers } from '../test/uiStateTimers'
 
 function worker(overrides: Partial<WorkerInfo>): WorkerInfo {
   return {
@@ -156,10 +157,6 @@ describe('WorkersPane persistence', () => {
   })
 
   it('captures scroll position and restores it after back-navigation', async () => {
-    // Use fake timers so we can advance through rAF (shimmed as setTimeout in
-    // jsdom) and the 150ms useUIState debounce without real-time waits.
-    vi.useFakeTimers()
-
     const { router } = renderApp(TEST_WORKERS)
 
     // Locate the Pane's scrollable body element (the div with role="region").
@@ -177,13 +174,11 @@ describe('WorkersPane persistence', () => {
       },
     })
 
-    // Dispatch the scroll event — triggers the rAF-throttled onScroll handler.
-    scrollBody.dispatchEvent(new Event('scroll'))
-
-    // Flush rAF (shimmed as setTimeout(0) in jsdom) and all queued timers,
-    // including the 150ms debounce that runs inside the rAF callback.
-    await act(async () => {
-      vi.runAllTimers()
+    // Dispatch the scroll event under fake timers and flush rAF plus the 150ms
+    // debounce that runs inside the rAF callback. Control returns on real
+    // timers — the navigations below must not run on a frozen clock.
+    await captureScrollWithFakeTimers(() => {
+      scrollBody.dispatchEvent(new Event('scroll'))
     })
 
     // Navigate away — WorkersPane unmounts, debounce timer already fired so
@@ -230,12 +225,12 @@ describe('WorkersPane persistence', () => {
     // The separate tests above verify each storage path in isolation; this one
     // proves they compose — the unmount/remount cycle doesn't drop one because
     // the other was also touched, and the first paint after pop carries both.
-    // The click runs on real timers. userEvent wraps every interaction in
-    // React's async act(), which yields to the macrotask queue; under fake
+    // Everything here runs on real timers. userEvent wraps every interaction
+    // in React's async act(), which yields to the macrotask queue; under fake
     // timers nothing advances that queue from inside the await, so the click
-    // never settles and the test hangs until its timeout. Fake timers are
-    // installed further down, once the only thing left to drive is our own
-    // rAF + 150ms debounce — exactly the split the two isolated tests above use.
+    // never settles and the test hangs until its timeout. The fake clock is
+    // scoped to captureScrollWithFakeTimers below — the one flush that needs
+    // it — exactly the split the two isolated tests above use.
     const user = userEvent.setup()
 
     const { router } = renderApp(TEST_WORKERS)
@@ -244,10 +239,6 @@ describe('WorkersPane persistence', () => {
     const forgeHeader = screen.getByTestId('workers-group-forge')
     await user.click(forgeHeader)
     expect(forgeHeader).toHaveAttribute('aria-expanded', 'false')
-
-    // From here on we drive rAF (shimmed as setTimeout in jsdom) and the
-    // useUIState debounce by hand, so switch to fake timers.
-    vi.useFakeTimers()
 
     // Set a scroll position — written to sessionStorage via the rAF-throttled
     // onScroll handler. jsdom has no layout engine, so we shim scrollTop on
@@ -262,12 +253,12 @@ describe('WorkersPane persistence', () => {
         _scrollTop = v
       },
     })
-    scrollBody.dispatchEvent(new Event('scroll'))
 
-    // Flush rAF + the 150ms useUIState debounce so the scroll value lands
-    // in sessionStorage before we navigate away.
-    await act(async () => {
-      vi.runAllTimers()
+    // Flush rAF + the 150ms useUIState debounce on a frozen clock so the
+    // scroll value lands in sessionStorage before we navigate away, then get
+    // real timers back for the navigations.
+    await captureScrollWithFakeTimers(() => {
+      scrollBody.dispatchEvent(new Event('scroll'))
     })
 
     // Navigate away — the routes are siblings so WorkersPane fully unmounts.

@@ -1,11 +1,12 @@
 import '@testing-library/jest-dom/vitest'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { act, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { createMemoryRouter, RouterProvider, useLocation } from 'react-router'
 import QueuePane from './QueuePane'
 import type { QueueItem } from '../api'
 import { KEY_PREFIX } from '../hooks/useUIState'
+import { captureScrollWithFakeTimers } from '../test/uiStateTimers'
 
 function item(overrides: Partial<QueueItem>): QueueItem {
   return {
@@ -79,6 +80,13 @@ const TEST_ITEMS: QueueItem[] = [
 beforeEach(() => {
   sessionStorage.clear()
   localStorage.clear()
+})
+
+// Safety net the sibling persistence suites already have: a test that throws
+// while the clock is frozen must not leave fake timers installed for the next
+// one, which would then hang on its first navigation instead of failing.
+afterEach(() => {
+  vi.useRealTimers()
 })
 
 describe('QueuePane persistence', () => {
@@ -209,10 +217,6 @@ describe('QueuePane persistence', () => {
   })
 
   it('captures scroll position and restores it after back-navigation', async () => {
-    // Use fake timers so we can advance through rAF (shimmed as setTimeout in
-    // jsdom) and the 150ms useUIState debounce without real-time waits.
-    vi.useFakeTimers()
-
     const { router } = renderApp(TEST_ITEMS)
 
     // Locate the Pane's scrollable body element (the div with role="region").
@@ -228,14 +232,12 @@ describe('QueuePane persistence', () => {
       set: (v: number) => { _scrollTop = v },
     })
 
-    // Dispatch the scroll event — triggers the rAF-throttled onScroll handler.
-    scrollBody.dispatchEvent(new Event('scroll'))
-
-    // Flush rAF (shimmed as setTimeout(0) in jsdom) and all queued timers,
-    // including the 150ms debounce that runs inside the rAF callback. After
-    // this, sessionStorage already has the captured scroll position (300).
-    await act(async () => {
-      vi.runAllTimers()
+    // Dispatch the scroll event under fake timers and flush rAF plus the 150ms
+    // debounce that runs inside the rAF callback. After this, sessionStorage
+    // already has the captured scroll position (300) and we are back on real
+    // timers — the navigations below must not run on a frozen clock.
+    await captureScrollWithFakeTimers(() => {
+      scrollBody.dispatchEvent(new Event('scroll'))
     })
 
     // Navigate away — QueuePane unmounts. useUIState's unmount cleanup is a
@@ -269,7 +271,6 @@ describe('QueuePane persistence', () => {
       if (origDesc) {
         Object.defineProperty(Element.prototype, 'scrollTop', origDesc)
       }
-      vi.useRealTimers()
     }
 
     // The layout effect must have written the restored position to the body.
