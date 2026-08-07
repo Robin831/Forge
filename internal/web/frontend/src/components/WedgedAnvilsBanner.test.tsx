@@ -52,6 +52,15 @@ describe('WedgedAnvilsBanner', () => {
     ).not.toHaveTextContent('detected')
   })
 
+  it('says the banner clears itself so the operator does not hunt for a dismiss action', () => {
+    render(<WedgedAnvilsBanner anvils={[{ anvil: 'munin' }]} />)
+    const banner = screen.getByRole('region', { name: 'Wedged anvils' })
+    expect(banner).toHaveTextContent('there is nothing to dismiss here')
+    expect(banner).toHaveTextContent(
+      'this banner clears itself on the next poll once dolt_conflicts is empty',
+    )
+  })
+
   it('pluralises the headline for multiple wedged anvils', () => {
     render(
       <WedgedAnvilsBanner
