@@ -12,6 +12,14 @@ func (s *Server) routes() http.Handler {
 	r := chi.NewRouter()
 	r.Use(s.requestLogger)
 
+	// Host-based preview routing (settings.preview_proxy_base). Registered as
+	// the first middleware after the logger so it runs before any route
+	// matching: a request for `<label>.<base>` is forwarded to that preview's
+	// port and never sees the route table below, while everything addressed to
+	// the dashboard's own host falls straight through. Off unless a proxy base
+	// is configured — see PreviewProxyMiddleware.
+	r.Use(s.PreviewProxyMiddleware)
+
 	// Build the SPA static handler once so both the catch-all route and
 	// handleLoginStatus (which may fall back to it for unauthenticated
 	// browser navigations) can share a single instance.

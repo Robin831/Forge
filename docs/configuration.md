@@ -1109,6 +1109,22 @@ names resolve is a DNS job: a wildcard record (`*.preview.example.test`)
 pointing at the Forge box, or the equivalent entries in a hosts file for a
 single-label base like `localtest`.
 
+The Hearth 2.0 web server (`FORGE_WEB_ENABLED`) does the routing itself: a
+request whose `Host` matches one of the two forms above is forwarded to the
+preview's loopback port before any route matching happens, so the preview sees
+the request byte for byte — same path, same query, same `Host` header, no
+decompression, no redirect following. Streaming responses (SSE, HMR, long-poll)
+are flushed as they arrive and websocket upgrades pass through. Traffic on any
+other host — including the base itself, which is the dashboard's own name — goes
+to the dashboard exactly as before, so switching the setting on cannot affect
+it.
+
+Browsing a preview through the proxy counts as activity, so the idle reaper
+(`preview_idle_timeout`) never tears down a preview somebody is looking at. A
+host that names no live preview gets a `404` saying which state it is in — `no
+live preview for forge-a1b2`, `preview forge-a1b2 is stopped`, `preview
+forge-a1b2 has no service "api"` — rather than the dashboard's login page.
+
 The value is a bare DNS name. A scheme, a port, a path, a leading dot, an empty
 or over-long label, or a character outside `[a-z0-9-]` is rejected at load time
 rather than silently stripped; the value is lowercased and a trailing root dot

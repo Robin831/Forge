@@ -1,6 +1,7 @@
 package web
 
 import (
+	"bufio"
 	"net"
 	"net/http"
 	"strings"
@@ -78,6 +79,23 @@ func (s *statusRecorder) Flush() {
 		f.Flush()
 	}
 }
+
+// Hijack delegates to the underlying ResponseWriter so a handler running under
+// the request logger can take the connection over. The preview proxy's
+// websocket upgrade path needs this: httputil.ReverseProxy hijacks the inbound
+// connection after a 101, and without the delegation every upgrade through a
+// preview host would fail with "can't switch protocols".
+func (s *statusRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	hj, ok := s.ResponseWriter.(http.Hijacker)
+	if !ok {
+		return nil, nil, http.ErrNotSupported
+	}
+	return hj.Hijack()
+}
+
+// Unwrap exposes the wrapped ResponseWriter to http.ResponseController, which
+// is how the standard library reaches Flush/Hijack through wrappers.
+func (s *statusRecorder) Unwrap() http.ResponseWriter { return s.ResponseWriter }
 
 // csrfCheck rejects state-changing requests (POST/PUT/DELETE/PATCH) that lack
 // the X-Forge-Action header. The SPA sets this header on every action fetch;

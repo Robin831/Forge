@@ -7069,6 +7069,13 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 	case "previews", "preview_list":
 		return d.handlePreviewList()
 
+	case "preview_resolve":
+		var p ipc.PreviewResolvePayload
+		if err := json.Unmarshal(cmd.Payload, &p); err != nil {
+			return errorResponse("invalid preview_resolve payload")
+		}
+		return d.handlePreviewResolve(p)
+
 	case "preview_quest_run":
 		var p ipc.PreviewQuestRunPayload
 		if err := json.Unmarshal(cmd.Payload, &p); err != nil {

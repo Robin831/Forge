@@ -45,6 +45,8 @@ type previewManager interface {
 	List() []*kiln.Environment
 	// Get returns one bead's preview; the bool is false when it has none.
 	Get(beadID string) (*kiln.Environment, bool)
+	// Touch resets a preview's idle clock; a bead without one is a no-op.
+	Touch(beadID string)
 }
 
 // *kiln.Manager is what the daemon actually wires in, so keep the two in step
@@ -593,6 +595,147 @@ func (d *Daemon) handlePreviewList() ipc.Response {
 		out.Previews = append(out.Previews, previewInfo(env.Record(), env.EntryURL(), idle, now))
 	}
 	return okResponse(out)
+}
+
+// handlePreviewResolve serves the "preview_resolve" IPC command: the host-based
+// preview proxy in internal/web hands over the label it parsed out of a Host
+// header and gets back the loopback address to forward to.
+//
+// The lookup lives here rather than in the web layer because the Kiln registry
+// does: the proxy sees a hostname, the daemon owns the bead → preview mapping,
+// and doing both in one call means the resolve can Touch the preview. Unlike
+// "previews" — which the dashboard polls, so counting it as activity would
+// disable the idle reaper in practice — a proxied request *is* someone using
+// the preview, and must reset the idle clock.
+//
+// Every refusal is an ok response carrying a PreviewResolve* reason. The proxy
+// turns each into its own 404 body, so "no preview by that name" and "that
+// preview is stopped" stay distinguishable to whoever typed the URL.
+func (d *Daemon) handlePreviewResolve(p ipc.PreviewResolvePayload) ipc.Response {
+	label := kiln.NormalizeHostname(p.Label)
+	service := kiln.NormalizeHostname(p.Service)
+	if label == "" {
+		return errorResponse("label is required")
+	}
+	out := ipc.PreviewResolveResponse{Service: service}
+
+	mgr := d.previews()
+	if mgr == nil {
+		out.Reason = ipc.PreviewResolveDisabled
+		return okResponse(out)
+	}
+	var match *kiln.Environment
+	for _, env := range mgr.List() {
+		if env != nil && kiln.PreviewLabel(env.BeadID) == label {
+			match = env
+			break
+		}
+	}
+	if match == nil {
+		out.Reason = ipc.PreviewResolveNoPreview
+		return okResponse(out)
+	}
+
+	rec := match.Record()
+	out.BeadID = rec.BeadID
+	out.Status = rec.Status
+	// A stopped or failed preview is still in the registry for a moment (and a
+	// failed one may never have served anything), so answering with its ports
+	// would forward to a dead process group.
+	if rec.Status == state.PreviewStopped || rec.Status == state.PreviewFailed {
+		out.Reason = ipc.PreviewResolveStopped
+		return okResponse(out)
+	}
+
+	port := 0
+	if service == "" {
+		out.Service = previewEntryServiceName(rec)
+		port = previewEntryPort(rec)
+	} else {
+		svc, ok := previewServiceByLabel(rec, service)
+		if !ok {
+			out.Reason = ipc.PreviewResolveNoService
+			return okResponse(out)
+		}
+		out.Service = svc.Name
+		port = svc.Port
+	}
+	if port <= 0 {
+		out.Reason = ipc.PreviewResolveNoPort
+		return okResponse(out)
+	}
+
+	out.Host = previewDialHost(d.cfg.Load())
+	out.Port = port
+	out.Found = true
+	// Proxied traffic is activity — the whole point of resolving through the
+	// daemon rather than reading the ports out of the previews payload.
+	mgr.Touch(rec.BeadID)
+	return okResponse(out)
+}
+
+// previewServiceByLabel finds the service a `<label>--<service>` host names.
+//
+// A hostname label is lowercase and carries neither '.' nor '_', both of which
+// a manifest service name may contain, so an exact (case-insensitive) match is
+// tried first and a match on the name folded to a DNS label second. The fold is
+// not injective — services named "api_v1" and "api.v1" both fold to "api-v1" —
+// so the first one declared wins, the same way the manifest's own
+// FORGE_PREVIEW_PORT_<NAME> collision is a manifest bug rather than something
+// resolved at request time.
+func previewServiceByLabel(rec state.Preview, label string) (state.PreviewService, bool) {
+	for _, svc := range rec.Services {
+		if strings.EqualFold(svc.Name, label) {
+			return svc, true
+		}
+	}
+	for _, svc := range rec.Services {
+		if foldServiceLabel(svc.Name) == label {
+			return svc, true
+		}
+	}
+	return state.PreviewService{}, false
+}
+
+// foldServiceLabel renders a manifest service name as the DNS label it would be
+// addressed by: lowercased, with '.' and '_' folded to '-'.
+func foldServiceLabel(name string) string {
+	folded := strings.ToLower(strings.TrimSpace(name))
+	folded = strings.ReplaceAll(folded, "_", "-")
+	return strings.ReplaceAll(folded, ".", "-")
+}
+
+// previewEntryServiceName names the service previewEntryPort picked, so the
+// resolve response reports which one a service-less host actually landed on.
+func previewEntryServiceName(rec state.Preview) string {
+	for _, svc := range rec.Services {
+		if svc.Entry && svc.Port > 0 {
+			return svc.Name
+		}
+	}
+	for _, svc := range rec.Services {
+		if svc.Port > 0 {
+			return svc.Name
+		}
+	}
+	return ""
+}
+
+// previewDialHost is the address a proxy connects to a preview service on.
+//
+// It is settings.preview_bind_host, except that a wildcard bind names no
+// address to dial — "listening everywhere" is not somewhere to connect — so it
+// is reported as loopback, which a wildcard listener also answers on.
+func previewDialHost(cfg *config.Config) string {
+	host := config.DefaultPreviewBindHost
+	if cfg != nil {
+		host = cfg.Settings.ResolvedPreviewBindHost()
+	}
+	switch strings.Trim(strings.TrimSpace(host), "[]") {
+	case "", "0.0.0.0", "::", "*":
+		return "127.0.0.1"
+	}
+	return host
 }
 
 // previewInfo maps one preview's persisted record onto the IPC payload. It
