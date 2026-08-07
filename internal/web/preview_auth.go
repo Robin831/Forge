@@ -189,6 +189,11 @@ func previewTokenRejection(err error) string {
 // carrying the originally requested preview URL as `next`. The port is carried
 // over from the request: Hearth answers the preview host and its own host on
 // the same listener.
+//
+// The login consumes `next` and bounces back here once a session exists — see
+// loginnext.go, which re-validates the URL rather than trusting the round trip,
+// and falls back to the dashboard in the deployment where the fresh session
+// would not reach the preview host anyway.
 func (s *Server) previewLoginURL(r *http.Request, base string) string {
 	scheme := s.requestScheme(r)
 	host := base
