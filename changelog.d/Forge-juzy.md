@@ -1,2 +1,0 @@
-category: Added
-- **Preview quest results reported on the PR** - A finished E2E quest run against a Kiln preview now posts a pass/fail summary table (plus screenshots) as a single pull request comment, keyed by a hidden head-SHA marker so re-running the same commit edits that comment instead of duplicating it and a new head gets its own. The report creates no check run and no commit status — preview quest results stay informational and never gate a merge. (Forge-juzy)

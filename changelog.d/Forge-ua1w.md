@@ -1,2 +1,0 @@
-category: Added
-- **`forge preview` CLI** - New `forge preview list` and `forge preview stop <bead-id>` subcommands for Kiln preview environments. `list` renders bead, status, entry URL, idle countdown and held resources (with `--json` for the raw `preview_list` payload); `stop` waits for the queued teardown to resolve and exits non-zero with the daemon's message when the daemon is down, the bead has no preview, or teardown fails. (Forge-ua1w)
