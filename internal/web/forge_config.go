@@ -849,9 +849,9 @@ func (d anvilKeyDef) clearable() bool {
 
 // managedAnvilKeys is the allowlist of per-anvil settings exposed by the config
 // API, mirroring config.AnvilSettings. Order is preserved in the response's
-// schema and per-key coverage. Only auto_merge is hot-reloadable (see
-// internal/hotreload/hotreload.go, which diffs anvil auto_merge live); the
-// others are read on the next dispatch/run.
+// schema and per-key coverage. auto_merge and the three preview keys are
+// hot-reloadable (see internal/hotreload/hotreload.go, which diffs them live);
+// the others are read on the next dispatch/run.
 var managedAnvilKeys = []anvilKeyDef{
 	{Key: "auto_merge", Type: typeBool, TriState: false, Instant: true,
 		Label: "Auto-merge PRs", Description: "Automatically merge this anvil's PRs once required checks pass."},
@@ -865,9 +865,9 @@ var managedAnvilKeys = []anvilKeyDef{
 		Label: "Dependency scanning", Description: "Include this anvil in scheduled dependency-update scans."},
 	{Key: "questgiver_enabled", Type: typeBool, TriState: true,
 		Label: "QuestGiver E2E quests", Description: "Discover and run E2E quests for this anvil."},
-	{Key: "preview_enabled", Type: typeBool, TriState: true,
+	{Key: "preview_enabled", Type: typeBool, TriState: true, Instant: true,
 		Label: "Kiln previews", Description: "Allow on-demand preview environments for this anvil's branches (requires the global preview_enabled and a .forge/preview.yaml manifest)."},
-	{Key: "preview_quests", Type: typeBool, TriState: false,
+	{Key: "preview_quests", Type: typeBool, TriState: false, Instant: true,
 		Label: "Preview E2E quests", Description: "Run this anvil's E2E quests against a running preview environment (requires previews to be enabled for the anvil)."},
 	{Key: "wicket_enabled", Type: typeBool, TriState: true,
 		Label: "Wicket issue triage", Description: "Poll this anvil's GitHub issues and triage them into beads."},
@@ -883,7 +883,7 @@ var managedAnvilKeys = []anvilKeyDef{
 		Label: "Auto-dispatch tag", Description: "Label a bead must carry when auto-dispatch is \"tagged\" (e.g. forgeReady)."},
 	{Key: "auto_dispatch_min_priority", Type: typeInt, Min: fptr(0), Max: fptr(4),
 		Label: "Auto-dispatch min priority", Description: "Minimum priority (0=highest) a bead needs to be auto-dispatched."},
-	{Key: "preview_auto", Type: typeEnum, Options: config.PreviewAutoModes,
+	{Key: "preview_auto", Type: typeEnum, Options: config.PreviewAutoModes, Instant: true,
 		Label: "Automatic previews", Description: "When to start a preview without being asked. \"ready_to_merge\" starts one as a PR becomes mergeable; it still obeys preview_max_concurrent and the idle timeout, and each preview holds memory for as long as it runs."},
 	{Key: "platform", Type: typeEnum, Options: []string{"github", "gitlab", "gitea", "bitbucket", "azuredevops"},
 		Label: "VCS platform", Description: "Hosting platform for this anvil's PR operations."},
