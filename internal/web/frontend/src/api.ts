@@ -1080,9 +1080,9 @@ export interface AnvilKeyInfo {
 // tri-state: `null` means "inherit / unset" (the anvil follows the global
 // setting or built-in default), while `true`/`false` is an explicit override.
 // This nullable distinction must survive the round-trip, so callers must NOT
-// collapse `null` to `false`. `auto_merge` and `wicket_auto_dispatch` are plain
-// booleans with no inherit semantics. The remaining fields are non-boolean
-// per-anvil scalars (Forge-85wn).
+// collapse `null` to `false`. `auto_merge`, `preview_quests` and
+// `wicket_auto_dispatch` are plain booleans with no inherit semantics. The
+// remaining fields are non-boolean per-anvil scalars (Forge-85wn).
 export interface AnvilSettings {
   auto_merge: boolean
   schematic_enabled: boolean | null
@@ -1090,6 +1090,12 @@ export interface AnvilSettings {
   go_race_detection: boolean | null
   depcheck_enabled: boolean | null
   questgiver_enabled: boolean | null
+  // Kiln preview keys. `preview_enabled` is tri-state (null = inherit the
+  // global `settings.preview_enabled`); `preview_auto` is '' (on-demand only)
+  // or 'ready_to_merge'; `preview_quests` is a plain opt-in bool.
+  preview_enabled: boolean | null
+  preview_auto: string
+  preview_quests: boolean
   wicket_enabled: boolean | null
   wicket_auto_dispatch: boolean
   max_smiths: number
