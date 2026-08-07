@@ -26,22 +26,6 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// cleanGitEnv returns os.Environ() with GIT_DIR, GIT_WORK_TREE, and
-// GIT_CEILING_DIRECTORIES stripped. When the smelter runs inside a Forge
-// worktree these variables are set to the parent repo's paths; leaving them
-// in place would confuse git subprocesses that operate on a different tree.
-func cleanGitEnv() []string {
-	env := os.Environ()
-	out := env[:0:0]
-	for _, e := range env {
-		if strings.HasPrefix(e, "GIT_DIR=") || strings.HasPrefix(e, "GIT_WORK_TREE=") || strings.HasPrefix(e, "GIT_CEILING_DIRECTORIES=") {
-			continue
-		}
-		out = append(out, e)
-	}
-	return out
-}
-
 const (
 	// prTitle is the title used for smelter PRs.
 	prTitle = "forge: batch warden rule update [no-changelog]"
@@ -560,7 +544,7 @@ func archiveRules(wtPath string, archived []warden.Rule, summary []warden.MergeR
 // archived from Pass 2, backfilled from Pass 3) land in one commit on the
 // same PR — one PR per anvil per smelter run.
 func (s *Smelter) commitAndPush(ctx context.Context, wtPath, branch string, passes PassResults) error {
-	gitEnv := cleanGitEnv()
+	gitEnv := executil.CleanGitEnv()
 	git := func(args ...string) error {
 		cmdCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
 		defer cancel()

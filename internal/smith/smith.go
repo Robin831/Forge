@@ -866,9 +866,9 @@ func readAll(r io.Reader, buf *strings.Builder, logFile *os.File) {
 //
 // It strips CLAUDECODE (so claude does not refuse to run inside another
 // session), strips any keys that the provider will set (avoiding cross-platform
-// duplicate-entry ambiguity), and unconditionally strips GIT_DIR /
-// GIT_WORK_TREE / GIT_CEILING_DIRECTORIES so an inherited value cannot leak
-// into the child:
+// duplicate-entry ambiguity), and unconditionally strips the git repo-location
+// env vars (executil.IsGitRepoEnvVar — GIT_DIR, GIT_WORK_TREE and the rest of
+// the family) so an inherited value cannot leak into the child:
 //   - Worktree spawns: gitEnv re-injects values pinning git to the worktree.
 //     A stray "cd .." in a tool_use bash command cannot escape into the parent
 //     anvil and commit to its main branch.
@@ -886,9 +886,8 @@ func buildChildEnv(parentEnv []string, providerEnv map[string]string, gitEnv []s
 		if strings.HasPrefix(e, "CLAUDECODE=") {
 			continue
 		}
-		if strings.HasPrefix(e, "GIT_DIR=") ||
-			strings.HasPrefix(e, "GIT_WORK_TREE=") ||
-			strings.HasPrefix(e, "GIT_CEILING_DIRECTORIES=") {
+		key, _, _ := strings.Cut(e, "=")
+		if executil.IsGitRepoEnvVar(key) {
 			continue
 		}
 		skip := false

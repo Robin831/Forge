@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/Robin831/Forge/internal/config"
+	"github.com/Robin831/Forge/internal/executil"
 	"github.com/Robin831/Forge/internal/poller"
 	"github.com/Robin831/Forge/internal/prompt"
 	"github.com/Robin831/Forge/internal/provider"
@@ -1581,13 +1582,7 @@ func TestSchematic_OnSpawn_UpdatesWorkerPIDAndLogPath(t *testing.T) {
 // that git commands in tests are not redirected to the worktree that hosts the
 // test process.
 func cleanGitEnv() []string {
-	env := make([]string, 0, len(os.Environ()))
-	for _, e := range os.Environ() {
-		if !strings.HasPrefix(e, "GIT_DIR=") && !strings.HasPrefix(e, "GIT_WORK_TREE=") {
-			env = append(env, e)
-		}
-	}
-	return env
+	return executil.CleanGitEnv()
 }
 
 // initGitRepo creates a temporary git repo with an initial commit and returns

@@ -2784,27 +2784,11 @@ func Run(ctx context.Context, p Params) *Outcome {
 	return outcome
 }
 
-// gitCmdCleanEnv returns os.Environ() with GIT_DIR and GIT_WORK_TREE removed.
-// Git uses GIT_DIR/GIT_WORK_TREE to override the repository location.
-// When the daemon (or tests) run inside a git worktree those variables point at
-// the parent repo, which would cause git commands that target a child worktree
-// path to operate on the wrong repository. Stripping them lets git discover the
-// correct repo via the .git file in the worktree directory instead.
-func gitCmdCleanEnv() []string {
-	env := make([]string, 0, len(os.Environ()))
-	for _, e := range os.Environ() {
-		if !strings.HasPrefix(e, "GIT_DIR=") && !strings.HasPrefix(e, "GIT_WORK_TREE=") {
-			env = append(env, e)
-		}
-	}
-	return env
-}
-
 // gitRevParseHEAD returns the current HEAD commit SHA for the given worktree.
 // Returns an empty string on error.
 func gitRevParseHEAD(worktreePath string) string {
 	cmd := executil.HideWindow(exec.Command("git", "-C", worktreePath, "rev-parse", "HEAD"))
-	cmd.Env = gitCmdCleanEnv()
+	cmd.Env = executil.CleanGitEnv()
 	out, err := cmd.Output()
 	if err != nil {
 		return ""
@@ -2817,12 +2801,20 @@ func gitRevParseHEAD(worktreePath string) string {
 // it is used directly (as "origin/<baseBranch>"). Otherwise it mirrors the
 // worktree manager's auto-detection: try origin/main, then origin/master.
 // Returns an empty string if no valid ref is found.
+//
+// The candidate probes run with the git repo-location env vars stripped (see
+// executil.CleanGitEnv) so a daemon that itself lives in a git worktree cannot
+// have its own repository answer for the anvil's — an inherited GIT_DIR makes
+// `git -C <worktree> rev-parse` resolve origin/main from the ambient repo, and
+// Temper would then filter paths against a base ref belonging to a different
+// repository.
 func resolveTemperBaseRef(ctx context.Context, worktreePath, baseBranch string) string {
 	if baseBranch != "" {
 		return "origin/" + baseBranch
 	}
 	for _, candidate := range []string{"origin/main", "origin/master"} {
 		cmd := executil.HideWindow(exec.CommandContext(ctx, "git", "-C", worktreePath, "rev-parse", "--verify", candidate))
+		cmd.Env = executil.CleanGitEnv()
 		if err := cmd.Run(); err == nil {
 			return candidate
 		}
@@ -2835,13 +2827,14 @@ func resolveTemperBaseRef(ctx context.Context, worktreePath, baseBranch string) 
 // Crucible child targeting its epic branch), otherwise origin/main or
 // origin/master, whichever exists. Returns an empty string when none resolves.
 //
-// Unlike resolveTemperBaseRef this runs with GIT_DIR/GIT_WORK_TREE stripped, so
-// a daemon that itself lives in a git worktree cannot have its own repository
-// answer for the anvil's.
+// Like resolveTemperBaseRef this runs with the git repo-location env vars
+// stripped, so a daemon that itself lives in a git worktree cannot have its own
+// repository answer for the anvil's. Unlike resolveTemperBaseRef it also verifies an
+// explicitly configured base branch instead of trusting it.
 func resolveBaseRef(ctx context.Context, worktreePath, baseBranch string) string {
 	verify := func(ref string) bool {
 		cmd := executil.HideWindow(exec.CommandContext(ctx, "git", "-C", worktreePath, "rev-parse", "--verify", ref))
-		cmd.Env = gitCmdCleanEnv()
+		cmd.Env = executil.CleanGitEnv()
 		return cmd.Run() == nil
 	}
 	if baseBranch != "" {
@@ -2866,7 +2859,7 @@ func resolveBaseRef(ctx context.Context, worktreePath, baseBranch string) string
 func countCommitsAhead(ctx context.Context, worktreePath, base, branch string) (int, error) {
 	cmd := executil.HideWindow(exec.CommandContext(ctx, "git", "-C", worktreePath,
 		"rev-list", "--count", base+".."+branch))
-	cmd.Env = gitCmdCleanEnv()
+	cmd.Env = executil.CleanGitEnv()
 	out, err := cmd.Output()
 	if err != nil {
 		return 0, fmt.Errorf("git rev-list --count %s..%s: %w", base, branch, err)
@@ -2884,7 +2877,7 @@ func countCommitsAhead(ctx context.Context, worktreePath, base, branch string) (
 // so that post-push state (where @{upstream} == HEAD) doesn't falsely indicate
 // an empty diff.
 func hasEmptyDiff(worktreePath, preSmithSHA string) bool {
-	env := gitCmdCleanEnv()
+	env := executil.CleanGitEnv()
 	// Check for uncommitted changes (staged or unstaged).
 	statusCmd := executil.HideWindow(exec.Command("git", "-C", worktreePath, "status", "--porcelain"))
 	statusCmd.Env = env
