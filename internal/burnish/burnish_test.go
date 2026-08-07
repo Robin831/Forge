@@ -823,15 +823,16 @@ func TestFix_BeforeTemperHook_Fails_AbortsBurnish(t *testing.T) {
 	}
 }
 
-// TestFix_VerifyTimeout_MarksWorkerFailed verifies that when the verification
-// step (temper) never returns, the burnish loop fires its configured timeout,
-// returns a stable error string ("warden_timeout"), and transitions the
-// worker row in state.DB to "failed".
+// TestFix_VerifyTimeout_PreservesWorkWhenHeadUnresolvable verifies that when
+// verification never returns AND the worktree HEAD cannot be resolved, burnish
+// refuses to declare the cycle finished: it reports the stable error string
+// ("warden_timeout"), names the work as unpushed so the caller keeps the
+// worktree, and transitions the worker row in state.DB to "failed".
 //
 // This regression covers the round-2 burnish hang on PR 761 (Forge-j67a),
 // where Smith committed locally but the post-Smith pipeline went silent and
 // the worker row stayed running indefinitely with no Warden / no push.
-func TestFix_VerifyTimeout_MarksWorkerFailed(t *testing.T) {
+func TestFix_VerifyTimeout_PreservesWorkWhenHeadUnresolvable(t *testing.T) {
 	h := newTestHarness()
 	defer h.restore()
 
@@ -881,7 +882,13 @@ func TestFix_VerifyTimeout_MarksWorkerFailed(t *testing.T) {
 	elapsed := time.Since(start)
 
 	if result.Addressed {
-		t.Error("expected Addressed=false on verification timeout")
+		t.Error("expected Addressed=false when the timed-out fix could not be pushed")
+	}
+	if !result.VerifyTimedOut {
+		t.Error("expected VerifyTimedOut=true on verification timeout")
+	}
+	if result.UnpushedHead == "" {
+		t.Error("expected UnpushedHead to be set so the caller preserves the worktree")
 	}
 	if result.Error == nil {
 		t.Fatal("expected error on verification timeout")
@@ -890,7 +897,7 @@ func TestFix_VerifyTimeout_MarksWorkerFailed(t *testing.T) {
 		t.Errorf("expected error to contain %q, got: %v", ErrVerifyTimeoutReason, result.Error)
 	}
 	if pushCalled != 0 {
-		t.Errorf("expected no push on verification timeout, got %d", pushCalled)
+		t.Errorf("expected no push when HEAD is unresolvable, got %d", pushCalled)
 	}
 	// Allow generous slack on slow CI, but should be well under MaxAttempts*verifyTimeout.
 	if elapsed > 5*time.Second {
@@ -921,7 +928,8 @@ func TestFix_VerifyTimeout_DefaultsToPackageConstant(t *testing.T) {
 }
 
 // TestBatchFix_VerifyTimeout verifies the batch path also honours the
-// verification timeout and surfaces the stable error string.
+// verification timeout and, when the HEAD cannot be resolved so the fix cannot
+// be pushed, surfaces the stable error string and flags the work as unpushed.
 func TestBatchFix_VerifyTimeout(t *testing.T) {
 	h := newTestHarness()
 	defer h.restore()
@@ -955,7 +963,13 @@ func TestBatchFix_VerifyTimeout(t *testing.T) {
 	})
 
 	if result.Addressed {
-		t.Error("expected Addressed=false on batch verification timeout")
+		t.Error("expected Addressed=false when the timed-out batch fix could not be pushed")
+	}
+	if !result.VerifyTimedOut {
+		t.Error("expected VerifyTimedOut=true on batch verification timeout")
+	}
+	if result.UnpushedHead == "" {
+		t.Error("expected UnpushedHead to be set so the caller preserves the worktree")
 	}
 	if result.Error == nil {
 		t.Fatal("expected error on batch verification timeout")
@@ -964,7 +978,7 @@ func TestBatchFix_VerifyTimeout(t *testing.T) {
 		t.Errorf("expected error to contain %q, got: %v", ErrVerifyTimeoutReason, result.Error)
 	}
 	if pushCalled != 0 {
-		t.Errorf("expected no push on verification timeout, got %d", pushCalled)
+		t.Errorf("expected no push when HEAD is unresolvable, got %d", pushCalled)
 	}
 }
 
@@ -1007,5 +1021,293 @@ func TestFix_AfterTemperHook_Fails_Logged_Only(t *testing.T) {
 	}
 	if !pushCalled {
 		t.Error("push should still happen after after_temper hook failure")
+	}
+}
+
+// --- Verification timeout policy (Forge-xl50) -------------------------------
+
+// blockingTemper returns a temper stub that never completes on its own, so the
+// verification deadline is what ends every run.
+func blockingTemper(calls *int) func(context.Context, string, temper.Config, *state.DB, string, string) *temper.Result {
+	return func(ctx context.Context, _ string, _ temper.Config, _ *state.DB, _, _ string) *temper.Result {
+		*calls++
+		<-ctx.Done()
+		return &temper.Result{Passed: false, FailedStep: "blocked"}
+	}
+}
+
+// TestFix_VerifyTimeout_PushesUnverified is the core of Forge-xl50: a fix
+// commit whose verification never completed is pushed rather than discarded.
+// The old behaviour logged a WARN, skipped the push and deleted the worktree,
+// leaving a finished fix reachable from nothing while the operator saw a
+// success table.
+func TestFix_VerifyTimeout_PushesUnverified(t *testing.T) {
+	h := newTestHarness()
+	defer h.restore()
+
+	db := openTestDB(t)
+	smithSpawnFn = makeSmithStub(0)
+	temperCalls := 0
+	temperRunFn = blockingTemper(&temperCalls)
+	pushCalled := 0
+	gitPushFn = func(_ context.Context, _, _ string) error {
+		pushCalled++
+		return nil
+	}
+	// Smith committed: local HEAD is ahead of the remote tip.
+	gitRevParseFn = fixedRevParse("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
+
+	v := &fakeVCS{comments: []vcs.ReviewComment{
+		{Author: "copilot", Body: "fix this", State: "CHANGES_REQUESTED", ThreadID: "T1"},
+	}}
+	params := defaultFixParams(db, v)
+	params.MaxAttempts = 3
+	params.VerifyTimeout = 50 * time.Millisecond
+	params.VerifyRetries = -1 // no retry: keep the test to one verification run
+
+	result := Fix(context.Background(), params)
+
+	if !result.Addressed {
+		t.Fatalf("expected Addressed=true after the unverified push, got error: %v", result.Error)
+	}
+	if !result.Unverified {
+		t.Error("expected Unverified=true so the caller does not report a clean success")
+	}
+	if !result.VerifyTimedOut {
+		t.Error("expected VerifyTimedOut=true")
+	}
+	if result.Error != nil {
+		t.Errorf("expected no error once the fix reached the PR, got: %v", result.Error)
+	}
+	if result.UnpushedHead != "" {
+		t.Errorf("expected no unpushed head after a successful push, got %q", result.UnpushedHead)
+	}
+	if pushCalled != 1 {
+		t.Errorf("expected exactly one push, got %d", pushCalled)
+	}
+	// A timeout says nothing about the diff, so Smith must not be re-run:
+	// another attempt would rebuild identical work.
+	if result.Attempts != 1 {
+		t.Errorf("expected the timeout to end the attempt loop, got %d attempts", result.Attempts)
+	}
+	if temperCalls != 1 {
+		t.Errorf("expected one verification run with retries disabled, got %d", temperCalls)
+	}
+	// The reviewer's threads are resolved: the fix IS on the PR.
+	if len(v.resolved) != 1 {
+		t.Errorf("expected the pushed fix to resolve its thread, got %v", v.resolved)
+	}
+	// The operator must see this, not just a WARN line in the daemon log.
+	assertNeedsHuman(t, db, params.BeadID, params.AnvilName, "UNVERIFIED")
+}
+
+// TestFix_VerifyTimeout_RetriesVerification checks the bounded re-run: a
+// timeout is usually a wedged test process, so one clean re-run resolves it
+// without ever reaching the unverified-push fallback.
+func TestFix_VerifyTimeout_RetriesVerification(t *testing.T) {
+	h := newTestHarness()
+	defer h.restore()
+
+	db := openTestDB(t)
+	smithSpawnFn = makeSmithStub(0)
+	calls := 0
+	temperRunFn = func(ctx context.Context, _ string, _ temper.Config, _ *state.DB, _, _ string) *temper.Result {
+		calls++
+		if calls == 1 {
+			<-ctx.Done()
+			return &temper.Result{Passed: false, FailedStep: "blocked"}
+		}
+		return &temper.Result{Passed: true}
+	}
+	pushCalled := 0
+	gitPushFn = func(_ context.Context, _, _ string) error {
+		pushCalled++
+		return nil
+	}
+	gitRevParseFn = fixedRevParse("aaaaaaaaaaaa", "bbbbbbbbbbbb")
+
+	v := &fakeVCS{comments: []vcs.ReviewComment{
+		{Author: "copilot", Body: "fix this", State: "CHANGES_REQUESTED"},
+	}}
+	params := defaultFixParams(db, v)
+	params.VerifyTimeout = 50 * time.Millisecond
+	params.VerifyRetries = 1
+
+	result := Fix(context.Background(), params)
+
+	if !result.Addressed {
+		t.Fatalf("expected Addressed=true after the retry verified, got error: %v", result.Error)
+	}
+	if result.Unverified {
+		t.Error("expected Unverified=false — the retry produced a real verification")
+	}
+	if calls != 2 {
+		t.Errorf("expected 2 verification runs (1 timeout + 1 retry), got %d", calls)
+	}
+	if pushCalled != 1 {
+		t.Errorf("expected exactly one push, got %d", pushCalled)
+	}
+}
+
+// TestFix_VerifyTimeout_PreservesWorkWhenPushFails covers the last resort: the
+// fix could not be verified AND could not be pushed, so the commit exists only
+// in the worktree. The result must name it so the caller keeps the checkout.
+func TestFix_VerifyTimeout_PreservesWorkWhenPushFails(t *testing.T) {
+	h := newTestHarness()
+	defer h.restore()
+
+	db := openTestDB(t)
+	workerID := "burnish-preserve-1"
+	if err := db.InsertWorker(&state.Worker{
+		ID: workerID, BeadID: "test-1", Anvil: "test-anvil",
+		Branch: "forge/test", Status: state.WorkerRunning, Phase: "burnish",
+		StartedAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("InsertWorker: %v", err)
+	}
+
+	smithSpawnFn = makeSmithStub(0)
+	calls := 0
+	temperRunFn = blockingTemper(&calls)
+	gitPushFn = func(_ context.Context, _, _ string) error {
+		return fmt.Errorf("remote rejected")
+	}
+	const head = "7729aad29abc"
+	gitRevParseFn = fixedRevParse(head, "0000000000")
+
+	v := &fakeVCS{comments: []vcs.ReviewComment{
+		{Author: "copilot", Body: "fix this", State: "CHANGES_REQUESTED"},
+	}}
+	params := defaultFixParams(db, v)
+	params.WorkerID = workerID
+	params.VerifyTimeout = 50 * time.Millisecond
+	params.VerifyRetries = -1
+
+	result := Fix(context.Background(), params)
+
+	if result.Addressed {
+		t.Error("expected Addressed=false when the fix reached neither verification nor the remote")
+	}
+	if result.UnpushedHead != head {
+		t.Errorf("UnpushedHead = %q, want %q", result.UnpushedHead, head)
+	}
+	if result.Error == nil {
+		t.Fatal("expected an error when the unverified push failed")
+	}
+	// The escalation must name the SHA an operator has to recover.
+	assertNeedsHuman(t, db, params.BeadID, params.AnvilName, head)
+	w, err := db.GetWorker(workerID)
+	if err != nil {
+		t.Fatalf("GetWorker: %v", err)
+	}
+	if w.Status != state.WorkerFailed {
+		t.Errorf("worker status = %s, want %s", w.Status, state.WorkerFailed)
+	}
+}
+
+// TestFix_ExhaustedAttempts_PreservesUnpushedWork covers the other way a
+// finished commit ends up unpushed: every attempt failed temper, so nothing was
+// ever pushed. The commit still exists only in the worktree.
+func TestFix_ExhaustedAttempts_PreservesUnpushedWork(t *testing.T) {
+	h := newTestHarness()
+	defer h.restore()
+
+	db := openTestDB(t)
+	smithSpawnFn = makeSmithStub(0)
+	temperRunFn = makeTemperStub(false, "test")
+	gitPushFn = noPush
+	const head = "deadbeefcafe"
+	gitRevParseFn = fixedRevParse(head, "0000000000")
+
+	v := &fakeVCS{comments: []vcs.ReviewComment{
+		{Author: "copilot", Body: "fix this", State: "CHANGES_REQUESTED"},
+	}}
+	params := defaultFixParams(db, v)
+	params.MaxAttempts = 2
+
+	result := Fix(context.Background(), params)
+
+	if result.Addressed {
+		t.Error("expected Addressed=false after exhausting attempts")
+	}
+	if result.UnpushedHead != head {
+		t.Errorf("UnpushedHead = %q, want %q", result.UnpushedHead, head)
+	}
+	assertNeedsHuman(t, db, params.BeadID, params.AnvilName, head)
+}
+
+// TestBatchFix_VerifyTimeout_PushesUnverified mirrors the single-comment path:
+// the batch fix is pushed unverified rather than discarded.
+func TestBatchFix_VerifyTimeout_PushesUnverified(t *testing.T) {
+	h := newTestHarness()
+	defer h.restore()
+
+	db := openTestDB(t)
+	smithSpawnFn = makeSmithStub(0)
+	calls := 0
+	temperRunFn = blockingTemper(&calls)
+	pushCalled := 0
+	gitPushFn = func(_ context.Context, _, _ string) error {
+		pushCalled++
+		return nil
+	}
+	gitRevParseFn = fixedRevParse("aaaaaaaaaaaa", "bbbbbbbbbbbb")
+
+	v := &fakeVCS{}
+	result := BatchFix(context.Background(), BatchFixParams{
+		WorktreePath:  os.TempDir(),
+		BeadID:        "test-1",
+		AnvilName:     "test-anvil",
+		PRNumber:      42,
+		Branch:        "forge/test",
+		DB:            db,
+		VCS:           v,
+		Providers:     []provider.Provider{{Kind: provider.Claude, Model: "test"}},
+		VerifyTimeout: 50 * time.Millisecond,
+		VerifyRetries: -1,
+		Comments: []vcs.ReviewComment{
+			{Author: "copilot", Body: "fix this", State: "CHANGES_REQUESTED", ThreadID: "T1"},
+		},
+	})
+
+	if !result.Addressed || !result.Unverified {
+		t.Fatalf("expected an unverified push, got Addressed=%t Unverified=%t err=%v",
+			result.Addressed, result.Unverified, result.Error)
+	}
+	if pushCalled != 1 {
+		t.Errorf("expected exactly one push, got %d", pushCalled)
+	}
+	if len(v.resolved) != 1 {
+		t.Errorf("expected the pushed batch fix to resolve its thread, got %v", v.resolved)
+	}
+}
+
+// TestResolveVerifyRetries pins the tri-state: 0 means "unset" (package
+// default, mirroring resolveVerifyTimeout), negative is the explicit opt-out.
+func TestResolveVerifyRetries(t *testing.T) {
+	if got := resolveVerifyRetries(0); got != DefaultVerifyRetries {
+		t.Errorf("resolveVerifyRetries(0) = %d, want %d", got, DefaultVerifyRetries)
+	}
+	if got := resolveVerifyRetries(-1); got != 0 {
+		t.Errorf("resolveVerifyRetries(-1) = %d, want 0", got)
+	}
+	if got := resolveVerifyRetries(3); got != 3 {
+		t.Errorf("resolveVerifyRetries(3) = %d, want 3", got)
+	}
+}
+
+// assertNeedsHuman fails unless the bead carries a needs-attention entry whose
+// message contains want.
+func assertNeedsHuman(t *testing.T, db *state.DB, beadID, anvil, want string) {
+	t.Helper()
+	r, err := db.GetRetry(beadID, anvil)
+	if err != nil {
+		t.Fatalf("GetRetry(%s): %v", beadID, err)
+	}
+	if r == nil || !r.NeedsHuman {
+		t.Fatalf("expected bead %s to be flagged needs-attention", beadID)
+	}
+	if !strings.Contains(r.LastError, want) {
+		t.Errorf("needs-attention message %q does not mention %q", r.LastError, want)
 	}
 }

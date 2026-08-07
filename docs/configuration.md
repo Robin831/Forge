@@ -54,9 +54,11 @@ settings:
   max_review_attempts: 2
   max_ci_fix_attempts: 5
   max_review_fix_attempts: 5
+  max_same_head_review_fixes: 2     # Review fixes against ONE unchanged PR head before escalating
   max_rebase_attempts: 3
   max_lifecycle_workers: 2          # Concurrent quench/burnish/rebase/assay fix workers
   burnish_verify_timeout: 5m        # Verify (Temper) deadline within one review-fix attempt
+  burnish_verify_retries: 1         # Extra verification runs after a timeout, before pushing unverified
   merge_strategy: squash
   empty_diff_action: attention      # Approved branch with no commits vs base: attention | close
   daily_cost_limit: 50.00
@@ -519,7 +521,9 @@ anvils:
 | `copilot_premium_multipliers` | map | built-in defaults | | Per-model Copilot premium-request multipliers (e.g. `claude-opus-4.6: 3`). Each entry overrides the built-in default for that model; unlisted models keep their defaults (and unknown models default to `1.0`). Hot-reloadable. See [Pricing Tables](#pricing-tables) below. |
 | `max_ci_fix_attempts` | int | `5` | `1` | Maximum CI fix cycles per PR before marking as exhausted. |
 | `max_review_fix_attempts` | int | `5` | `1` | Maximum review fix cycles per PR before marking as exhausted. |
-| `burnish_verify_timeout` | duration | `5m` | `30s` (when set) | Maximum time allowed for the post-Smith Temper (verification) step within a single Burnish (review-fix) attempt. The push and thread-resolution steps that follow are not covered by this deadline. On timeout the Burnish worker logs a WARN, records the stable reason `warden_timeout` in the event log (`burnish_failed`) and the returned error, and lets the daemon's normal recovery re-dispatch. The timeout cannot be disabled — omitting the field (or setting it to `0`) falls back to the `5m` default; a non-zero value must be at least `30s`. |
+| `max_same_head_review_fixes` | int | `2` | `0` (use default) | Maximum review fix cycles dispatched against **one unchanged PR head**. `max_review_fix_attempts` bounds the PR's whole life and never resets, so it cannot tell a PR that is progressing (each round pushes a new head) from one rebuilding the identical diff every Bellows cycle — the second burns a full Smith run per cycle for nothing. Exceeding this raises a Needs Attention entry naming the PR, head SHA and attempt count instead of dispatching again; the counter resets as soon as the head moves, and `forge queue retry` clears it. A manual review fix (Hearth's "fix comments") is never circuit-broken. `0` or unset falls back to `2` — the breaker can be widened but not disabled. |
+| `burnish_verify_timeout` | duration | `5m` | `30s` (when set) | Maximum time allowed for the post-Smith Temper (verification) step within a single Burnish (review-fix) attempt. The push and thread-resolution steps that follow are not covered by this deadline. On timeout the Burnish worker logs a WARN and records the stable reason `warden_timeout` in the event log (`review_fix_failed`) — then re-runs verification up to `burnish_verify_retries` times and, if it still does not complete, pushes the fix marked **unverified** rather than discarding it (see `burnish_verify_retries`). The timeout cannot be disabled — omitting the field (or setting it to `0`) falls back to the `5m` default; a non-zero value must be at least `30s`. |
+| `burnish_verify_retries` | int | `1` | | Extra verification runs a Burnish attempt gets after the first one exceeds `burnish_verify_timeout`. A timeout is usually a wedged test process rather than a genuinely slow suite, so one clean re-run resolves most of them. When every run times out the fix is **not** discarded: the commit is pushed marked unverified (Burnish verification is advisory — the fix lands on a PR that humans, Copilot and Assay review anyway), the run is recorded as `review_fix_unverified_push`, and a Needs Attention entry is raised. Only if that push also fails is the worktree preserved instead of removed, with the dangling SHA named (`review_fix_work_preserved`). Omitting the field (or `0`) uses the default; a negative value falls straight through to the unverified push. |
 | `max_rebase_attempts` | int | `3` | `1` | Maximum conflict rebase attempts per PR before marking as exhausted. |
 | `max_lifecycle_workers` | int | `2` | `0` (use default) | Global cap on concurrent lifecycle/bellows fix workers (quench/cifix, burnish/reviewfix, rebase, assay) across all PRs and anvils. Each fix worker spawns its own Claude session and is **not** counted against `max_total_smiths`, so this independent ceiling prevents a burst of stuck PRs from fanning out unbounded Claude sessions and OOM-crashing the host. `0` or unset falls back to the default of `2`. |
 | `merge_strategy` | string | `"squash"` | | How PRs are merged from Hearth TUI. Valid: `squash`, `merge`, `rebase`. |
@@ -1804,9 +1808,11 @@ Environment variables with the `FORGE_` prefix override YAML values. Nested keys
 | `FORGE_SETTINGS_COPILOT_DAILY_REQUEST_LIMIT` | `settings.copilot_daily_request_limit` |
 | `FORGE_SETTINGS_MAX_CI_FIX_ATTEMPTS` | `settings.max_ci_fix_attempts` |
 | `FORGE_SETTINGS_MAX_REVIEW_FIX_ATTEMPTS` | `settings.max_review_fix_attempts` |
+| `FORGE_SETTINGS_MAX_SAME_HEAD_REVIEW_FIXES` | `settings.max_same_head_review_fixes` |
 | `FORGE_SETTINGS_MAX_REBASE_ATTEMPTS` | `settings.max_rebase_attempts` |
 | `FORGE_SETTINGS_MAX_LIFECYCLE_WORKERS` | `settings.max_lifecycle_workers` |
 | `FORGE_SETTINGS_BURNISH_VERIFY_TIMEOUT` | `settings.burnish_verify_timeout` |
+| `FORGE_SETTINGS_BURNISH_VERIFY_RETRIES` | `settings.burnish_verify_retries` |
 | `FORGE_SETTINGS_MERGE_STRATEGY` | `settings.merge_strategy` |
 | `FORGE_SETTINGS_EMPTY_DIFF_ACTION` | `settings.empty_diff_action` |
 | `FORGE_SETTINGS_STALE_INTERVAL` | `settings.stale_interval` |
@@ -1876,6 +1882,7 @@ The config is validated at load time. Errors are reported as a list:
 - `max_review_fix_attempts` must be >= 1
 - `max_rebase_attempts` must be >= 1
 - `max_lifecycle_workers` must not be negative (omit or set to 0 to use the default)
+- `max_same_head_review_fixes` must not be negative (omit or set to 0 to use the default)
 - `burnish_verify_timeout` must not be negative, and must be >= 30s when set explicitly (omit or set to 0 to use the package default)
 - `poll_interval` must be >= 10s
 - `smith_timeout` must be >= 1m

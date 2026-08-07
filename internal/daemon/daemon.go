@@ -1891,6 +1891,7 @@ func (d *Daemon) handleLifecycleAction(ctx context.Context, req lifecycle.Action
 		switch req.Action {
 		case lifecycle.ActionCloseBead:
 			d.logger.Info("closing bead after PR merge", "bead", req.BeadID)
+			d.clearReviewFixDispatch(req)
 			if err := d.closeBead(ctx, req.BeadID, anvilCfg.Path, "PR merged"); err != nil {
 				d.logger.Warn("failed to close bead after PR merge", "bead", req.BeadID, "error", err)
 			}
@@ -1898,6 +1899,7 @@ func (d *Daemon) handleLifecycleAction(ctx context.Context, req lifecycle.Action
 
 		case lifecycle.ActionCleanup:
 			d.logger.Info("cleaning up PR after close", "pr", req.PRNumber)
+			d.clearReviewFixDispatch(req)
 			// Optional: delete remote branch etc.
 			return
 		}
@@ -1983,7 +1985,7 @@ func (d *Daemon) handleLifecycleAction(ctx context.Context, req lifecycle.Action
 					d.logger.Info("preserved lifecycle logs", "bead", req.BeadID, "workers", n, "dir", dstDir)
 				}
 			}
-			d.worktreeMgr.Remove(ctx, anvilCfg.Path, wt)
+			d.removeLifecycleWorktree(ctx, req, anvilCfg.Path, wt)
 		}()
 
 		workerID := fmt.Sprintf("%s-%s-%d", req.Anvil, req.BeadID, time.Now().UnixNano())
@@ -2106,6 +2108,18 @@ func (d *Daemon) handleLifecycleAction(ctx context.Context, req lifecycle.Action
 			}
 
 		case lifecycle.ActionFixReview:
+			// Refuse a dispatch that would rebuild work an unchanged PR head
+			// already carries. ReviewFixCnt bounds review fixes for the PR's
+			// whole life and never resets, so it neither stops a
+			// non-converging loop early nor lets a genuinely progressing PR
+			// keep going; the head SHA is the signal that tells the two apart.
+			if !d.reviewFixDispatchAllowed(workerCtx, req, anvilCfg.Path) {
+				d.lifecycleMgr.NotifyReviewFixCompleted(req.Anvil, req.PRNumber)
+				if d.bellowsMonitor != nil {
+					d.bellowsMonitor.ResetPRState(req.Anvil, req.PRNumber)
+				}
+				return
+			}
 			d.logger.Info("spawning review fix worker", "pr", req.PRNumber, "bead", req.BeadID)
 			// Coordinate with Assay before fetching the comment set: on a live
 			// Assay anvil, ensure Assay has reviewed (and posted on) the current
@@ -2157,6 +2171,7 @@ func (d *Daemon) handleLifecycleAction(ctx context.Context, req lifecycle.Action
 						GoRaceDetection: d.resolveGoRaceDetection(anvilCfg),
 						Hooks:           anvilCfg.Hooks,
 						VerifyTimeout:   burnishCfg.Settings.BurnishVerifyTimeout,
+						VerifyRetries:   burnishCfg.Settings.BurnishVerifyRetries,
 					})
 				}
 			}
@@ -2180,6 +2195,7 @@ func (d *Daemon) handleLifecycleAction(ctx context.Context, req lifecycle.Action
 					GoRaceDetection: d.resolveGoRaceDetection(anvilCfg),
 					Hooks:           anvilCfg.Hooks,
 					VerifyTimeout:   burnishCfg.Settings.BurnishVerifyTimeout,
+					VerifyRetries:   burnishCfg.Settings.BurnishVerifyRetries,
 				})
 			}
 			status := state.WorkerDone
@@ -2187,6 +2203,7 @@ func (d *Daemon) handleLifecycleAction(ctx context.Context, req lifecycle.Action
 				status = state.WorkerFailed
 			}
 			_ = d.db.UpdateWorkerStatus(workerID, status)
+			d.recordReviewFixOutcome(req, res)
 			// Always notify lifecycle the review-fix cycle has finished and
 			// clear the bellows snapshot, regardless of outcome. The earlier
 			// guard left both signals untouched on failure, hoping bellows
@@ -6248,6 +6265,13 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 			}
 			if err := d.db.ResetPRFixCounts(rp.PRID); err != nil {
 				return errorResponse(fmt.Sprintf("failed to reset PR fix counts: %v", err))
+			}
+			// The head-scoped review-fix breaker is part of the same budget:
+			// leaving its row would have the retry trip again on its first
+			// dispatch, since the head has not moved.
+			if err := d.db.DeleteReviewFixDispatch(pr.Anvil, pr.Number); err != nil {
+				d.logger.Warn("failed to clear review fix dispatch bookkeeping on retry",
+					"pr", pr.Number, "anvil", pr.Anvil, "error", err)
 			}
 			if d.lifecycleMgr == nil {
 				d.logger.Error("lifecycle manager not ready for retry_bead PR reset", "pr_id", rp.PRID, "bead", pr.BeadID, "anvil", pr.Anvil)

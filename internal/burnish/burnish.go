@@ -49,6 +49,25 @@ const DefaultVerifyTimeout = 5 * time.Minute
 // match on this exact string, so do not change without coordinating.
 const ErrVerifyTimeoutReason = "warden_timeout"
 
+// Needs-attention message prefixes. They exist so a later cycle can tell which
+// entries this package raised, and which of them a merged PR resolves.
+const (
+	// AttentionUnverified marks a fix that reached the PR without a passing
+	// verification. The work landed, so a merge clears the entry.
+	AttentionUnverified = "review fix unverified: "
+	// AttentionUnpushed marks a fix commit that exists only in a preserved
+	// worktree. A merge does NOT clear this one — the commit still never
+	// reached the remote, and the checkout still holds the only copy.
+	AttentionUnpushed = "review fix unpushed: "
+)
+
+// DefaultVerifyRetries is how many EXTRA verification runs a burnish attempt
+// gets after the first one times out. A timeout is usually a wedged test
+// process rather than a genuinely slow suite, so one clean re-run resolves most
+// of them for the price of one more temper cycle. Mirrored by
+// config.SettingsConfig.BurnishVerifyRetries.
+const DefaultVerifyRetries = 1
+
 // FixParams holds the inputs for a review fix attempt.
 type FixParams struct {
 	// WorktreePath is the git worktree for this PR's branch.
@@ -90,6 +109,11 @@ type FixParams struct {
 	// VerifyTimeout caps the post-Smith verification (temper) step per attempt.
 	// When <= 0 the package default (DefaultVerifyTimeout) is applied.
 	VerifyTimeout time.Duration
+	// VerifyRetries is how many extra verification runs a timed-out
+	// verification gets before burnish falls back to pushing unverified.
+	// When 0 the package default (DefaultVerifyRetries) is applied; a negative
+	// value disables the retry.
+	VerifyRetries int
 }
 
 // FixResult captures the outcome of addressing review comments.
@@ -104,6 +128,21 @@ type FixResult struct {
 	Duration time.Duration
 	// Error if the fix process itself failed.
 	Error error
+	// Unverified is true when the pushed fix was NOT confirmed by temper
+	// because verification exceeded its deadline. Addressed is still true — the
+	// commit is on the PR — but the caller must report it as unverified rather
+	// than as a clean success.
+	Unverified bool
+	// VerifyTimedOut is true when at least one verification run of the final
+	// attempt hit its deadline, whatever burnish then did about it.
+	VerifyTimedOut bool
+	// HeadSHA is the worktree's HEAD after the last Smith attempt, when
+	// burnish had reason to resolve it. Empty when it was never resolved.
+	HeadSHA string
+	// UnpushedHead is set when a finished fix commit could not be pushed. The
+	// commit exists only in the worktree, so the caller must preserve that
+	// worktree and surface the SHA rather than tearing it down.
+	UnpushedHead string
 }
 
 // BatchFixParams holds the inputs for a batched review fix attempt.
@@ -143,6 +182,11 @@ type BatchFixParams struct {
 	// VerifyTimeout caps the post-Smith verification (temper) step.
 	// When <= 0 the package default (DefaultVerifyTimeout) is applied.
 	VerifyTimeout time.Duration
+	// VerifyRetries is how many extra verification runs a timed-out
+	// verification gets before burnish falls back to pushing unverified.
+	// When 0 the package default (DefaultVerifyRetries) is applied; a negative
+	// value disables the retry.
+	VerifyRetries int
 }
 
 // BatchFix combines multiple review comments into one Smith prompt.
@@ -264,66 +308,86 @@ func BatchFix(ctx context.Context, p BatchFixParams) *FixResult {
 		result.Duration = time.Since(start)
 		return result
 	}
-	verifyTimeout := resolveVerifyTimeout(p.VerifyTimeout)
-	log.Printf("[burnish] PR #%d bead=%s: verification starting (timeout=%s)",
-		p.PRNumber, p.BeadID, verifyTimeout)
+	vp := verifyParams{
+		prNumber:     p.PRNumber,
+		beadID:       p.BeadID,
+		anvilName:    p.AnvilName,
+		branch:       p.Branch,
+		worktreePath: p.WorktreePath,
+		workerID:     p.WorkerID,
+		db:           p.DB,
+		timeout:      resolveVerifyTimeout(p.VerifyTimeout),
+		retries:      resolveVerifyRetries(p.VerifyRetries),
+	}
+	log.Printf("[burnish] PR #%d bead=%s: verification starting (timeout=%s, retries=%d)",
+		p.PRNumber, p.BeadID, vp.timeout, vp.retries)
 	temperCfg := resolveTemperConfig(p.WorktreePath, p.TemperConfig, p.DetectOptions, p.GoRaceDetection)
-	verifyOutc := runVerifyWithTimeout(ctx, p.PRNumber, p.BeadID, p.AnvilName, p.WorktreePath, temperCfg, p.DB, verifyTimeout)
+	verifyOutc, verifyRuns := runVerifyRetrying(ctx, vp, temperCfg)
 	if err := hookRunFn(ctx, p.WorkerID, "after_temper", hooks.HookCmd(p.Hooks, "after_temper"), hEnv); err != nil {
 		log.Printf("[burnish] PR #%d: after_temper hook failed (non-fatal): %v", p.PRNumber, err)
 	}
 	if verifyOutc.timedOut {
 		if p.DB != nil {
 			_ = p.DB.LogEvent(state.EventBurnishFailed,
-				fmt.Sprintf("PR #%d: batch verification timed out after %s (%s)", p.PRNumber, verifyTimeout, ErrVerifyTimeoutReason),
-				p.BeadID, p.AnvilName)
-			if p.WorkerID != "" {
-				_ = p.DB.UpdateWorkerStatus(p.WorkerID, state.WorkerFailed)
-			}
-		}
-		result.Error = fmt.Errorf("batch review fix: verification timed out after %s (%s)", verifyTimeout, ErrVerifyTimeoutReason)
-		result.Duration = time.Since(start)
-		return result
-	}
-	verifyResult := verifyOutc.result
-	log.Printf("[burnish] PR #%d bead=%s: verification result (passed=%t, failedStep=%s)",
-		p.PRNumber, p.BeadID, verifyResult.Passed, verifyResult.FailedStep)
-	if !verifyResult.Passed {
-		log.Printf("[burnish] PR #%d: batch Temper failed (failed step: %s) — not pushing",
-			p.PRNumber, verifyResult.FailedStep)
-		if p.DB != nil {
-			_ = p.DB.LogEvent(state.EventBurnishTemperFailed,
-				fmt.Sprintf("PR #%d: batch temper failed at step %s", p.PRNumber, verifyResult.FailedStep),
+				fmt.Sprintf("PR #%d: batch verification timed out after %s across %d run(s) (%s)",
+					p.PRNumber, vp.timeout, verifyRuns, ErrVerifyTimeoutReason),
 				p.BeadID, p.AnvilName)
 		}
-		result.Error = fmt.Errorf("batch review fix: temper verification failed at step %s", verifyResult.FailedStep)
-		result.Duration = time.Since(start)
-		return result
-	}
-
-	// Temper passed — push the verified commits (unless Smith already pushed).
-	localHead, _ := gitRevParseFn(ctx, p.WorktreePath, "HEAD")
-	remoteHead, _ := gitRevParseFn(ctx, p.WorktreePath, "origin/"+p.Branch)
-	if localHead == "" || localHead != remoteHead {
-		log.Printf("[burnish] PR #%d bead=%s: push attempt starting (branch=%s)", p.PRNumber, p.BeadID, p.Branch)
-		if err := gitPushFn(ctx, p.WorktreePath, p.Branch); err != nil {
-			log.Printf("[burnish] PR #%d bead=%s: WARN push failed after temper-verified batch fix: %v", p.PRNumber, p.BeadID, err)
-			if p.DB != nil {
-				_ = p.DB.LogEvent(state.EventBurnishFailed,
-					fmt.Sprintf("PR #%d: push failed after temper-verified batch fix: %v", p.PRNumber, err),
-					p.BeadID, p.AnvilName)
-			}
-			result.Error = fmt.Errorf("push after temper verification: %w", err)
+		// The timeout resolver pushes the fix unverified when it can, so a
+		// still-unaddressed result means the commit is stranded and there is
+		// nothing to resolve threads for.
+		resolveVerifyTimeoutOutcome(ctx, vp, verifyRuns, result)
+		if !result.Addressed {
 			result.Duration = time.Since(start)
 			return result
 		}
-		log.Printf("[burnish] PR #%d bead=%s: push complete", p.PRNumber, p.BeadID)
 	} else {
-		log.Printf("[burnish] PR #%d bead=%s: Smith already pushed (HEAD matches origin/%s), skipping explicit push", p.PRNumber, p.BeadID, p.Branch)
-	}
+		verifyResult := verifyOutc.result
+		log.Printf("[burnish] PR #%d bead=%s: verification result (passed=%t, failedStep=%s)",
+			p.PRNumber, p.BeadID, verifyResult.Passed, verifyResult.FailedStep)
+		if !verifyResult.Passed {
+			log.Printf("[burnish] PR #%d: batch Temper failed (failed step: %s) — not pushing",
+				p.PRNumber, verifyResult.FailedStep)
+			if p.DB != nil {
+				_ = p.DB.LogEvent(state.EventBurnishTemperFailed,
+					fmt.Sprintf("PR #%d: batch temper failed at step %s", p.PRNumber, verifyResult.FailedStep),
+					p.BeadID, p.AnvilName)
+			}
+			result.Error = fmt.Errorf("batch review fix: temper verification failed at step %s", verifyResult.FailedStep)
+			result.Duration = time.Since(start)
+			return result
+		}
 
-	log.Printf("[burnish] PR #%d: batch review fix verified and pushed for %d comments", p.PRNumber, len(actionable))
-	result.Addressed = true
+		// Temper passed — push the verified commits (unless Smith already pushed).
+		localHead, _ := gitRevParseFn(ctx, p.WorktreePath, "HEAD")
+		remoteHead, _ := gitRevParseFn(ctx, p.WorktreePath, "origin/"+p.Branch)
+		if localHead == "" || localHead != remoteHead {
+			log.Printf("[burnish] PR #%d bead=%s: push attempt starting (branch=%s)", p.PRNumber, p.BeadID, p.Branch)
+			if err := gitPushFn(ctx, p.WorktreePath, p.Branch); err != nil {
+				log.Printf("[burnish] PR #%d bead=%s: WARN push failed after temper-verified batch fix: %v", p.PRNumber, p.BeadID, err)
+				if p.DB != nil {
+					_ = p.DB.LogEvent(state.EventBurnishFailed,
+						fmt.Sprintf("PR #%d: push failed after temper-verified batch fix: %v", p.PRNumber, err),
+						p.BeadID, p.AnvilName)
+				}
+				// The fix is committed and exists nowhere else: name it so the
+				// caller keeps the worktree instead of tearing it down.
+				result.HeadSHA = localHead
+				result.UnpushedHead = localHead
+				preserveWork(vp, result, err.Error())
+				result.Error = fmt.Errorf("push after temper verification: %w", err)
+				result.Duration = time.Since(start)
+				return result
+			}
+			log.Printf("[burnish] PR #%d bead=%s: push complete", p.PRNumber, p.BeadID)
+		} else {
+			log.Printf("[burnish] PR #%d bead=%s: Smith already pushed (HEAD matches origin/%s), skipping explicit push", p.PRNumber, p.BeadID, p.Branch)
+		}
+
+		log.Printf("[burnish] PR #%d: batch review fix verified and pushed for %d comments", p.PRNumber, len(actionable))
+		result.HeadSHA = localHead
+		result.Addressed = true
+	}
 
 	// Resolve threads after successful fix.
 	resolvedCount := 0
@@ -350,12 +414,22 @@ func BatchFix(ctx context.Context, p BatchFixParams) *FixResult {
 
 	if p.DB != nil {
 		_ = p.DB.LogEvent(state.EventBurnishSuccess,
-			fmt.Sprintf("PR #%d: batch addressed %d comments", p.PRNumber, len(actionable)),
+			fmt.Sprintf("PR #%d: batch addressed %d comments%s", p.PRNumber, len(actionable), unverifiedSuffix(result)),
 			p.BeadID, p.AnvilName)
 	}
 
 	result.Duration = time.Since(start)
 	return result
+}
+
+// unverifiedSuffix annotates a success message when the fix reached the PR
+// without a passing verification, so the event log never reads as a clean
+// success for a run that never completed one.
+func unverifiedSuffix(result *FixResult) string {
+	if result.Unverified {
+		return " (UNVERIFIED — verification timed out)"
+	}
+	return ""
 }
 
 // buildBatchReviewPrompt creates a prompt listing all review comments for Smith to address in one pass.
@@ -581,67 +655,87 @@ func Fix(ctx context.Context, p FixParams) *FixResult {
 			result.Duration = time.Since(start)
 			return result
 		}
-		verifyTimeout := resolveVerifyTimeout(p.VerifyTimeout)
-		log.Printf("[burnish] PR #%d bead=%s: verification starting (attempt=%d, timeout=%s)",
-			p.PRNumber, p.BeadID, attempt, verifyTimeout)
+		vp := verifyParams{
+			prNumber:     p.PRNumber,
+			beadID:       p.BeadID,
+			anvilName:    p.AnvilName,
+			branch:       p.Branch,
+			worktreePath: p.WorktreePath,
+			workerID:     p.WorkerID,
+			db:           p.DB,
+			timeout:      resolveVerifyTimeout(p.VerifyTimeout),
+			retries:      resolveVerifyRetries(p.VerifyRetries),
+		}
+		log.Printf("[burnish] PR #%d bead=%s: verification starting (attempt=%d, timeout=%s, retries=%d)",
+			p.PRNumber, p.BeadID, attempt, vp.timeout, vp.retries)
 		temperCfg := resolveTemperConfig(p.WorktreePath, p.TemperConfig, p.DetectOptions, p.GoRaceDetection)
-		verifyOutc := runVerifyWithTimeout(ctx, p.PRNumber, p.BeadID, p.AnvilName, p.WorktreePath, temperCfg, p.DB, verifyTimeout)
+		verifyOutc, verifyRuns := runVerifyRetrying(ctx, vp, temperCfg)
 		if err := hookRunFn(ctx, p.WorkerID, "after_temper", hooks.HookCmd(p.Hooks, "after_temper"), hEnv); err != nil {
 			log.Printf("[burnish] PR #%d: after_temper hook failed (non-fatal): %v", p.PRNumber, err)
 		}
 		if verifyOutc.timedOut {
 			_ = p.DB.LogEvent(state.EventBurnishFailed,
-				fmt.Sprintf("PR #%d: verification timed out after %s (%s) on attempt %d",
-					p.PRNumber, verifyTimeout, ErrVerifyTimeoutReason, attempt),
+				fmt.Sprintf("PR #%d: verification timed out after %s across %d run(s) (%s) on attempt %d",
+					p.PRNumber, vp.timeout, verifyRuns, ErrVerifyTimeoutReason, attempt),
 				p.BeadID, p.AnvilName)
-			if p.WorkerID != "" && p.DB != nil {
-				_ = p.DB.UpdateWorkerStatus(p.WorkerID, state.WorkerFailed)
-			}
-			result.Error = fmt.Errorf("review fix: verification timed out after %s (%s)", verifyTimeout, ErrVerifyTimeoutReason)
-			result.Duration = time.Since(start)
-			return result
-		}
-		verifyResult := verifyOutc.result
-		log.Printf("[burnish] PR #%d bead=%s: verification result (attempt=%d, passed=%t, failedStep=%s)",
-			p.PRNumber, p.BeadID, attempt, verifyResult.Passed, verifyResult.FailedStep)
-
-		// Defensive check: did Smith push despite being told not to?
-		smithAlreadyPushed := false
-		localHead, _ := gitRevParseFn(ctx, p.WorktreePath, "HEAD")
-		remoteHead, _ := gitRevParseFn(ctx, p.WorktreePath, "origin/"+p.Branch)
-		if localHead != "" && localHead == remoteHead {
-			smithAlreadyPushed = true
-			log.Printf("[burnish] PR #%d: Smith already pushed (HEAD matches origin/%s)", p.PRNumber, p.Branch)
-		}
-
-		if !verifyResult.Passed {
-			log.Printf("[burnish] PR #%d: Temper failed on attempt %d (failed step: %s) — looping with feedback",
-				p.PRNumber, attempt, verifyResult.FailedStep)
-			_ = p.DB.LogEvent(state.EventBurnishTemperFailed,
-				fmt.Sprintf("PR #%d: temper failed on attempt %d at step %s", p.PRNumber, attempt, verifyResult.FailedStep),
-				p.BeadID, p.AnvilName)
-			lastTemperFailure = verifyResult
-			continue
-		}
-
-		// Temper passed — push the verified commits.
-		if !smithAlreadyPushed {
-			log.Printf("[burnish] PR #%d bead=%s: push attempt starting (attempt=%d, branch=%s)",
-				p.PRNumber, p.BeadID, attempt, p.Branch)
-			if err := gitPushFn(ctx, p.WorktreePath, p.Branch); err != nil {
-				log.Printf("[burnish] PR #%d bead=%s: WARN push failed after temper-verified fix: %v", p.PRNumber, p.BeadID, err)
-				_ = p.DB.LogEvent(state.EventBurnishFailed,
-					fmt.Sprintf("PR #%d: push failed after temper-verified fix: %v", p.PRNumber, err),
-					p.BeadID, p.AnvilName)
-				result.Error = fmt.Errorf("push after temper verification: %w", err)
+			// Never loop back to Smith here: a timeout says nothing about the
+			// diff, so another attempt would rebuild identical work. The
+			// resolver pushes the commit unverified when it can, and preserves
+			// it when it cannot — either way this attempt is the last one.
+			resolveVerifyTimeoutOutcome(ctx, vp, verifyRuns, result)
+			if !result.Addressed {
 				result.Duration = time.Since(start)
 				return result
 			}
-			log.Printf("[burnish] PR #%d bead=%s: push complete (attempt=%d)", p.PRNumber, p.BeadID, attempt)
-		}
+			log.Printf("[burnish] PR #%d: Review fixes pushed UNVERIFIED on attempt %d", p.PRNumber, attempt)
+		} else {
+			verifyResult := verifyOutc.result
+			log.Printf("[burnish] PR #%d bead=%s: verification result (attempt=%d, passed=%t, failedStep=%s)",
+				p.PRNumber, p.BeadID, attempt, verifyResult.Passed, verifyResult.FailedStep)
 
-		log.Printf("[burnish] PR #%d: Review fixes verified and pushed on attempt %d", p.PRNumber, attempt)
-		result.Addressed = true
+			// Defensive check: did Smith push despite being told not to?
+			smithAlreadyPushed := false
+			localHead, _ := gitRevParseFn(ctx, p.WorktreePath, "HEAD")
+			remoteHead, _ := gitRevParseFn(ctx, p.WorktreePath, "origin/"+p.Branch)
+			if localHead != "" && localHead == remoteHead {
+				smithAlreadyPushed = true
+				log.Printf("[burnish] PR #%d: Smith already pushed (HEAD matches origin/%s)", p.PRNumber, p.Branch)
+			}
+
+			if !verifyResult.Passed {
+				log.Printf("[burnish] PR #%d: Temper failed on attempt %d (failed step: %s) — looping with feedback",
+					p.PRNumber, attempt, verifyResult.FailedStep)
+				_ = p.DB.LogEvent(state.EventBurnishTemperFailed,
+					fmt.Sprintf("PR #%d: temper failed on attempt %d at step %s", p.PRNumber, attempt, verifyResult.FailedStep),
+					p.BeadID, p.AnvilName)
+				lastTemperFailure = verifyResult
+				continue
+			}
+
+			// Temper passed — push the verified commits.
+			if !smithAlreadyPushed {
+				log.Printf("[burnish] PR #%d bead=%s: push attempt starting (attempt=%d, branch=%s)",
+					p.PRNumber, p.BeadID, attempt, p.Branch)
+				if err := gitPushFn(ctx, p.WorktreePath, p.Branch); err != nil {
+					log.Printf("[burnish] PR #%d bead=%s: WARN push failed after temper-verified fix: %v", p.PRNumber, p.BeadID, err)
+					_ = p.DB.LogEvent(state.EventBurnishFailed,
+						fmt.Sprintf("PR #%d: push failed after temper-verified fix: %v", p.PRNumber, err),
+						p.BeadID, p.AnvilName)
+					// A verified fix that could not be pushed exists only here.
+					result.HeadSHA = localHead
+					result.UnpushedHead = localHead
+					preserveWork(vp, result, err.Error())
+					result.Error = fmt.Errorf("push after temper verification: %w", err)
+					result.Duration = time.Since(start)
+					return result
+				}
+				log.Printf("[burnish] PR #%d bead=%s: push complete (attempt=%d)", p.PRNumber, p.BeadID, attempt)
+			}
+
+			log.Printf("[burnish] PR #%d: Review fixes verified and pushed on attempt %d", p.PRNumber, attempt)
+			result.HeadSHA = localHead
+			result.Addressed = true
+		}
 
 		// Resolve threads after successful fix.
 		// Only thread-level comments (with a ThreadID from GraphQL) can be resolved
@@ -678,11 +772,30 @@ func Fix(ctx context.Context, p FixParams) *FixResult {
 			p.PRNumber, p.BeadID, resolvedCount, len(actionable))
 
 		_ = p.DB.LogEvent(state.EventBurnishSuccess,
-			fmt.Sprintf("PR #%d: Addressed %d comments on attempt %d", p.PRNumber, len(actionable), attempt),
+			fmt.Sprintf("PR #%d: Addressed %d comments on attempt %d%s",
+				p.PRNumber, len(actionable), attempt, unverifiedSuffix(result)),
 			p.BeadID, p.AnvilName)
 
 		result.Duration = time.Since(start)
 		return result
+	}
+
+	// Every attempt was spent without a push. Whatever the last Smith committed
+	// exists only in the worktree, so name it rather than letting teardown take
+	// it: the caller preserves the checkout when UnpushedHead is set.
+	if head, err := gitRevParseFn(ctx, p.WorktreePath, "HEAD"); err == nil && head != "" {
+		if remote, _ := gitRevParseFn(ctx, p.WorktreePath, "origin/"+p.Branch); remote != head {
+			result.HeadSHA = head
+			result.UnpushedHead = head
+			preserveWork(verifyParams{
+				prNumber:     p.PRNumber,
+				beadID:       p.BeadID,
+				anvilName:    p.AnvilName,
+				branch:       p.Branch,
+				worktreePath: p.WorktreePath,
+				db:           p.DB,
+			}, result, fmt.Sprintf("exhausted %d fix attempts without a verified push", p.MaxAttempts))
+		}
 	}
 
 	result.Error = fmt.Errorf("could not address review comments after %d attempts", p.MaxAttempts)
@@ -757,6 +870,184 @@ func resolveVerifyTimeout(d time.Duration) time.Duration {
 		return DefaultVerifyTimeout
 	}
 	return d
+}
+
+// resolveVerifyRetries returns how many extra verification runs a timed-out
+// verification gets. Zero means "unset" and falls back to the package default,
+// mirroring resolveVerifyTimeout; a negative value is the explicit opt-out for
+// an anvil whose suite is slow enough that a second full run is not worth the
+// wall clock.
+func resolveVerifyRetries(n int) int {
+	switch {
+	case n == 0:
+		return DefaultVerifyRetries
+	case n < 0:
+		return 0
+	default:
+		return n
+	}
+}
+
+// verifyParams is the slice of a fix attempt that verification needs. Fix and
+// BatchFix carry different parameter structs but must resolve a timeout
+// identically, so both project onto this.
+type verifyParams struct {
+	prNumber     int
+	beadID       string
+	anvilName    string
+	branch       string
+	worktreePath string
+	workerID     string
+	db           *state.DB
+	timeout      time.Duration
+	retries      int
+}
+
+// runVerifyRetrying runs verification, re-running it after a timeout up to
+// vp.retries extra times. It returns the outcome of the last run and how many
+// runs it took.
+//
+// A verification timeout is nearly always a wedged test process rather than a
+// suite that genuinely needs longer, so one clean re-run resolves most of them
+// — and doing so before falling back to an unverified push means the fallback
+// stays rare enough to be worth escalating when it happens.
+func runVerifyRetrying(ctx context.Context, vp verifyParams, cfg temper.Config) (verifyOutcome, int) {
+	runs := 0
+	var outc verifyOutcome
+	for attempt := 0; attempt <= vp.retries; attempt++ {
+		if attempt > 0 {
+			log.Printf("[burnish] PR #%d bead=%s: re-running verification after timeout (retry %d/%d)",
+				vp.prNumber, vp.beadID, attempt, vp.retries)
+			if vp.db != nil {
+				_ = vp.db.LogEvent(state.EventBurnishFailed,
+					fmt.Sprintf("PR #%d: verification timed out (%s), retrying (%d/%d)",
+						vp.prNumber, ErrVerifyTimeoutReason, attempt, vp.retries),
+					vp.beadID, vp.anvilName)
+			}
+		}
+		outc = runVerifyWithTimeout(ctx, vp.prNumber, vp.beadID, vp.anvilName, vp.worktreePath, cfg, vp.db, vp.timeout)
+		runs++
+		if !outc.timedOut {
+			return outc, runs
+		}
+		// An outer cancellation will never produce a different answer, and
+		// retrying under a dead context just burns the remaining budget.
+		if ctx.Err() != nil {
+			return outc, runs
+		}
+	}
+	return outc, runs
+}
+
+// resolveVerifyTimeoutOutcome decides what happens to a finished fix commit
+// that verification could not confirm.
+//
+// The old behaviour was the worst of every option: log a WARN, skip the push,
+// delete the worktree, and report the cycle complete. The commit — a correct,
+// finished fix — survived only as an unreferenced object, the operator saw a
+// success table, and the next Bellows cycle re-detected the unchanged
+// changes-requested review and spent another full Smith run rebuilding exactly
+// the same diff (Forge-xl50).
+//
+// Burnish verification is advisory, unlike Temper in the pipeline: every
+// burnish output lands on an open PR where humans, Copilot and Assay review the
+// new head anyway. So the fix is pushed and marked unverified. That both keeps
+// the work and moves the PR head, which is what actually stops the loop — the
+// next cycle reviews something new instead of re-deriving the same diff.
+//
+// If the push itself fails there is nothing left to do but keep the commit:
+// UnpushedHead is set so the caller preserves the worktree instead of deleting
+// it, and the SHA is named in the escalation.
+func resolveVerifyTimeoutOutcome(ctx context.Context, vp verifyParams, runs int, result *FixResult) {
+	result.VerifyTimedOut = true
+
+	localHead, headErr := gitRevParseFn(ctx, vp.worktreePath, "HEAD")
+	result.HeadSHA = localHead
+	remoteHead, _ := gitRevParseFn(ctx, vp.worktreePath, "origin/"+vp.branch)
+
+	timeoutDetail := fmt.Sprintf("verification timed out after %s across %d run(s) (%s)",
+		vp.timeout, runs, ErrVerifyTimeoutReason)
+
+	// Already on the remote (Smith pushed despite being told not to, or made no
+	// commit at all): nothing is at risk, but the outcome is still unverified.
+	if localHead != "" && localHead == remoteHead {
+		log.Printf("[burnish] PR #%d bead=%s: %s — HEAD already matches origin/%s, marking unverified",
+			vp.prNumber, vp.beadID, timeoutDetail, vp.branch)
+		markUnverified(vp, result, localHead, timeoutDetail)
+		return
+	}
+
+	if headErr != nil || localHead == "" {
+		// We cannot even name what is at risk. Refuse to declare the cycle
+		// finished and keep the worktree so nothing is deleted blind.
+		result.UnpushedHead = "unknown"
+		result.Error = fmt.Errorf("review fix: %s and the worktree HEAD could not be resolved: %w", timeoutDetail, headErr)
+		preserveWork(vp, result, "unresolved HEAD")
+		return
+	}
+
+	log.Printf("[burnish] PR #%d bead=%s: %s — pushing %s unverified (burnish verification is advisory; the PR is re-reviewed)",
+		vp.prNumber, vp.beadID, timeoutDetail, shortSHA(localHead))
+	if err := gitPushFn(ctx, vp.worktreePath, vp.branch); err != nil {
+		log.Printf("[burnish] PR #%d bead=%s: WARN unverified push failed: %v", vp.prNumber, vp.beadID, err)
+		result.UnpushedHead = localHead
+		result.Error = fmt.Errorf("review fix: %s and the unverified push failed: %w", timeoutDetail, err)
+		preserveWork(vp, result, err.Error())
+		return
+	}
+	markUnverified(vp, result, localHead, timeoutDetail)
+}
+
+// markUnverified records a fix that reached the PR without a passing
+// verification. Addressed stays true — the commit IS on the PR — but the run is
+// escalated rather than reported as a clean success, because "the operator sees
+// success" was half of what made the original bug expensive.
+func markUnverified(vp verifyParams, result *FixResult, headSHA, detail string) {
+	result.Addressed = true
+	result.Unverified = true
+	result.HeadSHA = headSHA
+
+	msg := fmt.Sprintf("PR #%d: review fix %s pushed UNVERIFIED — %s",
+		vp.prNumber, shortSHA(headSHA), detail)
+	if vp.db == nil {
+		return
+	}
+	_ = vp.db.LogEvent(state.EventBurnishUnverifiedPush, msg, vp.beadID, vp.anvilName)
+	if vp.beadID != "" {
+		if err := vp.db.MarkNeedsHuman(vp.beadID, vp.anvilName, AttentionUnverified+msg); err != nil {
+			log.Printf("[burnish] PR #%d: failed to raise needs-attention for unverified push: %v", vp.prNumber, err)
+		}
+	}
+}
+
+// preserveWork records a fix commit that exists only in the worktree. The
+// caller reads result.UnpushedHead and keeps the worktree; this names the SHA
+// and the checkout so recovery is a cherry-pick rather than an archaeology
+// session in `git fsck --lost-found`.
+func preserveWork(vp verifyParams, result *FixResult, cause string) {
+	msg := fmt.Sprintf("PR #%d: review fix commit %s is UNPUSHED and kept in worktree %s (branch %s) — %s",
+		vp.prNumber, shortSHA(result.UnpushedHead), vp.worktreePath, vp.branch, cause)
+	log.Printf("[burnish] %s", msg)
+	if vp.db == nil {
+		return
+	}
+	_ = vp.db.LogEvent(state.EventBurnishWorkPreserved, msg, vp.beadID, vp.anvilName)
+	if vp.beadID != "" {
+		if err := vp.db.MarkNeedsHuman(vp.beadID, vp.anvilName, AttentionUnpushed+msg); err != nil {
+			log.Printf("[burnish] PR #%d: failed to raise needs-attention for preserved work: %v", vp.prNumber, err)
+		}
+	}
+	if vp.workerID != "" {
+		_ = vp.db.UpdateWorkerStatus(vp.workerID, state.WorkerFailed)
+	}
+}
+
+// shortSHA abbreviates a commit id for operator-facing messages.
+func shortSHA(sha string) string {
+	if len(sha) > 12 {
+		return sha[:12]
+	}
+	return sha
 }
 
 // verifyOutcome carries the result of a temper run executed under a deadline.

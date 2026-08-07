@@ -370,6 +370,19 @@ func applyChanges(old, new *config.Config) []string {
 			old.Settings.MaxReviewFixAttempts, new.Settings.MaxReviewFixAttempts))
 	}
 
+	// Both of these are read per dispatch (the breaker on every review-fix
+	// action, the retry count on every burnish verification), so a reload
+	// applies immediately — they only need reporting.
+	if old.Settings.MaxSameHeadReviewFixes != new.Settings.MaxSameHeadReviewFixes {
+		changes = append(changes, fmt.Sprintf("max_same_head_review_fixes: %d → %d",
+			old.Settings.MaxSameHeadReviewFixes, new.Settings.MaxSameHeadReviewFixes))
+	}
+
+	if old.Settings.BurnishVerifyRetries != new.Settings.BurnishVerifyRetries {
+		changes = append(changes, fmt.Sprintf("burnish_verify_retries: %d → %d",
+			old.Settings.BurnishVerifyRetries, new.Settings.BurnishVerifyRetries))
+	}
+
 	if old.Settings.MaxRebaseAttempts != new.Settings.MaxRebaseAttempts {
 		changes = append(changes, fmt.Sprintf("max_rebase_attempts: %d → %d",
 			old.Settings.MaxRebaseAttempts, new.Settings.MaxRebaseAttempts))

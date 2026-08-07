@@ -616,6 +616,16 @@ type SettingsConfig struct {
 	// MaxReviewFixAttempts is the maximum number of review fix cycles per PR
 	// before the PR is considered exhausted. Default: 5.
 	MaxReviewFixAttempts int `mapstructure:"max_review_fix_attempts" yaml:"max_review_fix_attempts"`
+	// MaxSameHeadReviewFixes bounds review fix cycles dispatched against one
+	// UNCHANGED PR head. max_review_fix_attempts bounds the PR's whole life and
+	// never resets, so it cannot distinguish a PR that is progressing (each
+	// round pushes a new head) from one rebuilding the identical diff every
+	// Bellows cycle — the second is what burns a full Smith run per cycle for
+	// nothing. Exceeding this raises a Needs Attention entry naming the PR,
+	// head SHA and attempt count instead of dispatching again; the count resets
+	// as soon as the head moves. Default: 2. A value <= 0 falls back to the
+	// default — the breaker cannot be disabled from config, only widened.
+	MaxSameHeadReviewFixes int `mapstructure:"max_same_head_review_fixes" yaml:"max_same_head_review_fixes"`
 	// BurnishVerifyTimeout is the maximum time allowed for the post-Smith
 	// temper (verification) step in a single burnish attempt. The push and
 	// thread-resolution steps that follow are not covered by this deadline.
@@ -631,6 +641,19 @@ type SettingsConfig struct {
 	// original silent-hang bug (Forge-j67a). When set explicitly the value
 	// must be at least 30s.
 	BurnishVerifyTimeout time.Duration `mapstructure:"burnish_verify_timeout" yaml:"burnish_verify_timeout"`
+	// BurnishVerifyRetries is how many EXTRA verification runs a burnish
+	// attempt gets after the first one exceeds burnish_verify_timeout. A
+	// timeout is usually a wedged test process rather than a genuinely slow
+	// suite, so one clean re-run resolves most of them.
+	//
+	// When every run times out, burnish does NOT discard the fix: it pushes the
+	// commit marked unverified (burnish verification is advisory — the fix
+	// lands on a PR that humans, Copilot and Assay review anyway) and raises a
+	// Needs Attention entry. Only if that push also fails is the worktree
+	// preserved instead of removed, with the dangling SHA named. Default: 1.
+	// Omitting the field (or setting it to 0) uses the default; set a negative
+	// value to fall straight through to the unverified push without re-running.
+	BurnishVerifyRetries int `mapstructure:"burnish_verify_retries" yaml:"burnish_verify_retries"`
 	// MaxRebaseAttempts is the maximum number of conflict rebase attempts per
 	// PR before the PR is considered exhausted. Default: 3.
 	MaxRebaseAttempts int `mapstructure:"max_rebase_attempts" yaml:"max_rebase_attempts"`
@@ -1230,9 +1253,11 @@ func (s SettingsConfig) MarshalYAML() (interface{}, error) {
 		PerWorkerCostEstimate     float64             `yaml:"per_worker_cost_estimate,omitempty"`
 		MaxCIFixAttempts          int                 `yaml:"max_ci_fix_attempts"`
 		MaxReviewFixAttempts      int                 `yaml:"max_review_fix_attempts"`
+		MaxSameHeadReviewFixes    int                 `yaml:"max_same_head_review_fixes,omitempty"`
 		MaxRebaseAttempts         int                 `yaml:"max_rebase_attempts"`
 		MaxLifecycleWorkers       int                 `yaml:"max_lifecycle_workers"`
 		BurnishVerifyTimeout      string              `yaml:"burnish_verify_timeout,omitempty"`
+		BurnishVerifyRetries      int                 `yaml:"burnish_verify_retries,omitempty"`
 		MergeStrategy             string              `yaml:"merge_strategy,omitempty"`
 		EmptyDiffAction           string              `yaml:"empty_diff_action,omitempty"`
 		StaleInterval             string              `yaml:"stale_interval"`
@@ -1315,6 +1340,7 @@ func (s SettingsConfig) MarshalYAML() (interface{}, error) {
 		PerWorkerCostEstimate:  s.PerWorkerCostEstimate,
 		MaxCIFixAttempts:       s.MaxCIFixAttempts,
 		MaxReviewFixAttempts:   s.MaxReviewFixAttempts,
+		MaxSameHeadReviewFixes: s.MaxSameHeadReviewFixes,
 		MaxRebaseAttempts:      s.MaxRebaseAttempts,
 		MaxLifecycleWorkers:    s.MaxLifecycleWorkers,
 		BurnishVerifyTimeout: func() string {
@@ -1323,6 +1349,7 @@ func (s SettingsConfig) MarshalYAML() (interface{}, error) {
 			}
 			return ""
 		}(),
+		BurnishVerifyRetries:      s.BurnishVerifyRetries,
 		MergeStrategy:             s.MergeStrategy,
 		EmptyDiffAction:           s.EmptyDiffAction,
 		StaleInterval:             durationString(s.StaleInterval),
@@ -2139,28 +2166,30 @@ func Defaults() Config {
 			MaxPipelineIterations: 5,
 			ClaudeFlags:           []string{},
 			// No Providers default here — provider.FromConfig handles empty slice.
-			RateLimitBackoff:     5 * time.Minute,
-			BellowsInterval:      2 * time.Minute,
-			MaxCIFixAttempts:     5,
-			MaxReviewFixAttempts: 5,
-			MaxRebaseAttempts:    3,
-			MaxLifecycleWorkers:  DefaultMaxLifecycleWorkers,
-			BurnishVerifyTimeout: 5 * time.Minute,
-			StaleInterval:        5 * time.Minute,
-			TemperStepTimeout:    5 * time.Minute,
-			TemperGitTimeout:     30 * time.Second,
-			WorktreeGitTimeout:   5 * time.Minute,
-			BdTimeout:            executil.DefaultBdTimeout,
-			TemperOutputCap:      DefaultTemperOutputCap,
-			DepcheckInterval:     168 * time.Hour, // weekly
-			DepcheckTimeout:      5 * time.Minute,
-			VulncheckInterval:    24 * time.Hour,
-			VulncheckTimeout:     10 * time.Minute,
-			LogRetentionDays:     30,
-			LogSweepInterval:     24 * time.Hour,
-			SmelterInterval:      8 * time.Hour,
-			QuestgiverInterval:   24 * time.Hour,
-			AdventurerTimeout:    5 * time.Minute,
+			RateLimitBackoff:       5 * time.Minute,
+			BellowsInterval:        2 * time.Minute,
+			MaxCIFixAttempts:       5,
+			MaxReviewFixAttempts:   5,
+			MaxSameHeadReviewFixes: 2,
+			MaxRebaseAttempts:      3,
+			MaxLifecycleWorkers:    DefaultMaxLifecycleWorkers,
+			BurnishVerifyTimeout:   5 * time.Minute,
+			BurnishVerifyRetries:   1,
+			StaleInterval:          5 * time.Minute,
+			TemperStepTimeout:      5 * time.Minute,
+			TemperGitTimeout:       30 * time.Second,
+			WorktreeGitTimeout:     5 * time.Minute,
+			BdTimeout:              executil.DefaultBdTimeout,
+			TemperOutputCap:        DefaultTemperOutputCap,
+			DepcheckInterval:       168 * time.Hour, // weekly
+			DepcheckTimeout:        5 * time.Minute,
+			VulncheckInterval:      24 * time.Hour,
+			VulncheckTimeout:       10 * time.Minute,
+			LogRetentionDays:       30,
+			LogSweepInterval:       24 * time.Hour,
+			SmelterInterval:        8 * time.Hour,
+			QuestgiverInterval:     24 * time.Hour,
+			AdventurerTimeout:      5 * time.Minute,
 			// Kiln preview environments: off by default; the rest of the
 			// values only matter once preview_enabled is turned on.
 			PreviewEnabled:       false,
@@ -2637,6 +2666,9 @@ func (c *Config) Validate() []string {
 	}
 	if c.Settings.MaxReviewFixAttempts < 1 {
 		errs = append(errs, "settings.max_review_fix_attempts must be >= 1")
+	}
+	if c.Settings.MaxSameHeadReviewFixes < 0 {
+		errs = append(errs, "settings.max_same_head_review_fixes must not be negative (omit or set to 0 to use the default)")
 	}
 	if c.Settings.MaxRebaseAttempts < 1 {
 		errs = append(errs, "settings.max_rebase_attempts must be >= 1")
