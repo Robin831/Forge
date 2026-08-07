@@ -114,7 +114,7 @@ settings:
   preview_enabled: false            # Kiln preview environments (master gate)
   preview_max_concurrent: 2
   preview_idle_timeout: 30m
-  preview_port_range: '42000-42999'
+  preview_port_range: '24000-24999'
   preview_bind_host: 127.0.0.1
   preview_public_host: ''           # Hostname used in preview links; empty = bind host
   preview_proxy_base: ''            # DNS suffix for host-based preview routing; empty = off
@@ -556,7 +556,7 @@ anvils:
 | `preview_max_concurrent` | int | `2` | `0` (use default) | Maximum number of previews running at once. Each preview costs real memory (database, API, dev server), hence the low default. A start that hits the cap is **rejected**, not queued; the error names the limit and the beads holding the slots. See [When the cap is reached](#when-the-cap-is-reached-preview_max_concurrent-preview_evict_lru). |
 | `preview_evict_lru` | bool | `false` | | What happens when a preview is requested while `preview_max_concurrent` is already reached. `false` rejects the request. `true` stops the least recently used preview to make room. Automatic previews (`preview_auto`) never evict — they are skipped when the box is full either way. |
 | `preview_idle_timeout` | duration | `30m` | `1m` or `0` | How long a preview may go unused before it is torn down. `0` disables the idle reaper, leaving previews running until stopped explicitly or until their PR merges/closes. |
-| `preview_port_range` | string | `"42000-42999"` | | Inclusive `"min-max"` TCP port range preview service ports are allocated from. Both ends must be within 1024-65535 and min must be less than max. |
+| `preview_port_range` | string | `"24000-24999"` | | Inclusive `"min-max"` TCP port range preview service ports are allocated from. Both ends must be within 1024-65535 and min must be less than max. **The range must stay below the host's ephemeral port floor** — see [Choosing a preview port range](#choosing-a-preview-port-range-preview_port_range). A range that overlaps it logs a WARN at daemon start but is never rejected. |
 | `preview_bind_host` | string | `"127.0.0.1"` | | Address preview services bind to. The loopback default keeps previews reachable only from the Forge box; `0.0.0.0` exposes them to a LAN or VPN. Kiln probes health here, but a service listens where its own command line says — reference this value as `{{.BindHost}}` in the manifest so the two cannot drift. Ports bound here bypass the Hearth login entirely (only the hostname-based proxy is gated — see `preview_proxy_auth`), so widen this only on a trusted network. |
 | `preview_public_host` | string | `""` (bind host) | | Hostname used when displaying preview links (e.g. the box's LAN or WireGuard name). Empty falls back to `preview_bind_host`. Ignored once `preview_proxy_base` is set: previews are then addressed by their own hostname, not by this one plus a port. |
 | `preview_proxy_base` | string | `""` (off) | | DNS suffix previews are addressed under when Forge fronts them by hostname instead of by port: a bead's preview answers on `<label>.<base>` and one of its services on `<label>--<service>.<base>`. A bare DNS name — a scheme, port, path or leading dot is rejected at load time. Requires the Hearth web GUI (`FORGE_WEB_ENABLED`) plus wildcard DNS and a wildcard certificate ([Deploying the preview proxy](preview-proxy-deployment.md)). See [Host-based preview routing](#host-based-preview-routing-preview_proxy_base). Empty (the default) switches host-based routing off and leaves preview links on `host:port`. |
@@ -1070,7 +1070,7 @@ settings:
   preview_max_concurrent: 2      # previews running at once
   preview_evict_lru: false       # cap reached: false = reject, true = stop the LRU preview
   preview_idle_timeout: 30m      # tear down after this much inactivity; 0 disables
-  preview_port_range: '42000-42999'
+  preview_port_range: '24000-24999'
   preview_bind_host: 127.0.0.1   # 0.0.0.0 to reach previews from a LAN/VPN
   preview_public_host: ''        # hostname shown in links; empty = bind host
   preview_proxy_base: ''         # DNS suffix for host-based routing; empty = off
@@ -1083,6 +1083,49 @@ anvils:
     preview_auto: ready_to_merge # off (default) | ready_to_merge
     preview_quests: true         # run this anvil's E2E quests against the preview
 ```
+
+### Choosing a preview port range (`preview_port_range`)
+
+Preview service ports come out of `preview_port_range` (default
+`24000-24999`). The one hard constraint on an override is that **the range must
+sit entirely below the host's ephemeral port floor** — the range the kernel
+hands out as the *source* port of outbound connections:
+
+| Platform | Ephemeral range | Where to check |
+|----------|-----------------|----------------|
+| Linux | typically `32768-60999` | `cat /proc/sys/net/ipv4/ip_local_port_range` (`sysctl net.ipv4.ip_local_port_range`) |
+| Windows | `49152-65535` | `netsh int ipv4 show dynamicport tcp` |
+
+**Why it matters.** Kiln bind-tests a port when it allocates it, but the service
+that port belongs to only binds it once it has finished starting — for a cold
+`dotnet run` or `npm install` that is minutes later. If the allocated port lies
+inside the ephemeral range, anything in the same network namespace that opens an
+outbound connection during that window can be handed the port as its local port,
+and the preview service then dies at bind:
+
+```
+Failed to bind to address http://127.0.0.1:42000: address already in use
+```
+
+The failure is timing-dependent and leaves no trace — the connection that took
+the port is long gone by the time anyone looks — so it reads like a Kiln
+allocator bug when it is really the kernel doing exactly what it was configured
+to do. A range below the ephemeral floor cannot lose that race. (This is also
+why the same manifest can pass every test on a Windows laptop, whose dynamic
+range starts at 49152, and fail on a Linux box or a Kubernetes pod.)
+
+The default avoids `30000-32767` as well, even though that band is below the
+usual Linux floor: it is the Kubernetes NodePort convention, and reusing it for
+previews is confusing to operators reading a cluster's port map — NodePorts live
+on the node rather than in the pod's network namespace, so the clash is one of
+comprehension, not of binding.
+
+**Validation is a warning, never a rejection.** When the configured range
+overlaps the host ephemeral range, the daemon logs a WARN at start naming both
+ranges and the failure mode, then carries on. An operator may have narrowed or
+moved the kernel range (`sysctl -w net.ipv4.ip_local_port_range="40000 60999"`),
+or may simply have decided to live with the risk — so an existing config with an
+explicit overlapping range keeps working exactly as before.
 
 ### Host-based preview routing (`preview_proxy_base`)
 

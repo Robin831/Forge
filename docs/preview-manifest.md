@@ -135,7 +135,12 @@ dropped for the same reason.
 
 - **Ports** are allocated per service from `preview_port_range` before any
   command runs, so templates can reference every service's port. Each candidate
-  is bind-tested, so a port another process already holds is skipped.
+  is bind-tested, so a port another process already holds is skipped. The
+  bind-test is necessary but not sufficient: the service binds the port minutes
+  later, once its build finishes, and in that window the kernel can hand the
+  port to an outbound connection if the range overlaps the host's ephemeral
+  range — which is why `preview_port_range` must stay below the ephemeral floor.
+  See [Choosing a preview port range](configuration.md#choosing-a-preview-port-range-preview_port_range).
 - **Logs**: each service's stdout and stderr are appended to
   `~/.forge/logs/<beadID>/preview-<service>.log` — the same per-bead directory
   the pipeline preserves worker logs in, so preview logs appear in the Hearth

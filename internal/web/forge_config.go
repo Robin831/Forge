@@ -479,7 +479,7 @@ var managedConfigKeys = []configKeyDef{
 		Type:        typeString,
 		Area:        "Previews",
 		Label:       "Preview port range",
-		Description: "Inclusive \"min-max\" TCP port range preview services are allocated from (e.g. 42000-42999).",
+		Description: "Inclusive \"min-max\" TCP port range preview services are allocated from (e.g. 24000-24999). Keep it below the host's ephemeral port floor (Linux: net.ipv4.ip_local_port_range, typically 32768; Windows: 49152) — a port inside that range can be taken by an outbound connection before the preview service binds it.",
 		Default:     config.DefaultPreviewPortRange,
 		value:       func(s config.SettingsConfig) any { return s.PreviewPortRange },
 	},

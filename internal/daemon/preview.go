@@ -237,6 +237,8 @@ func (d *Daemon) startPreviews(ctx context.Context) {
 		return
 	}
 
+	d.warnPreviewPortRange(cfg)
+
 	build := d.newPreviewManager
 	if build == nil {
 		build = d.buildPreviewManager
@@ -270,6 +272,29 @@ func (d *Daemon) startPreviews(ctx context.Context) {
 		"idle_timeout", cfg.Settings.PreviewIdleTimeout,
 		"max_concurrent", cfg.Settings.ResolvedPreviewMaxConcurrent(),
 		"evict_lru", cfg.Settings.PreviewEvictLRU)
+}
+
+// warnPreviewPortRange logs a WARN when the configured preview_port_range
+// overlaps the range the host kernel assigns ephemeral (source) ports from.
+//
+// Kiln bind-tests a port when it allocates it, but the service only binds it
+// minutes later, once its restore/build finishes; in that window the kernel can
+// hand the same port to an outbound connection and the service then dies with
+// "address already in use". The overlap is the precondition for that race, and
+// it is invisible after the fact — hence naming both ranges up front.
+//
+// It warns and never rejects: an operator may have narrowed or moved the kernel
+// range, and a probabilistic risk is no reason to refuse to start.
+func (d *Daemon) warnPreviewPortRange(cfg *config.Config) {
+	lo, hi, err := cfg.Settings.PreviewPortRangeBounds()
+	if err != nil {
+		// An unparseable range is reported by config validation and again by
+		// buildPreviewManager; there is nothing to compare here.
+		return
+	}
+	if msg := kiln.EphemeralOverlapWarning(lo, hi, config.DefaultPreviewPortRange); msg != "" {
+		d.logger.Warn(msg)
+	}
 }
 
 // buildPreviewManager assembles the real Kiln manager: a port allocator over
