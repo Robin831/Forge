@@ -114,7 +114,7 @@ Forge is a **Go orchestrator daemon** that autonomously drives Claude Code agent
 | `internal/ledger` | Interactive bead management TUI |
 | `internal/ipc` | Named pipe (Windows) / Unix socket daemon↔CLI protocol; newline-delimited JSON |
 | `internal/hearth` | **Hearth (TUI)** — Bubbletea terminal dashboard (`forge hearth`): three-column layout (Queue+Crucibles(when active)+ReadyToMerge+NeedsAttention / Workers / LiveActivity+Events) |
-| `internal/web` | **Hearth 2.0 (web GUI)** — chi-based HTTP server run in-process inside the daemon (gated by `FORGE_WEB_ENABLED`). Serves the browser dashboard: bcrypt session login, JSON/SSE endpoints mirroring IPC (status, queue, workers, events, crucibles, ingots, costs, PRs), per-worker log tail/stream, per-bead log browsing, PR actions (merge/close/approve/fix), queue actions, worker steering/pause/resume, the Kiln preview routes (start/stop/list/log-tail, whose DTOs in `preview_handlers.go` are the frontend contract), and the Beads-Forge session pages. It also fronts previews by hostname when `settings.preview_proxy_base` is set (`preview_proxy.go`): `PreviewProxyMiddleware` sits ahead of routing, and a request whose Host `kiln.ParsePreviewHost` accepts is resolved through the daemon's `preview_resolve` and forwarded to the preview's loopback port by one process-wide `httputil.ReverseProxy` — `FlushInterval = -1` so SSE/HMR stream, a Director that rewrites only scheme and host (path, query and the Host header arrive byte-for-byte), compression and HTTP/2 off so websocket upgrades pass through, and generous transport timeouts because a preview's traffic holds connections open for minutes. Everything else — every host the parse rejects, the apex included — falls through untouched, which is what keeps the dashboard's own traffic out of the proxy path |
+| `internal/web` | **Hearth 2.0 (web GUI)** — chi-based HTTP server run in-process inside the daemon (gated by `FORGE_WEB_ENABLED`). Serves the browser dashboard: bcrypt session login, JSON/SSE endpoints mirroring IPC (status, queue, workers, events, crucibles, ingots, costs, PRs), per-worker log tail/stream, per-bead log browsing, PR actions (merge/close/approve/fix), queue actions, worker steering/pause/resume, the Kiln preview routes (start/stop/list/log-tail, whose DTOs in `preview_handlers.go` are the frontend contract), and the Beads-Forge session pages. It also fronts previews by hostname when `settings.preview_proxy_base` is set (`preview_proxy.go`): `PreviewProxyMiddleware` sits ahead of routing, and a request whose Host `kiln.ParsePreviewHost` accepts is resolved through the daemon's `preview_resolve` and forwarded to the preview's loopback port by one process-wide `httputil.ReverseProxy` — `FlushInterval = -1` so SSE/HMR stream, a Director that rewrites only scheme and host (path, query and the Host header arrive byte-for-byte), compression and HTTP/2 off so websocket upgrades pass through, and generous transport timeouts because a preview's traffic holds connections open for minutes. Everything else — every host the parse rejects, the apex included — falls through untouched, which is what keeps the dashboard's own traffic out of the proxy path. Proxied previews are gated by `preview_auth.go` unless `settings.preview_proxy_auth` is `none`: `sharedCookieDomain` widens the Hearth session cookie to the parent the dashboard host and the proxy base share (refusing IPs, `localhost` and anything that would cross a public suffix), and where no such parent exists the entry URL carries a short-lived `?_forge_token=` HMAC that the middleware exchanges for an HttpOnly `forge_preview_<label>` cookie and redirects off the URL. A request proving neither is 401 (302 to the apex login for a navigation) *before* `preview_resolve` runs, and Hearth's own cookies are stripped from everything forwarded upstream |
 | `internal/forgechat` | Backs the per-turn AI loop for the Hearth 2.0 "Beads-Forge" page — drafting → grilling → ready stages, one claude round-trip per turn via a pluggable `Runner` |
 | `internal/queueactions` | Shared business logic behind the queue resolution verbs (clarify, unclarify, retry, clear, stop) — single source of truth for the state mutations/audit entries used by both the CLI verbs and the IPC handlers; enforces multi-forge safety |
 | `internal/logsweep` | Daily retention sweep for preserved per-bead log directories under `~/.forge/logs/<beadID>/`; deletes stale dirs with no running worker |
@@ -294,11 +294,21 @@ browser → internal/web (Hearth 2.0, in-process HTTP server, gated by FORGE_WEB
       gate reads them, and the panel says so next to a failure
   → Host-based preview routing (settings.preview_proxy_base, preview_proxy.go):
       PreviewProxyMiddleware runs ahead of routing. A Host of <label>.<base> or
-      <label>--<service>.<base> is resolved through preview_resolve (which also
-      bumps the idle clock) and forwarded to 127.0.0.1:<port> by one shared
-      ReverseProxy — streaming, websockets and the request itself untouched. A
-      host that names no live preview answers 404 in one request naming the
-      state; every other host, apex included, falls through to the router
+      <label>--<service>.<base> is authorised (preview_auth.go), resolved
+      through preview_resolve (which also bumps the idle clock) and forwarded to
+      127.0.0.1:<port> by one shared ReverseProxy — streaming, websockets and the
+      request itself untouched apart from Hearth's own cookies, which are
+      stripped. A host that names no live preview answers 404 in one request
+      naming the state; every other host, apex included, falls through to the
+      router
+  → Preview auth gate (settings.preview_proxy_auth, preview_auth.go): unless the
+      mode is `none`, a proxied request must present a Hearth session cookie
+      (widened to the shared parent domain by sharedCookieDomain when the Hearth
+      host and the proxy base have one) or a preview grant — a `?_forge_token=`
+      HMAC over label+expiry, minted into the entry URL and exchanged on first
+      contact for an HttpOnly `forge_preview_<label>` cookie. Refusals are 401
+      (302 to the apex login for navigations), never a pass-through, and happen
+      before preview_resolve so nothing unauthenticated probes the registry
   → async outcomes: an action the daemon runs in the background answers 202 with
       {request_id, poll_url}; the SPA polls GET /api/requests/{request_id}
       → request_status (pending → ok/error, unknown once evicted) so a failed

@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Robin831/Forge/internal/config"
 	"github.com/Robin831/Forge/internal/ipc"
 )
 
@@ -95,7 +96,19 @@ func hostPort(t *testing.T, raw string) (string, int) {
 
 // newProxyServer wires a Server whose preview proxy is on for proxyBase and
 // resolves through rec. Passing an empty base leaves host-based routing off.
+//
+// Auth gating is switched off (preview_proxy_auth: none) so these tests
+// exercise routing and forwarding on their own; the gate has its own file.
 func newProxyServer(t *testing.T, base string, rec *resolveRecorder) *Server {
+	t.Helper()
+	srv := newGatedProxyServer(t, base, rec)
+	srv.SetPreviewProxyAuth(func() string { return config.PreviewProxyAuthNone })
+	return srv
+}
+
+// newGatedProxyServer is newProxyServer with the default auth posture left
+// alone, i.e. every proxied request has to prove a Hearth session.
+func newGatedProxyServer(t *testing.T, base string, rec *resolveRecorder) *Server {
 	t.Helper()
 	srv := newServerWithDefaults(t, rec.handler)
 	if base != "" {

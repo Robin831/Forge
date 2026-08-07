@@ -118,6 +118,7 @@ settings:
   preview_bind_host: 127.0.0.1
   preview_public_host: ''           # Hostname used in preview links; empty = bind host
   preview_proxy_base: ''            # DNS suffix for host-based preview routing; empty = off
+  preview_proxy_auth: session       # gate proxied previews on a Hearth session; 'none' opts out
   crucible_enabled: true
   crucible_poll_interval: 3m
   auto_merge_crucible_children: true
@@ -556,9 +557,10 @@ anvils:
 | `preview_evict_lru` | bool | `false` | | What happens when a preview is requested while `preview_max_concurrent` is already reached. `false` rejects the request. `true` stops the least recently used preview to make room. Automatic previews (`preview_auto`) never evict — they are skipped when the box is full either way. |
 | `preview_idle_timeout` | duration | `30m` | `1m` or `0` | How long a preview may go unused before it is torn down. `0` disables the idle reaper, leaving previews running until stopped explicitly or until their PR merges/closes. |
 | `preview_port_range` | string | `"42000-42999"` | | Inclusive `"min-max"` TCP port range preview service ports are allocated from. Both ends must be within 1024-65535 and min must be less than max. |
-| `preview_bind_host` | string | `"127.0.0.1"` | | Address preview services bind to. The loopback default keeps previews reachable only from the Forge box; `0.0.0.0` exposes them to a LAN or VPN. Kiln probes health here, but a service listens where its own command line says — reference this value as `{{.BindHost}}` in the manifest so the two cannot drift. **Preview URLs bypass the Hearth login**, so widen this only on a trusted network. |
+| `preview_bind_host` | string | `"127.0.0.1"` | | Address preview services bind to. The loopback default keeps previews reachable only from the Forge box; `0.0.0.0` exposes them to a LAN or VPN. Kiln probes health here, but a service listens where its own command line says — reference this value as `{{.BindHost}}` in the manifest so the two cannot drift. Ports bound here bypass the Hearth login entirely (only the hostname-based proxy is gated — see `preview_proxy_auth`), so widen this only on a trusted network. |
 | `preview_public_host` | string | `""` (bind host) | | Hostname used when displaying preview links (e.g. the box's LAN or WireGuard name). Empty falls back to `preview_bind_host`. |
 | `preview_proxy_base` | string | `""` (off) | | DNS suffix previews are addressed under when Forge fronts them by hostname instead of by port: a bead's preview answers on `<label>.<base>` and one of its services on `<label>--<service>.<base>`. See [Host-based preview routing](#host-based-preview-routing-preview_proxy_base). Empty (the default) switches host-based routing off and leaves preview links on `host:port`. |
+| `preview_proxy_auth` | string | `"session"` | `session`, `none` | Whether a request arriving on a preview hostname has to prove it comes from a signed-in Hearth operator. `session` (the default, and what an empty value means) gates every proxied request; `none` serves previews to anyone who can resolve the name. Only applies when `preview_proxy_base` is set. See [Auth gating for proxied previews](#auth-gating-for-proxied-previews-preview_proxy_auth). |
 | `wicket_enabled` | bool | `false` | | Enable the Wicket GitHub issue triage monitor globally. When false, no issue scanning occurs. |
 | `wicket_interval` | duration | `15m` | `1m` or `0` | How often Wicket polls repositories for new issues. `0` disables. |
 | `wicket_provider` | string | `""` (uses `providers`) | | AI provider used for triage decisions. When empty, the global `providers` chain is used. |
@@ -1072,6 +1074,7 @@ settings:
   preview_bind_host: 127.0.0.1   # 0.0.0.0 to reach previews from a LAN/VPN
   preview_public_host: ''        # hostname shown in links; empty = bind host
   preview_proxy_base: ''         # DNS suffix for host-based routing; empty = off
+  preview_proxy_auth: session    # session (default) | none — see Auth gating below
 
 anvils:
   my-api:
@@ -1119,6 +1122,12 @@ other host — including the base itself, which is the dashboard's own name — 
 to the dashboard exactly as before, so switching the setting on cannot affect
 it.
 
+With the setting on, the preview link Hearth shows is the hostname rather than
+`host:port`, and proxied requests are gated on a Hearth session by default — see
+[Auth gating for proxied previews](#auth-gating-for-proxied-previews-preview_proxy_auth).
+The one thing the forward does change is Hearth's own cookies, which are
+stripped on the way to the preview.
+
 Browsing a preview through the proxy counts as activity, so the idle reaper
 (`preview_idle_timeout`) never tears down a preview somebody is looking at. A
 host that names no live preview gets a `404` saying which state it is in — `no
@@ -1146,6 +1155,69 @@ them can be previewed at a time
 either landing on whichever the proxy resolves first. With the setting empty
 nothing routes by hostname, so the check does not run and both previews start
 normally.
+
+### Auth gating for proxied previews (`preview_proxy_auth`)
+
+A preview serves an unreviewed branch build. Behind a rotating loopback port
+that was contained; behind a stable wildcard hostname it is not, so by default
+every request Forge proxies to a preview has to come from an operator who is
+signed in to Hearth. `preview_proxy_auth: none` turns that off for a trusted
+network — it is the only way to get an unauthenticated proxied preview, and it
+has to be written down.
+
+Gating applies to the hostname-based proxy only. The raw `preview_bind_host`
+ports are unchanged and remain unauthenticated; if they are reachable from
+anywhere you do not trust, that is what `preview_bind_host` is for.
+
+There are two ways a request proves itself, and which one is used is decided
+automatically:
+
+1. **The Hearth session cookie.** When the Hearth host and `preview_proxy_base`
+   share a registrable parent domain — `hearth.example.com` and
+   `preview.example.com` share `example.com` — the session cookie is issued with
+   `Domain` set to that parent, so the browser sends it to preview hostnames too
+   and the proxy simply validates the session the operator already has. Nothing
+   extra is minted and signing out of Hearth revokes preview access with it.
+
+   The parent has to be a real registrable domain. Two hosts that share only a
+   public suffix (`a.github.io` and `b.github.io`) or only a TLD share nothing
+   as far as this is concerned, and neither do IP addresses or `localhost`.
+
+   The tradeoff of a shared `Domain` is that a preview can *write* cookies at
+   that parent — a hostile branch could clobber the operator's session cookie
+   and log them out. It cannot read the session (Forge strips its own cookies
+   before forwarding, and they are `HttpOnly` regardless) and it cannot fixate
+   one (logging in rotates the token), so the worst case is a nuisance from code
+   you are already running on your own box. Deployments that would rather not
+   accept even that can put the previews under a different registrable domain,
+   which moves them onto the token path below.
+
+2. **A short-lived signed link token.** When the widening above would not be
+   legitimate, the preview link Hearth renders carries a `_forge_token` query
+   parameter: an HMAC over the preview's label and an expiry, minted for an
+   already-authenticated operator and valid for two minutes. The proxy verifies
+   it on first contact, replaces it with a preview-scoped cookie (HttpOnly,
+   good for eight hours, scoped to `preview_proxy_base` so per-service
+   hostnames are covered) and redirects to the same URL without the token, so
+   it does not linger in the address bar, history or a referrer.
+
+   The cookie authorises exactly the preview named in the token: presenting one
+   preview's grant on another's hostname is a `401`.
+
+A request that proves neither is refused, never quietly served. A browser
+navigation is redirected to the Hearth login on the apex of
+`preview_proxy_base` — the host the dashboard itself answers on — with the
+preview URL in a `next` parameter; anything else (an XHR, an asset, a
+websocket) gets a `401` whose body says what is missing. An expired,
+mismatched or unsigned token is a `401` that says which.
+
+Hearth's own cookies are stripped from every request before it is forwarded.
+The preview upstream is branch code and has no business seeing the session
+cookie that the shared-`Domain` mechanism above puts within its reach.
+
+Preview link tokens and grants are signed with a per-process secret, so they do
+not survive a daemon restart. Neither do previews (Kiln clears them on
+startup), so nothing is lost: reopen the preview from the dashboard.
 
 ### When the cap is reached (`preview_max_concurrent`, `preview_evict_lru`)
 

@@ -96,6 +96,14 @@ func (d *Daemon) startWebServer(ctx context.Context) error {
 		return d.cfg.Load().Settings.ResolvedPreviewProxyBase()
 	})
 
+	// Decide whether proxied preview requests must carry a Hearth session
+	// (settings.preview_proxy_auth). Read per request for the same hot-reload
+	// reason as the base above; the gated mode is the default, so a trusted
+	// network has to opt out of it explicitly.
+	srv.SetPreviewProxyAuth(func() string {
+		return d.cfg.Load().Settings.ResolvedPreviewProxyAuth()
+	})
+
 	// Plug in the Beads-Forge AI runner using the daemon's configured
 	// providers. We pick the head of the resolved list — fallbacks are not
 	// needed here because a turn is interactive and should fail fast.

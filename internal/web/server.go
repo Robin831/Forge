@@ -9,6 +9,7 @@ package web
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -182,6 +183,19 @@ type Server struct {
 	// passes every request straight through. See SetPreviewProxyBase.
 	previewProxyBase func() string
 
+	// previewProxyAuth supplies the live settings.preview_proxy_auth, read per
+	// request for the same hot-reload reason as previewProxyBase. nil (the
+	// default, and in tests) means the gated mode — a missing wire-up must not
+	// be what opens previews to anyone who can resolve the hostname. See
+	// SetPreviewProxyAuth and previewAuthMode.
+	previewProxyAuth func() string
+
+	// previewSecret signs the short-lived preview access tokens minted into
+	// preview links and exchanged for preview-scoped cookies. Generated per
+	// process in New: previews themselves do not survive a daemon restart
+	// (kiln.Reconcile clears them), so neither should credentials for them.
+	previewSecret []byte
+
 	// throttle rate-limits failed login attempts per username and per IP so
 	// online password guessing is slowed at the application layer (fail2ban
 	// cannot see Cloudflare-routed clients). Always non-nil after New.
@@ -312,6 +326,11 @@ func New(cfg Config, db *state.DB, handler CommandHandler, logger *slog.Logger) 
 		cfg.PurgeInterval = time.Hour
 	}
 
+	previewSecret := make([]byte, 32)
+	if _, err := rand.Read(previewSecret); err != nil {
+		return nil, fmt.Errorf("web: generating preview token secret: %w", err)
+	}
+
 	s := &Server{
 		cfg:            cfg,
 		db:             db,
@@ -325,6 +344,7 @@ func New(cfg Config, db *state.DB, handler CommandHandler, logger *slog.Logger) 
 		throttleSem:    make(chan struct{}, 10),
 		trustedProxies: cfg.TrustedProxies,
 		sseConns:       make(map[string]int),
+		previewSecret:  previewSecret,
 	}
 	s.httpServer = &http.Server{
 		Addr:              cfg.Addr,

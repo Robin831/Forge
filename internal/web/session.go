@@ -11,7 +11,7 @@ import (
 // createSession issues a new web session for the given user, persists it,
 // and writes the session cookie to w. Returns the raw token (which is what
 // the client stores in the cookie).
-func (s *Server) createSession(w http.ResponseWriter, username string) (string, error) {
+func (s *Server) createSession(w http.ResponseWriter, r *http.Request, username string) (string, error) {
 	token, err := generateSessionToken()
 	if err != nil {
 		return "", err
@@ -27,16 +27,47 @@ func (s *Server) createSession(w http.ResponseWriter, username string) (string, 
 	}); err != nil {
 		return "", err
 	}
-	http.SetCookie(w, &http.Cookie{
+	http.SetCookie(w, s.sessionCookie(r, token, expires))
+	return token, nil
+}
+
+// sessionCookie builds the session cookie. Everything about it is fixed except
+// Domain, which is widened to the suffix the Hearth host and
+// settings.preview_proxy_base share when they share one — that is what lets a
+// proxied preview on a sibling subdomain see the session the operator already
+// has, instead of demanding a second credential. sharedCookieDomain refuses
+// every case where the widening would be a grant to hosts outside this
+// deployment; those fall back to the preview token exchange.
+func (s *Server) sessionCookie(r *http.Request, value string, expires time.Time) *http.Cookie {
+	c := &http.Cookie{
 		Name:     s.cfg.CookieName,
-		Value:    token,
+		Value:    value,
 		Path:     "/",
 		Expires:  expires,
 		HttpOnly: true,
 		Secure:   s.cfg.CookieSecure,
 		SameSite: http.SameSiteLaxMode,
-	})
-	return token, nil
+	}
+	if domain, ok := s.sessionCookieDomain(r); ok {
+		c.Domain = domain
+	}
+	return c
+}
+
+// sessionCookieDomain resolves the Domain attribute the session cookie should
+// carry for this request, or ok=false for a host-only cookie (the default and
+// the tighter posture).
+func (s *Server) sessionCookieDomain(r *http.Request) (string, bool) {
+	if r == nil || !s.previewAuthGated() {
+		// With the gate off nothing needs the session on a preview host, so
+		// there is no reason to hand it to one.
+		return "", false
+	}
+	base := s.proxyBase()
+	if base == "" {
+		return "", false
+	}
+	return sharedCookieDomain(r.Host, base)
 }
 
 // loadSession looks up the session token from the request's session cookie
@@ -100,29 +131,17 @@ func (s *Server) refreshSessionCookie(w http.ResponseWriter, r *http.Request, se
 	if err != nil || cookie.Value == "" {
 		return
 	}
-	http.SetCookie(w, &http.Cookie{
-		Name:     s.cfg.CookieName,
-		Value:    cookie.Value,
-		Path:     "/",
-		Expires:  sess.ExpiresAt,
-		HttpOnly: true,
-		Secure:   s.cfg.CookieSecure,
-		SameSite: http.SameSiteLaxMode,
-	})
+	http.SetCookie(w, s.sessionCookie(r, cookie.Value, sess.ExpiresAt))
 }
 
-// clearSessionCookie deletes the session cookie on the client.
-func (s *Server) clearSessionCookie(w http.ResponseWriter) {
-	http.SetCookie(w, &http.Cookie{
-		Name:     s.cfg.CookieName,
-		Value:    "",
-		Path:     "/",
-		Expires:  time.Unix(0, 0),
-		MaxAge:   -1,
-		HttpOnly: true,
-		Secure:   s.cfg.CookieSecure,
-		SameSite: http.SameSiteLaxMode,
-	})
+// clearSessionCookie deletes the session cookie on the client. The deletion
+// must repeat whatever Domain the cookie was issued with — a host-only delete
+// leaves a domain-scoped cookie sitting in the browser, and the operator stays
+// "logged in" on every preview host after signing out.
+func (s *Server) clearSessionCookie(w http.ResponseWriter, r *http.Request) {
+	cookie := s.sessionCookie(r, "", time.Unix(0, 0))
+	cookie.MaxAge = -1
+	http.SetCookie(w, cookie)
 }
 
 type sessionContextKey struct{}
