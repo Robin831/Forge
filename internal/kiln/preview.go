@@ -5,9 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"net"
 	"os"
-	"strconv"
 	"sync"
 	"time"
 
@@ -406,16 +404,23 @@ func (p *Preview) Status() string {
 	return p.status
 }
 
-// EntryURL returns the URL of the entry service — the link an operator opens.
-// It is empty when the manifest has no entry service (a manifest with more than
-// one service and no `entry: true` never validates, so this only happens for an
-// empty preview).
+// EntryURL returns the address the entry service actually answers on:
+// `http://<public host>:<port>/`. It is empty when the manifest has no entry
+// service (a manifest with more than one service and no `entry: true` never
+// validates, so this only happens for an empty preview).
+//
+// This is the *direct* address, which is what something running on this host
+// needs — the preview quest runner drives a headless browser at it, and the
+// daemon logs it. The link an *operator* opens may be a preview hostname
+// instead (settings.preview_proxy_base); that one depends on daemon settings
+// this runtime does not read, so it is built one level up by the daemon's
+// previewEntryURL. Both go through kiln.EntryURL.
 func (p *Preview) EntryURL() string {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	for _, svc := range p.services {
 		if svc.entry {
-			return "http://" + net.JoinHostPort(p.runtime.publicHost, strconv.Itoa(svc.port)) + "/"
+			return EntryURL(EntryURLOptions{Host: p.runtime.publicHost, Port: svc.port})
 		}
 	}
 	return ""

@@ -273,6 +273,48 @@ func TestPreviewList_RendersDaemonPayload(t *testing.T) {
 	}
 }
 
+// TestPreviewList_PrintsTheProxyURL — with host-based routing configured the
+// daemon reports the preview hostname as the entry URL, and the CLI prints
+// that. The assertion that matters is the second one: the CLI must not assemble
+// a link of its own out of the port that rides along in the same payload, or it
+// would print a loopback address the operator cannot open while the dashboard
+// prints the routable one.
+func TestPreviewList_PrintsTheProxyURL(t *testing.T) {
+	const proxyURL = "https://forge-abc1.preview.example.com/"
+	startFakeDaemon(t, func(cmd ipc.Command) ipc.Response {
+		if cmd.Type != "preview_list" {
+			return errResp(t, "unexpected command "+cmd.Type)
+		}
+		return okResp(t, ipc.PreviewListResponse{
+			Enabled:    true,
+			Anvils:     []string{"forge"},
+			PublicHost: "127.0.0.1",
+			Previews: []ipc.PreviewInfo{{
+				BeadID:       "Forge-abc1",
+				Anvil:        "forge",
+				Status:       "running",
+				EntryURL:     proxyURL,
+				Port:         41000,
+				ResourceNote: "1 service, ports 41000",
+			}},
+		})
+	})
+
+	var err error
+	out := captureStdout(t, func() {
+		err = previewListCmd.RunE(previewListCmd, nil)
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(out, proxyURL) {
+		t.Errorf("expected the proxy URL %q in the output, got %q", proxyURL, out)
+	}
+	if strings.Contains(out, "127.0.0.1:41000") || strings.Contains(out, "http://") {
+		t.Errorf("the CLI must print the daemon's URL, not one built from the port: %q", out)
+	}
+}
+
 func TestPreviewList_JSONEmitsRawPayload(t *testing.T) {
 	startFakeDaemon(t, func(cmd ipc.Command) ipc.Response {
 		return okResp(t, ipc.PreviewListResponse{

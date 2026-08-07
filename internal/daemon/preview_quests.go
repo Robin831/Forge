@@ -207,6 +207,11 @@ func (d *Daemon) handlePreviewQuestRun(p ipc.PreviewQuestRunPayload) ipc.Respons
 		return reject(ipc.PreviewQuestRejectNotHealthy,
 			fmt.Sprintf("preview for %s is %s, not healthy", beadID, status))
 	}
+	// The preview's *direct* address, deliberately not the operator-facing link
+	// previewEntryURL builds: the browser runs on this host, so it wants the
+	// port the service binds rather than a preview hostname that would have to
+	// resolve in public DNS and clear the proxy's auth gate to reach the same
+	// process.
 	baseURL := strings.TrimSpace(env.EntryURL())
 	if baseURL == "" {
 		return reject(ipc.PreviewQuestRejectNoEntryURL,

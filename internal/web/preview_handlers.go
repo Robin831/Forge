@@ -7,7 +7,6 @@ import (
 	"net/url"
 	"path/filepath"
 	"regexp"
-	"strconv"
 	"strings"
 	"time"
 
@@ -232,15 +231,21 @@ func previewLogPath(beadID, service string) string {
 	return "/api/preview/" + url.PathEscape(beadID) + "/log/" + url.PathEscape(service)
 }
 
-// previewEntryURL builds the link an operator opens for a preview.
+// previewEntryURL builds the link an operator opens for a preview. The URL
+// itself is assembled by kiln.EntryURL — the one builder the daemon's
+// previewEntryURL and `forge preview list` go through too, so a browser link
+// and a printed one cannot disagree about how a preview is addressed. What this
+// adds is the two things only an HTTP handler knows: the browser's own request,
+// and whether the auth gate needs a token in the link.
 //
 // With settings.preview_proxy_base configured the preview is addressed by
-// hostname — `<label>.<base>`, fronted by this server — so that is the link,
-// and it carries an access token when the auth gate needs one (see
-// previewAccessToken: the shared-cookie deployment and the `none` opt-out both
-// need nothing). This is the only place a token is minted, and it is minted
-// per response for an already-authenticated caller, which is why it can be as
-// short-lived as it is.
+// hostname — `<label>.<base>`, fronted by this server — so scheme and port are
+// carried over from the request that reached Hearth (it answers preview
+// hostnames on its own listener), and the link carries an access token when the
+// auth gate needs one (see previewAccessToken: the shared-cookie deployment and
+// the `none` opt-out both need nothing). This is the only place a token is
+// minted, and it is minted per response for an already-authenticated caller,
+// which is why it can be as short-lived as it is.
 //
 // Without a proxy base the link is the port the entry service actually binds.
 // The port comes from the manifest's entry service (falling back to the first
@@ -250,59 +255,48 @@ func previewLogPath(beadID, service string) string {
 // rather than the loopback the services actually bind. When it is unset the
 // request's own Host is used, which is right far more often than 127.0.0.1: a
 // browser that reached Hearth at some address can reach the preview there too.
-//
-// The scheme is always http: preview services bind a plain port and are not
-// behind Hearth's TLS.
+// That form's scheme is always http: preview services bind a plain port and are
+// not behind Hearth's TLS.
 func (s *Server) previewEntryURL(r *http.Request, p ipc.PreviewInfo, publicHost string) string {
-	if base := s.proxyBase(); base != "" && p.BeadID != "" {
-		return s.previewProxyEntryURL(r, p.BeadID, base)
+	opts := kiln.EntryURLOptions{
+		BeadID: p.BeadID,
+		Host:   previewHost(r, publicHost),
+		Port:   previewEntryPort(p.Services),
 	}
+	// A preview with no bead id has no host label to be addressed by, so it is
+	// left on the port form rather than handed to the host-based one — the same
+	// fall-through this had before either form was shared.
+	if base := s.proxyBase(); base != "" && p.BeadID != "" {
+		opts.ProxyBase = base
+		hearthHost := ""
+		if r != nil {
+			hearthHost = r.Host
+			opts.ProxyScheme = s.requestScheme(r)
+			if _, port, err := net.SplitHostPort(r.Host); err == nil && port != "" {
+				opts.ProxyPort = port
+			}
+		}
+		opts.Token = s.previewAccessToken(kiln.PreviewLabel(p.BeadID), hearthHost, base)
+		opts.TokenParam = previewTokenParam
+	}
+	return kiln.EntryURL(opts)
+}
+
+// previewEntryPort picks the port a preview's link points at: the service
+// flagged as the manifest's entry, falling back to the first service that has a
+// port so a single-service manifest (which needs no `entry: true`) still gets a
+// link. 0 means nothing has a port yet.
+func previewEntryPort(services []ipc.PreviewServiceInfo) int {
 	port := 0
-	for _, svc := range p.Services {
+	for _, svc := range services {
 		if svc.Entry && svc.Port > 0 {
-			port = svc.Port
-			break
+			return svc.Port
 		}
 		if port == 0 && svc.Port > 0 {
 			port = svc.Port
 		}
 	}
-	if port == 0 {
-		return ""
-	}
-	host := previewHost(r, publicHost)
-	if host == "" {
-		return ""
-	}
-	return "http://" + net.JoinHostPort(host, strconv.Itoa(port)) + "/"
-}
-
-// previewProxyEntryURL renders the host-based link for a preview:
-// `<scheme>://<label>.<base>[:port]/`, plus the access token when the auth gate
-// cannot be satisfied by the operator's existing session cookie alone.
-//
-// The port is carried over from the request because Hearth answers preview
-// hostnames on its own listener — the same address the caller just reached.
-func (s *Server) previewProxyEntryURL(r *http.Request, beadID, base string) string {
-	label := kiln.PreviewLabel(beadID)
-	if label == "" {
-		return ""
-	}
-	host := label + "." + base
-	hearthHost := ""
-	scheme := "http"
-	if r != nil {
-		hearthHost = r.Host
-		scheme = s.requestScheme(r)
-		if _, port, err := net.SplitHostPort(r.Host); err == nil && port != "" {
-			host = net.JoinHostPort(host, port)
-		}
-	}
-	entry := scheme + "://" + host + "/"
-	if token := s.previewAccessToken(label, hearthHost, base); token != "" {
-		entry += "?" + previewTokenParam + "=" + url.QueryEscape(token)
-	}
-	return entry
+	return port
 }
 
 // previewHost resolves the hostname preview links point at: the configured

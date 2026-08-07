@@ -558,7 +558,7 @@ anvils:
 | `preview_idle_timeout` | duration | `30m` | `1m` or `0` | How long a preview may go unused before it is torn down. `0` disables the idle reaper, leaving previews running until stopped explicitly or until their PR merges/closes. |
 | `preview_port_range` | string | `"42000-42999"` | | Inclusive `"min-max"` TCP port range preview service ports are allocated from. Both ends must be within 1024-65535 and min must be less than max. |
 | `preview_bind_host` | string | `"127.0.0.1"` | | Address preview services bind to. The loopback default keeps previews reachable only from the Forge box; `0.0.0.0` exposes them to a LAN or VPN. Kiln probes health here, but a service listens where its own command line says — reference this value as `{{.BindHost}}` in the manifest so the two cannot drift. Ports bound here bypass the Hearth login entirely (only the hostname-based proxy is gated — see `preview_proxy_auth`), so widen this only on a trusted network. |
-| `preview_public_host` | string | `""` (bind host) | | Hostname used when displaying preview links (e.g. the box's LAN or WireGuard name). Empty falls back to `preview_bind_host`. |
+| `preview_public_host` | string | `""` (bind host) | | Hostname used when displaying preview links (e.g. the box's LAN or WireGuard name). Empty falls back to `preview_bind_host`. Ignored once `preview_proxy_base` is set: previews are then addressed by their own hostname, not by this one plus a port. |
 | `preview_proxy_base` | string | `""` (off) | | DNS suffix previews are addressed under when Forge fronts them by hostname instead of by port: a bead's preview answers on `<label>.<base>` and one of its services on `<label>--<service>.<base>`. See [Host-based preview routing](#host-based-preview-routing-preview_proxy_base). Empty (the default) switches host-based routing off and leaves preview links on `host:port`. |
 | `preview_proxy_auth` | string | `"session"` | `session`, `none` | Whether a request arriving on a preview hostname has to prove it comes from a signed-in Hearth operator. `session` (the default, and what an empty value means) gates every proxied request; `none` serves previews to anyone who can resolve the name. Only applies when `preview_proxy_base` is set. See [Auth gating for proxied previews](#auth-gating-for-proxied-previews-preview_proxy_auth). |
 | `wicket_enabled` | bool | `false` | | Enable the Wicket GitHub issue triage monitor globally. When false, no issue scanning occurs. |
@@ -1122,11 +1122,26 @@ other host — including the base itself, which is the dashboard's own name — 
 to the dashboard exactly as before, so switching the setting on cannot affect
 it.
 
-With the setting on, the preview link Hearth shows is the hostname rather than
-`host:port`, and proxied requests are gated on a Hearth session by default — see
+With the setting on, **every** preview link Forge hands out is the hostname
+rather than `host:port` — the Preview button and the bead panel, the `/previews`
+fleet page, and `forge preview list` in the terminal, all built by one helper
+(`kiln.EntryURL`) so a link you read in the browser and one you copy out of the
+CLI cannot disagree. The dashboard's links carry the scheme and port of the
+request that reached Hearth (it answers preview names on its own listener) plus
+an access token when the auth gate needs one; the daemon has no request to
+follow, so the URL it reports over IPC — what the CLI prints — is plain
+`https://<label>.<base>/`.
+
+Proxied requests are gated on a Hearth session by default — see
 [Auth gating for proxied previews](#auth-gating-for-proxied-previews-preview_proxy_auth).
 The one thing the forward does change is Hearth's own cookies, which are
 stripped on the way to the preview.
+
+Two things deliberately stay on the port: the health checks Kiln runs against a
+starting service, and the browser the preview quest runner drives
+(`preview_quests`). Both run on the Forge box, where the loopback port is the
+short way to the same process and a preview hostname would mean a DNS lookup and
+an auth gate to reach it.
 
 Browsing a preview through the proxy counts as activity, so the idle reaper
 (`preview_idle_timeout`) never tears down a preview somebody is looking at. A

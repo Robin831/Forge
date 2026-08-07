@@ -57,6 +57,20 @@ func PreviewLabel(beadID string) string {
 	return strings.ReplaceAll(SanitizePreviewID(beadID), "_", "-")
 }
 
+// ServiceLabel renders a manifest service name as the DNS label it is addressed
+// by in the `<label>--<service>.<base>` form: lowercased, with '.' and '_'
+// folded to '-'. It is the inverse ParsePreviewHost's service half is matched
+// against, and what EntryURL builds a named-service link with.
+//
+// Like PreviewLabel the fold is not injective — "api_v1" and "api.v1" both
+// yield "api-v1" — which is a manifest bug in the same class as two services
+// sharing a FORGE_PREVIEW_PORT_<NAME>, not something resolved at request time.
+func ServiceLabel(name string) string {
+	folded := strings.ToLower(strings.TrimSpace(name))
+	folded = strings.ReplaceAll(folded, "_", "-")
+	return strings.ReplaceAll(folded, ".", "-")
+}
+
 // CheckPreviewLabelCollisions reports the first set of bead ids that fold to the
 // same PreviewLabel, mirroring the manifest's FORGE_PREVIEW_PORT_<NAME> check:
 // a many-to-one mapping is refused up front rather than left to surprise
