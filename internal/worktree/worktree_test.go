@@ -12,6 +12,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/Robin831/Forge/internal/executil"
 )
 
 func TestSanitizePath(t *testing.T) {
@@ -100,12 +102,26 @@ func TestBeadIDFromBranch_RoundTripsBranchName(t *testing.T) {
 	}
 }
 
-// runGit runs a git command in dir and fails the test on error.
-func runGit(t *testing.T, dir string, args ...string) {
+// testGitCmd builds a git command that runs in dir with the ambient git
+// repo-location overrides stripped. Every git invocation in this package's
+// tests must be built here: `go test` inherits the environment of whatever
+// started it, and Forge's own Smith workers export GIT_DIR and GIT_WORK_TREE
+// pointing at the worker's worktree. Those variables outrank both cmd.Dir and
+// `git -C`, so a command built with the raw environment silently operates on
+// the surrounding repository instead of the test fixture — which is how the
+// whole suite failed when run from inside a worker worktree.
+func testGitCmd(t *testing.T, dir string, args ...string) *exec.Cmd {
 	t.Helper()
 	cmd := exec.Command("git", args...)
 	cmd.Dir = dir
 	cmd.Env = envWithoutGitVars()
+	return cmd
+}
+
+// runGit runs a git command in dir and fails the test on error.
+func runGit(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	cmd := testGitCmd(t, dir, args...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("git %v in %s: %v\n%s", args, dir, err, out)
@@ -170,9 +186,7 @@ func TestCurrentBranch_OnFeatureBranch(t *testing.T) {
 	initTestRepo(t, dir, "main")
 
 	// Create and switch to a feature branch.
-	cmd := exec.Command("git", "checkout", "-b", "forge/test-bead")
-	cmd.Dir = dir
-	cmd.Env = envWithoutGitVars()
+	cmd := testGitCmd(t, dir, "checkout", "-b", "forge/test-bead")
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("git checkout -b: %v\n%s", err, out)
 	}
@@ -209,9 +223,7 @@ func TestAssertOnMainBranch_OnFeatureBranch(t *testing.T) {
 	initTestRepo(t, dir, "main")
 
 	// Simulate environment corruption: checkout a feature branch.
-	cmd := exec.Command("git", "checkout", "-b", "forge/Forge-x1bs")
-	cmd.Dir = dir
-	cmd.Env = envWithoutGitVars()
+	cmd := testGitCmd(t, dir, "checkout", "-b", "forge/Forge-x1bs")
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("git checkout -b: %v\n%s", err, out)
 	}
@@ -257,9 +269,7 @@ func TestVerifyAndRecoverMain_OnFeatureBranch(t *testing.T) {
 	initTestRepo(t, dir, "main")
 
 	// Simulate environment corruption: checkout a feature branch.
-	cmd := exec.Command("git", "checkout", "-b", "forge/Forge-x1bs")
-	cmd.Dir = dir
-	cmd.Env = envWithoutGitVars()
+	cmd := testGitCmd(t, dir, "checkout", "-b", "forge/Forge-x1bs")
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("git checkout -b: %v\n%s", err, out)
 	}
@@ -764,9 +774,7 @@ func TestGitEnv_ConfinesGitFromOutsideWorktree(t *testing.T) {
 
 	// Sanity: without our env vars, running git from the anvil resolves to
 	// the anvil's checkout (the dangerous default we're protecting against).
-	cmd := exec.Command("git", "rev-parse", "--show-toplevel")
-	cmd.Dir = anvilDir
-	cmd.Env = envWithoutGitVars()
+	cmd := testGitCmd(t, anvilDir, "rev-parse", "--show-toplevel")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("baseline git rev-parse: %v\n%s", err, out)
@@ -790,9 +798,8 @@ func TestGitEnv_ConfinesGitFromOutsideWorktree(t *testing.T) {
 	if env == nil {
 		t.Fatal("GitEnv returned nil for valid worktree")
 	}
-	cmd = exec.Command("git", "rev-parse", "--show-toplevel")
-	cmd.Dir = anvilDir
-	cmd.Env = append(envWithoutGitVars(), env...)
+	cmd = testGitCmd(t, anvilDir, "rev-parse", "--show-toplevel")
+	cmd.Env = append(cmd.Env, env...)
 	out, err = cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("confined git rev-parse: %v\n%s", err, out)
@@ -815,9 +822,8 @@ func TestGitEnv_ConfinesGitFromOutsideWorktree(t *testing.T) {
 	// must report the worktree's branch, not the anvil's main. This is the
 	// invariant that prevents the Fhi.Metadata-k41dx scenario where commits
 	// landed on the parent repo's checked-out branch.
-	cmd = exec.Command("git", "rev-parse", "--abbrev-ref", "HEAD")
-	cmd.Dir = anvilDir
-	cmd.Env = append(envWithoutGitVars(), env...)
+	cmd = testGitCmd(t, anvilDir, "rev-parse", "--abbrev-ref", "HEAD")
+	cmd.Env = append(cmd.Env, env...)
 	out, err = cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("confined git rev-parse --abbrev-ref HEAD: %v\n%s", err, out)
@@ -829,24 +835,65 @@ func TestGitEnv_ConfinesGitFromOutsideWorktree(t *testing.T) {
 	}
 }
 
-// envWithoutGitVars returns os.Environ() with GIT_DIR, GIT_WORK_TREE, and
-// GIT_CEILING_DIRECTORIES removed, so that appending our own values is
-// deterministic even when the host shell has those vars set.
+// envWithoutGitVars returns os.Environ() with every git repo-location override
+// removed, so a fixture command is answered by its own cmd.Dir and appending
+// our own values stays deterministic even when the host shell has some of them
+// set. It delegates to executil, which owns the single strip set the production
+// git callers use — a local copy here would drift the day git grows another
+// repo-location variable, and the tests would stop covering what ships.
 func envWithoutGitVars() []string {
-	skip := map[string]bool{
-		"GIT_DIR":                 true,
-		"GIT_WORK_TREE":           true,
-		"GIT_CEILING_DIRECTORIES": true,
+	return executil.CleanGitEnv()
+}
+
+// TestFixtureGitCommands_IgnoreAmbientGitEnvironment is the guard for the failure this
+// suite kept hitting: run from inside a Forge worker worktree, `go test`
+// inherits GIT_DIR/GIT_WORK_TREE (and friends) pointing at the real Forge
+// repository, and every fixture command silently answered from there instead
+// of from its temp dir. A command built by testGitCmd must report the fixture no
+// matter what the surrounding process exported.
+func TestFixtureGitCommands_IgnoreAmbientGitEnvironment(t *testing.T) {
+	fixture := t.TempDir()
+	initTestRepo(t, fixture, "main")
+
+	// Stand in for the ambient repository a worker exports. Point every
+	// repo-location variable at it, including the ones beyond the obvious
+	// GIT_DIR/GIT_WORK_TREE pair, so a partial strip list fails here.
+	ambient := t.TempDir()
+	initTestRepo(t, ambient, "main")
+	t.Setenv("GIT_DIR", filepath.Join(ambient, ".git"))
+	t.Setenv("GIT_WORK_TREE", ambient)
+	t.Setenv("GIT_CEILING_DIRECTORIES", filepath.Dir(fixture))
+	t.Setenv("GIT_INDEX_FILE", filepath.Join(ambient, ".git", "index"))
+	t.Setenv("GIT_COMMON_DIR", filepath.Join(ambient, ".git"))
+	t.Setenv("GIT_OBJECT_DIRECTORY", filepath.Join(ambient, ".git", "objects"))
+
+	out, err := testGitCmd(t, fixture, "rev-parse", "--show-toplevel").CombinedOutput()
+	if err != nil {
+		t.Fatalf("git rev-parse --show-toplevel: %v\n%s", err, out)
 	}
-	base := os.Environ()
-	out := make([]string, 0, len(base))
-	for _, e := range base {
-		key, _, _ := strings.Cut(e, "=")
-		if !skip[key] {
-			out = append(out, e)
+	got, err := filepath.EvalSymlinks(strings.TrimSpace(string(out)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, err := filepath.EvalSymlinks(fixture)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != want {
+		t.Errorf("testGitCmd resolved to %q; want the fixture %q "+
+			"(the ambient git environment leaked into the command)", got, want)
+	}
+
+	// rev-parse only proves GIT_DIR/GIT_WORK_TREE are gone. The quieter members
+	// of the family (GIT_INDEX_FILE retargets the staging area, GIT_COMMON_DIR
+	// the ref store) corrupt a fixture without failing a command outright, so
+	// assert the built environment against executil's strip set directly. This
+	// is what catches a hand-rolled partial copy of that set drifting back in.
+	for _, e := range testGitCmd(t, fixture, "status").Env {
+		if key, _, _ := strings.Cut(e, "="); executil.IsGitRepoEnvVar(key) {
+			t.Errorf("%s survived into a fixture git command's environment", key)
 		}
 	}
-	return out
 }
 
 // TestCleanStaleCoreWorktree_UnsetsMissingPath verifies that
@@ -864,9 +911,7 @@ func TestCleanStaleCoreWorktree_UnsetsMissingPath(t *testing.T) {
 		t.Fatalf("CleanStaleCoreWorktree: %v", err)
 	}
 
-	cmd := exec.Command("git", "config", "--local", "--get", "core.worktree")
-	cmd.Dir = dir
-	cmd.Env = envWithoutGitVars()
+	cmd := testGitCmd(t, dir, "config", "--local", "--get", "core.worktree")
 	if out, err := cmd.CombinedOutput(); err == nil {
 		t.Errorf("core.worktree should be unset, but got %q", strings.TrimSpace(string(out)))
 	}
@@ -887,9 +932,7 @@ func TestCleanStaleCoreWorktree_UnsetsEmptyDir(t *testing.T) {
 		t.Fatalf("CleanStaleCoreWorktree: %v", err)
 	}
 
-	cmd := exec.Command("git", "config", "--local", "--get", "core.worktree")
-	cmd.Dir = dir
-	cmd.Env = envWithoutGitVars()
+	cmd := testGitCmd(t, dir, "config", "--local", "--get", "core.worktree")
 	if err := cmd.Run(); err == nil {
 		t.Error("core.worktree should be unset when value points to an empty directory")
 	}
@@ -947,9 +990,7 @@ func TestCleanStaleCoreWorktree_RelativePathMissing(t *testing.T) {
 		t.Fatalf("CleanStaleCoreWorktree: %v", err)
 	}
 
-	cmd := exec.Command("git", "config", "--local", "--get", "core.worktree")
-	cmd.Dir = dir
-	cmd.Env = envWithoutGitVars()
+	cmd := testGitCmd(t, dir, "config", "--local", "--get", "core.worktree")
 	if err := cmd.Run(); err == nil {
 		t.Error("core.worktree should have been unset for a relative path resolving to a missing directory")
 	}
@@ -994,9 +1035,7 @@ func TestCreateWithOptions_DoesNotSetCoreWorktree(t *testing.T) {
 		t.Fatalf("CreateWithOptions: %v", err)
 	}
 
-	cmd := exec.Command("git", "config", "--local", "--get", "core.worktree")
-	cmd.Dir = anvilDir
-	cmd.Env = envWithoutGitVars()
+	cmd := testGitCmd(t, anvilDir, "config", "--local", "--get", "core.worktree")
 	if out, err := cmd.CombinedOutput(); err == nil {
 		t.Errorf("main repo should not have core.worktree set after worktree creation, got %q",
 			strings.TrimSpace(string(out)))
@@ -1019,9 +1058,7 @@ func TestCreateWithOptions_SelfHealsStaleCoreWorktree(t *testing.T) {
 		t.Fatalf("CreateWithOptions: %v", err)
 	}
 
-	cmd := exec.Command("git", "config", "--local", "--get", "core.worktree")
-	cmd.Dir = anvilDir
-	cmd.Env = envWithoutGitVars()
+	cmd := testGitCmd(t, anvilDir, "config", "--local", "--get", "core.worktree")
 	if err := cmd.Run(); err == nil {
 		t.Error("CreateWithOptions should have unset stale core.worktree on the main repo")
 	}
@@ -1052,18 +1089,14 @@ func TestRemove_UnsetsStaleCoreWorktree(t *testing.T) {
 
 	// After remove, core.worktree must be unset (the path it pointed to no
 	// longer exists, so the self-heal triggers).
-	cmd := exec.Command("git", "config", "--local", "--get", "core.worktree")
-	cmd.Dir = anvilDir
-	cmd.Env = envWithoutGitVars()
+	cmd := testGitCmd(t, anvilDir, "config", "--local", "--get", "core.worktree")
 	if out, err := cmd.CombinedOutput(); err == nil {
 		t.Errorf("Remove should clear stale core.worktree, got %q", strings.TrimSpace(string(out)))
 	}
 
 	// Regression assertion from the bug report: `git status --porcelain`
 	// against the main repo must succeed (exit 0) after a worker round-trip.
-	cmd = exec.Command("git", "status", "--porcelain")
-	cmd.Dir = anvilDir
-	cmd.Env = envWithoutGitVars()
+	cmd = testGitCmd(t, anvilDir, "status", "--porcelain")
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Errorf("git status --porcelain on main repo failed after worker remove: %v\n%s", err, out)
 	}
@@ -1152,12 +1185,11 @@ func TestCreateFromBranch_RemoteOnly(t *testing.T) {
 		t.Fatalf("Remove: %v", err)
 	}
 	// Remove leaves the local branch (best-effort delete), so force-delete to
-	// simulate the remote-only case regardless. The env scrub is not optional:
-	// a GIT_DIR/GIT_WORK_TREE in the ambient environment overrides -C, and this
-	// would then delete the branch from whatever repository those point at.
-	delBranch := exec.Command("git", "-C", anvilDir, "branch", "-D", branch)
-	delBranch.Env = envWithoutGitVars()
-	_ = delBranch.Run()
+	// simulate the remote-only case regardless. testGitCmd's env scrub is not
+	// optional here: a GIT_DIR/GIT_WORK_TREE in the ambient environment
+	// outranks the target directory, and this would then delete the branch
+	// from whatever repository those point at.
+	_ = testGitCmd(t, anvilDir, "branch", "-D", branch).Run()
 
 	got, err := mgr.CreateFromBranch(ctx, anvilDir, "remote-only-bead", branch, origPath)
 	if err != nil {
@@ -1271,9 +1303,7 @@ func TestCreateFromBranch_RejectsInvalidBranchName(t *testing.T) {
 // gitOutput runs a git command and returns trimmed stdout.
 func gitOutput(t *testing.T, dir string, args ...string) string {
 	t.Helper()
-	cmd := exec.Command("git", args...)
-	cmd.Dir = dir
-	cmd.Env = envWithoutGitVars()
+	cmd := testGitCmd(t, dir, args...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("git %v: %v\n%s", args, err, out)
@@ -1311,16 +1341,24 @@ func TestCreate_RecoversFromStaleRegistrationAfterKilledWorker(t *testing.T) {
 	if err := os.RemoveAll(wt.Path); err != nil {
 		t.Fatalf("removing worktree dir: %v", err)
 	}
-	// envWithoutGitVars is required here, not cosmetic: GIT_DIR/GIT_WORK_TREE in
-	// the ambient environment (Forge's own workers run with both set) override
-	// -C, so an unscrubbed list reports the surrounding repository's worktrees
-	// and the precondition fails on a test that is otherwise fine.
-	list := exec.Command("git", "-C", anvil, "worktree", "list")
-	list.Env = envWithoutGitVars()
-	if out, err := list.CombinedOutput(); err != nil {
+	// The registration IS the admin directory under .git/worktrees, so assert
+	// it on disk rather than by parsing `git worktree list`: git versions
+	// differ on whether listing prunes a registration whose directory is
+	// already gone, which made this precondition fail on a test that was
+	// otherwise fine. Reading the directory involves no git version at all.
+	adminDir := filepath.Join(anvil, ".git", "worktrees", filepath.Base(wt.Path))
+	if _, statErr := os.Stat(adminDir); statErr != nil {
+		t.Fatalf("precondition failed: registration %s should still be present: %v", adminDir, statErr)
+	}
+	// testGitCmd's env scrub is not cosmetic here either: GIT_DIR/GIT_WORK_TREE in
+	// the ambient environment (Forge's own workers run with both set) outrank
+	// the target directory, so an unscrubbed list reports the surrounding
+	// repository's worktrees.
+	if out, err := testGitCmd(t, anvil, "worktree", "list").CombinedOutput(); err != nil {
 		t.Fatalf("worktree list: %v\n%s", err, out)
-	} else if !strings.Contains(string(out), "pr-4616") {
-		t.Fatalf("precondition failed: registration should still be present, got:\n%s", out)
+	} else if !strings.Contains(string(out), filepath.Base(wt.Path)) {
+		t.Logf("this git version already dropped the stale registration from `worktree list`; "+
+			"the recovery below must still succeed:\n%s", out)
 	}
 
 	// Before the prune fix this returned "exit status 255" forever.

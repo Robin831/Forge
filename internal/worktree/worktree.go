@@ -657,24 +657,13 @@ func CleanStaleCoreWorktree(ctx context.Context, anvilPath string) error {
 	return nil
 }
 
-// localGitEnv returns the process environment with Forge-set git overrides
-// stripped so that git commands discover the repo from cmd.Dir rather than
-// from inherited GIT_DIR / GIT_WORK_TREE values.
+// localGitEnv returns the process environment with every git repo-location
+// override stripped, so that git commands discover the repo from cmd.Dir
+// rather than from an inherited GIT_DIR / GIT_WORK_TREE / GIT_INDEX_FILE.
+// The strip set lives in executil so this package and the fixture helper in
+// worktree_test.go apply exactly the same one.
 func localGitEnv() []string {
-	skip := map[string]bool{
-		"GIT_DIR":                 true,
-		"GIT_WORK_TREE":           true,
-		"GIT_CEILING_DIRECTORIES": true,
-	}
-	base := os.Environ()
-	out := make([]string, 0, len(base))
-	for _, e := range base {
-		key, _, _ := strings.Cut(e, "=")
-		if !skip[key] {
-			out = append(out, e)
-		}
-	}
-	return out
+	return executil.CleanGitEnv()
 }
 
 // anvilGitEnv returns an environment suitable for git commands that should

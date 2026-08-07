@@ -3,7 +3,6 @@ package worktree
 import (
 	"context"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -13,9 +12,7 @@ import (
 // for teardown steps whose target may already be gone.
 func runGitAllowFail(t *testing.T, dir string, args ...string) {
 	t.Helper()
-	cmd := exec.Command("git", args...)
-	cmd.Dir = dir
-	cmd.Env = envWithoutGitVars()
+	cmd := testGitCmd(t, dir, args...)
 	_ = cmd.Run()
 }
 
