@@ -488,7 +488,7 @@ var managedConfigKeys = []configKeyDef{
 		Type:        typeString,
 		Area:        "Previews",
 		Label:       "Preview bind host",
-		Description: "Address preview services bind to. 127.0.0.1 keeps them on loopback; 0.0.0.0 exposes them to the LAN/VPN. Preview URLs bypass the Hearth login.",
+		Description: "Address preview services bind to, available to manifests as {{.BindHost}}. 127.0.0.1 keeps them on loopback; 0.0.0.0 exposes them to the LAN/VPN. Preview URLs bypass the Hearth login.",
 		Default:     config.DefaultPreviewBindHost,
 		value:       func(s config.SettingsConfig) any { return s.PreviewBindHost },
 	},

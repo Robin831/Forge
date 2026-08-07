@@ -205,6 +205,7 @@ func (r *Runtime) Start(ctx context.Context, req StartRequest) (*Preview, error)
 	expanded, err := req.Manifest.Expand(Context{
 		PreviewID: previewID,
 		Host:      r.publicHost,
+		BindHost:  r.bindHost,
 		Ports:     ports,
 	})
 	if err != nil {

@@ -21,7 +21,9 @@ services:
     ready_timeout: 180s
 
   web:
-    command: "npm run dev -- --port {{.Port}} --strictPort"
+    # `--host {{.BindHost}}` follows preview_bind_host, so widening that setting
+    # to reach previews from a LAN does not also mean editing this manifest.
+    command: "npm run dev -- --host {{.BindHost}} --port {{.Port}} --strictPort"
     dir: "web"
     env:
       # The api's port is not known until the preview starts, so the client is

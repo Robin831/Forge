@@ -81,7 +81,7 @@ func TestExampleManifestsLoad(t *testing.T) {
 			for i, svc := range m.Services {
 				ports[svc.Name] = 42000 + i
 			}
-			if _, err := m.Expand(Context{PreviewID: "forge_1t6c", Host: "forge.local", Ports: ports}); err != nil {
+			if _, err := m.Expand(Context{PreviewID: "forge_1t6c", Host: "forge.local", BindHost: "0.0.0.0", Ports: ports}); err != nil {
 				t.Fatalf("expanding %s: %v", name, err)
 			}
 		})

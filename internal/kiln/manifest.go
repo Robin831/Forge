@@ -347,7 +347,7 @@ func (m *Manifest) validateTemplates() error {
 	for _, svc := range m.Services {
 		ports[svc.Name] = probePort
 	}
-	_, err := m.Expand(Context{PreviewID: "probe", Host: "127.0.0.1", Ports: ports})
+	_, err := m.Expand(Context{PreviewID: "probe", Host: "127.0.0.1", BindHost: "127.0.0.1", Ports: ports})
 	return err
 }
 

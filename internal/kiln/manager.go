@@ -137,6 +137,11 @@ type ManagerConfig struct {
 	// It must match the runtime's, so a teardown command builds the same URL
 	// its services were handed. Zero value uses the loopback default.
 	PublicHost string
+	// BindHost is the address manifest templates expand {{.BindHost}} against
+	// (settings.preview_bind_host). Like PublicHost it must match the runtime's,
+	// so a teardown command sees the address its services were told to listen
+	// on. Zero value uses the loopback default.
+	BindHost string
 	// Env is the environment preview commands inherit; nil means the daemon's
 	// own (os.Environ).
 	Env []string
@@ -360,8 +365,11 @@ func NewManager(deps ManagerDeps) (*Manager, error) {
 	if cfg.CommandTimeout <= 0 {
 		cfg.CommandTimeout = DefaultCommandTimeout
 	}
+	if strings.TrimSpace(cfg.BindHost) == "" {
+		cfg.BindHost = config.DefaultPreviewBindHost
+	}
 	if strings.TrimSpace(cfg.PublicHost) == "" {
-		cfg.PublicHost = config.DefaultPreviewBindHost
+		cfg.PublicHost = cfg.BindHost
 	}
 	return &Manager{
 		runtime:      deps.Runtime,
@@ -744,6 +752,7 @@ func (m *Manager) runTeardown(ctx context.Context, env *Environment) error {
 	expanded, err := env.manifest.Expand(Context{
 		PreviewID: SanitizePreviewID(env.BeadID),
 		Host:      m.cfg.PublicHost,
+		BindHost:  m.cfg.BindHost,
 		Ports:     ports,
 	})
 	if err != nil {

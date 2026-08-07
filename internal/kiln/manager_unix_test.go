@@ -50,6 +50,27 @@ func TestManagerRunsManifestLifecycleCommands(t *testing.T) {
 	}
 }
 
+// TestManagerExpandsBindHostInTeardown proves ManagerConfig.BindHost reaches
+// the teardown command, so a cleanup script sees the same address the services
+// were told to listen on rather than the loopback default.
+func TestManagerExpandsBindHostInTeardown(t *testing.T) {
+	h := newHarness(t, ManagerConfig{MaxConcurrent: 2, CommandTimeout: 30 * time.Second, BindHost: "0.0.0.0"})
+	trace := filepath.Join(t.TempDir(), "trace")
+	h.manifest.Teardown = fmt.Sprintf(`echo "teardown {{.BindHost}}" >> %q`, trace)
+
+	if _, err := h.mgr.Start(context.Background(), h.opts("Forge-aaa1")); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if err := h.mgr.Stop(context.Background(), "Forge-aaa1"); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+
+	lines := readLines(t, trace)
+	if len(lines) != 1 || lines[0] != "teardown 0.0.0.0" {
+		t.Fatalf("trace = %v, want the teardown line with the configured bind host", lines)
+	}
+}
+
 // TestManagerStartRollsBackOnSetupFailure covers the unwind path a failing
 // setup script triggers: no services, no worktree, no row, no cap slot held.
 func TestManagerStartRollsBackOnSetupFailure(t *testing.T) {

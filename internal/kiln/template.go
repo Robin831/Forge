@@ -16,22 +16,28 @@ const probePort = 1
 
 // Context carries the values a manifest's templates expand against: the
 // allocated port per service, the sanitized preview id (safe for database
-// names) and the host preview URLs are built from.
+// names), the host preview URLs are built from and the address services bind.
 type Context struct {
 	// PreviewID is the sanitized bead id identifying this preview.
 	PreviewID string
 	// Host is the hostname used in URLs handed to services and operators
 	// (settings.preview_public_host, falling back to preview_bind_host).
 	Host string
+	// BindHost is the address preview services are expected to listen on
+	// (settings.preview_bind_host). It is the value a service needs when it has
+	// to be told what to bind — `vite --host {{.BindHost}}`,
+	// `ASPNETCORE_URLS=http://{{.BindHost}}:{{.Port}}` — and is deliberately
+	// distinct from Host, which is only ever what a browser dials.
+	BindHost string
 	// Ports maps service name to its allocated port. Every service in the
 	// manifest must have an entry.
 	Ports map[string]int
 }
 
 // Expand returns a copy of the manifest with `{{.Port}}`, `{{.ServicePort
-// "name"}}`, `{{.PreviewID}}` and `{{.Host}}` resolved in the setup/teardown
-// commands and in each service's command and env values. The receiver is not
-// modified.
+// "name"}}`, `{{.PreviewID}}`, `{{.Host}}` and `{{.BindHost}}` resolved in the
+// setup/teardown commands and in each service's command and env values. The
+// receiver is not modified.
 //
 // `{{.Port}}` resolves to the port of the service being expanded, so it is
 // only available inside a service; setup and teardown must name a service
@@ -92,6 +98,9 @@ func (d templateData) PreviewID() string { return d.ctx.PreviewID }
 
 // Host is the hostname preview URLs are built from.
 func (d templateData) Host() string { return d.ctx.Host }
+
+// BindHost is the address preview services are expected to listen on.
+func (d templateData) BindHost() string { return d.ctx.BindHost }
 
 // Port is the port allocated to the service being expanded.
 func (d templateData) Port() (int, error) {
