@@ -188,6 +188,13 @@ interface PendingAction {
 export interface UsePreviewOptions {
   /** Owning anvil. Required to start — the daemon reads the manifest from it. */
   anvil?: string
+  /**
+   * Branch to preview. Left unset for every bead-owned preview, where the
+   * daemon's own default — the bead's forge/<bead-id> branch — is the right
+   * answer. Only the ad-hoc form on the previews page names one, since there
+   * the bead id is a registry key rather than a branch it can be derived from.
+   */
+  branch?: string
   /** Called with a human-readable message when a start/stop fails. */
   onError?: (message: string) => void
   /** Called once the daemon has accepted a start/stop. */
@@ -220,7 +227,7 @@ export interface UsePreviewResult {
 }
 
 export function usePreview(beadID: string, options: UsePreviewOptions = {}): UsePreviewResult {
-  const { anvil } = options
+  const { anvil, branch } = options
   const snap = useSyncExternalStore(subscribePreviews, getPreviewsSnapshot, getPreviewsSnapshot)
 
   // Callbacks are read through a ref so a caller passing inline arrows does not
@@ -337,14 +344,14 @@ export function usePreview(beadID: string, options: UsePreviewOptions = {}): Use
     setFailure(null)
     setPending({ kind: 'start', pollUrl: null, deadline: Date.now() + START_TIMEOUT_MS })
     try {
-      const queued = await startPreview(beadID, anvil)
+      const queued = await startPreview(beadID, anvil, branch)
       const url = pollURLFor(queued)
       setPending((prev) => (prev && prev.kind === 'start' ? { ...prev, pollUrl: url } : prev))
       callbacksRef.current.onQueued?.('start')
     } catch (err) {
       fail(err instanceof ApiError || err instanceof Error ? err.message : 'failed to start preview')
     }
-  }, [anvil, beadID, fail, pending])
+  }, [anvil, beadID, branch, fail, pending])
 
   const stop = useCallback(async () => {
     if (pending || busyRef.current) return

@@ -103,15 +103,22 @@ var validPreviewService = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`
 // setup script, service spawn, health checks) so the daemon queues it and the
 // response is a 202 carrying the request_id + poll_url the SPA resolves through
 // GET /api/requests/{request_id}.
+//
+// The optional `branch` is forwarded verbatim; omitting it leaves the daemon to
+// default to the bead's canonical forge/<bead-id> branch. Together with the fact
+// that the daemon never looks the bead id up in bd, that is what lets the
+// previews page start an ad-hoc preview of an arbitrary branch under a
+// made-up registry key — the browser half of `forge preview start`.
 func (s *Server) handlePreviewStart(w http.ResponseWriter, r *http.Request) {
 	beadID, req, ok := requireBeadAndAnvil(w, r)
 	if !ok {
 		return
 	}
-	s.logActor(r, "preview_start", "bead", beadID, "anvil", req.Anvil)
+	s.logActor(r, "preview_start", "bead", beadID, "anvil", req.Anvil, "branch", req.Branch)
 	s.dispatchAction(w, "preview_start", ipc.PreviewActionPayload{
 		BeadID: beadID,
 		Anvil:  req.Anvil,
+		Branch: req.Branch,
 	})
 }
 

@@ -258,7 +258,9 @@ browser → internal/web (Hearth 2.0, in-process HTTP server, gated by FORGE_WEB
   → PR + queue actions: merge/close/approve/fix-ci/fix-comments/fix-conflicts,
       queue retry/dispatch/clarify/stop, bead close/label/note/comment
   → Kiln previews: POST /bead/{id}/preview/start|stop → preview_start/preview_stop
-      (queued, so both answer 202); GET /previews → previews, mapped to the
+      (queued, so both answer 202; start forwards the body's optional `branch`
+      verbatim and omits it when blank, leaving the daemon's forge/<bead-id>
+      default in place); GET /previews → previews, mapped to the
       PreviewSummary/PreviewServiceStatus DTOs in internal/web/preview_handlers.go
       (the frontend contract) with an entry URL built by kiln.EntryURL — the
       preview hostname when preview_proxy_base is set (carrying the request's
@@ -279,7 +281,12 @@ browser → internal/web (Hearth 2.0, in-process HTTP server, gated by FORGE_WEB
       <PreviewPanel> the full per-bead surface on the bead detail page
       (per-service port/health/uptime/log rows, Open preview, idle countdown,
       resource note, start/stop), and /previews (PreviewsPage, nav entry gated
-      on Kiln being enabled) the fleet view of every running preview.
+      on Kiln being enabled) the fleet view of every running preview, which also
+      mounts <AdHocPreviewForm> — the browser half of `forge preview start`:
+      preview id + anvil (from the payload's `anvils`) + optional branch, run
+      through the same usePreview start rather than a second polling path, so a
+      branch with no bead can be previewed under a made-up registry key like
+      kiln-smoke-1.
       lib/previewFormat.previewIdleCountdown is the one countdown renderer both
       surfaces call: it prefers the relative `idle_remaining_seconds` (immune to
       a browser clock that disagrees with the daemon's) and falls back to

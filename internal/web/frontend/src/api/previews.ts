@@ -178,8 +178,21 @@ async function postPreviewAction(path: string, body: unknown): Promise<QueuedBod
 
 // startPreview asks the daemon to bring a bead's preview up. The anvil is
 // required: the daemon reads the manifest from that anvil's main checkout.
-export function startPreview(beadID: string, anvil: string): Promise<QueuedBody> {
-  return postPreviewAction(`/api/bead/${encodeURIComponent(beadID)}/preview/start`, { anvil })
+//
+// `branch` is optional and is omitted from the body entirely when blank, so the
+// daemon applies its own default (the bead's forge/<bead-id> branch) rather than
+// receiving an empty string this client made up. Passing one is what makes an
+// ad-hoc preview possible: the bead id is only a registry key, so any branch can
+// be previewed under any id.
+export function startPreview(
+  beadID: string,
+  anvil: string,
+  branch?: string,
+): Promise<QueuedBody> {
+  const body: { anvil: string; branch?: string } = { anvil }
+  const trimmed = branch?.trim()
+  if (trimmed) body.branch = trimmed
+  return postPreviewAction(`/api/bead/${encodeURIComponent(beadID)}/preview/start`, body)
 }
 
 // stopPreview tears a bead's preview down. The anvil is optional — the bead id

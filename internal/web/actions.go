@@ -23,10 +23,15 @@ var validLabel = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._\-]{0,63}$`)
 // destructive action is scoped to a single (bead, anvil) pair; many of them
 // also carry an optional reason (for clarify/stop) or note text.
 type actionRequest struct {
-	Anvil    string `json:"anvil"`
-	Reason   string `json:"reason,omitempty"`
-	Note     string `json:"note,omitempty"`
-	Label    string `json:"label,omitempty"`
+	Anvil  string `json:"anvil"`
+	Reason string `json:"reason,omitempty"`
+	Note   string `json:"note,omitempty"`
+	Label  string `json:"label,omitempty"`
+	// Branch is read only by the preview start endpoint, where an empty value
+	// means the bead's canonical forge/<bead-id> branch. It lives on the shared
+	// body shape for the same reason Label and Reason do: the action endpoints
+	// all decode through decodeActionRequest.
+	Branch   string `json:"branch,omitempty"`
 	ForceRun bool   `json:"force_run,omitempty"`
 }
 
@@ -49,6 +54,7 @@ func decodeActionRequest(r *http.Request) (actionRequest, error) {
 	req.Anvil = strings.TrimSpace(req.Anvil)
 	req.Reason = strings.TrimSpace(req.Reason)
 	req.Label = strings.TrimSpace(req.Label)
+	req.Branch = strings.TrimSpace(req.Branch)
 	return req, nil
 }
 

@@ -1,6 +1,6 @@
 import '@testing-library/jest-dom/vitest'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { act, render, screen, within } from '@testing-library/react'
+import { act, fireEvent, render, screen, within } from '@testing-library/react'
 import { MemoryRouter } from 'react-router'
 import type { PreviewsListResponse, PreviewSummary } from '../api/previews'
 import { resetPreviewsStore } from '../hooks/usePreview'
@@ -18,6 +18,8 @@ const NOW = '2026-08-06T10:00:30Z'
 
 let previews: PreviewsListResponse
 let posts: Array<{ url: string; body: unknown }>
+// When set, a preview start is refused with this message instead of queued.
+let startRejection: string | null
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -73,14 +75,16 @@ beforeEach(() => {
   resetPreviewsStore()
   previews = { enabled: true, anvils: ['forge'], quest_anvils: [], previews: [preview()] }
   posts = []
+  startRejection = null
 
   vi.stubGlobal(
     'fetch',
     vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = typeof input === 'string' ? input : String(input)
       if (url === '/api/previews') return jsonResponse(previews)
-      if (url.endsWith('/preview/stop')) {
+      if (url.endsWith('/preview/stop') || url.endsWith('/preview/start')) {
         posts.push({ url, body: init?.body ? JSON.parse(String(init.body)) : null })
+        if (startRejection) return jsonResponse({ error: startRejection }, 500)
         return jsonResponse({ queued: true, request_id: 'r1', poll_url: '/api/requests/r1' }, 202)
       }
       if (url.startsWith('/api/requests/')) {
@@ -187,5 +191,94 @@ describe('PreviewsPage', () => {
     previews = { enabled: true, anvils: ['forge'], quest_anvils: [], previews: [] }
     await mount()
     expect(screen.getByText(/No preview environments are running/)).toBeInTheDocument()
+  })
+})
+
+// The ad-hoc form is the browser half of `forge preview start`: a preview id
+// that need not be a bead, an anvil, and an optional branch.
+describe('PreviewsPage ad-hoc preview form', () => {
+  // fill types an id and (optionally) a branch, then submits.
+  async function submitAdHoc(id: string, branch?: string) {
+    fireEvent.change(screen.getByTestId('adhoc-preview-id'), { target: { value: id } })
+    if (branch !== undefined) {
+      fireEvent.change(screen.getByTestId('adhoc-preview-branch'), { target: { value: branch } })
+    }
+    await act(async () => {
+      screen.getByTestId('adhoc-preview-submit').click()
+      await vi.advanceTimersByTimeAsync(0)
+    })
+  }
+
+  it('offers every previewable anvil from the payload', async () => {
+    previews = { ...previews, anvils: ['forge', 'hytte'] }
+    await mount()
+    const options = within(screen.getByTestId('adhoc-preview-anvil')).getAllByRole('option')
+    expect(options.map((o) => o.textContent)).toEqual(['Choose an anvil…', 'forge', 'hytte'])
+  })
+
+  it('starts a preview without a branch, letting the daemon default it', async () => {
+    await mount()
+    await submitAdHoc('kiln-smoke-1')
+
+    expect(posts).toEqual([
+      { url: '/api/bead/kiln-smoke-1/preview/start', body: { anvil: 'forge' } },
+    ])
+    expect(screen.getByTestId('adhoc-preview-pending')).toHaveTextContent('kiln-smoke-1')
+  })
+
+  it('sends the branch when one is given', async () => {
+    await mount()
+    await submitAdHoc('kiln-smoke-2', '  main  ')
+
+    expect(posts).toEqual([
+      { url: '/api/bead/kiln-smoke-2/preview/start', body: { anvil: 'forge', branch: 'main' } },
+    ])
+  })
+
+  it('reports the daemon refusal and keeps what was typed', async () => {
+    startRejection = 'previews are disabled for anvil "forge"'
+    await mount()
+    await submitAdHoc('kiln-smoke-3', 'main')
+
+    expect(screen.getByTestId('adhoc-preview-error')).toHaveTextContent(
+      'previews are disabled for anvil "forge"',
+    )
+    expect(screen.getByTestId('adhoc-preview-id')).toHaveValue('kiln-smoke-3')
+    expect(screen.getByTestId('adhoc-preview-branch')).toHaveValue('main')
+  })
+
+  it('will not submit without an id, nor without an anvil when there is a choice', async () => {
+    previews = { ...previews, anvils: ['forge', 'hytte'] }
+    await mount()
+    expect(screen.getByTestId('adhoc-preview-submit')).toBeDisabled()
+
+    // An id alone is not enough while the anvil is still unchosen.
+    fireEvent.change(screen.getByTestId('adhoc-preview-id'), { target: { value: 'kiln-smoke-1' } })
+    expect(screen.getByTestId('adhoc-preview-submit')).toBeDisabled()
+
+    fireEvent.change(screen.getByTestId('adhoc-preview-anvil'), { target: { value: 'hytte' } })
+    expect(screen.getByTestId('adhoc-preview-submit')).toBeEnabled()
+  })
+
+  it('rejects an id the bead-id route would refuse, without asking the daemon', async () => {
+    await mount()
+    await submitAdHoc('kiln smoke/1')
+
+    expect(posts).toEqual([])
+    expect(screen.getByTestId('adhoc-preview-error')).toHaveTextContent('must start with a letter')
+  })
+
+  it('refuses an id that already has a preview rather than adopting it', async () => {
+    await mount()
+    fireEvent.change(screen.getByTestId('adhoc-preview-id'), { target: { value: 'Forge-abc1' } })
+
+    expect(screen.getByTestId('adhoc-preview-taken')).toBeInTheDocument()
+    expect(screen.getByTestId('adhoc-preview-submit')).toBeDisabled()
+  })
+
+  it('stays hidden while previews are disabled', async () => {
+    previews = { enabled: false, anvils: [], quest_anvils: [], previews: [] }
+    await mount()
+    expect(screen.queryByTestId('adhoc-preview-form')).not.toBeInTheDocument()
   })
 })

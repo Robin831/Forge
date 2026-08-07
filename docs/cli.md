@@ -311,6 +311,9 @@ A refusal — previews disabled globally or for the anvil, no manifest, the
 `preview_max_concurrent` cap already full — is printed as the daemon phrased it
 and exits non-zero. `forge preview stop <bead-id>` is the inverse.
 
+Hearth 2.0 offers the same thing in the browser: the **Ad-hoc preview** form at
+the top of its `/previews` page takes the same id, anvil and optional branch.
+
 | Flag | Description |
 |------|-------------|
 | `-a, --anvil` | Anvil the branch lives in (required) |
