@@ -377,6 +377,21 @@ the service command install into a directory that is not the junction (for
 example `npm ci --prefix .preview-deps` plus a `NODE_PATH`), and to accept the
 per-start cost — but treat that as a last resort.
 
+The same invariant runs the other way: Forge itself must not `npm ci` the **main
+checkout** while a preview is linked into it. Depcheck syncs `node_modules` with
+`npm ci --ignore-scripts` before reading `npm outdated`, so it asks the daemon
+whether the anvil has a live preview first and skips its whole npm half for that
+cycle when it does, logging the bead holding the preview:
+
+```
+[depcheck] heimdall: skipping npm scan — Kiln preview for bead Forge-abc1 holds this checkout's node_modules
+```
+
+Go and .NET scanning are unaffected — neither deletes anything. The liveness
+check is re-read immediately before npm is spawned, which leaves a window of a
+few statements in which a preview could start; that race is accepted, and is no
+wider than the pre-existing one against a worker's own npm build step.
+
 ### The manifest is loaded from main
 
 Kiln reads `.forge/preview.yaml` from **the anvil's main checkout**, never from

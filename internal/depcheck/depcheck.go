@@ -46,13 +46,23 @@ type CheckResult struct {
 	Checked   time.Time
 }
 
+// PreviewLivenessFunc reports the bead whose live Kiln preview currently holds
+// the named anvil's checkout, or "" when the anvil has no live preview.
+//
+// A preview's worktree gets the main checkout's node_modules linked into it, so
+// anything that deletes node_modules in the main checkout — `npm ci` does, as
+// its first act — deletes it out from under the running preview. depcheck asks
+// this before it touches an anvil's node_modules.
+type PreviewLivenessFunc func(anvil string) string
+
 // Scanner checks anvils for outdated dependencies across all supported ecosystems.
 type Scanner struct {
-	db         *state.DB
-	interval   time.Duration
-	timeout    time.Duration
-	anvilPaths map[string]string // anvil name -> path
-	mu         sync.RWMutex
+	db          *state.DB
+	interval    time.Duration
+	timeout     time.Duration
+	anvilPaths  map[string]string // anvil name -> path
+	previewLive PreviewLivenessFunc
+	mu          sync.RWMutex
 }
 
 // New creates a dependency check scanner.
@@ -81,6 +91,28 @@ func (s *Scanner) UpdateAnvilPaths(paths map[string]string) {
 	s.mu.Lock()
 	s.anvilPaths = copied
 	s.mu.Unlock()
+}
+
+// SetPreviewLiveness installs the callback the scanner consults before syncing
+// an anvil's node_modules. Safe to call while Run is active. A nil callback
+// (the default) means "no anvil ever has a live preview", which is exactly the
+// behaviour of a Forge built without Kiln.
+func (s *Scanner) SetPreviewLiveness(fn PreviewLivenessFunc) {
+	s.mu.Lock()
+	s.previewLive = fn
+	s.mu.Unlock()
+}
+
+// previewHolder returns the bead whose live preview holds the anvil's checkout,
+// or "" when there is none (including when no callback is installed).
+func (s *Scanner) previewHolder(anvil string) string {
+	s.mu.RLock()
+	fn := s.previewLive
+	s.mu.RUnlock()
+	if fn == nil {
+		return ""
+	}
+	return fn(anvil)
 }
 
 // UpdateAnvilTags is a no-op kept for API compatibility. Consolidated dependency

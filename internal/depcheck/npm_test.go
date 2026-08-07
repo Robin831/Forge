@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -223,4 +224,114 @@ func TestScanNpmCrossProjectDedup_MostSevereWins(t *testing.T) {
 	assert.Len(t, result.Major, 1, "major bump should win over patch for the same package")
 	assert.Equal(t, "lodash", result.Major[0].Path)
 	assert.Equal(t, "5.0.0", result.Major[0].Latest)
+}
+
+// TestScanNpm_SkipsWhileKilnPreviewLive verifies that an anvil with a live Kiln
+// preview gets no npm sync at all: `npm ci` deletes node_modules first, and the
+// preview's worktree has that node_modules linked into it, so the delete would
+// gut the main checkout out from under every worktree using it.
+func TestScanNpm_SkipsWhileKilnPreviewLive(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "package.json"), []byte("{}"), 0o644))
+
+	origInstall := runNpmInstallFn
+	origOutdated := runNpmOutdatedFn
+	origCmd := runNpmCmdFn
+	t.Cleanup(func() {
+		runNpmInstallFn = origInstall
+		runNpmOutdatedFn = origOutdated
+		runNpmCmdFn = origCmd
+	})
+
+	var npmCalls []string
+	runNpmInstallFn = func(_ context.Context, _ time.Duration, d string) error {
+		npmCalls = append(npmCalls, "install:"+d)
+		return nil
+	}
+	runNpmCmdFn = func(_ context.Context, _ time.Duration, d string, args ...string) ([]byte, error) {
+		npmCalls = append(npmCalls, "npm "+strings.Join(args, " ")+":"+d)
+		return []byte("{}"), nil
+	}
+
+	var asked []string
+	s := &Scanner{timeout: 30 * time.Second}
+	s.SetPreviewLiveness(func(anvil string) string {
+		asked = append(asked, anvil)
+		return "Forge-prev"
+	})
+
+	result := s.scanNpm(context.Background(), "heimdall", dir)
+
+	assert.Nil(t, result, "npm results should be skipped entirely, not reported from a tree we refused to sync")
+	assert.Empty(t, npmCalls, "no npm command may run while a preview holds node_modules")
+	assert.Equal(t, []string{"heimdall"}, asked, "liveness should be checked for the scanned anvil")
+}
+
+// TestScanNpm_SkipsWhenPreviewStartsMidScan verifies the re-check inside the
+// per-project loop: a preview that comes up after the scan began still stops
+// the sync before npm is spawned.
+func TestScanNpm_SkipsWhenPreviewStartsMidScan(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "package.json"), []byte("{}"), 0o644))
+
+	orig := runNpmOutdatedFn
+	t.Cleanup(func() { runNpmOutdatedFn = orig })
+	var outdatedCalls int
+	runNpmOutdatedFn = func(_ context.Context, _ time.Duration, _ string) ([]ModuleUpdate, error) {
+		outdatedCalls++
+		return nil, nil
+	}
+
+	// No preview at the top of the scan; one is live by the time the loop is
+	// about to spawn npm for the first project.
+	var checks int
+	s := &Scanner{timeout: 30 * time.Second}
+	s.SetPreviewLiveness(func(string) string {
+		checks++
+		if checks == 1 {
+			return ""
+		}
+		return "Forge-prev"
+	})
+
+	result := s.scanNpm(context.Background(), "heimdall", dir)
+
+	assert.Nil(t, result, "a preview appearing mid-scan should still skip the npm half")
+	assert.Zero(t, outdatedCalls, "npm outdated (and the npm ci it fronts) must not run")
+	assert.Equal(t, 2, checks, "liveness is re-read immediately before the npm spawn")
+}
+
+// TestScanNpm_RunsWithoutLivePreview verifies the unchanged path: no callback
+// installed, or a callback reporting no preview, both scan exactly as before.
+func TestScanNpm_RunsWithoutLivePreview(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "package.json"), []byte("{}"), 0o644))
+
+	orig := runNpmOutdatedFn
+	t.Cleanup(func() { runNpmOutdatedFn = orig })
+	var outdatedCalls int
+	runNpmOutdatedFn = func(_ context.Context, _ time.Duration, _ string) ([]ModuleUpdate, error) {
+		outdatedCalls++
+		return []ModuleUpdate{{Path: "lodash", Current: "4.17.20", Latest: "4.17.21", Kind: "patch"}}, nil
+	}
+
+	for _, tc := range []struct {
+		name string
+		fn   PreviewLivenessFunc
+	}{
+		{"nil callback", nil},
+		{"no preview", func(string) string { return "" }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			outdatedCalls = 0
+			s := &Scanner{timeout: 30 * time.Second}
+			s.SetPreviewLiveness(tc.fn)
+
+			result := s.scanNpm(context.Background(), "heimdall", dir)
+
+			require.NotNil(t, result)
+			assert.Equal(t, 1, outdatedCalls, "the npm scan should run exactly as before")
+			assert.Len(t, result.Patch, 1)
+		})
+	}
 }

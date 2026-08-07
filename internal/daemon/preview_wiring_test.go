@@ -483,3 +483,26 @@ func TestHandlePreviewTeardownOnPRClose_TeardownErrorIsContained(t *testing.T) {
 		return len(mgr.stoppedBeads()) == 1
 	}, 2*time.Second, 10*time.Millisecond)
 }
+
+// TestPreviewBeadForAnvil covers the depcheck.PreviewLivenessFunc the daemon
+// injects: it names a bead only when that anvil actually has a live preview, so
+// depcheck skips its `npm ci` exactly then and never otherwise.
+func TestPreviewBeadForAnvil(t *testing.T) {
+	mgr := newFakePreviewManager()
+	_, err := mgr.Start(t.Context(), kiln.StartOptions{
+		BeadID: "Forge-prev", Anvil: "heimdall", Branch: "forge/Forge-prev",
+	})
+	require.NoError(t, err)
+	d := newPreviewAPIDaemon(t, previewConfig(true, nil), mgr)
+
+	assert.Equal(t, "Forge-prev", d.previewBeadForAnvil("heimdall"))
+	assert.Empty(t, d.previewBeadForAnvil("forge"), "another anvil's preview must not block this one")
+	assert.Empty(t, d.previewBeadForAnvil(""))
+}
+
+// TestPreviewBeadForAnvil_PreviewsDisabled verifies that a daemon without a
+// Kiln manager reports no holder, leaving depcheck's behaviour unchanged.
+func TestPreviewBeadForAnvil_PreviewsDisabled(t *testing.T) {
+	d := newPreviewAPIDaemon(t, previewConfig(false, nil), nil)
+	assert.Empty(t, d.previewBeadForAnvil("heimdall"))
+}

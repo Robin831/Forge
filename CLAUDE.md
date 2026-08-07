@@ -97,7 +97,7 @@ Forge is a **Go orchestrator daemon** that autonomously drives Claude Code agent
 | `internal/hooks` | Pipeline hook execution — shell commands before/after each stage |
 | `internal/bellows` | Monitors open PRs for CI failures, review comments, and merge conflicts; gates Assay review runs. The CI gate that feeds Quench is head-scoped (`ci.go`): check results reported against a superseded commit are discarded, a head whose runs have not finished is `pending` (never `failed`), and a check queued past 30 minutes is `stuck` — surfaced as a Needs Attention note instead of dispatching a fix worker |
 | `internal/crucible` | Orchestrates parent beads with children on feature branches — auto-detects, sequences, merges |
-| `internal/depcheck` | Multi-language dependency update scanner (Go, .NET, Node) — creates beads for outdated deps |
+| `internal/depcheck` | Multi-language dependency update scanner (Go, .NET, Node) — creates beads for outdated deps. The npm half syncs `node_modules` with `npm ci --ignore-scripts` before reading `npm outdated`, so it is gated on a `PreviewLivenessFunc` the daemon injects (`SetPreviewLiveness`, nil = never blocked): an anvil with a live Kiln preview linked into its `node_modules` is skipped for the whole cycle, naming the holding bead in the log, rather than having `npm ci` delete that tree through the link. Go and .NET scanning are never gated |
 | `internal/vulncheck` | Vulnerability scanning via `govulncheck` — creates prioritized beads |
 | `internal/wicket` | GitHub issue triage monitor — polls repos for new issues, AI-classifies them, and creates beads or requests clarification |
 | `internal/schematic` | Pre-analysis worker — decomposes complex beads or produces implementation plans |
@@ -209,6 +209,9 @@ Crucible path (parent beads with children):
 
 depcheck.Monitor (background, weekly by default)
   → scans each anvil for outdated dependencies (Go, .NET, Node)
+  → npm half only: anvil has a live Kiln preview? → skip it this cycle (INFO,
+    names the bead) — `npm ci` would delete the checkout's node_modules through
+    the link the preview holds
   → creates beads for outdated dependencies (patch/minor auto-dispatch, major needs attention)
 
 vulncheck.Monitor (background, daily by default)

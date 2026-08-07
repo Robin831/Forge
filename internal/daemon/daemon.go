@@ -1386,6 +1386,10 @@ func (d *Daemon) Run(ctx context.Context) error {
 			}
 		}
 		d.depcheckScanner.UpdateAnvilTags(depcheckTags)
+		// Never sync an anvil's node_modules while a Kiln preview is linked
+		// into that checkout — `npm ci` deletes node_modules first, and the
+		// delete reaches through the link into the running preview.
+		d.depcheckScanner.SetPreviewLiveness(d.previewBeadForAnvil)
 		go func() {
 			if err := d.depcheckScanner.Run(ctx); err != nil && err != context.Canceled {
 				d.logger.Error("Depcheck scanner error", "error", err)
