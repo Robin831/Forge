@@ -36,8 +36,13 @@ func TestPreviewSettingsDefaults(t *testing.T) {
 
 	lo, hi, err := cfg.Settings.PreviewPortRangeBounds()
 	require.NoError(t, err)
-	assert.Equal(t, 42000, lo)
-	assert.Equal(t, 42999, hi)
+	assert.Equal(t, 24000, lo)
+	assert.Equal(t, 24999, hi)
+	// The default must sit below every common ephemeral floor: Linux's
+	// ip_local_port_range is typically 32768-60999, Windows' dynamic range
+	// starts at 49152. A default inside either can lose an allocated port to an
+	// outbound connection before the preview service binds it.
+	assert.Less(t, hi, 32768, "the default range must stay below the Linux ephemeral floor")
 
 	assert.Empty(t, cfg.Validate())
 }
@@ -199,7 +204,8 @@ func TestPreviewValidation(t *testing.T) {
 		{
 			name:     "malformed port range",
 			mutate:   func(c *Config) { c.Settings.PreviewPortRange = "42000" },
-			expected: `settings.preview_port_range: port range "42000" must be in the form "min-max" (e.g. "42000-42999")`,
+			expected: fmt.Sprintf(`settings.preview_port_range: port range "42000" must be in the form "min-max" (e.g. %q)`,
+				DefaultPreviewPortRange),
 		},
 		{
 			name:     "proxy base with a leading dot",

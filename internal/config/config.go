@@ -1583,7 +1583,16 @@ const (
 	DefaultPreviewIdleTimeout = 30 * time.Minute
 	// DefaultPreviewPortRange is the port range previews allocate from when
 	// preview_port_range is unset.
-	DefaultPreviewPortRange = "42000-42999"
+	//
+	// It sits below every common ephemeral (dynamic) port floor — Linux's
+	// net.ipv4.ip_local_port_range is typically 32768-60999, Windows' dynamic
+	// range starts at 49152 — because Kiln allocates a port minutes before the
+	// service binds it, and a range inside the ephemeral range can have that
+	// port handed to an outbound connection in between ("address already in
+	// use" at service start). It also stays clear of the Kubernetes NodePort
+	// convention (30000-32767) to avoid confusing operators, even though
+	// NodePorts live on the node rather than in the pod's netns.
+	DefaultPreviewPortRange = "24000-24999"
 	// DefaultPreviewBindHost keeps preview services on loopback unless the
 	// operator opts into a wider bind address.
 	DefaultPreviewBindHost = "127.0.0.1"
@@ -1786,7 +1795,7 @@ func (s SettingsConfig) PreviewPortRangeBounds() (int, int, error) {
 	return ParsePortRange(raw)
 }
 
-// ParsePortRange parses a "min-max" port range (e.g. "42000-42999"), returning
+// ParsePortRange parses a "min-max" port range (e.g. "24000-24999"), returning
 // its inclusive bounds. Both ends must be unprivileged ports and min < max.
 func ParsePortRange(raw string) (int, int, error) {
 	parts := strings.Split(strings.TrimSpace(raw), "-")
