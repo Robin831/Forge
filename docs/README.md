@@ -13,6 +13,7 @@ Reference documentation for configuring and operating Forge.
 | [Burnish (Review Fix) Loop](reviewfix.md) | Automatic PR review comment handling and CI fix cycles |
 | [Preview Manifest](preview-manifest.md) | `.forge/preview.yaml` reference — fields, templates, runtime behaviour |
 | [Reference Preview Manifests](preview-manifests.md) | Worked example manifests and per-preview database lifecycle recipes |
+| [Deploying the Preview Proxy](preview-proxy-deployment.md) | Wildcard DNS, ingress and wildcard TLS prerequisites for `preview_proxy_base` |
 | [Remote Access](remote-access.md) | Remote Hearth TUI and Claude CLI via VS Code Tunnels |
 
 ## Quick Links

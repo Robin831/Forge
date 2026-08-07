@@ -945,6 +945,16 @@ func TestActivityStream_PollFallbackDisabledUsesBus(t *testing.T) {
 // the Bus live loop must reach a connected SSE client in well under 100ms — the
 // whole point of the Bus over the legacy 2s poll. The DB starts empty so replay
 // emits nothing and the measurement isolates the live publish→flush→client path.
+//
+// The clock must not start until the handler is provably parked in the live
+// select loop. Do() returns as soon as the response headers arrive, which
+// streamActivityBus flushes BEFORE it subscribes and replays, so a bare sleep
+// only guesses at readiness: on a loaded CI runner where startup outruns the
+// guess, the "delivery latency" silently absorbs the rest of subscribe+replay
+// and the assertion fails on scheduler noise rather than on Bus delivery. So we
+// synchronise on a warmup event instead. Receiving it proves the line-222 flush
+// has already run — a replay-phase emit is not visible to the client until that
+// flush — which puts the handler at the select, and only then do we measure.
 func TestActivityStream_BusDeliversUnder100ms(t *testing.T) {
 	srv := busServer(t)
 
@@ -972,10 +982,26 @@ func TestActivityStream_BusDeliversUnder100ms(t *testing.T) {
 		}
 	}()
 
-	// Let the handler subscribe and finish the (empty) replay so it is parked in
-	// the live select loop before we publish and start the clock.
-	time.Sleep(300 * time.Millisecond)
+	// Readiness barrier: publish a warmup event and wait for the client to see
+	// it. Its own delivery is deliberately untimed — however long the handler
+	// takes to subscribe, replay and flush is startup cost, not Bus latency.
+	if err := srv.db.LogEvent(state.EventBeadClaimed, "warmup", "", ""); err != nil {
+		t.Fatalf("LogEvent warmup: %v", err)
+	}
+	warmupDeadline := time.After(10 * time.Second)
+	for ready := false; !ready; {
+		select {
+		case s := <-got:
+			if s.msg == "warmup" {
+				ready = true
+			}
+		case <-warmupDeadline:
+			t.Fatal("handler did not reach the live loop within 10s (warmup event never delivered)")
+		}
+	}
 
+	// The handler is now in the live select loop, so this measures exactly the
+	// publish→flush→client path the design point is about.
 	start := time.Now()
 	if err := srv.db.LogEvent(state.EventBeadClaimed, "live", "", ""); err != nil {
 		t.Fatalf("LogEvent: %v", err)
