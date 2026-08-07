@@ -103,6 +103,26 @@ type PreviewsResponse struct {
 // to change a field.
 type PreviewListResponse = PreviewsResponse
 
+// PreviewStartResponse is the outcome of a "preview_start" command.
+//
+// Starting is queued (a git checkout, the manifest's setup command, service
+// spawns and health checks), so the caller first gets a "queued" response and
+// resolves it through "request_status"; this is the payload the daemon
+// completes that request with. Only Message survives that round trip — the
+// outcome record keeps the message and drops the rest — so a client that wants
+// the entry URL reads it back from "preview_list" once the start resolves.
+type PreviewStartResponse struct {
+	BeadID string `json:"bead_id,omitempty"`
+	// Status is the preview's state.Preview* status the moment the start
+	// finished (running, degraded, ...).
+	Status string `json:"status"`
+	// Message names the bead and its status, for the outcome tracker.
+	Message string `json:"message,omitempty"`
+	// EntryURL is the link an operator opens, built by the daemon the same way
+	// PreviewInfo.EntryURL is.
+	EntryURL string `json:"entry_url,omitempty"`
+}
+
 // PreviewStopResponse is the outcome of a "preview_stop" command.
 //
 // Teardown is queued (it kills process groups, runs the manifest's teardown

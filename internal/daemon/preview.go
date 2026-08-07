@@ -533,10 +533,11 @@ func (d *Daemon) handlePreviewStart(p ipc.PreviewActionPayload) ipc.Response {
 		}
 		d.logger.Info("preview started", "bead", beadID, "anvil", anvilName,
 			"branch", branch, "status", env.Status())
-		d.completeAsync(reqID, okResponse(map[string]string{
-			"message":   fmt.Sprintf("preview for %s is %s", beadID, env.Status()),
-			"status":    env.Status(),
-			"entry_url": previewEntryURL(d.cfg.Load(), env.Record()),
+		d.completeAsync(reqID, okResponse(ipc.PreviewStartResponse{
+			BeadID:   beadID,
+			Status:   env.Status(),
+			Message:  fmt.Sprintf("preview for %s is %s", beadID, env.Status()),
+			EntryURL: previewEntryURL(d.cfg.Load(), env.Record()),
 		}))
 	}()
 	resp, _ := ipc.NewQueuedResponse(reqID, "starting preview")

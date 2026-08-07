@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/Robin831/Forge/internal/ipc"
+	"github.com/spf13/cobra"
 )
 
 // startFakeDaemon runs an IPC server answering with the given handler, on a
@@ -112,6 +113,214 @@ func TestPreviewList_DaemonDown(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "forge up") {
 		t.Errorf("error should tell the operator to start the daemon, got %q", err)
+	}
+}
+
+// setPreviewStartFlags sets the start verb's flags and clears them again
+// afterwards — the cobra command is a package-level singleton, so a value left
+// behind would leak into the next test.
+func setPreviewStartFlags(t *testing.T, anvil, branch string) {
+	t.Helper()
+	if err := previewStartCmd.Flags().Set("anvil", anvil); err != nil {
+		t.Fatalf("set --anvil: %v", err)
+	}
+	if err := previewStartCmd.Flags().Set("branch", branch); err != nil {
+		t.Fatalf("set --branch: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = previewStartCmd.Flags().Set("anvil", "")
+		_ = previewStartCmd.Flags().Set("branch", "")
+	})
+}
+
+func TestPreviewStart_DaemonDown(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	setPreviewStartFlags(t, "forge", "")
+
+	err := previewStartCmd.RunE(previewStartCmd, []string{"kiln-smoke-1"})
+	if err == nil {
+		t.Fatal("expected an error when the daemon is not running")
+	}
+	if !strings.Contains(err.Error(), "forge up") {
+		t.Errorf("error should tell the operator to start the daemon, got %q", err)
+	}
+}
+
+// TestPreviewStart_RequiresAnvilAndBeadID pins the two client-side guards: the
+// bead id is positional and required, and --anvil is marked required so cobra
+// refuses the invocation before a socket is dialled.
+func TestPreviewStart_RequiresAnvilAndBeadID(t *testing.T) {
+	if err := previewStartCmd.Args(previewStartCmd, nil); err == nil {
+		t.Error("expected a usage error when the bead id is missing")
+	}
+	flag := previewStartCmd.Flags().Lookup("anvil")
+	if flag == nil {
+		t.Fatal("--anvil flag is not registered")
+	}
+	if _, ok := flag.Annotations[cobra.BashCompOneRequiredFlag]; !ok {
+		t.Error("--anvil should be marked required")
+	}
+}
+
+// TestPreviewStart_OmitsBranchWhenUnset — the daemon owns the forge/<bead-id>
+// default, so an unset --branch must reach it as an absent field rather than a
+// branch name the CLI guessed at.
+func TestPreviewStart_OmitsBranchWhenUnset(t *testing.T) {
+	var sent ipc.PreviewActionPayload
+	startFakeDaemon(t, func(cmd ipc.Command) ipc.Response {
+		switch cmd.Type {
+		case "preview_start":
+			if err := json.Unmarshal(cmd.Payload, &sent); err != nil {
+				return errResp(t, "bad payload")
+			}
+			resp, err := ipc.NewQueuedResponse("req-10", "starting preview")
+			if err != nil {
+				return errResp(t, err.Error())
+			}
+			return resp
+		case "request_status":
+			return okResp(t, ipc.RequestStatusResponse{
+				RequestID: "req-10",
+				State:     ipc.RequestStateOK,
+				Message:   "preview for kiln-smoke-1 is running",
+			})
+		case "preview_list":
+			return okResp(t, ipc.PreviewListResponse{
+				Enabled: true,
+				Anvils:  []string{"forge"},
+				Previews: []ipc.PreviewInfo{{
+					BeadID:   "kiln-smoke-1",
+					Anvil:    "forge",
+					Status:   "running",
+					EntryURL: "http://127.0.0.1:41000/",
+					Port:     41000,
+				}},
+			})
+		default:
+			return errResp(t, "unexpected command "+cmd.Type)
+		}
+	})
+	setPreviewStartFlags(t, "forge", "")
+
+	var err error
+	out := captureStdout(t, func() {
+		err = previewStartCmd.RunE(previewStartCmd, []string{"kiln-smoke-1"})
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if sent.BeadID != "kiln-smoke-1" || sent.Anvil != "forge" {
+		t.Errorf("unexpected payload: %+v", sent)
+	}
+	if sent.Branch != "" {
+		t.Errorf("branch should be left to the daemon's default, got %q", sent.Branch)
+	}
+	if !strings.Contains(out, "preview for kiln-smoke-1 is running") {
+		t.Errorf("expected the daemon's confirmation on stdout, got %q", out)
+	}
+	if !strings.Contains(out, "http://127.0.0.1:41000/") {
+		t.Errorf("expected the entry URL on stdout, got %q", out)
+	}
+}
+
+func TestPreviewStart_SendsExplicitBranch(t *testing.T) {
+	var sent ipc.PreviewActionPayload
+	startFakeDaemon(t, func(cmd ipc.Command) ipc.Response {
+		switch cmd.Type {
+		case "preview_start":
+			if err := json.Unmarshal(cmd.Payload, &sent); err != nil {
+				return errResp(t, "bad payload")
+			}
+			resp, err := ipc.NewQueuedResponse("req-11", "starting preview")
+			if err != nil {
+				return errResp(t, err.Error())
+			}
+			return resp
+		case "request_status":
+			return okResp(t, ipc.RequestStatusResponse{
+				RequestID: "req-11",
+				State:     ipc.RequestStateOK,
+				Message:   "preview for kiln-smoke-2 is running",
+			})
+		case "preview_list":
+			// The list read is best-effort: an empty one must not turn a
+			// successful start into a failure, it just leaves no link.
+			return okResp(t, ipc.PreviewListResponse{Enabled: true, Anvils: []string{"forge"}})
+		default:
+			return errResp(t, "unexpected command "+cmd.Type)
+		}
+	})
+	setPreviewStartFlags(t, "forge", "main")
+
+	var err error
+	out := captureStdout(t, func() {
+		err = previewStartCmd.RunE(previewStartCmd, []string{"kiln-smoke-2"})
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if sent.Branch != "main" {
+		t.Errorf("branch = %q, want main", sent.Branch)
+	}
+	if !strings.Contains(out, "preview for kiln-smoke-2 is running") {
+		t.Errorf("expected the daemon's confirmation on stdout, got %q", out)
+	}
+	if strings.Contains(out, "URL:") {
+		t.Errorf("no preview in the list means no link to print, got %q", out)
+	}
+}
+
+// TestPreviewStart_SynchronousRefusal — previews being disabled, or the anvil
+// being unknown, is rejected before the work is queued. The daemon's wording is
+// the whole answer, so it has to survive to the operator's terminal.
+func TestPreviewStart_SynchronousRefusal(t *testing.T) {
+	startFakeDaemon(t, func(cmd ipc.Command) ipc.Response {
+		if cmd.Type != "preview_start" {
+			return errResp(t, "unexpected command "+cmd.Type)
+		}
+		return errResp(t, `previews are disabled for anvil "forge"`)
+	})
+	setPreviewStartFlags(t, "forge", "")
+
+	err := previewStartCmd.RunE(previewStartCmd, []string{"kiln-smoke-3"})
+	if err == nil {
+		t.Fatal("expected an error when the daemon refuses the start")
+	}
+	if !strings.Contains(err.Error(), `previews are disabled for anvil "forge"`) {
+		t.Errorf("expected the daemon's refusal verbatim, got %q", err)
+	}
+}
+
+// TestPreviewStart_QueuedFailure — the concurrency cap and a failing setup
+// command both surface after the work is queued, and must exit non-zero rather
+// than print a phantom success.
+func TestPreviewStart_QueuedFailure(t *testing.T) {
+	startFakeDaemon(t, func(cmd ipc.Command) ipc.Response {
+		switch cmd.Type {
+		case "preview_start":
+			resp, err := ipc.NewQueuedResponse("req-12", "starting preview")
+			if err != nil {
+				return errResp(t, err.Error())
+			}
+			return resp
+		case "request_status":
+			return okResp(t, ipc.RequestStatusResponse{
+				RequestID: "req-12",
+				State:     ipc.RequestStateError,
+				Message:   "starting preview for kiln-smoke-4 failed: too many previews running (limit 3): Forge-a, Forge-b, Forge-c",
+			})
+		default:
+			return errResp(t, "unexpected command "+cmd.Type)
+		}
+	})
+	setPreviewStartFlags(t, "forge", "")
+
+	err := previewStartCmd.RunE(previewStartCmd, []string{"kiln-smoke-4"})
+	if err == nil {
+		t.Fatal("expected an error when the queued start fails")
+	}
+	if !strings.Contains(err.Error(), "too many previews running (limit 3): Forge-a, Forge-b, Forge-c") {
+		t.Errorf("expected the daemon's refusal, naming the beads holding the slots, got %q", err)
 	}
 }
 

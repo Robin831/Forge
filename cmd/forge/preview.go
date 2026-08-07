@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"text/tabwriter"
 	"time"
 
@@ -19,18 +20,30 @@ import (
 // the CLI reports the daemon's own outcome rather than its own impatience.
 const previewStopWait = 150 * time.Second
 
-// previewStopPoll is how often the queued teardown's outcome is re-checked.
-const previewStopPoll = 300 * time.Millisecond
+// previewStartWait bounds how long `forge preview start` waits for the queued
+// start to resolve. The daemon caps the start itself at 15 minutes
+// (daemon.previewStartTimeout) — a manifest's setup command can be a full
+// dependency install — and, as with the stop, the slack covers the round trips
+// around it so the CLI reports the daemon's outcome and not its own impatience.
+const previewStartWait = 16 * time.Minute
+
+// previewPoll is how often a queued preview command's outcome is re-checked.
+const previewPoll = 300 * time.Millisecond
 
 func init() {
+	previewStartCmd.Flags().StringP("anvil", "a", "", "Anvil the branch lives in (required)")
+	_ = previewStartCmd.MarkFlagRequired("anvil")
+	previewStartCmd.Flags().StringP("branch", "b", "", "Branch to preview (default: the bead's forge/<bead-id> branch)")
+
 	previewCmd.AddCommand(previewListCmd)
+	previewCmd.AddCommand(previewStartCmd)
 	previewCmd.AddCommand(previewStopCmd)
 	rootCmd.AddCommand(previewCmd)
 }
 
 var previewCmd = &cobra.Command{
 	Use:     "preview",
-	Short:   "Inspect and tear down Kiln preview environments",
+	Short:   "Start, inspect and tear down Kiln preview environments",
 	GroupID: "work",
 }
 
@@ -76,6 +89,101 @@ health and the anvils a preview can be started for.`,
 	},
 }
 
+var previewStartCmd = &cobra.Command{
+	Use:   "start <bead-id>",
+	Short: "Start a preview environment for a branch",
+	Long: `Starts a Kiln preview environment: checks the branch out into its own
+detached preview checkout, runs the manifest's setup command and supervises the
+services declared in <anvil>/.forge/preview.yaml.
+
+The bead id is a registry key, not a lookup. It names the preview, keys its
+logs and derives its hostname label, but it does not have to exist as a bd
+issue — which is what makes this usable for ad-hoc work: smoke-testing a new
+manifest, or previewing a branch that has no bead yet. Such previews
+conventionally use ids like kiln-smoke-1.
+
+Without --branch the bead's canonical forge/<bead-id> branch is previewed.
+
+Starting runs asynchronously in the daemon (checkout, setup, health checks), so
+this waits for the outcome and exits non-zero if it fails, reporting the
+daemon's refusal — previews disabled, no manifest, the concurrency cap already
+full — as the daemon phrased it. On success the entry URL is printed.
+
+'forge preview stop <bead-id>' is the inverse; 'forge preview list' shows every
+running preview.`,
+	Args: cobra.ExactArgs(1),
+	Example: "  forge preview start Forge-abc1 --anvil forge\n" +
+		"  forge preview start kiln-smoke-1 --anvil heimdall --branch main",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		beadID := strings.TrimSpace(args[0])
+		if beadID == "" {
+			return fmt.Errorf("bead id must not be empty")
+		}
+		anvil, _ := cmd.Flags().GetString("anvil")
+		branch, _ := cmd.Flags().GetString("branch")
+
+		client, err := ipc.NewClient()
+		if err != nil {
+			return fmt.Errorf("connecting to daemon: %w (is 'forge up' running?)", err)
+		}
+		defer client.Close()
+
+		payload, _ := json.Marshal(ipc.PreviewActionPayload{
+			BeadID: beadID,
+			Anvil:  strings.TrimSpace(anvil),
+			// An unset --branch is sent as an empty field rather than a branch
+			// name assembled here: the default belongs to the daemon, which
+			// owns the forge/<bead-id> naming scheme.
+			Branch: strings.TrimSpace(branch),
+		})
+		resp, err := client.Send(ipc.Command{
+			Type:    "preview_start",
+			Payload: payload,
+		})
+		if err != nil {
+			return fmt.Errorf("sending command: %w", err)
+		}
+		// Previews disabled globally or for this anvil, an unknown anvil and a
+		// missing bead id are all rejected synchronously.
+		if resp.Type == "error" {
+			return ipcError(resp)
+		}
+
+		message := fmt.Sprintf("preview for %s started", beadID)
+		if resp.IsQueued() {
+			outcome, err := awaitRequestOutcome(client, resp.RequestID, previewStartWait)
+			if err != nil {
+				return err
+			}
+			if outcome.Message != "" {
+				message = outcome.Message
+			}
+		}
+
+		// The resolved outcome carries only its message, so the entry URL comes
+		// from a follow-up read. A preview that is already gone by then (a
+		// concurrent stop, the idle reaper on a very short timeout) does not
+		// make the start a failure — it just leaves nothing to link to.
+		info, _ := lookupPreview(client, beadID)
+
+		if jsonOutput {
+			enc := json.NewEncoder(os.Stdout)
+			enc.SetIndent("", "  ")
+			return enc.Encode(ipc.PreviewStartResponse{
+				BeadID:   beadID,
+				Status:   info.Status,
+				Message:  message,
+				EntryURL: info.EntryURL,
+			})
+		}
+		fmt.Println(message)
+		if info.EntryURL != "" {
+			fmt.Printf("URL: %s\n", info.EntryURL)
+		}
+		return nil
+	},
+}
+
 var previewStopCmd = &cobra.Command{
 	Use:   "stop <bead-id>",
 	Short: "Tear down a bead's preview environment",
@@ -84,7 +192,9 @@ runs the manifest's teardown command and removes the preview checkout.
 
 Teardown runs asynchronously in the daemon, so this waits for the outcome and
 exits non-zero if it fails. A bead with no running preview is an error, not a
-silent success.`,
+silent success.
+
+'forge preview start <bead-id> --anvil <name>' is the inverse.`,
 	Args:    cobra.ExactArgs(1),
 	Example: "  forge preview stop Forge-abc1",
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -133,6 +243,31 @@ silent success.`,
 		fmt.Println(message)
 		return nil
 	},
+}
+
+// lookupPreview reads the daemon's preview list and returns the entry for one
+// bead, if it has a live preview.
+//
+// It is how `preview start` gets its entry URL: the queued outcome a start
+// resolves to carries only a message, and the URL is assembled by the daemon
+// from settings (preview_proxy_base, preview_public_host) the CLI does not
+// read. A failed read is reported as "no entry", never as an error — the start
+// itself has already succeeded by the time this runs.
+func lookupPreview(client *ipc.Client, beadID string) (ipc.PreviewInfo, bool) {
+	resp, err := client.Send(ipc.Command{Type: "preview_list"})
+	if err != nil || resp.Type != "ok" {
+		return ipc.PreviewInfo{}, false
+	}
+	var list ipc.PreviewListResponse
+	if err := json.Unmarshal(resp.Payload, &list); err != nil {
+		return ipc.PreviewInfo{}, false
+	}
+	for _, p := range list.Previews {
+		if p.BeadID == beadID {
+			return p, true
+		}
+	}
+	return ipc.PreviewInfo{}, false
 }
 
 // renderPreviewList writes the human-readable preview table. It takes an
@@ -246,7 +381,7 @@ func awaitRequestOutcome(client *ipc.Client, requestID string, timeout time.Dura
 		select {
 		case <-ctx.Done():
 			return out, ctx.Err()
-		case <-time.After(previewStopPoll):
+		case <-time.After(previewPoll):
 		}
 	}
 }
