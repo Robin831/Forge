@@ -32,7 +32,7 @@ var runNpmOutdatedFn = runNpmOutdated
 var runNpmCmdFn = runNpmCmd
 
 // scanNpm runs 'npm outdated --json' in directories containing package.json.
-// Skips node_modules, .workers, .worktrees, bin, obj, and .git directories
+// Skips node_modules, .workers, .worktrees, .previews, bin, obj, and .git directories
 // (via findNpmProjects). Deduplicates packages across projects, keeping the
 // most severe update (major > minor > patch) when the same package appears
 // in multiple package.json files. Returns nil if no package.json found.
@@ -89,7 +89,13 @@ func (s *Scanner) scanNpm(ctx context.Context, anvil, path string) *CheckResult 
 }
 
 // findNpmProjects walks the anvil directory for package.json files,
-// skipping node_modules, .workers, .worktrees, bin, obj, and .git directories.
+// skipping node_modules, .workers, .worktrees, .previews, bin, obj, and .git
+// directories.
+//
+// .previews holds Kiln preview checkouts, whose node_modules are junctions
+// into the main checkout. Discovering a project there means running `npm ci`
+// through the junction, which deletes the main checkout's node_modules out
+// from under every worktree linked to it (observed 2026-08-07).
 func findNpmProjects(root string) []string {
 	var dirs []string
 	_ = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
@@ -98,7 +104,7 @@ func findNpmProjects(root string) []string {
 		}
 		if d.IsDir() {
 			name := d.Name()
-			if name == "node_modules" || name == ".workers" || name == ".worktrees" || name == "bin" || name == "obj" || name == ".git" {
+			if name == "node_modules" || name == ".workers" || name == ".worktrees" || name == ".previews" || name == "bin" || name == "obj" || name == ".git" {
 				return filepath.SkipDir
 			}
 			return nil

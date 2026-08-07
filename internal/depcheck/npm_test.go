@@ -33,6 +33,13 @@ func TestFindNpmProjects(t *testing.T) {
 	require.NoError(t, os.MkdirAll(wt, 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(wt, "package.json"), []byte("{}"), 0o644))
 
+	// Create package.json inside .previews (Kiln preview checkout — must be
+	// skipped: its node_modules is a junction into the main checkout, and an
+	// npm ci there deletes the main checkout's dependencies through the link)
+	pv := filepath.Join(dir, ".previews", "some-bead", "client")
+	require.NoError(t, os.MkdirAll(pv, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(pv, "package.json"), []byte("{}"), 0o644))
+
 	// Create package.json inside bin (should be skipped)
 	bin := filepath.Join(dir, "bin")
 	require.NoError(t, os.MkdirAll(bin, 0o755))
