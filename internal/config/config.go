@@ -838,6 +838,17 @@ type SettingsConfig struct {
 	// PreviewPublicHost is the hostname used when displaying preview links
 	// (e.g. the box's WireGuard or LAN name). Empty means PreviewBindHost.
 	PreviewPublicHost string `mapstructure:"preview_public_host" yaml:"preview_public_host,omitempty"`
+	// PreviewProxyBase is the DNS suffix previews are addressed under when
+	// Forge fronts them by hostname instead of by port: a bead's preview
+	// answers on "<label>.<base>" and one of its services on
+	// "<label>--<service>.<base>", where <label> is kiln.PreviewLabel of the
+	// bead id. Empty (the default) switches host-based routing off entirely
+	// and leaves preview links on host:port.
+	//
+	// It is a bare DNS name — no scheme, no port, no leading dot — and is
+	// lowercased on validation. A wildcard record (*.preview.example.test)
+	// pointing at the Forge box is what makes it resolve.
+	PreviewProxyBase string `mapstructure:"preview_proxy_base" yaml:"preview_proxy_base,omitempty"`
 
 	// WicketEnabled controls whether the Wicket issue triage monitor is
 	// active globally. When false (default), no issue scanning occurs.
@@ -1250,6 +1261,7 @@ func (s SettingsConfig) MarshalYAML() (interface{}, error) {
 		PreviewPortRange     string `yaml:"preview_port_range,omitempty"`
 		PreviewBindHost      string `yaml:"preview_bind_host,omitempty"`
 		PreviewPublicHost    string `yaml:"preview_public_host,omitempty"`
+		PreviewProxyBase     string `yaml:"preview_proxy_base,omitempty"`
 
 		WicketEnabled             bool                    `yaml:"wicket_enabled"`
 		WicketInterval            string                  `yaml:"wicket_interval"`
@@ -1325,6 +1337,7 @@ func (s SettingsConfig) MarshalYAML() (interface{}, error) {
 		PreviewPortRange:     s.PreviewPortRange,
 		PreviewBindHost:      s.PreviewBindHost,
 		PreviewPublicHost:    s.PreviewPublicHost,
+		PreviewProxyBase:     s.PreviewProxyBase,
 
 		WicketEnabled:             s.WicketEnabled,
 		WicketProvider:            s.WicketProvider,
@@ -1629,6 +1642,82 @@ func (s SettingsConfig) ResolvedPreviewPublicHost() string {
 		return host
 	}
 	return s.ResolvedPreviewBindHost()
+}
+
+// ResolvedPreviewProxyBase returns the normalized preview_proxy_base — trimmed,
+// lowercased and without its trailing root dot — or "" when host-based preview
+// routing is switched off. It never reports an error: an invalid base is caught
+// by Validate at load time, and callers on the request path need an answer, not
+// a second error to handle.
+func (s SettingsConfig) ResolvedPreviewProxyBase() string {
+	base, err := NormalizePreviewProxyBase(s.PreviewProxyBase)
+	if err != nil {
+		return ""
+	}
+	return base
+}
+
+// IsPreviewProxyEnabled reports whether previews are addressed by hostname
+// (preview_proxy_base is set to a usable DNS name) rather than by port.
+func (s SettingsConfig) IsPreviewProxyEnabled() bool {
+	return s.ResolvedPreviewProxyBase() != ""
+}
+
+// maxDNSName is the longest a fully qualified DNS name may be, and
+// maxDNSLabel the longest one of its dot-separated labels (RFC 1035). Kiln's
+// preview hostnames put a bead label in front of the configured base, so the
+// base itself is held to the same limits.
+const (
+	maxDNSName  = 253
+	maxDNSLabel = 63
+)
+
+// NormalizePreviewProxyBase validates preview_proxy_base and returns it in the
+// shape everything else compares against: trimmed, lowercased, without a
+// trailing root dot. An empty value is valid and means the feature is off.
+//
+// The value is a bare DNS name, so a scheme, a port, a path or a leading dot
+// are rejected rather than quietly stripped — each of those is a different
+// mistake and saying which one it is beats guessing what was meant. Single-label
+// bases ("localtest") are allowed: they are what a hosts-file or a local
+// resolver setup uses.
+func NormalizePreviewProxyBase(raw string) (string, error) {
+	base := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(raw)), ".")
+	if base == "" {
+		return "", nil
+	}
+	if i := strings.Index(base, "://"); i >= 0 {
+		return "", fmt.Errorf("%q must be a bare DNS name without a scheme (drop the %q)", raw, base[:i+3])
+	}
+	if strings.ContainsAny(base, "/?#") {
+		return "", fmt.Errorf("%q must be a bare DNS name without a path", raw)
+	}
+	if strings.Contains(base, ":") {
+		return "", fmt.Errorf("%q must be a bare DNS name without a port", raw)
+	}
+	if strings.HasPrefix(base, ".") {
+		return "", fmt.Errorf("%q must not start with a dot", raw)
+	}
+	if len(base) > maxDNSName {
+		return "", fmt.Errorf("%q is longer than %d characters", raw, maxDNSName)
+	}
+	for _, label := range strings.Split(base, ".") {
+		switch {
+		case label == "":
+			return "", fmt.Errorf("%q has an empty label", raw)
+		case len(label) > maxDNSLabel:
+			return "", fmt.Errorf("%q: label %q is longer than %d characters", raw, label, maxDNSLabel)
+		case strings.HasPrefix(label, "-"), strings.HasSuffix(label, "-"):
+			return "", fmt.Errorf("%q: label %q must not start or end with a hyphen", raw, label)
+		}
+		for _, r := range label {
+			if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '-' {
+				continue
+			}
+			return "", fmt.Errorf("%q: label %q contains %q, which is not allowed in a DNS name", raw, label, string(r))
+		}
+	}
+	return base, nil
 }
 
 // PreviewPortRangeBounds parses preview_port_range into its inclusive lower
@@ -2121,6 +2210,7 @@ func Load(configFile string) (*Config, error) {
 	v.SetDefault("settings.preview_port_range", DefaultPreviewPortRange)
 	v.SetDefault("settings.preview_bind_host", DefaultPreviewBindHost)
 	v.SetDefault("settings.preview_public_host", "")
+	v.SetDefault("settings.preview_proxy_base", "")
 	v.SetDefault("settings.copilot_warden_sample_rate", 0.1)
 	v.SetDefault("settings.wicket_enabled", false)
 	v.SetDefault("settings.wicket_interval", "15m")
@@ -2551,6 +2641,9 @@ func (c *Config) Validate() []string {
 	}
 	if _, _, err := c.Settings.PreviewPortRangeBounds(); err != nil {
 		errs = append(errs, fmt.Sprintf("settings.preview_port_range: %s", err))
+	}
+	if _, err := NormalizePreviewProxyBase(c.Settings.PreviewProxyBase); err != nil {
+		errs = append(errs, fmt.Sprintf("settings.preview_proxy_base: %s", err))
 	}
 
 	if c.Settings.CruciblePollInterval < 0 {

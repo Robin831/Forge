@@ -117,6 +117,7 @@ settings:
   preview_port_range: '42000-42999'
   preview_bind_host: 127.0.0.1
   preview_public_host: ''           # Hostname used in preview links; empty = bind host
+  preview_proxy_base: ''            # DNS suffix for host-based preview routing; empty = off
   crucible_enabled: true
   crucible_poll_interval: 3m
   auto_merge_crucible_children: true
@@ -557,6 +558,7 @@ anvils:
 | `preview_port_range` | string | `"42000-42999"` | | Inclusive `"min-max"` TCP port range preview service ports are allocated from. Both ends must be within 1024-65535 and min must be less than max. |
 | `preview_bind_host` | string | `"127.0.0.1"` | | Address preview services bind to. The loopback default keeps previews reachable only from the Forge box; `0.0.0.0` exposes them to a LAN or VPN. Kiln probes health here, but a service listens where its own command line says — reference this value as `{{.BindHost}}` in the manifest so the two cannot drift. **Preview URLs bypass the Hearth login**, so widen this only on a trusted network. |
 | `preview_public_host` | string | `""` (bind host) | | Hostname used when displaying preview links (e.g. the box's LAN or WireGuard name). Empty falls back to `preview_bind_host`. |
+| `preview_proxy_base` | string | `""` (off) | | DNS suffix previews are addressed under when Forge fronts them by hostname instead of by port: a bead's preview answers on `<label>.<base>` and one of its services on `<label>--<service>.<base>`. See [Host-based preview routing](#host-based-preview-routing-preview_proxy_base). Empty (the default) switches host-based routing off and leaves preview links on `host:port`. |
 | `wicket_enabled` | bool | `false` | | Enable the Wicket GitHub issue triage monitor globally. When false, no issue scanning occurs. |
 | `wicket_interval` | duration | `15m` | `1m` or `0` | How often Wicket polls repositories for new issues. `0` disables. |
 | `wicket_provider` | string | `""` (uses `providers`) | | AI provider used for triage decisions. When empty, the global `providers` chain is used. |
@@ -1069,6 +1071,7 @@ settings:
   preview_port_range: '42000-42999'
   preview_bind_host: 127.0.0.1   # 0.0.0.0 to reach previews from a LAN/VPN
   preview_public_host: ''        # hostname shown in links; empty = bind host
+  preview_proxy_base: ''         # DNS suffix for host-based routing; empty = off
 
 anvils:
   my-api:
@@ -1077,6 +1080,56 @@ anvils:
     preview_auto: ready_to_merge # off (default) | ready_to_merge
     preview_quests: true         # run this anvil's E2E quests against the preview
 ```
+
+### Host-based preview routing (`preview_proxy_base`)
+
+By default a preview is reached at `host:port` — a different port per service,
+per preview, allocated out of `preview_port_range`. `preview_proxy_base` gives
+previews stable names instead: set it to a DNS suffix and a bead's preview is
+addressed as
+
+```
+<label>.<base>              # the entry service
+<label>--<service>.<base>   # a named service in the same preview
+```
+
+where `<label>` is the bead id reduced to a DNS label — lowercased, every
+character that is not a letter or digit folded to `-`, runs collapsed, so
+`Forge-a1b2` becomes `forge-a1b2`. `--` separates the label from a service name
+because a label never contains one.
+
+```yaml
+settings:
+  preview_proxy_base: preview.example.test
+```
+
+Requests then look like `forge-a1b2.preview.example.test` (the entry service)
+and `forge-a1b2--api.preview.example.test` (its `api` service). Making those
+names resolve is a DNS job: a wildcard record (`*.preview.example.test`)
+pointing at the Forge box, or the equivalent entries in a hosts file for a
+single-label base like `localtest`.
+
+The value is a bare DNS name. A scheme, a port, a path, a leading dot, an empty
+or over-long label, or a character outside `[a-z0-9-]` is rejected at load time
+rather than silently stripped; the value is lowercased and a trailing root dot
+is dropped. Empty — the default — switches the whole feature off, and preview
+links stay on `host:port`.
+
+**Label collisions are refused at start, not at request time.** The label
+mapping is not injective: `Forge-a1b2` and `Forge_a1b2` both fold to
+`forge-a1b2`. With `preview_proxy_base` set, starting a preview for a bead
+whose label matches a live preview's fails immediately —
+
+```
+kiln: bead ids "Forge-a1b2", "Forge_a1b2" all map to the preview host label
+"forge-a1b2" — settings.preview_proxy_base routes by that label, so only one of
+them can be previewed at a time
+```
+
+— because the alternative is two previews sharing one address and requests for
+either landing on whichever the proxy resolves first. With the setting empty
+nothing routes by hostname, so the check does not run and both previews start
+normally.
 
 ### When the cap is reached (`preview_max_concurrent`, `preview_evict_lru`)
 
