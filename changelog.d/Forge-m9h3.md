@@ -1,0 +1,3 @@
+category: Fixed
+- **bd timeouts say what timed out** - A `bd` invocation killed on its deadline now reports `bd <args> timed out after <elapsed> (limit <limit>)` instead of a bare `signal: killed`, so a wedged `bd ready` poll or bead close is readable in daemon.log. The error classifies as `context.DeadlineExceeded`, and a caller with a tighter budget of its own (the 30s wedged-anvil probe) reports that budget. (Forge-m9h3)
+- **Configurable bd timeout** - New `settings.bd_timeout` (default `5m`, minimum `30s` when set) bounds every bd subprocess Forge spawns, hot-reloadable and applied by both the daemon and the CLI. (Forge-m9h3)

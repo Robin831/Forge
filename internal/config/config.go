@@ -22,6 +22,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Robin831/Forge/internal/executil"
 	"github.com/Robin831/Forge/internal/vcs"
 	"github.com/spf13/viper"
 	"gopkg.in/yaml.v3"
@@ -712,6 +713,13 @@ type SettingsConfig struct {
 	// SIGKILLs git, so too low a value burns a bead's first attempt. A value
 	// <= 0 falls back to worktree.DefaultGitCheckoutTimeout. Default: 5m.
 	WorktreeGitTimeout time.Duration `mapstructure:"worktree_git_timeout" yaml:"worktree_git_timeout,omitempty"`
+	// BdTimeout is the timeout applied to every `bd` subprocess Forge spawns
+	// (ready/list/show/create/update/close/sql). bd talks to a Dolt backend
+	// that may be remote, so a single write can legitimately take tens of
+	// seconds; the deadline SIGKILLs bd, which used to surface as a bare
+	// "signal: killed" with no hint that a deadline had fired. A value <= 0
+	// falls back to executil.DefaultBdTimeout. Default: 5m.
+	BdTimeout time.Duration `mapstructure:"bd_timeout" yaml:"bd_timeout,omitempty"`
 	// TemperOutputCap is the maximum number of bytes of combined stdout+stderr
 	// retained per Temper step. Output beyond the cap is head+tail truncated
 	// with an elision marker, bounding both memory and the warden/fix prompt
@@ -1214,6 +1222,7 @@ func (s SettingsConfig) MarshalYAML() (interface{}, error) {
 		TemperStepTimeout         string              `yaml:"temper_step_timeout,omitempty"`
 		TemperGitTimeout          string              `yaml:"temper_git_timeout,omitempty"`
 		WorktreeGitTimeout        string              `yaml:"worktree_git_timeout,omitempty"`
+		BdTimeout                 string              `yaml:"bd_timeout,omitempty"`
 		TemperOutputCap           int                 `yaml:"temper_output_cap,omitempty"`
 		AutoLearnRules            bool                `yaml:"auto_learn_rules"`
 		CopilotDailyRequestLimit  int                 `yaml:"copilot_daily_request_limit,omitempty"`
@@ -1380,6 +1389,9 @@ func (s SettingsConfig) MarshalYAML() (interface{}, error) {
 	}
 	if s.WorktreeGitTimeout > 0 {
 		sh.WorktreeGitTimeout = durationString(s.WorktreeGitTimeout)
+	}
+	if s.BdTimeout > 0 {
+		sh.BdTimeout = durationString(s.BdTimeout)
 	}
 	// Always emit SmelterInterval so an intentional 0 (disable scheduled runs)
 	// is persisted and not silently dropped back to the 8h default on next load.
@@ -1984,6 +1996,7 @@ func Defaults() Config {
 			TemperStepTimeout:    5 * time.Minute,
 			TemperGitTimeout:     30 * time.Second,
 			WorktreeGitTimeout:   5 * time.Minute,
+			BdTimeout:            executil.DefaultBdTimeout,
 			TemperOutputCap:      DefaultTemperOutputCap,
 			DepcheckInterval:     168 * time.Hour, // weekly
 			DepcheckTimeout:      5 * time.Minute,
@@ -2238,6 +2251,13 @@ func Load(configFile string) (*Config, error) {
 		}
 		cfg.Settings.WorktreeGitTimeout = d
 	}
+	if raw := v.GetString("settings.bd_timeout"); raw != "" {
+		d, err := time.ParseDuration(raw)
+		if err != nil {
+			return nil, fmt.Errorf("invalid bd_timeout %q: %w", raw, err)
+		}
+		cfg.Settings.BdTimeout = d
+	}
 	if raw := v.GetString("settings.depcheck_interval"); raw != "" {
 		d, err := time.ParseDuration(raw)
 		if err != nil {
@@ -2478,6 +2498,12 @@ func (c *Config) Validate() []string {
 		errs = append(errs, "settings.worktree_git_timeout must not be negative (omit or set to 0 to use the default)")
 	} else if c.Settings.WorktreeGitTimeout > 0 && c.Settings.WorktreeGitTimeout < 30*time.Second {
 		errs = append(errs, "settings.worktree_git_timeout must be >= 30s when set explicitly (omit or set to 0 to use the default)")
+	}
+
+	if c.Settings.BdTimeout < 0 {
+		errs = append(errs, "settings.bd_timeout must not be negative (omit or set to 0 to use the default)")
+	} else if c.Settings.BdTimeout > 0 && c.Settings.BdTimeout < 30*time.Second {
+		errs = append(errs, "settings.bd_timeout must be >= 30s when set explicitly (omit or set to 0 to use the default)")
 	}
 
 	if c.Settings.CopilotDailyRequestLimit < 0 {

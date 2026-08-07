@@ -714,12 +714,11 @@ func (p *Params) countBranchCommits(ctx context.Context, workerID string, wt *wo
 // versa). A future cleanup could factor this into a shared executil helper used
 // by both call sites.
 func releaseBead(beadID, anvilPath string) error {
-	ctx, cancel := context.WithTimeout(context.Background(), executil.DefaultBdTimeout)
-	defer cancel()
 	// Clear both status and assignee so the poller can re-dispatch the bead.
 	// The poller filters out any bead with a non-empty assignee (poller.go),
 	// so failing to clear the assignee would leave the bead permanently invisible.
-	cmd := executil.HideWindow(exec.CommandContext(ctx, "bd", "update", beadID, "--status=open", "--assignee=", "--json"))
+	cmd, cancel := executil.BdCommand(context.Background(), "update", beadID, "--status=open", "--assignee=", "--json")
+	defer cancel()
 	cmd.Dir = anvilPath
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -733,9 +732,8 @@ func releaseBead(beadID, anvilPath string) error {
 // so a cancelled or timed-out pipeline context does not prevent the note from
 // being recorded.
 func appendSteerNote(beadID, anvilPath, note string) error {
-	ctx, cancel := context.WithTimeout(context.Background(), executil.DefaultBdTimeout)
+	cmd, cancel := executil.BdCommand(context.Background(), "update", beadID, "--append-notes", note)
 	defer cancel()
-	cmd := executil.HideWindow(exec.CommandContext(ctx, "bd", "update", beadID, "--append-notes", note))
 	cmd.Dir = anvilPath
 	out, err := cmd.CombinedOutput()
 	if err != nil {

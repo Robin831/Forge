@@ -11,6 +11,7 @@ package schematic
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -461,7 +462,8 @@ type bdRunner func(ctx context.Context, dir string, args ...string) ([]byte, err
 
 // defaultRunCmd is the production bdRunner that delegates to the real bd CLI.
 func defaultRunCmd(ctx context.Context, dir string, args ...string) ([]byte, error) {
-	cmd := executil.HideWindow(exec.CommandContext(ctx, "bd", args...))
+	cmd, cancel := executil.BdCommand(ctx, args...)
+	defer cancel()
 	cmd.Dir = dir
 	return cmd.CombinedOutput()
 }
@@ -535,10 +537,16 @@ func addSequentialDepWithRetry(ctx context.Context, anvilPath, parentID, childID
 	var lastOut []byte
 	var lastErr error
 	for attempt := 1; attempt <= depRetryAttempts; attempt++ {
-		depCtx, depCancel := context.WithTimeout(ctx, executil.DefaultBdTimeout)
+		depCtx, depCancel := context.WithTimeout(ctx, executil.BdTimeout())
 		out, err := run(depCtx, anvilPath, "dep", "add", childID, prevID)
 		depCtxErr := depCtx.Err() // capture before cancel clears it
 		depCancel()
+		// The bd helper bounds the call itself, so a deadline kill can surface
+		// as *executil.BdTimeoutError while depCtx is still live. Either signal
+		// means the attempt ran out of time.
+		if depCtxErr == nil && errors.Is(err, context.DeadlineExceeded) {
+			depCtxErr = context.DeadlineExceeded
+		}
 
 		if err == nil {
 			return out, attempt, nil
@@ -617,7 +625,7 @@ func createSubBeads(ctx context.Context, parent poller.Bead, tasks []subTaskVerd
 	existingByTitle := findExistingChildren(ctx, anvilPath, marker, run)
 
 	resetParent := func() {
-		rCtx, rCancel := context.WithTimeout(context.Background(), executil.DefaultBdTimeout)
+		rCtx, rCancel := context.WithTimeout(context.Background(), executil.BdTimeout())
 		defer rCancel()
 		if out, err := run(rCtx, anvilPath, "update", parent.ID, "--status=open", "--json"); err != nil {
 			log.Printf("[schematic:%s] Warning: failed to reset parent to open: %v: %s", parent.ID, err, out)
@@ -650,7 +658,7 @@ func createSubBeads(ctx context.Context, parent poller.Bead, tasks []subTaskVerd
 		// Create sub-bead with blocks dependency so the parent is blocked
 		// until all sub-beads are closed. The marker label lets a later
 		// re-decomposition detect and reuse this child instead of duplicating.
-		createCtx, cancel := context.WithTimeout(ctx, executil.DefaultBdTimeout)
+		createCtx, cancel := context.WithTimeout(ctx, executil.BdTimeout())
 		out, err := run(createCtx, anvilPath,
 			"create",
 			"--title="+task.Title,
@@ -718,7 +726,7 @@ func createSubBeads(ctx context.Context, parent poller.Bead, tasks []subTaskVerd
 
 		// Re-fetch parent to get accurate dependency data from bd.
 		var upstreamIDs, downstreamIDs []string
-		showCtx, showCancel := context.WithTimeout(ctx, executil.DefaultBdTimeout)
+		showCtx, showCancel := context.WithTimeout(ctx, executil.BdTimeout())
 		showOut, showErr := run(showCtx, anvilPath, "show", parent.ID, "--json")
 		showCancel()
 		if showErr == nil {
@@ -732,7 +740,7 @@ func createSubBeads(ctx context.Context, parent poller.Bead, tasks []subTaskVerd
 
 		// Transfer parent's upstream dependencies to B1 (first sub-bead).
 		for _, depID := range upstreamIDs {
-			xCtx, xCancel := context.WithTimeout(ctx, executil.DefaultBdTimeout)
+			xCtx, xCancel := context.WithTimeout(ctx, executil.BdTimeout())
 			xOut, xErr := run(xCtx, anvilPath, "dep", "add", first.ID, depID)
 			xCancel()
 			if xErr != nil {
@@ -743,7 +751,7 @@ func createSubBeads(ctx context.Context, parent poller.Bead, tasks []subTaskVerd
 
 		// Transfer parent's downstream blocks to B3 (last sub-bead).
 		for _, blockedID := range downstreamIDs {
-			xCtx, xCancel := context.WithTimeout(ctx, executil.DefaultBdTimeout)
+			xCtx, xCancel := context.WithTimeout(ctx, executil.BdTimeout())
 			xOut, xErr := run(xCtx, anvilPath, "dep", "add", blockedID, last.ID)
 			xCancel()
 			if xErr != nil {
@@ -766,7 +774,7 @@ func createSubBeads(ctx context.Context, parent poller.Bead, tasks []subTaskVerd
 		subIDs[i] = sb.ID
 	}
 	closeReason := fmt.Sprintf("Decomposed into %d sub-beads: %s", len(subBeads), strings.Join(subIDs, ", "))
-	closeCtx, closeCancel := context.WithTimeout(ctx, executil.DefaultBdTimeout)
+	closeCtx, closeCancel := context.WithTimeout(ctx, executil.BdTimeout())
 	defer closeCancel()
 	closeOut, closeErr := run(closeCtx, anvilPath, "close", parent.ID, "--force", "--reason", closeReason)
 	if closeErr != nil {
@@ -820,7 +828,7 @@ func closeSupersededChildren(ctx context.Context, parent poller.Bead, subBeads [
 		if _, ok := used[id]; ok {
 			continue
 		}
-		coCtx, coCancel := context.WithTimeout(ctx, executil.DefaultBdTimeout)
+		coCtx, coCancel := context.WithTimeout(ctx, executil.BdTimeout())
 		out, err := run(coCtx, anvilPath, "close", id, "--force", "--reason", reason)
 		coCancel()
 		if err != nil {
@@ -840,7 +848,7 @@ func closeSupersededChildren(ctx context.Context, parent poller.Bead, subBeads [
 func findExistingChildren(ctx context.Context, anvilPath, marker string, run bdRunner) map[string]string {
 	result := map[string]string{}
 
-	listCtx, cancel := context.WithTimeout(ctx, executil.DefaultBdTimeout)
+	listCtx, cancel := context.WithTimeout(ctx, executil.BdTimeout())
 	out, err := run(listCtx, anvilPath, "list", "--label", marker, "--json")
 	cancel()
 	if err != nil {

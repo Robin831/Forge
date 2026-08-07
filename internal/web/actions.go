@@ -543,7 +543,7 @@ func (s *Server) handleBeadAddComment(w http.ResponseWriter, r *http.Request) {
 	}
 	s.logActor(r, "add_comment", "bead", beadID, "anvil", req.Anvil)
 
-	ctx, cancel := context.WithTimeout(r.Context(), executil.DefaultBdTimeout)
+	ctx, cancel := context.WithTimeout(r.Context(), executil.BdTimeout())
 	defer cancel()
 	out, err := bdCommentsAdd(ctx, anvilPath, beadID, body)
 	if err != nil {

@@ -7,7 +7,6 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
-	"os/exec"
 	"sort"
 	"strconv"
 	"strings"
@@ -419,11 +418,11 @@ func isBlockingDep(e bdShowEntry) bool {
 // anvil's on-disk path; passing a non-empty value sets cmd.Dir so bd can
 // locate the Dolt database.
 var bdShowJSON = func(ctx context.Context, dir, beadID string) ([]byte, error) {
-	cmd := exec.CommandContext(ctx, "bd", "show", beadID, "--json")
+	cmd, cancel := executil.BdCommand(ctx, "show", beadID, "--json")
+	defer cancel()
 	if dir != "" {
 		cmd.Dir = dir
 	}
-	executil.HideWindow(cmd)
 	return cmd.Output()
 }
 
@@ -529,11 +528,11 @@ func extractBeadDeps(entry *bdShowEntry, lookup anvilLookup) (blocks, blockedBy 
 // dir parameter is the anvil's on-disk path; passing a non-empty value sets
 // cmd.Dir so bd can locate the Dolt database.
 var bdCommentsJSON = func(ctx context.Context, dir, beadID string) ([]byte, error) {
-	cmd := exec.CommandContext(ctx, "bd", "comments", beadID, "--json")
+	cmd, cancel := executil.BdCommand(ctx, "comments", beadID, "--json")
+	defer cancel()
 	if dir != "" {
 		cmd.Dir = dir
 	}
-	executil.HideWindow(cmd)
 	return cmd.Output()
 }
 
@@ -541,11 +540,11 @@ var bdCommentsJSON = func(ctx context.Context, dir, beadID string) ([]byte, erro
 // passed as a separate argv entry so it is never subject to shell expansion.
 // Like bdCommentsJSON the variable is package-level so tests can swap it.
 var bdCommentsAdd = func(ctx context.Context, dir, beadID, body string) ([]byte, error) {
-	cmd := exec.CommandContext(ctx, "bd", "comments", "add", beadID, body, "--json")
+	cmd, cancel := executil.BdCommand(ctx, "comments", "add", beadID, body, "--json")
+	defer cancel()
 	if dir != "" {
 		cmd.Dir = dir
 	}
-	executil.HideWindow(cmd)
 	return cmd.CombinedOutput()
 }
 
@@ -831,7 +830,7 @@ func (s *Server) handleBeadDetail(w http.ResponseWriter, r *http.Request) {
 	// stays stable when bd is missing or returns unexpected output.
 	// Each bd call gets its own independent context so a slow or cancelled
 	// show call does not starve the comment fetch.
-	showCtx, showCancel := context.WithTimeout(r.Context(), executil.DefaultBdTimeout)
+	showCtx, showCancel := context.WithTimeout(r.Context(), executil.BdTimeout())
 	defer showCancel()
 	if entry, err := fetchBeadShow(showCtx, anvilPath, beadID); err == nil && entry != nil {
 		resp.Notes = entry.Notes
@@ -842,7 +841,7 @@ func (s *Server) handleBeadDetail(w http.ResponseWriter, r *http.Request) {
 
 	// Comments come from a separate `bd comments <id> --json` shell-out.
 	// Errors are non-fatal: the rest of the page still renders.
-	commentsCtx, commentsCancel := context.WithTimeout(r.Context(), executil.DefaultBdTimeout)
+	commentsCtx, commentsCancel := context.WithTimeout(r.Context(), executil.BdTimeout())
 	defer commentsCancel()
 	resp.Comments = fetchBeadComments(commentsCtx, anvilPath, beadID, s.logger)
 

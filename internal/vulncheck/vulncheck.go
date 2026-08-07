@@ -370,12 +370,9 @@ func (s *Scanner) CreateBeads(ctx context.Context, results []ScanResult) (int, e
 // It restricts the search to open beads so that a resolved vulnerability whose bead
 // was closed does not suppress a new bead if the vulnerability reappears.
 func (s *Scanner) beadExists(ctx context.Context, anvilPath, vulnID string) (bool, error) {
-	cmdCtx, cancel := context.WithTimeout(ctx, executil.DefaultBdTimeout)
+	cmd, cancel := executil.BdCommand(ctx, "list", "--status=open", "--json")
 	defer cancel()
-
-	cmd := exec.CommandContext(cmdCtx, "bd", "list", "--status=open", "--json")
 	cmd.Dir = anvilPath
-	executil.HideWindow(cmd)
 
 	out, err := cmd.Output()
 	if err != nil {
@@ -391,17 +388,15 @@ func (s *Scanner) beadExists(ctx context.Context, anvilPath, vulnID string) (boo
 
 // createBead calls `bd create` to make a new issue.
 func (s *Scanner) createBead(ctx context.Context, anvilPath, title, description string, priority int) error {
-	tctx, cancel := context.WithTimeout(ctx, executil.DefaultBdTimeout)
-	defer cancel()
-	cmd := exec.CommandContext(tctx, "bd", "create",
+	cmd, cancel := executil.BdCommand(ctx, "create",
 		"--title", title,
 		"--description", description,
 		"--type", "bug",
 		fmt.Sprintf("--priority=%d", priority),
 		"--json",
 	)
+	defer cancel()
 	cmd.Dir = anvilPath
-	executil.HideWindow(cmd)
 
 	out, err := cmd.CombinedOutput()
 	if err != nil {

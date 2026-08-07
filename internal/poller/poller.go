@@ -7,7 +7,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os/exec"
 	"sort"
 	"strconv"
 	"strings"
@@ -252,10 +251,6 @@ func (p *BeadPoller) Poll(ctx context.Context) ([]Bead, []AnvilResult) {
 // pollAnvil runs 'bd ready --json --limit <n>' in an anvil directory and parses the output.
 // The limit is taken from BdReadyLimit (default 100 when unset/non-positive).
 func (p *BeadPoller) pollAnvil(ctx context.Context, name string, anvil config.AnvilConfig) ([]Bead, error) {
-	// Build command with timeout
-	cmdCtx, cancel := context.WithTimeout(ctx, executil.DefaultBdTimeout)
-	defer cancel()
-
 	limit := p.BdReadyLimit
 	if limit <= 0 {
 		limit = 100
@@ -264,7 +259,9 @@ func (p *BeadPoller) pollAnvil(ctx context.Context, name string, anvil config.An
 	if p.UseLabelFilter && anvil.AutoDispatchTag != "" {
 		args = append(args, "--label", anvil.AutoDispatchTag)
 	}
-	cmd := executil.HideWindow(exec.CommandContext(cmdCtx, "bd", args...))
+	// Build command with timeout
+	cmd, cancel := executil.BdCommand(ctx, args...)
+	defer cancel()
 	cmd.Dir = anvil.Path
 
 	var stderr bytes.Buffer
@@ -431,10 +428,8 @@ func (p *BeadPoller) PollInProgress(ctx context.Context) ([]Bead, []AnvilResult)
 
 // pollInProgressAnvil runs 'bd list --status=in_progress --json' in one anvil directory.
 func pollInProgressAnvil(ctx context.Context, name string, anvil config.AnvilConfig) ([]Bead, error) {
-	cmdCtx, cancel := context.WithTimeout(ctx, executil.DefaultBdTimeout)
+	cmd, cancel := executil.BdCommand(ctx, "list", "--status=in_progress", "--json")
 	defer cancel()
-
-	cmd := executil.HideWindow(exec.CommandContext(cmdCtx, "bd", "list", "--status=in_progress", "--json"))
 	cmd.Dir = anvil.Path
 
 	var stderr bytes.Buffer

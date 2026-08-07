@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os/exec"
 	"strings"
 	"sync"
 	"time"
@@ -51,7 +50,8 @@ var bdRunner func(ctx context.Context, args []string, dir string) (string, error
 
 func defaultBDRunner(ctx context.Context, args []string, dir string) (string, error) {
 	cmdArgs := append([]string{"create"}, args...)
-	cmd := executil.HideWindow(exec.CommandContext(ctx, "bd", cmdArgs...))
+	cmd, cancel := executil.BdCommand(ctx, cmdArgs...)
+	defer cancel()
 	if dir != "" {
 		cmd.Dir = dir
 	}

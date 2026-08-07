@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"os/exec"
 	"strings"
 	"time"
 
@@ -121,12 +120,10 @@ func BuildDedupCache(ctx context.Context, db *state.DB, anvilPath, anvilName str
 
 // fetchBeadList runs bd sql (fast) or falls back to bd list for the given status.
 func fetchBeadList(ctx context.Context, anvilPath, status string) ([]byte, error) {
-	cmdCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
-	defer cancel()
-
 	// Try bd sql first (~6x faster than bd list on Dolt).
 	query := fmt.Sprintf(`SELECT * FROM issues WHERE status = '%s'`, status)
-	cmd := executil.HideWindow(exec.CommandContext(cmdCtx, "bd", "sql", "--json", query))
+	cmd, cancel := executil.BdCommand(ctx, "sql", "--json", query)
+	defer cancel()
 	cmd.Dir = anvilPath
 	out, err := cmd.Output()
 	if err == nil {
@@ -134,8 +131,9 @@ func fetchBeadList(ctx context.Context, anvilPath, status string) ([]byte, error
 	}
 
 	// Fall back to bd list.
-	cmd2 := executil.HideWindow(exec.CommandContext(cmdCtx,
-		"bd", "list", fmt.Sprintf("--status=%s", status), "--limit", "0", "--json"))
+	cmd2, cancel2 := executil.BdCommand(ctx,
+		"list", fmt.Sprintf("--status=%s", status), "--limit", "0", "--json")
+	defer cancel2()
 	cmd2.Dir = anvilPath
 	out, err = cmd2.Output()
 	if err != nil {
@@ -147,10 +145,9 @@ func fetchBeadList(ctx context.Context, anvilPath, status string) ([]byte, error
 
 // fetchBeadShow runs bd show for a single bead ID and returns raw output.
 func fetchBeadShow(ctx context.Context, anvilPath, beadID string) []byte {
-	cmdCtx, cancel := context.WithTimeout(ctx, 3*time.Minute)
+	cmd, cancel := executil.BdCommandTimeout(ctx, 3*time.Minute,
+		"show", beadID, "--json")
 	defer cancel()
-	cmd := executil.HideWindow(exec.CommandContext(cmdCtx,
-		"bd", "show", beadID, "--json"))
 	cmd.Dir = anvilPath
 	out, _ := cmd.Output()
 	return out

@@ -6,14 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os/exec"
-	"time"
 )
-
-// DefaultBdTimeout is the default timeout for bd subprocess invocations.
-// bd operations on anvils with remote Dolt (e.g. via kubectl port-forward)
-// and GitHub auto-sync can routinely take 20-30 seconds per write, so the
-// timeout must be generous enough to accommodate that latency.
-const DefaultBdTimeout = 5 * time.Minute
 
 // jsonSnippetLimit caps the raw output included in DecodeJSON error messages
 // so a misbehaving subprocess can't blow up logs or downstream UIs.

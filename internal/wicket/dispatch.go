@@ -5,7 +5,6 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"os/exec"
 	"strings"
 	"time"
 
@@ -20,7 +19,8 @@ var bdUpdateRunner func(ctx context.Context, beadID string, args []string) error
 
 func defaultBDUpdateRunner(ctx context.Context, beadID string, args []string) error {
 	cmdArgs := append([]string{"update", beadID}, args...)
-	cmd := executil.HideWindow(exec.CommandContext(ctx, "bd", cmdArgs...))
+	cmd, cancel := executil.BdCommand(ctx, cmdArgs...)
+	defer cancel()
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
