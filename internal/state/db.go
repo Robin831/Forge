@@ -626,6 +626,16 @@ CREATE TABLE IF NOT EXISTS pending_bead_closes (
     updated_at  TEXT NOT NULL DEFAULT '',
     PRIMARY KEY (bead_id, anvil)
 );
+
+CREATE TABLE IF NOT EXISTS review_fix_dispatches (
+    anvil       TEXT NOT NULL,
+    pr_number   INTEGER NOT NULL,
+    head_sha    TEXT NOT NULL DEFAULT '',
+    attempts    INTEGER NOT NULL DEFAULT 0,
+    last_result TEXT NOT NULL DEFAULT '',
+    updated_at  TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (anvil, pr_number)
+);
 `
 
 // dbTimeLayout is the canonical, fixed-width layout used for timestamps
@@ -1700,6 +1710,19 @@ const (
 	DefaultMaxRebaseAttempts    = 3
 )
 
+// DefaultMaxSameHeadReviewFixes bounds review-fix dispatches against one
+// UNCHANGED PR head, which is a different question from
+// DefaultMaxReviewFixAttempts: that one bounds the PR's whole life and never
+// resets, so it cannot tell a PR that is progressing (new head each round) from
+// one rebuilding the identical diff every cycle.
+//
+// Two is deliberate. A second dispatch against an unchanged head is legitimate
+// — the first may have failed verification and pushed nothing, and a fresh
+// Smith can succeed where it did not. A third has no new information to work
+// from: same base, same comments, same result, one full Smith run per Bellows
+// cycle (Forge-xl50).
+const DefaultMaxSameHeadReviewFixes = 2
+
 // PRStatus represents the lifecycle of a pull request.
 type PRStatus string
 
@@ -2293,6 +2316,18 @@ const (
 	EventReviewThreadResolved EventType = "review_thread_resolved"
 	EventBurnishSmithError    EventType = "review_fix_smith_error"
 	EventBurnishTemperFailed  EventType = "review_fix_temper_failed"
+	// EventBurnishUnverifiedPush records a review fix pushed without a passing
+	// verification, because verification exceeded its deadline. The commit
+	// lands on the PR — where humans, Copilot and Assay re-review it anyway —
+	// rather than being discarded with the worktree.
+	EventBurnishUnverifiedPush EventType = "review_fix_unverified_push"
+	// EventBurnishWorkPreserved records a review fix commit that could neither
+	// be verified nor pushed, so its worktree was kept instead of deleted.
+	EventBurnishWorkPreserved EventType = "review_fix_work_preserved"
+	// EventBurnishCircuitBroken records a review-fix dispatch refused because
+	// the PR head has not moved across the attempt budget — the loop is
+	// rebuilding identical work.
+	EventBurnishCircuitBroken EventType = "review_fix_circuit_broken"
 	EventPRCreated            EventType = "pr_created"
 	EventPRMerged             EventType = "pr_merged"
 	EventPRClosed             EventType = "pr_closed"
