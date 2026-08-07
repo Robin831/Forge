@@ -849,6 +849,21 @@ type SettingsConfig struct {
 	// lowercased on validation. A wildcard record (*.preview.example.test)
 	// pointing at the Forge box is what makes it resolve.
 	PreviewProxyBase string `mapstructure:"preview_proxy_base" yaml:"preview_proxy_base,omitempty"`
+	// PreviewProxyAuth decides whether a request arriving on a preview
+	// hostname has to prove it belongs to a signed-in Hearth operator.
+	//
+	// "session" (the default, and what an empty value means) gates every
+	// proxied request on a Hearth web session — either the session cookie
+	// itself when preview_proxy_base shares a registrable suffix with the
+	// Hearth host, or a short-lived signed token minted into the preview link
+	// and exchanged for a preview-scoped cookie when it does not.
+	//
+	// "none" turns the gate off and serves previews to anyone who can resolve
+	// the hostname. That is the posture the raw host:port previews already had,
+	// so it is the honest opt-out for a trusted network — and an explicit one,
+	// because on a box reachable from anywhere else it hands unauthenticated
+	// strangers a branch build.
+	PreviewProxyAuth string `mapstructure:"preview_proxy_auth" yaml:"preview_proxy_auth,omitempty"`
 
 	// WicketEnabled controls whether the Wicket issue triage monitor is
 	// active globally. When false (default), no issue scanning occurs.
@@ -1262,6 +1277,7 @@ func (s SettingsConfig) MarshalYAML() (interface{}, error) {
 		PreviewBindHost      string `yaml:"preview_bind_host,omitempty"`
 		PreviewPublicHost    string `yaml:"preview_public_host,omitempty"`
 		PreviewProxyBase     string `yaml:"preview_proxy_base,omitempty"`
+		PreviewProxyAuth     string `yaml:"preview_proxy_auth,omitempty"`
 
 		WicketEnabled             bool                    `yaml:"wicket_enabled"`
 		WicketInterval            string                  `yaml:"wicket_interval"`
@@ -1338,6 +1354,7 @@ func (s SettingsConfig) MarshalYAML() (interface{}, error) {
 		PreviewBindHost:      s.PreviewBindHost,
 		PreviewPublicHost:    s.PreviewPublicHost,
 		PreviewProxyBase:     s.PreviewProxyBase,
+		PreviewProxyAuth:     s.PreviewProxyAuth,
 
 		WicketEnabled:             s.WicketEnabled,
 		WicketProvider:            s.WicketProvider,
@@ -1661,6 +1678,45 @@ func (s SettingsConfig) ResolvedPreviewProxyBase() string {
 // (preview_proxy_base is set to a usable DNS name) rather than by port.
 func (s SettingsConfig) IsPreviewProxyEnabled() bool {
 	return s.ResolvedPreviewProxyBase() != ""
+}
+
+// The accepted values of settings.preview_proxy_auth. An empty setting means
+// PreviewProxyAuthSession: gating is the default, so forgetting to configure it
+// cannot leave previews open.
+const (
+	// PreviewProxyAuthSession gates proxied preview requests on a Hearth
+	// session (shared session cookie, or a signed token exchanged for a
+	// preview-scoped cookie).
+	PreviewProxyAuthSession = "session"
+	// PreviewProxyAuthNone serves proxied previews unauthenticated.
+	PreviewProxyAuthNone = "none"
+)
+
+// ResolvedPreviewProxyAuth returns the effective preview_proxy_auth mode —
+// always one of the constants above. Like ResolvedPreviewProxyBase it never
+// errors: an unknown value is rejected by Validate at load time, and the
+// request path falls back to the gated mode rather than opening previews up
+// because a config typo made it past validation (a hot-reload, say).
+func (s SettingsConfig) ResolvedPreviewProxyAuth() string {
+	mode, err := NormalizePreviewProxyAuth(s.PreviewProxyAuth)
+	if err != nil {
+		return PreviewProxyAuthSession
+	}
+	return mode
+}
+
+// NormalizePreviewProxyAuth validates preview_proxy_auth and returns the
+// canonical mode. Empty is valid and means PreviewProxyAuthSession.
+func NormalizePreviewProxyAuth(raw string) (string, error) {
+	switch mode := strings.ToLower(strings.TrimSpace(raw)); mode {
+	case "":
+		return PreviewProxyAuthSession, nil
+	case PreviewProxyAuthSession, PreviewProxyAuthNone:
+		return mode, nil
+	default:
+		return "", fmt.Errorf("%q is not a known mode (expected %q or %q)",
+			raw, PreviewProxyAuthSession, PreviewProxyAuthNone)
+	}
 }
 
 // maxDNSName is the longest a fully qualified DNS name may be, and
@@ -2211,6 +2267,7 @@ func Load(configFile string) (*Config, error) {
 	v.SetDefault("settings.preview_bind_host", DefaultPreviewBindHost)
 	v.SetDefault("settings.preview_public_host", "")
 	v.SetDefault("settings.preview_proxy_base", "")
+	v.SetDefault("settings.preview_proxy_auth", "")
 	v.SetDefault("settings.copilot_warden_sample_rate", 0.1)
 	v.SetDefault("settings.wicket_enabled", false)
 	v.SetDefault("settings.wicket_interval", "15m")
@@ -2644,6 +2701,9 @@ func (c *Config) Validate() []string {
 	}
 	if _, err := NormalizePreviewProxyBase(c.Settings.PreviewProxyBase); err != nil {
 		errs = append(errs, fmt.Sprintf("settings.preview_proxy_base: %s", err))
+	}
+	if _, err := NormalizePreviewProxyAuth(c.Settings.PreviewProxyAuth); err != nil {
+		errs = append(errs, fmt.Sprintf("settings.preview_proxy_auth: %s", err))
 	}
 
 	if c.Settings.CruciblePollInterval < 0 {

@@ -15,6 +15,7 @@ import (
 
 	"github.com/Robin831/Forge/internal/forge"
 	"github.com/Robin831/Forge/internal/ipc"
+	"github.com/Robin831/Forge/internal/kiln"
 	"github.com/Robin831/Forge/internal/state"
 )
 
@@ -170,7 +171,7 @@ func (s *Server) handlePreviewsList(w http.ResponseWriter, r *http.Request) {
 		out.QuestAnvils = []string{}
 	}
 	for _, p := range payload.Previews {
-		out.Previews = append(out.Previews, previewSummary(r, p, payload.PublicHost, idle, now))
+		out.Previews = append(out.Previews, s.previewSummary(r, p, payload.PublicHost, idle, now))
 	}
 	writeJSON(w, http.StatusOK, out)
 }
@@ -178,14 +179,14 @@ func (s *Server) handlePreviewsList(w http.ResponseWriter, r *http.Request) {
 // previewSummary maps one IPC preview record onto the frontend DTO, filling in
 // the two things only the HTTP layer can know: the log tail URL for each
 // service and the host the entry link should point at.
-func previewSummary(r *http.Request, p ipc.PreviewInfo, publicHost string, idle time.Duration, now time.Time) PreviewSummary {
+func (s *Server) previewSummary(r *http.Request, p ipc.PreviewInfo, publicHost string, idle time.Duration, now time.Time) PreviewSummary {
 	summary := PreviewSummary{
 		BeadID:               p.BeadID,
 		Anvil:                p.Anvil,
 		Branch:               p.Branch,
 		Status:               p.Status,
 		Services:             make([]PreviewServiceStatus, 0, len(p.Services)),
-		EntryURL:             previewEntryURL(r, p, publicHost),
+		EntryURL:             s.previewEntryURL(r, p, publicHost),
 		CreatedAt:            p.CreatedAt,
 		LastActiveAt:         p.LastActiveAt,
 		IdleRemainingSeconds: p.IdleRemainingSeconds,
@@ -233,6 +234,15 @@ func previewLogPath(beadID, service string) string {
 
 // previewEntryURL builds the link an operator opens for a preview.
 //
+// With settings.preview_proxy_base configured the preview is addressed by
+// hostname — `<label>.<base>`, fronted by this server — so that is the link,
+// and it carries an access token when the auth gate needs one (see
+// previewAccessToken: the shared-cookie deployment and the `none` opt-out both
+// need nothing). This is the only place a token is minted, and it is minted
+// per response for an already-authenticated caller, which is why it can be as
+// short-lived as it is.
+//
+// Without a proxy base the link is the port the entry service actually binds.
 // The port comes from the manifest's entry service (falling back to the first
 // service that has one, so a single-service preview still gets a link). The
 // host comes from settings.preview_public_host when it is configured — that is
@@ -243,7 +253,10 @@ func previewLogPath(beadID, service string) string {
 //
 // The scheme is always http: preview services bind a plain port and are not
 // behind Hearth's TLS.
-func previewEntryURL(r *http.Request, p ipc.PreviewInfo, publicHost string) string {
+func (s *Server) previewEntryURL(r *http.Request, p ipc.PreviewInfo, publicHost string) string {
+	if base := s.proxyBase(); base != "" && p.BeadID != "" {
+		return s.previewProxyEntryURL(r, p.BeadID, base)
+	}
 	port := 0
 	for _, svc := range p.Services {
 		if svc.Entry && svc.Port > 0 {
@@ -262,6 +275,34 @@ func previewEntryURL(r *http.Request, p ipc.PreviewInfo, publicHost string) stri
 		return ""
 	}
 	return "http://" + net.JoinHostPort(host, strconv.Itoa(port)) + "/"
+}
+
+// previewProxyEntryURL renders the host-based link for a preview:
+// `<scheme>://<label>.<base>[:port]/`, plus the access token when the auth gate
+// cannot be satisfied by the operator's existing session cookie alone.
+//
+// The port is carried over from the request because Hearth answers preview
+// hostnames on its own listener — the same address the caller just reached.
+func (s *Server) previewProxyEntryURL(r *http.Request, beadID, base string) string {
+	label := kiln.PreviewLabel(beadID)
+	if label == "" {
+		return ""
+	}
+	host := label + "." + base
+	hearthHost := ""
+	scheme := "http"
+	if r != nil {
+		hearthHost = r.Host
+		scheme = s.requestScheme(r)
+		if _, port, err := net.SplitHostPort(r.Host); err == nil && port != "" {
+			host = net.JoinHostPort(host, port)
+		}
+	}
+	entry := scheme + "://" + host + "/"
+	if token := s.previewAccessToken(label, hearthHost, base); token != "" {
+		entry += "?" + previewTokenParam + "=" + url.QueryEscape(token)
+	}
+	return entry
 }
 
 // previewHost resolves the hostname preview links point at: the configured

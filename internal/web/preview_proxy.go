@@ -26,11 +26,13 @@ import (
 //
 // The match is on Host and nothing else. A dev server assumes it owns the URL
 // root — vite's HMR websocket and absolute asset paths break the moment a path
-// prefix is rewritten underneath it — so the forward leaves the request
-// byte-for-byte alone: same path, same query, same Host header, no
-// decompression, no redirect following, no cookie jar. Apex traffic (the
-// dashboard's own host) never matches ParsePreviewHost and so never enters this
-// path at all.
+// prefix is rewritten underneath it — so the forward leaves the request alone:
+// same path, same query, same Host header, no decompression, no redirect
+// following, no cookie jar. The single exception is Hearth's own auth cookies,
+// which are removed on the way out (stripForgeAuthCookies) — they are the
+// credential this middleware just checked, and the upstream is unreviewed
+// branch code. Apex traffic (the dashboard's own host) never matches
+// ParsePreviewHost and so never enters this path at all.
 
 // previewTargetKey carries the resolved upstream "host:port" from the
 // middleware to the shared Director. The proxy is process-wide (one connection
@@ -113,6 +115,15 @@ func (s *Server) SetPreviewProxyBase(fn func() string) {
 	s.previewProxyBase = fn
 }
 
+// SetPreviewProxyAuth installs the callback that supplies the live
+// settings.preview_proxy_auth. Same shape and same reason as
+// SetPreviewProxyBase — the daemon passes a closure reading its current config
+// so flipping the setting takes effect on the next request. nil (the default,
+// and in most tests) leaves the gated mode in place.
+func (s *Server) SetPreviewProxyAuth(fn func() string) {
+	s.previewProxyAuth = fn
+}
+
 // proxyBase returns the configured preview proxy base, or "" when host-based
 // routing is switched off.
 func (s *Server) proxyBase() string {
@@ -136,12 +147,14 @@ func (s *Server) proxyBase() string {
 // body says which state it is in; there is no retry and no fallback to the SPA,
 // because rendering the dashboard at a preview URL would be a confusing lie.
 //
-// Proxied previews are not behind the Hearth session yet: the middleware runs
-// ahead of requireAuth, so anyone who can resolve the hostname reaches the
-// preview. That is the same posture the ports it replaces already had (they are
-// unauthenticated too), and it is tolerable on a loopback box — gating it is
-// tracked separately, and is the reason this stays one middleware with a single
-// entry point rather than logic spread through the router.
+// The middleware runs ahead of requireAuth, so a proxied preview is gated by
+// its own check rather than the router's: see authorizePreviewRequest in
+// preview_auth.go. Unless settings.preview_proxy_auth is "none", a request that
+// cannot show a Hearth session or a preview grant is refused here — a wildcard
+// DNS record is a much wider audience than the loopback ports this replaces,
+// and there is no pass-through for "authenticated nobody". Hearth's own cookies
+// are then stripped from whatever is forwarded: the upstream is unreviewed
+// branch code and has no business seeing them.
 func (s *Server) PreviewProxyMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		base := s.proxyBase()
@@ -154,12 +167,20 @@ func (s *Server) PreviewProxyMiddleware(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
+		// Authorise before resolving: an unauthenticated caller must not be
+		// able to probe which previews exist, and must not bump anyone's idle
+		// clock either.
+		if s.previewAuthGated() && !s.authorizePreviewRequest(w, r, label, base) {
+			return
+		}
 		target, ok := s.resolvePreviewTarget(w, label, service)
 		if !ok {
 			return
 		}
 		ctx := context.WithValue(r.Context(), previewTargetKey{}, target)
-		previewReverseProxy.ServeHTTP(w, r.WithContext(ctx))
+		out := r.Clone(ctx)
+		s.stripForgeAuthCookies(out)
+		previewReverseProxy.ServeHTTP(w, out)
 	})
 }
 

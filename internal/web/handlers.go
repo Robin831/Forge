@@ -109,7 +109,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	// pre-login (potentially fixated or captured) token cannot survive a
 	// successful sign-in.
 	s.deleteSessionFromRequest(r)
-	if _, err := s.createSession(w, username); err != nil {
+	if _, err := s.createSession(w, r, username); err != nil {
 		s.logger.Error("web login session create failed", "user", username, "error", err)
 		writeError(w, http.StatusInternalServerError, "session creation failed")
 		return
@@ -130,7 +130,7 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 			s.logger.Warn("web session delete failed", "error", err)
 		}
 	}
-	s.clearSessionCookie(w)
+	s.clearSessionCookie(w, r)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 

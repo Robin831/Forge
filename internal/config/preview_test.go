@@ -217,6 +217,11 @@ func TestPreviewValidation(t *testing.T) {
 			mutate:   func(c *Config) { c.Settings.PreviewProxyBase = "preview.test:8080" },
 			expected: `settings.preview_proxy_base: "preview.test:8080" must be a bare DNS name without a port`,
 		},
+		{
+			name:     "unknown proxy auth mode",
+			mutate:   func(c *Config) { c.Settings.PreviewProxyAuth = "basic" },
+			expected: `settings.preview_proxy_auth: "basic" is not a known mode (expected "session" or "none")`,
+		},
 	}
 
 	for _, tc := range tests {
@@ -240,6 +245,26 @@ func TestPreviewValidation(t *testing.T) {
 			assert.Empty(t, cfg.Validate(), "preview_proxy_base %q must be accepted", base)
 		}
 	})
+}
+
+// The gate is on unless somebody says otherwise, so an unset, blank or
+// mistyped-case value must all resolve to the gated mode.
+func TestResolvedPreviewProxyAuth(t *testing.T) {
+	cases := map[string]string{
+		"":         PreviewProxyAuthSession,
+		"  ":       PreviewProxyAuthSession,
+		"session":  PreviewProxyAuthSession,
+		"None":     PreviewProxyAuthNone,
+		" none  ":  PreviewProxyAuthNone,
+		"whatever": PreviewProxyAuthSession,
+	}
+	for raw, want := range cases {
+		s := SettingsConfig{PreviewProxyAuth: raw}
+		assert.Equal(t, want, s.ResolvedPreviewProxyAuth(), "preview_proxy_auth %q", raw)
+	}
+
+	assert.Equal(t, PreviewProxyAuthSession, Defaults().Settings.ResolvedPreviewProxyAuth(),
+		"previews must be gated out of the box")
 }
 
 func TestPreviewEnabledPerAnvilTriState(t *testing.T) {
