@@ -2817,12 +2817,19 @@ func gitRevParseHEAD(worktreePath string) string {
 // it is used directly (as "origin/<baseBranch>"). Otherwise it mirrors the
 // worktree manager's auto-detection: try origin/main, then origin/master.
 // Returns an empty string if no valid ref is found.
+//
+// The candidate probes run with GIT_DIR/GIT_WORK_TREE stripped so a daemon that
+// itself lives in a git worktree cannot have its own repository answer for the
+// anvil's — an inherited GIT_DIR makes `git -C <worktree> rev-parse` resolve
+// origin/main from the ambient repo, and Temper would then filter paths against
+// a base ref belonging to a different repository.
 func resolveTemperBaseRef(ctx context.Context, worktreePath, baseBranch string) string {
 	if baseBranch != "" {
 		return "origin/" + baseBranch
 	}
 	for _, candidate := range []string{"origin/main", "origin/master"} {
 		cmd := executil.HideWindow(exec.CommandContext(ctx, "git", "-C", worktreePath, "rev-parse", "--verify", candidate))
+		cmd.Env = gitCmdCleanEnv()
 		if err := cmd.Run(); err == nil {
 			return candidate
 		}
@@ -2835,9 +2842,10 @@ func resolveTemperBaseRef(ctx context.Context, worktreePath, baseBranch string) 
 // Crucible child targeting its epic branch), otherwise origin/main or
 // origin/master, whichever exists. Returns an empty string when none resolves.
 //
-// Unlike resolveTemperBaseRef this runs with GIT_DIR/GIT_WORK_TREE stripped, so
+// Like resolveTemperBaseRef this runs with GIT_DIR/GIT_WORK_TREE stripped, so
 // a daemon that itself lives in a git worktree cannot have its own repository
-// answer for the anvil's.
+// answer for the anvil's. Unlike resolveTemperBaseRef it also verifies an
+// explicitly configured base branch instead of trusting it.
 func resolveBaseRef(ctx context.Context, worktreePath, baseBranch string) string {
 	verify := func(ref string) bool {
 		cmd := executil.HideWindow(exec.CommandContext(ctx, "git", "-C", worktreePath, "rev-parse", "--verify", ref))
