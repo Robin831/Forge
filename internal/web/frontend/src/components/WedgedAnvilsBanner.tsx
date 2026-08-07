@@ -68,6 +68,11 @@ export default function WedgedAnvilsBanner({
               </li>
             ))}
           </ul>
+          <p className="mt-2 text-xs text-red-100/70">
+            Resolve the conflicts in the beads database — there is nothing to
+            dismiss here, this banner clears itself on the next poll once{' '}
+            <span className="font-mono">dolt_conflicts</span> is empty.
+          </p>
         </div>
       </div>
     </section>
