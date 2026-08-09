@@ -687,7 +687,7 @@ anvils:
 | `shadow_mode` | bool\|null | `true` | When true, Assay writes findings to `pr_findings` but posts nothing publicly — the safe default. Set to `false` to post review comments. |
 | `skip_drafts` | bool\|null | `true` | Skip draft PRs. |
 | `debounce_seconds` | int\|null | `300` | Seconds to coalesce rapid push bursts before running a review, so a flurry of commits triggers one review rather than many. |
-| `daily_cost_limit_usd` | float\|null | `5.0` | Per-calendar-day USD cap on Assay review spend. Prevents a runaway PR loop from silently burning quota. |
+| `daily_cost_limit_usd` | float\|null | `5.0` | Per-calendar-day USD cap on Assay review spend. Prevents a runaway PR loop from silently burning quota. Set `0` for no cap. While the cap is exhausted, due reviews are skipped and their heads count as reviewed for merge readiness — Bellows logs each skip and records an `assay_skipped` event once per PR head. |
 | `max_runs` | int\|null | `2` | Maximum number of executed Assay reviews per PR (Assay re-reviews on every new head SHA). A value `<= 0` means no cap. |
 | `max_diff_bytes` | int\|null | `250000` | Caps the size of the diff embedded in pass prompts. `<= 0` falls back to the shared `diff.MaxBytes` default. |
 | `max_base_file_bytes` | int\|null | `100000` | Caps the base-file context bytes included with the diff. |

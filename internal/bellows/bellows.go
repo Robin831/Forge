@@ -118,6 +118,11 @@ type Monitor struct {
 	// head instead of on every poll. Guarded by mu.
 	ciStuckNotified map[string]string
 
+	// assaySuppressNotified records "headSHA|reason" per "anvil/number" so a
+	// budget-suppressed Assay review (daily cost cap, per-PR run cap) is
+	// surfaced once per head instead of on every poll. Guarded by mu.
+	assaySuppressNotified map[string]string
+
 	// now returns the current time for CI age evaluation. nil selects
 	// time.Now; tests set it to pin the stuck threshold.
 	now func() time.Time
@@ -171,20 +176,21 @@ func New(db *state.DB, vcsLookup func(anvil string) vcs.Provider, interval time.
 		maxRebaseAttempts = func() int { return state.DefaultMaxRebaseAttempts }
 	}
 	return &Monitor{
-		db:                   db,
-		vcsLookup:            vcsLookup,
-		interval:             interval,
-		anvilPaths:           anvilPaths,
-		lastStatuses:         make(map[string]*prSnapshot),
-		refresh:              make(chan struct{}, 1),
-		autoLearnRules:       autoLearnRules,
-		maxCIFixAttempts:     maxCIFixAttempts,
-		maxReviewFixAttempts: maxReviewFixAttempts,
-		maxRebaseAttempts:    maxRebaseAttempts,
-		learnMu:              make(map[string]*sync.Mutex),
-		learnSem:             make(chan struct{}, 4), // allow up to 4 concurrent auto-learn goroutines
-		wasUnmanaged:         make(map[string]bool),
-		ciStuckNotified:      make(map[string]string),
+		db:                    db,
+		vcsLookup:             vcsLookup,
+		interval:              interval,
+		anvilPaths:            anvilPaths,
+		lastStatuses:          make(map[string]*prSnapshot),
+		refresh:               make(chan struct{}, 1),
+		autoLearnRules:        autoLearnRules,
+		maxCIFixAttempts:      maxCIFixAttempts,
+		maxReviewFixAttempts:  maxReviewFixAttempts,
+		maxRebaseAttempts:     maxRebaseAttempts,
+		learnMu:               make(map[string]*sync.Mutex),
+		learnSem:              make(chan struct{}, 4), // allow up to 4 concurrent auto-learn goroutines
+		wasUnmanaged:          make(map[string]bool),
+		ciStuckNotified:       make(map[string]string),
+		assaySuppressNotified: make(map[string]string),
 	}
 }
 
@@ -427,6 +433,44 @@ func (m *Monitor) assayUpToDate(pr *state.PR, headSHA string, dailyAssayCost *fl
 		return true
 	}
 	return false
+}
+
+// noteAssaySuppressed surfaces a budget-suppressed Assay review — once per
+// (PR, head, reason) — in the daemon log and the events feed. Both budget
+// gates also release the head to merge readiness via assayUpToDate, so without
+// this note the operator gets no signal at all that a PR is about to merge
+// without an Assay review (2026-08-09: the default daily cost cap silently
+// swallowed every review after the day's first; 2026-08-07: twenty PRs
+// auto-merged unreviewed the same way).
+func (m *Monitor) noteAssaySuppressed(pr *state.PR, headSHA, reason string, in reviewGateInputs) {
+	if m.db == nil {
+		return
+	}
+	key := fmt.Sprintf("%s/%d", pr.Anvil, pr.Number)
+	val := headSHA + "|" + reason
+	m.mu.Lock()
+	if m.assaySuppressNotified[key] == val {
+		m.mu.Unlock()
+		return
+	}
+	m.assaySuppressNotified[key] = val
+	m.mu.Unlock()
+
+	var detail string
+	switch reason {
+	case assaySuppressedDailyCost:
+		detail = fmt.Sprintf(
+			"PR #%d: Assay review skipped — daily Assay budget exhausted ($%.2f spent >= $%.2f limit, resets at UTC midnight); head %s will count as reviewed for merge readiness",
+			pr.Number, in.dailyCostUSD, in.dailyCostLimit, shortSHA(headSHA))
+	case assaySuppressedMaxRuns:
+		detail = fmt.Sprintf(
+			"PR #%d: Assay review skipped — per-PR run cap reached (%d/%d); head %s will count as reviewed for merge readiness",
+			pr.Number, in.runCount, in.maxRuns, shortSHA(headSHA))
+	default:
+		return
+	}
+	log.Printf("[bellows] %s", detail)
+	_ = m.db.LogEvent(state.EventAssaySkipped, detail, pr.BeadID, pr.Anvil)
 }
 
 // OnEvent registers a handler for PR events.
@@ -1468,6 +1512,19 @@ type reviewGateInputs struct {
 	beadFixWorkerActive bool
 }
 
+// Assay suppression reasons reported by shouldEmitReviewNeeded. Only the two
+// budget gates get a named reason: they are the ones that also RELEASE the PR
+// to merge readiness via assayUpToDate, so silently hitting them means a head
+// merges with no Assay review and no trace anywhere (observed 2026-08-09:
+// the default $5 daily cost cap swallowed every review after the day's first,
+// and 20 PRs on 2026-08-07 auto-merged unreviewed). The other gates are either
+// transient (debounce, worker in flight) or intentional filters (draft,
+// unmanaged) that do not end in an unreviewed merge.
+const (
+	assaySuppressedDailyCost = "daily_cost_limit"
+	assaySuppressedMaxRuns   = "max_runs"
+)
+
 // shouldEmitReviewNeeded returns true when EventPRReviewNeeded should fire for a
 // PR. It emits only when ALL hold: Assay is enabled; the PR is managed, open,
 // and not a (skipped) draft; the current head differs from the last reviewed
@@ -1482,54 +1539,57 @@ type reviewGateInputs struct {
 // merge) — too late to feed the Burnish fix loop. Reviewing on first sighting,
 // like Copilot, is the intended behaviour; the debounce + immutable head SHA +
 // cross-run dedup absorb any churn from rapid pushes.
-func shouldEmitReviewNeeded(in reviewGateInputs) bool {
+// The second return value names the suppression reason when a budget gate
+// (daily cost cap, per-PR run cap) blocked an otherwise-due review; it is ""
+// for every other outcome, including a true first value.
+func shouldEmitReviewNeeded(in reviewGateInputs) (bool, string) {
 	if !in.enabled {
-		return false
+		return false, ""
 	}
 	if !in.managed {
-		return false
+		return false, ""
 	}
 	if !in.open {
-		return false
+		return false, ""
 	}
 	if in.draft && in.skipDrafts {
-		return false
+		return false, ""
 	}
 	// An Assay worker is already pending/running for this PR; don't queue a
 	// second one. When it finishes, a head still unreviewed re-triggers the
 	// normal way (head != lastReviewedSHA).
 	if in.assayInFlight {
-		return false
+		return false, ""
 	}
 	// A non-Assay worker (smith/quench/burnish/rebase/...) holds the bead in
 	// flight; the daemon would skip the Assay dispatch, so emitting now just
 	// busy-loops every debounce. Suppress and let it fire once the worker
 	// finishes — the head it produces is reviewed on the next poll (Forge-dkso).
 	if in.beadFixWorkerActive {
-		return false
+		return false, ""
 	}
 	// An empty head SHA means GitHub did not report one; we cannot decide it is
 	// unreviewed, so skip rather than risk a spurious review.
 	if in.headSHA == "" || in.headSHA == in.lastReviewedSHA {
-		return false
+		return false, ""
 	}
 	debounce := in.debounceSeconds
 	if debounce <= 0 {
 		debounce = defaultAssayDebounceSeconds
 	}
 	if !in.lastAssayRun.IsZero() && in.now.Sub(in.lastAssayRun) < time.Duration(debounce)*time.Second {
-		return false
+		return false, ""
 	}
 	if in.dailyCostLimit > 0 && in.dailyCostUSD >= in.dailyCostLimit {
-		return false
+		return false, assaySuppressedDailyCost
 	}
 	// Per-PR run cap: once a PR has been reviewed maxRuns times, stop re-firing
 	// so the Assay→Burnish→new-head loop terminates instead of running until a
 	// pass finds nothing.
 	if in.maxRuns > 0 && in.runCount >= in.maxRuns {
-		return false
+		return false, assaySuppressedMaxRuns
 	}
-	return true
+	return true, ""
 }
 
 // maybeEmitReviewNeeded evaluates the Assay trigger gate for a managed, open PR
@@ -1578,7 +1638,11 @@ func (m *Monitor) maybeEmitReviewNeeded(ctx context.Context, pr *state.PR, statu
 		assayInFlight:       m.assayWorkerInFlight(pr.Anvil, pr.Number),
 		beadFixWorkerActive: m.beadFixWorkerActive(pr.Anvil, pr.BeadID),
 	}
-	if !shouldEmitReviewNeeded(in) {
+	emit, suppressedBy := shouldEmitReviewNeeded(in)
+	if !emit {
+		if suppressedBy != "" {
+			m.noteAssaySuppressed(pr, status.HeadSHA, suppressedBy, in)
+		}
 		return
 	}
 

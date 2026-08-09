@@ -2382,6 +2382,7 @@ const (
 	EventBeadClosed          EventType = "bead_closed"
 	EventPRReadyToMerge      EventType = "pr_ready_to_merge"
 	EventPRReviewNeeded      EventType = "pr_review_needed"
+	EventAssaySkipped        EventType = "assay_skipped"
 	EventPRMergeRequested    EventType = "pr_merge_requested"
 	EventPRMergeFailed       EventType = "pr_merge_failed"
 	EventPRAutoMerged        EventType = "pr_auto_merged"

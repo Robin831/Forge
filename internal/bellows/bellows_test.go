@@ -2042,7 +2042,54 @@ func TestShouldEmitReviewNeeded(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			in := base()
 			tt.mutate(&in)
-			assert.Equal(t, tt.want, shouldEmitReviewNeeded(in))
+			got, _ := shouldEmitReviewNeeded(in)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+// TestShouldEmitReviewNeeded_SuppressionReasons verifies that only the two
+// budget gates — which also release the head to merge readiness — report a
+// named suppression reason, so the operator-visible note fires exactly for
+// heads that will merge unreviewed.
+func TestShouldEmitReviewNeeded_SuppressionReasons(t *testing.T) {
+	base := func() reviewGateInputs {
+		return reviewGateInputs{
+			enabled:  true,
+			managed:  true,
+			open:     true,
+			headSHA:  "abc123",
+			now:      time.Now(),
+			maxRuns:  2,
+			runCount: 0,
+		}
+	}
+
+	tests := []struct {
+		name       string
+		mutate     func(in *reviewGateInputs)
+		wantEmit   bool
+		wantReason string
+	}{
+		{"emit has no reason", func(in *reviewGateInputs) {}, true, ""},
+		{"daily cost cap names its reason", func(in *reviewGateInputs) { in.dailyCostUSD = 6.64; in.dailyCostLimit = 5 }, false, assaySuppressedDailyCost},
+		{"run cap names its reason", func(in *reviewGateInputs) { in.runCount = 2 }, false, assaySuppressedMaxRuns},
+		{"disabled is silent", func(in *reviewGateInputs) { in.enabled = false }, false, ""},
+		{"debounce is silent", func(in *reviewGateInputs) { in.lastAssayRun = in.now.Add(-time.Minute) }, false, ""},
+		{"reviewed head is silent even over budget", func(in *reviewGateInputs) {
+			in.lastReviewedSHA = in.headSHA
+			in.dailyCostUSD = 99
+			in.dailyCostLimit = 5
+		}, false, ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			in := base()
+			tt.mutate(&in)
+			gotEmit, gotReason := shouldEmitReviewNeeded(in)
+			assert.Equal(t, tt.wantEmit, gotEmit)
+			assert.Equal(t, tt.wantReason, gotReason)
 		})
 	}
 }

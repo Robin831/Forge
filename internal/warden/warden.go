@@ -35,9 +35,29 @@ const (
 
 // wardenMaxTurns is the maximum number of turns the Warden review session may
 // use. Enough to output the verdict JSON first and then do file analysis.
-// Higher than 3 (the previous value) because tool reads can consume turns
-// before the model emits the verdict block.
-const wardenMaxTurns = 5
+// Raised from 5: despite the "verdict first" prompt, the model routinely spends
+// every turn investigating with tools and hits error_max_turns without having
+// written any text at all (observed: Hytte-dxs7s, 2026-08-09 — six tool turns,
+// zero text, silent default-approve). The real backstop for that failure mode
+// is the resume-for-verdict retry in Review; the larger budget just makes it
+// rarer.
+const wardenMaxTurns = 10
+
+// wardenVerdictRetryTurns bounds the resumed verdict-only follow-up session:
+// one turn of slack for a stray tool call, then the text turn with the JSON.
+const wardenVerdictRetryTurns = 2
+
+// verdictFollowUpPrompt is sent on a resumed Warden session when the primary
+// run ended without a parseable structured verdict — typically error_max_turns,
+// where the model spent every turn on tool calls and never wrote its
+// conclusion. The resumed session retains the full review context, so a single
+// text turn is enough to conclude. Imperative and JSON-only on purpose: any
+// prose invites the same parse failure that triggered the retry.
+const verdictFollowUpPrompt = `Your review session ended before you produced the structured verdict. Do NOT run any more tools. Based on the analysis you have already done, output your final verdict now as a single JSON object and nothing else:
+
+` + "```json\n" + `{"verdict": "approve", "summary": "<your one-paragraph review summary>", "issues": [{"file": "", "line": 0, "severity": "error|warning|suggestion", "message": ""}]}
+` + "```\n" + `
+Set verdict to one of: approve, reject, request_changes.`
 
 // ReviewResult captures the Warden's review outcome.
 type ReviewResult struct {
@@ -167,7 +187,42 @@ func Review(ctx context.Context, worktreePath, beadID, beadTitle, beadDescriptio
 	if outputText == "" {
 		outputText = smithResult.Output
 	}
-	parseVerdict(outputText, usedProvider.Kind, result)
+	parsed := parseVerdict(outputText, usedProvider.Kind, result)
+
+	// A missing structured verdict is almost never a formatting quirk — it is a
+	// session that spent its whole turn budget on tool calls (error_max_turns)
+	// and ended without writing any text. Before trusting the default-approve
+	// placeholder (which, with auto_merge on, means an effectively unreviewed
+	// merge), resume the same session and demand a final, JSON-only verdict
+	// turn: the model still holds its full review context, so one more turn is
+	// enough to conclude. Only providers whose ResumeFlag can actually reattach
+	// (Claude) take this path — a fresh, context-free session would just
+	// fabricate a verdict.
+	if !parsed && smithResult.SessionID != "" && len(usedProvider.ResumeFlag(smithResult.SessionID)) > 0 {
+		log.Printf("[warden:%s] no structured verdict in review output; resuming session %s for a final verdict turn", beadID, smithResult.SessionID)
+		retryFlags := []string{"--max-turns", fmt.Sprintf("%d", wardenVerdictRetryTurns)}
+		followUp, ferr := smith.SpawnWithOptions(ctx, worktreePath, verdictFollowUpPrompt, logDir, usedProvider,
+			retryFlags, smith.SpawnOptions{LogPrefix: "warden", ResumeSessionID: smithResult.SessionID})
+		if ferr != nil {
+			log.Printf("[warden:%s] verdict follow-up spawn failed, keeping default verdict: %v", beadID, ferr)
+		} else {
+			followRes := followUp.Wait()
+			result.CostUSD += followRes.CostUSD
+			if smith.ResumeUnavailable(followRes) {
+				log.Printf("[warden:%s] verdict follow-up could not resume session %s; keeping default verdict", beadID, smithResult.SessionID)
+			} else {
+				followText := followRes.FullOutput
+				if followText == "" {
+					followText = followRes.Output
+				}
+				if parseVerdict(followText, usedProvider.Kind, result) {
+					log.Printf("[warden:%s] verdict recovered on follow-up turn: %s", beadID, result.Verdict)
+				} else {
+					log.Printf("[warden:%s] verdict follow-up output still unparseable; defaulting to approve for human review", beadID)
+				}
+			}
+		}
+	}
 
 	if db != nil {
 		var evtType state.EventType
@@ -407,7 +462,12 @@ After outputting the JSON verdict above, review the following git diff:
 //   - Claude: reliably emits fenced ```json blocks
 //   - Gemini: sometimes uses plain ``` blocks or embeds JSON in prose
 //   - Copilot (Haiku): often outputs natural language verdicts without JSON
-func parseVerdict(output string, providerKind provider.Kind, result *ReviewResult) {
+//
+// The return value reports whether a verdict was actually extracted from the
+// output. False means nothing usable was found and result now holds the
+// default-approve placeholder — the caller can retry (e.g. resume the session
+// for a final verdict turn) before trusting it.
+func parseVerdict(output string, providerKind provider.Kind, result *ReviewResult) bool {
 	// Phase 1: Try structured JSON extraction — works across all providers.
 	jsonStr := extractJSON(output, "verdict")
 	if jsonStr != "" {
@@ -426,24 +486,24 @@ func parseVerdict(output string, providerKind provider.Kind, result *ReviewResul
 			}
 			result.Summary = parsed.Summary
 			result.Issues = parsed.Issues
-			return
+			return true
 		}
 	}
 
 	// Phase 2: Provider-specific fallback heuristics.
 	switch providerKind {
 	case provider.Copilot:
-		parseCopilotVerdict(output, result)
+		return parseCopilotVerdict(output, result)
 	case provider.Gemini:
-		parseGeminiVerdict(output, result)
+		return parseGeminiVerdict(output, result)
 	default:
-		parseClaudeVerdict(output, result)
+		return parseClaudeVerdict(output, result)
 	}
 }
 
 // parseClaudeVerdict handles fallback parsing for Claude output.
 // Claude almost always emits valid JSON; this is a rare edge case.
-func parseClaudeVerdict(output string, result *ReviewResult) {
+func parseClaudeVerdict(output string, result *ReviewResult) bool {
 	norm := strings.ToLower(strings.ReplaceAll(output, " ", ""))
 	switch {
 	case strings.Contains(norm, `"verdict":"approve"`) ||
@@ -457,18 +517,19 @@ func parseClaudeVerdict(output string, result *ReviewResult) {
 	default:
 		result.Verdict = VerdictApprove
 		result.Summary = "Could not parse structured verdict; defaulting to approve for human review"
-		return
+		return false
 	}
 	// Try to salvage the summary field from the raw output.
 	result.Summary = extractQuotedField(output, "summary")
 	if result.Summary == "" {
 		result.Summary = fmt.Sprintf("Verdict: %s (parsed from unstructured output)", result.Verdict)
 	}
+	return true
 }
 
 // parseGeminiVerdict handles fallback parsing for Gemini output.
 // Gemini may wrap verdicts in markdown bold, headers, or key-value lines.
-func parseGeminiVerdict(output string, result *ReviewResult) {
+func parseGeminiVerdict(output string, result *ReviewResult) bool {
 	lower := strings.ToLower(output)
 	norm := strings.ToLower(strings.ReplaceAll(output, " ", ""))
 
@@ -491,19 +552,20 @@ func parseGeminiVerdict(output string, result *ReviewResult) {
 		} else {
 			result.Verdict = VerdictApprove
 			result.Summary = "Could not parse structured verdict; defaulting to approve for human review"
-			return
+			return false
 		}
 	}
 	result.Summary = extractQuotedField(output, "summary")
 	if result.Summary == "" {
 		result.Summary = fmt.Sprintf("Verdict: %s (parsed from unstructured output)", result.Verdict)
 	}
+	return true
 }
 
 // parseCopilotVerdict handles fallback parsing for Copilot (Haiku) output.
 // Haiku frequently outputs natural language reviews without any JSON, so
 // this parser is the most aggressive at extracting verdicts from prose.
-func parseCopilotVerdict(output string, result *ReviewResult) {
+func parseCopilotVerdict(output string, result *ReviewResult) bool {
 	lower := strings.ToLower(output)
 	norm := strings.ToLower(strings.ReplaceAll(output, " ", ""))
 
@@ -541,13 +603,14 @@ func parseCopilotVerdict(output string, result *ReviewResult) {
 		} else {
 			result.Verdict = VerdictApprove
 			result.Summary = "Could not parse structured verdict; defaulting to approve for human review"
-			return
+			return false
 		}
 	}
 	result.Summary = extractQuotedField(output, "summary")
 	if result.Summary == "" {
 		result.Summary = fmt.Sprintf("Verdict: %s (parsed from unstructured output)", result.Verdict)
 	}
+	return true
 }
 
 // extractKeyValueVerdict looks for "verdict: <value>" or "**verdict**: <value>"
