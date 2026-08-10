@@ -1618,6 +1618,27 @@ func assaySummaryLine(findings []assay.Finding) string {
 // form. The two types are deliberately separate — the state package cannot
 // import the engine — but they carry the same two fields, so the run record and
 // the review result always name the same passes for the same reasons.
+// stateAssayStatus converts the engine's run status into the persisted form,
+// the same boundary and the same reason as statePassFailures below: the state
+// package cannot import the engine, so the two restate one set of values. The
+// explicit switch is what makes the three known statuses checked rather than
+// assumed by a bare cast — readers downstream compare against the state
+// constants (assayWorkerStatus, internal/web's PR fallback), and a rename on
+// either side would otherwise fail silently. An unknown status is passed
+// through verbatim so a value the engine adds later is still persisted.
+func stateAssayStatus(s assay.RunStatus) string {
+	switch s {
+	case assay.RunStatusComplete:
+		return state.AssayStatusComplete
+	case assay.RunStatusPartial:
+		return state.AssayStatusPartial
+	case assay.RunStatusFailed:
+		return state.AssayStatusFailed
+	default:
+		return string(s)
+	}
+}
+
 func statePassFailures(failed []assay.PassFailure) []state.AssayPassFailure {
 	if len(failed) == 0 {
 		return nil
@@ -1777,7 +1798,7 @@ func (d *Daemon) runAssayReview(ctx context.Context, anvil, anvilPath, beadID st
 			// engine's single computation, so the worker row's status chip,
 			// this log line, the assay_partial event, the PR findings panel
 			// and the PR summary comment cannot disagree.
-			run.Status = string(result.Status)
+			run.Status = stateAssayStatus(result.Status)
 			run.CompletedPasses = result.CompletedPasses
 			run.TotalPasses = result.TotalPasses
 			run.FailedPasses = statePassFailures(result.FailedPasses)

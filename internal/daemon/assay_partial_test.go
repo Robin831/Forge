@@ -67,14 +67,21 @@ func TestStatePassFailuresMirrorsEngine(t *testing.T) {
 	require.Nil(t, statePassFailures(nil))
 }
 
-// TestStateAssayStatusMirrorsEngine pins the assignment the daemon makes with a
-// bare conversion — run.Status = string(result.Status). Nothing else asserts
-// that the two constant sets carry identical literals, and a drift on the
-// engine side would be silent rather than red: a partial run would persist an
-// unrecognised status, fall through the run.Error != "" branch and report as a
-// failure while every existing test still passed.
+// TestStateAssayStatusMirrorsEngine pins the conversion the daemon makes when
+// it persists a run's coverage. Nothing else ties the two constant sets
+// together, and a drift on the engine side would be silent rather than red: a
+// partial run would persist an unrecognised status, fall through the
+// run.Error != "" branch and report as a failure while every existing test
+// still passed.
 func TestStateAssayStatusMirrorsEngine(t *testing.T) {
+	require.Equal(t, state.AssayStatusComplete, stateAssayStatus(assay.RunStatusComplete))
+	require.Equal(t, state.AssayStatusPartial, stateAssayStatus(assay.RunStatusPartial))
+	require.Equal(t, state.AssayStatusFailed, stateAssayStatus(assay.RunStatusFailed))
+	// The literals themselves must match too — the switch would otherwise
+	// paper over a rename that internal/web's raw string comparisons still see.
 	require.Equal(t, state.AssayStatusComplete, string(assay.RunStatusComplete))
 	require.Equal(t, state.AssayStatusPartial, string(assay.RunStatusPartial))
 	require.Equal(t, state.AssayStatusFailed, string(assay.RunStatusFailed))
+	// A status this switch does not know is persisted rather than dropped.
+	require.Equal(t, "future", stateAssayStatus(assay.RunStatus("future")))
 }

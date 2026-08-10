@@ -116,35 +116,60 @@ const (
 	ReasonUnknown = "unknown"
 )
 
-// maxReasonLen bounds a failure reason. A provider subtype is a label
-// ("error_max_turns"), not prose; anything longer is not one and does not
-// belong in a status line or a PR comment.
-const maxReasonLen = 48
+// maxLabelLen bounds a pass name or failure reason. A pass name ("logic") and
+// a provider subtype ("error_max_turns") are labels, not prose; anything longer
+// is not one and does not belong in a status line or a PR comment.
+const maxLabelLen = 48
 
-// sanitizeReason constrains a failure reason to the shape of a label an
-// operator can grep for: lowercase alphanumerics, '_' and '-', bounded in
-// length. Reasons reach the public PR summary comment verbatim, and neither a
+// labelSafe reports whether s is already the shape of a label an operator can
+// grep for: non-empty, bounded, and built only from lowercase alphanumerics,
+// '_' and '-'. Both halves of a PassFailure reach the public PR summary comment
+// verbatim and neither is trusted markdown — a value like
+// "[x](https://evil.example)" would render there as a live link.
+func labelSafe(s string) bool {
+	if s == "" || len(s) > maxLabelLen {
+		return false
+	}
+	for _, c := range s {
+		switch {
+		case c >= 'a' && c <= 'z', c >= '0' && c <= '9', c == '_', c == '-':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// sanitizeReason constrains a failure reason to a safe label. Neither a
 // provider-supplied result subtype nor a token inferred from a foreign
-// backend's error text is trusted markdown — a value like
-// "[x](https://evil.example)" would render as a live link. A reason that does
-// not fit the safe set is replaced wholesale by ReasonUnknown rather than
-// partially scrubbed, since a half-stripped label reads as a real one.
+// backend's error text is trusted. A reason that does not fit the safe set is
+// replaced wholesale by ReasonUnknown rather than partially scrubbed, since a
+// half-stripped label reads as a real one.
 func sanitizeReason(reason string) string {
 	r := strings.ToLower(strings.TrimSpace(reason))
 	if r == "" {
 		return ""
 	}
-	if len(r) > maxReasonLen {
+	if !labelSafe(r) {
 		return ReasonUnknown
 	}
-	for _, c := range r {
-		switch {
-		case c >= 'a' && c <= 'z', c >= '0' && c <= '9', c == '_', c == '-':
-		default:
-			return ReasonUnknown
+	return r
+}
+
+// passFailureName picks the name a PassFailure carries. running is the pass
+// Forge dispatched — it comes from this package's own pass set and is trusted.
+// claimed is the name an error carried, which is not: PassError is exported, so
+// a foreign backend could set Pass to "[x](https://evil.example)" and have it
+// rendered as a live link in the PR summary comment, the same exposure
+// sanitizeReason exists to close on the other field. An unsafe claim is dropped
+// in favour of the pass that was actually running rather than scrubbed.
+func passFailureName(running, claimed string) string {
+	for _, name := range [2]string{claimed, running} {
+		if n := strings.ToLower(strings.TrimSpace(name)); labelSafe(n) {
+			return n
 		}
 	}
-	return r
+	return ReasonUnknown
 }
 
 // PassError is the error a pass returns when it produced no findings. It keeps
@@ -186,20 +211,16 @@ func newPassError(pass, reason, detail string, cause error) *PassError {
 // runner in a test, or a future alternate backend) is attributed to the pass
 // that was running and has its reason inferred from the message.
 //
-// It is the single place a reason enters a PassFailure, so it is where the
-// reason is constrained to a safe label (sanitizeReason) — everything
-// downstream, the persisted run record and the public PR comment included,
-// reads what this returns.
+// It is the single place either half of a PassFailure is built, so it is where
+// both are constrained to safe labels (passFailureName, sanitizeReason) —
+// everything downstream, the persisted run record and the public PR comment
+// included, reads what this returns.
 func classifyPassError(pass string, err error) PassFailure {
 	var pe *PassError
 	if errors.As(err, &pe) {
-		name := pe.Pass
-		if name == "" {
-			name = pass
-		}
-		return PassFailure{Name: name, Reason: sanitizeReason(pe.Reason)}
+		return PassFailure{Name: passFailureName(pass, pe.Pass), Reason: sanitizeReason(pe.Reason)}
 	}
-	return PassFailure{Name: pass, Reason: sanitizeReason(inferPassReason(err))}
+	return PassFailure{Name: passFailureName(pass, ""), Reason: sanitizeReason(inferPassReason(err))}
 }
 
 // inferPassReason is the fallback classifier for an error this package did not
@@ -212,10 +233,15 @@ func inferPassReason(err error) string {
 	}
 	msg := strings.ToLower(err.Error())
 	if i := strings.Index(msg, "subtype "); i >= 0 {
-		subtype := strings.TrimSpace(msg[i+len("subtype "):])
-		subtype = strings.TrimRight(subtype, ").,;")
-		if f := strings.Fields(subtype); len(f) > 0 && f[0] != "" {
-			return f[0]
+		// Take the subtype token first and strip its trailing punctuation
+		// after, not before: a message that continues past the subtype
+		// ("… subtype error_max_turns) after 3 attempts") ends in prose, so
+		// trimming the whole remainder would leave the ')' attached to the
+		// token and collapse the whole reason to unknown.
+		if f := strings.Fields(msg[i+len("subtype "):]); len(f) > 0 {
+			if subtype := strings.TrimRight(f[0], ").,;"); subtype != "" {
+				return subtype
+			}
 		}
 	}
 	switch {

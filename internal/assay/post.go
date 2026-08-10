@@ -59,7 +59,8 @@ type PostRequest struct {
 	// FailedPasses names the deep passes that did not review this head. When
 	// non-empty the summary review carries an explicit partial-coverage line,
 	// so a short findings list is never read as a clean review of the whole
-	// diff. Read from the run record, so the comment and Hearth agree.
+	// diff. The same list the run record persists, so the comment and Hearth
+	// agree.
 	FailedPasses []PassFailure
 	// Findings is the aggregated set to post (already deduped/suppressed/capped
 	// by Review).

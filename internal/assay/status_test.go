@@ -28,6 +28,10 @@ func TestDeriveStatus(t *testing.T) {
 			[]PassFailure{{Name: "logic"}, {Name: "security"}},
 			RunStatusFailed,
 		},
+		// Nothing ran, so nothing reviewed the diff: the conservative status,
+		// not the optimistic one that would read "complete: 0 of 0".
+		{"no passes attempted", 0, nil, RunStatusFailed},
+		{"no passes attempted, failures reported", 0, []PassFailure{{Name: "logic"}}, RunStatusFailed},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -126,7 +130,7 @@ func TestClassifyPassErrorSanitizesReason(t *testing.T) {
 	}{
 		{"markdown link", "[click](https://evil.example)", ReasonUnknown},
 		{"html", "<img src=x onerror=alert(1)>", ReasonUnknown},
-		{"overlong prose", strings.Repeat("a", maxReasonLen+1), ReasonUnknown},
+		{"overlong prose", strings.Repeat("a", maxLabelLen+1), ReasonUnknown},
 		{"uppercased subtype", "Error_Max_Turns", "error_max_turns"},
 		{"plain subtype", "error_max_turns", "error_max_turns"},
 		{"empty", "", ""},
@@ -151,12 +155,50 @@ func TestClassifyPassErrorSanitizesReason(t *testing.T) {
 	}
 }
 
+// A pass name reaches the same public PR comment as its reason, and PassError
+// is exported — a foreign backend can set Pass to anything. An unsafe claim is
+// dropped in favour of the pass that was actually running.
+func TestClassifyPassErrorSanitizesName(t *testing.T) {
+	tests := []struct {
+		name    string
+		claimed string
+		want    string
+	}{
+		{"markdown link", "[click](https://evil.example)", "logic"},
+		{"html", "<img src=x onerror=alert(1)>", "logic"},
+		{"overlong prose", strings.Repeat("a", maxLabelLen+1), "logic"},
+		{"empty", "", "logic"},
+		{"uppercased", "Repo-Specific", "repo-specific"},
+		{"plain", "security", "security"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := classifyPassError("logic", &PassError{Pass: tt.claimed, Reason: "error_max_turns", Message: "detail"})
+			if got.Name != tt.want {
+				t.Errorf("classifyPassError name = %q; want %q", got.Name, tt.want)
+			}
+			for _, sink := range []string{
+				PartialCoverageNote([]PassFailure{got}),
+				RenderStatusText(RunStatusPartial, 4, 5, []PassFailure{got}),
+			} {
+				if strings.Contains(sink, "evil.example") || strings.Contains(sink, "onerror") {
+					t.Errorf("unsanitized pass name reached a rendered sink: %s", sink)
+				}
+			}
+		})
+	}
+}
+
 func TestClassifyPassErrorInfersReasonFromForeignError(t *testing.T) {
 	tests := []struct {
 		err  error
 		want string
 	}{
 		{errors.New("assay pass logic: provider claude/opus failed (exit 1, subtype error_max_turns)"), "error_max_turns"},
+		// The subtype is recoverable wherever it sits in the message, not only
+		// when it is the last token.
+		{errors.New("provider failed (exit 1, subtype error_max_turns) after 3 attempts"), "error_max_turns"},
+		{errors.New("backend: subtype error_max_turns, giving up"), "error_max_turns"},
 		{errors.New("assay pass logic: provider claude/opus rate limited"), ReasonRateLimited},
 		{errors.New("assay pass logic: invalid JSON output after retry"), ReasonInvalidJSON},
 		{errors.New("something else entirely"), ReasonUnknown},

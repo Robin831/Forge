@@ -10,7 +10,9 @@ import (
 // it, the worker status text names it, and the PR summary comment lists it, so
 // all three answer "which passes did not look at this diff" from one source.
 type PassFailure struct {
-	// Name is the pass identifier ("logic", "repo-specific", …).
+	// Name is the pass identifier ("logic", "repo-specific", …). Always a bare
+	// label — classifyPassError constrains it for the same reason it constrains
+	// Reason: both are rendered into the public PR comment.
 	Name string `json:"name"`
 	// Reason is the short failure label — the provider result subtype where
 	// there is one ("error_max_turns"), else a category from the Reason*
@@ -42,11 +44,19 @@ const (
 // deep passes attempted; failed lists the ones that did not produce findings.
 // It is the single place the three-way decision is made — everything else reads
 // the status it returns rather than re-deriving it from a pass-error count.
+//
+// A run that attempted no deep passes at all is Failed, not Complete: nothing
+// looked at the diff, and "complete: 0 of 0 passes completed" would present
+// that as a clean review. The deep-pass set is static today, so this only
+// matters if it ever becomes filterable — at which point the conservative
+// answer is the one that must already be wired in.
 func DeriveStatus(total int, failed []PassFailure) RunStatus {
 	switch {
+	case total <= 0:
+		return RunStatusFailed
 	case len(failed) == 0:
 		return RunStatusComplete
-	case total > 0 && len(failed) >= total:
+	case len(failed) >= total:
 		return RunStatusFailed
 	default:
 		return RunStatusPartial
