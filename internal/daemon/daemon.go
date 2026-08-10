@@ -1798,7 +1798,12 @@ func (d *Daemon) runAssayReview(ctx context.Context, anvil, anvilPath, beadID st
 			OnPassLog: d.assayLogPathRecorder(workerID),
 		}, d.db, engineCfg)
 		if rerr != nil {
-			d.logger.Error("Assay review failed", "pr", prNumber, "bead", beadID, "error", rerr)
+			// A failed run is still a billed run: the sessions it made before
+			// it died are charged, so the cost the error carries is recorded
+			// exactly like a successful run's. Dropping it would understate
+			// the assay spend that daily_cost_limit is measured against.
+			run.CostUSD = assay.RunCost(rerr)
+			d.logger.Error("Assay review failed", "pr", prNumber, "bead", beadID, "error", rerr, "cost_usd", run.CostUSD)
 			run.Error = rerr.Error()
 			run.Status = state.AssayStatusFailed
 		} else {

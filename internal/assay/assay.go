@@ -18,6 +18,7 @@ package assay
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -197,6 +198,44 @@ func (r *ReviewResult) PassTelemetryText() string {
 	return RenderPassTelemetry(r.Passes)
 }
 
+// RunError is the error Review returns once a run has spent money: it carries
+// the cost billed up to the point the run failed, so a run that produces no
+// result still reaches cost tracking.
+//
+// This is the run-level counterpart of PassError.CostUSD, and it exists for the
+// same reason: a failure is not a refund. The provider bills a triage session
+// that ended on error_max_turns — the subtype that by definition burned the
+// whole turn budget — exactly like one that answered, and a run whose every
+// deep pass failed has paid for six full sessions. Without this the daemon's
+// error path recorded zero cost for both, silently shrinking the numerator of
+// the daily spend that `daily_cost_limit` enforces.
+//
+// Error() reproduces the wrapped message verbatim and Unwrap exposes the cause,
+// so callers that only log or errors.As on the underlying error are unaffected.
+type RunError struct {
+	// CostUSD is what the run had been billed when it failed.
+	CostUSD float64
+	// Err is the underlying failure.
+	Err error
+}
+
+func (e *RunError) Error() string { return e.Err.Error() }
+
+func (e *RunError) Unwrap() error { return e.Err }
+
+// RunCost reports the cost carried by an error from Review. An error raised
+// before any provider session ran (a malformed request, an unbuildable prompt)
+// carries none and reports 0, as does any error this package did not build —
+// an undercount is the safe direction for a number feeding a spend limit, a
+// fabricated one is not.
+func RunCost(err error) float64 {
+	var re *RunError
+	if errors.As(err, &re) {
+		return re.CostUSD
+	}
+	return 0
+}
+
 // Review runs the multi-pass Assay review for req and returns the aggregated
 // result. db may be nil to skip all persistence and posted-Nit suppression
 // (useful for dry runs); when non-nil, findings are written to pr_findings
@@ -233,12 +272,21 @@ func Review(ctx context.Context, req ReviewRequest, db *state.DB, cfg Config) (*
 		totalCost float64
 	)
 
-	// 1. Triage — scope which files warrant deeper review.
-	triage, triageCost, triageTurns, err := runTriage(ctx, runner, cfg, req, filtered)
-	if err != nil {
-		return nil, err
+	// fail wraps an error raised after sessions have run so the run's spend to
+	// that point survives the nil result — see RunError.
+	fail := func(err error) (*ReviewResult, error) {
+		return nil, &RunError{CostUSD: totalCost, Err: err}
 	}
+
+	// 1. Triage — scope which files warrant deeper review. Its cost is banked
+	// before the error check: runTriage reports what its sessions cost whether
+	// or not they answered, and a triage failure aborts the run, so this is the
+	// only place that spend can be attributed.
+	triage, triageCost, triageTurns, err := runTriage(ctx, runner, cfg, req, filtered)
 	totalCost += triageCost
+	if err != nil {
+		return fail(err)
+	}
 	// Always one attempt: triage gets no turn-budget retry (see runTriage). Its
 	// strict-JSON re-prompt, when it needs one, is a second session inside that
 	// single attempt — counted in CostUSD, not here.
@@ -304,7 +352,7 @@ func Review(ctx context.Context, req ReviewRequest, db *state.DB, cfg Config) (*
 	// Status is RunStatusPartial, with the missing passes named in
 	// FailedPasses and recorded on the run record by the caller.
 	if status == RunStatusFailed {
-		return nil, fmt.Errorf("all assay deep passes failed: %s", strings.Join(passErrors, "; "))
+		return fail(fmt.Errorf("all assay deep passes failed: %s", strings.Join(passErrors, "; ")))
 	}
 
 	// 3. Aggregate: hash-dedupe → collapse near-duplicates across passes →
@@ -325,7 +373,7 @@ func Review(ctx context.Context, req ReviewRequest, db *state.DB, cfg Config) (*
 	if db != nil {
 		raw, ferr := db.ActiveFindings(req.Anvil, req.PRNumber)
 		if ferr != nil {
-			return nil, fmt.Errorf("assay: querying active findings: %w", ferr)
+			return fail(fmt.Errorf("assay: querying active findings: %w", ferr))
 		}
 		if len(raw) > 0 {
 			existing := make([]ExistingFinding, 0, len(raw))
@@ -340,7 +388,7 @@ func Review(ctx context.Context, req ReviewRequest, db *state.DB, cfg Config) (*
 	if db != nil {
 		posted, err = db.PostedFindingHashes(req.Anvil, req.PRNumber)
 		if err != nil {
-			return nil, fmt.Errorf("assay: querying posted findings: %w", err)
+			return fail(fmt.Errorf("assay: querying posted findings: %w", err))
 		}
 	}
 	suppressed, nSuppressed := suppressPostedNits(deduped, posted)
@@ -349,7 +397,7 @@ func Review(ctx context.Context, req ReviewRequest, db *state.DB, cfg Config) (*
 	// 4. Persist findings (idempotent per HeadSHA via OR IGNORE on the hash).
 	if db != nil {
 		if err := persistFindings(db, req, capped); err != nil {
-			return nil, err
+			return fail(err)
 		}
 	}
 

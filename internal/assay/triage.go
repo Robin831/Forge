@@ -23,6 +23,14 @@ type triageResult struct {
 // the cost and the turn count of the session it recorded, so triage appears in
 // the run's per-pass telemetry alongside the deep passes.
 //
+// The cost is cumulative across every session the pass made and is reported on
+// the error paths too — the provider bills a session that failed, and Review
+// banks this value before it checks the error, so a run that dies here still
+// carries its spend out through RunError. The turn count is the recorded
+// session's, i.e. the last one, for the same reason the deep passes report
+// theirs that way: a sum says nothing about how close any one session came to
+// the --max-turns budget.
+//
 // Triage gets no turn-budget retry: unlike a deep pass it is a hard gate — a
 // triage failure aborts the whole run rather than costing one pass's coverage,
 // so there is no partial outcome for a retry to salvage.
