@@ -94,6 +94,36 @@ describe('PRFindingsPanel', () => {
     )
   })
 
+  it('gives a partial run its own chip and names the passes that did not review the head', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        ...SNAPSHOT,
+        run: {
+          status: 'partial',
+          findings_count: 2,
+          posted_count: 1,
+          started_at: '2026-05-01T00:00:00Z',
+          completed_passes: 4,
+          total_passes: 5,
+          failed_passes: [{ name: 'logic', reason: 'error_max_turns' }],
+          status_text: 'partial: 4 of 5 passes completed (failed: logic — error_max_turns)',
+        },
+      } satisfies PRFindingsResponse),
+    )
+
+    render(<PRFindingsPanel pr={pr()} />)
+
+    const chip = await screen.findByText('partial')
+    // Neither the complete (emerald) nor the error (red) chip — a run that
+    // half-reviewed the head is its own outcome.
+    expect(chip.className).toContain('amber')
+    expect(chip.className).not.toContain('emerald')
+    expect(chip.className).not.toContain('red')
+    expect(
+      screen.getByText('partial: 4 of 5 passes completed (failed: logic — error_max_turns)'),
+    ).toBeInTheDocument()
+  })
+
   it('renders an empty state when there are no findings', async () => {
     fetchMock.mockResolvedValueOnce(
       jsonResponse({ pr: 42, anvil: 'forge', run: null, findings: [] }),

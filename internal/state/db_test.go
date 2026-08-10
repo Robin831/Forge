@@ -4034,6 +4034,70 @@ func TestDB_LastReviewedSHA(t *testing.T) {
 	}
 }
 
+// TestDB_AssayRunCoverageRoundTrip pins the coverage columns: a partial run
+// stores its status, pass tally and the passes that did not review the head, and
+// a run that records none of it (an old row, or one that never reached the
+// engine) reads back as no coverage gap rather than a phantom one.
+func TestDB_AssayRunCoverageRoundTrip(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "forge-state-test-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+	db, err := Open(filepath.Join(tmpDir, "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	partial := &AssayRun{
+		Anvil:           "anvil-1",
+		PRNumber:        7,
+		HeadSHA:         "sha-partial",
+		Status:          AssayStatusPartial,
+		CompletedPasses: 3,
+		TotalPasses:     5,
+		FailedPasses: []AssayPassFailure{
+			{Name: "logic", Reason: "error_max_turns"},
+			{Name: "repo-specific", Reason: "error_max_turns"},
+		},
+	}
+	if err := db.RecordAssayRun(partial); err != nil {
+		t.Fatalf("RecordAssayRun (partial): %v", err)
+	}
+	// A run with no coverage recorded at all — the shape of every pre-existing
+	// row after migration.
+	if err := db.RecordAssayRun(&AssayRun{Anvil: "anvil-1", PRNumber: 8, HeadSHA: "sha-legacy"}); err != nil {
+		t.Fatalf("RecordAssayRun (legacy): %v", err)
+	}
+
+	read := func(id int) (status string, completed, total int, failed []AssayPassFailure) {
+		t.Helper()
+		var raw string
+		err := db.Conn().QueryRow(
+			`SELECT status, completed_passes, total_passes, failed_passes FROM assay_runs WHERE id = ?`, id,
+		).Scan(&status, &completed, &total, &raw)
+		if err != nil {
+			t.Fatalf("reading assay run %d: %v", id, err)
+		}
+		return status, completed, total, DecodeAssayPassFailures(raw)
+	}
+
+	status, completed, total, failed := read(partial.ID)
+	if status != AssayStatusPartial || completed != 3 || total != 5 {
+		t.Errorf("partial run read back as %q %d/%d; want %q 3/5", status, completed, total, AssayStatusPartial)
+	}
+	if len(failed) != 2 || failed[0].Name != "logic" || failed[0].Reason != "error_max_turns" {
+		t.Errorf("failed passes round-tripped as %+v", failed)
+	}
+
+	status, completed, total, failed = read(partial.ID + 1)
+	if status != "" || completed != 0 || total != 0 || len(failed) != 0 {
+		t.Errorf("run without coverage read back as %q %d/%d %+v; want empty",
+			status, completed, total, failed)
+	}
+}
+
 func TestDB_CountAssayRuns(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "forge-state-test-*")
 	if err != nil {

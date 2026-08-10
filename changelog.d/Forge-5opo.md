@@ -1,0 +1,2 @@
+category: Added
+- **Assay partial-run state** - An Assay review where some passes covered the head and others did not now reports a distinct `partial` status instead of a bare failure. The run record persists the pass tally and the failed passes with their reasons, the worker row shows `partial: N of M passes completed (failed: logic, repo-specific — error_max_turns)` on its own amber chip, and the PR summary comment opens with a line naming the passes that did not review this head — so a short findings list is never mistaken for full coverage. (Forge-5opo)

@@ -444,8 +444,23 @@ export interface AssayFinding {
 }
 
 // AssayRunStatus mirrors web's runStatus(): a run is `running` until it
-// finishes, then resolves to `error`, `skipped`, or `complete`.
-export type AssayRunStatus = 'running' | 'error' | 'skipped' | 'complete' | (string & {})
+// finishes, then resolves to `error`, `skipped`, `partial`, or `complete`.
+// `partial` means some review passes covered the head and others never did —
+// the findings are real but they are not a review of the whole diff.
+export type AssayRunStatus =
+  | 'running'
+  | 'error'
+  | 'skipped'
+  | 'partial'
+  | 'complete'
+  | (string & {})
+
+// AssayPassFailure names one Assay pass that did not review the head, and why
+// ("error_max_turns", "rate_limited", …).
+export interface AssayPassFailure {
+  name: string
+  reason?: string
+}
 
 // AssayRun mirrors internal/web's assayRunJSON — a summary of the most recent
 // Assay review pass over a PR so the panel can show rerun progress.
@@ -461,6 +476,12 @@ export interface AssayRun {
   shadow_mode?: boolean
   skipped_reason?: string
   error?: string
+  // Coverage of a `partial` run: how many passes completed out of how many,
+  // which ones did not, and the server-rendered one-line status text.
+  completed_passes?: number
+  total_passes?: number
+  failed_passes?: AssayPassFailure[]
+  status_text?: string
 }
 
 // PRFindingsResponse mirrors internal/web's prFindingsResponse. It is the body

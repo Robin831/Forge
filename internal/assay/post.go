@@ -56,6 +56,11 @@ type PostRequest struct {
 	// top-level review comment. When empty (and there are no findings) the
 	// summary review is skipped.
 	SummaryLine string
+	// FailedPasses names the deep passes that did not review this head. When
+	// non-empty the summary review carries an explicit partial-coverage line,
+	// so a short findings list is never read as a clean review of the whole
+	// diff. Read from the run record, so the comment and Hearth agree.
+	FailedPasses []PassFailure
 	// Findings is the aggregated set to post (already deduped/suppressed/capped
 	// by Review).
 	Findings []Finding
@@ -146,8 +151,11 @@ func (p *Poster) Post(ctx context.Context, cfg Config, req PostRequest) (*PostRe
 
 	// 1. Top-level summary review: severity table over all findings, plus the
 	// full detail of any out-of-diff findings so their content is never lost.
-	if req.SummaryLine != "" || len(req.Findings) > 0 {
-		body := buildSummaryBody(req.SummaryLine, req.Findings) + buildOutOfDiffSection(outOfDiff)
+	// A run with missing passes always posts a summary, even with no findings
+	// and no summary line: "nothing to report" from a review that only half
+	// ran is exactly the impression the coverage line exists to prevent.
+	if req.SummaryLine != "" || len(req.Findings) > 0 || len(req.FailedPasses) > 0 {
+		body := buildSummaryBody(req.SummaryLine, req.FailedPasses, req.Findings) + buildOutOfDiffSection(outOfDiff)
 		if _, err := p.gh(ctx, req.WorktreePath,
 			"pr", "review", strconv.Itoa(req.PRNumber), "--comment", "--body", body,
 		); err != nil {
@@ -317,11 +325,15 @@ func (p *Poster) resolveThread(ctx context.Context, req PostRequest, f state.Fin
 	return true
 }
 
-// buildSummaryBody renders the top-level review body: the summary line followed
-// by a markdown severity table aggregated from the findings. Severities are
-// rendered in a fixed order (Important, Nit, PreExisting); zero-count rows are
-// omitted.
-func buildSummaryBody(summaryLine string, findings []Finding) string {
+// buildSummaryBody renders the top-level review body: the summary line, the
+// partial-coverage caveat when passes are missing, then a markdown severity
+// table aggregated from the findings. Severities are rendered in a fixed order
+// (Important, Nit, PreExisting); zero-count rows are omitted.
+//
+// The coverage line sits directly under the headline — above the table and
+// every finding — because it qualifies all of them: a reader who sees it after
+// the findings has already drawn the wrong conclusion.
+func buildSummaryBody(summaryLine string, failedPasses []PassFailure, findings []Finding) string {
 	counts := map[Severity]int{}
 	for _, f := range findings {
 		counts[f.Severity]++
@@ -330,6 +342,10 @@ func buildSummaryBody(summaryLine string, findings []Finding) string {
 	var b strings.Builder
 	if summaryLine != "" {
 		b.WriteString(summaryLine)
+		b.WriteString("\n\n")
+	}
+	if note := PartialCoverageNote(failedPasses); note != "" {
+		b.WriteString(note)
 		b.WriteString("\n\n")
 	}
 	b.WriteString("| Severity | Count |\n")

@@ -730,6 +730,64 @@ func TestReviewPartialPassFailure(t *testing.T) {
 	if len(result.PassErrors) > 0 && !strings.Contains(result.PassErrors[0], "tests-missing") {
 		t.Errorf("expected PassErrors to mention tests-missing; got %q", result.PassErrors[0])
 	}
+
+	// The run reports the gap rather than reading as a clean review: a
+	// distinct partial status, the pass tally, and the failed pass named
+	// with the reason it failed for.
+	if result.Status != RunStatusPartial {
+		t.Errorf("Status = %q; want %q", result.Status, RunStatusPartial)
+	}
+	if result.TotalPasses != len(deepPasses) {
+		t.Errorf("TotalPasses = %d; want %d", result.TotalPasses, len(deepPasses))
+	}
+	if result.CompletedPasses != len(deepPasses)-1 {
+		t.Errorf("CompletedPasses = %d; want %d", result.CompletedPasses, len(deepPasses)-1)
+	}
+	if len(result.FailedPasses) != 1 {
+		t.Fatalf("expected one FailedPasses entry; got %d (%v)", len(result.FailedPasses), result.FailedPasses)
+	}
+	if result.FailedPasses[0].Name != "tests-missing" {
+		t.Errorf("FailedPasses[0].Name = %q; want tests-missing", result.FailedPasses[0].Name)
+	}
+	if result.FailedPasses[0].Reason != "error_max_turns" {
+		t.Errorf("FailedPasses[0].Reason = %q; want error_max_turns", result.FailedPasses[0].Reason)
+	}
+	want := fmt.Sprintf("partial: %d of %d passes completed (failed: tests-missing — error_max_turns)",
+		len(deepPasses)-1, len(deepPasses))
+	if got := result.StatusText(); got != want {
+		t.Errorf("StatusText() = %q; want %q", got, want)
+	}
+}
+
+// TestReviewCompleteStatus pins the healthy case: every deep pass answering
+// means a complete status, no failed passes, and no coverage caveat anywhere.
+func TestReviewCompleteStatus(t *testing.T) {
+	good := findingsJSON(t, []Finding{
+		{File: "a.go", Anchor: "a.go:1", Category: "logic", Severity: SeverityNit, Title: "t", Body: "b"},
+	})
+	script := map[string][]stubResp{passTriage.Name: {{text: triageJSON(t, nil, "")}}}
+	for _, p := range deepPasses {
+		script[p.Name] = []stubResp{{text: good}}
+	}
+	cfg := DefaultConfig().WithRunner(newScriptRunner(script).run)
+
+	result, err := Review(context.Background(), testRequest(), openTestDB(t), cfg)
+	if err != nil {
+		t.Fatalf("Review: %v", err)
+	}
+	if result.Status != RunStatusComplete {
+		t.Errorf("Status = %q; want %q", result.Status, RunStatusComplete)
+	}
+	if len(result.FailedPasses) != 0 {
+		t.Errorf("expected no FailedPasses; got %v", result.FailedPasses)
+	}
+	if result.CompletedPasses != len(deepPasses) || result.TotalPasses != len(deepPasses) {
+		t.Errorf("pass tally = %d/%d; want %d/%d",
+			result.CompletedPasses, result.TotalPasses, len(deepPasses), len(deepPasses))
+	}
+	if note := PartialCoverageNote(result.FailedPasses); note != "" {
+		t.Errorf("a complete run must carry no coverage caveat; got %q", note)
+	}
 }
 
 func TestReviewRetrySucceedsOnSecondAttempt(t *testing.T) {

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Robin831/Forge/internal/assay"
 	"github.com/Robin831/Forge/internal/state"
 )
 
@@ -257,6 +258,20 @@ type assayRunJSON struct {
 	ShadowMode    bool    `json:"shadow_mode,omitempty"`
 	SkippedReason string  `json:"skipped_reason,omitempty"`
 	Error         string  `json:"error,omitempty"`
+	// Coverage: how many of the run's review passes actually looked at this
+	// head, and which ones did not. Present so the panel can say a `partial`
+	// run's findings are not a full review instead of leaving the operator to
+	// infer it from the error string.
+	CompletedPasses int                 `json:"completed_passes,omitempty"`
+	TotalPasses     int                 `json:"total_passes,omitempty"`
+	FailedPasses    []assayPassFailJSON `json:"failed_passes,omitempty"`
+	StatusText      string              `json:"status_text,omitempty"`
+}
+
+// assayPassFailJSON is one Assay pass that did not review the head, and why.
+type assayPassFailJSON struct {
+	Name   string `json:"name"`
+	Reason string `json:"reason,omitempty"`
 }
 
 // prFindingsResponse is the JSON body returned by GET /api/prs/{id}/findings
@@ -369,30 +384,43 @@ func (s *Server) latestAssayRun(anvil string, prNumber int) (*assayRunJSON, erro
 		durationMs                         int64
 		costUSD                            float64
 		findingsCount, postedCount, shadow int
+		runStatusRaw, failedPassesRaw      string
+		completedPasses, totalPasses       int
 	)
 	err := conn.QueryRow(`SELECT head_sha, started_at, finished_at, duration_ms,
-		cost_usd, findings_count, posted_count, shadow_mode, skipped_reason, error
+		cost_usd, findings_count, posted_count, shadow_mode, skipped_reason, error,
+		status, completed_passes, total_passes, failed_passes
 		FROM assay_runs
 		WHERE anvil = ? AND pr_number = ?
 		ORDER BY id DESC LIMIT 1`, anvil, prNumber).Scan(
 		&headSHA, &startedAt, &finishedAt, &durationMs, &costUSD,
-		&findingsCount, &postedCount, &shadow, &skipped, &errMsg)
+		&findingsCount, &postedCount, &shadow, &skipped, &errMsg,
+		&runStatusRaw, &completedPasses, &totalPasses, &failedPassesRaw)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, err
 	}
+	failed := state.DecodeAssayPassFailures(failedPassesRaw)
+	status := runStatus(finishedAt.Valid, errMsg, skipped, runStatusRaw)
 	run := &assayRunJSON{
-		Status:        runStatus(finishedAt.Valid, errMsg, skipped),
-		HeadSHA:       headSHA,
-		DurationMs:    durationMs,
-		CostUSD:       costUSD,
-		FindingsCount: findingsCount,
-		PostedCount:   postedCount,
-		ShadowMode:    shadow != 0,
-		SkippedReason: skipped,
-		Error:         errMsg,
+		Status:          status,
+		HeadSHA:         headSHA,
+		DurationMs:      durationMs,
+		CostUSD:         costUSD,
+		FindingsCount:   findingsCount,
+		PostedCount:     postedCount,
+		ShadowMode:      shadow != 0,
+		SkippedReason:   skipped,
+		Error:           errMsg,
+		CompletedPasses: completedPasses,
+		TotalPasses:     totalPasses,
+		FailedPasses:    assayPassFailuresJSON(failed),
+	}
+	if status == state.AssayStatusPartial {
+		run.StatusText = assay.RenderStatusText(
+			assay.RunStatusPartial, completedPasses, totalPasses, enginePassFailures(failed))
 	}
 	if t := parseAnyTime(startedAt); !t.IsZero() {
 		run.StartedAt = t.UTC().Format(time.RFC3339Nano)
@@ -420,11 +448,20 @@ func findingStatus(posted, resolved bool) string {
 }
 
 // runStatus maps an assay_runs row to a coarse lifecycle label: running (not
-// finished) → error → skipped → complete.
-func runStatus(finished bool, errMsg, skipped string) string {
+// finished) → partial → error → skipped → complete.
+//
+// A finished run's persisted status wins where it records one: `partial` is a
+// run that produced real findings from some passes while others never saw the
+// head, and it carries a non-empty error string (the failed passes'), so the
+// error branch below would otherwise swallow it. Rows written before coverage
+// was recorded have an empty stored status and fall through to the original
+// derivation unchanged.
+func runStatus(finished bool, errMsg, skipped, stored string) string {
 	switch {
 	case !finished:
 		return "running"
+	case stored == state.AssayStatusPartial:
+		return state.AssayStatusPartial
 	case errMsg != "":
 		return "error"
 	case skipped != "":
@@ -432,6 +469,31 @@ func runStatus(finished bool, errMsg, skipped string) string {
 	default:
 		return "complete"
 	}
+}
+
+// assayPassFailuresJSON converts persisted failed passes to the wire shape.
+func assayPassFailuresJSON(failed []state.AssayPassFailure) []assayPassFailJSON {
+	if len(failed) == 0 {
+		return nil
+	}
+	out := make([]assayPassFailJSON, 0, len(failed))
+	for _, f := range failed {
+		out = append(out, assayPassFailJSON{Name: f.Name, Reason: f.Reason})
+	}
+	return out
+}
+
+// enginePassFailures converts persisted failed passes back into the engine's
+// type so the status line is rendered by the same helper the daemon uses.
+func enginePassFailures(failed []state.AssayPassFailure) []assay.PassFailure {
+	if len(failed) == 0 {
+		return nil
+	}
+	out := make([]assay.PassFailure, 0, len(failed))
+	for _, f := range failed {
+		out = append(out, assay.PassFailure{Name: f.Name, Reason: f.Reason})
+	}
+	return out
 }
 
 // parseAnyTime parses a timestamp using the layouts the state package

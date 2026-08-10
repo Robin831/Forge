@@ -8,6 +8,7 @@ package state
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"log"
 	"os"
@@ -194,6 +195,14 @@ func (db *DB) migrate() error {
 		// features and transcript indexing). Empty for non-Claude providers.
 		{"workers", "session_id", `ALTER TABLE workers ADD COLUMN session_id TEXT NOT NULL DEFAULT ''`},
 		{"workers", "model", `ALTER TABLE workers ADD COLUMN model TEXT NOT NULL DEFAULT ''`},
+		// Assay coverage: which passes actually reviewed a head. Existing rows
+		// default to status '' / zero counts / no failed passes, which readers
+		// treat as "coverage not recorded" and fall back to the old
+		// finished/error/skipped derivation for.
+		{"assay_runs", "status", `ALTER TABLE assay_runs ADD COLUMN status TEXT NOT NULL DEFAULT ''`},
+		{"assay_runs", "completed_passes", `ALTER TABLE assay_runs ADD COLUMN completed_passes INTEGER NOT NULL DEFAULT 0`},
+		{"assay_runs", "total_passes", `ALTER TABLE assay_runs ADD COLUMN total_passes INTEGER NOT NULL DEFAULT 0`},
+		{"assay_runs", "failed_passes", `ALTER TABLE assay_runs ADD COLUMN failed_passes TEXT NOT NULL DEFAULT ''`},
 	}
 	for _, m := range migrations {
 		exists, err := db.columnExists(m.table, m.column)
@@ -552,20 +561,28 @@ CREATE INDEX IF NOT EXISTS idx_pr_findings_anvil_pr_sha ON pr_findings(anvil, pr
 
 -- assay_runs records each Assay review pass over a PR head SHA: timing, cost,
 -- how many findings were produced/posted, and any skip reason or error.
+-- status/completed_passes/total_passes/failed_passes record coverage: a run
+-- where some passes reviewed the head and others did not is 'partial', and
+-- failed_passes (JSON [{name, reason}]) names the ones that did not, so the
+-- worker status text and the PR summary comment read the same source.
 CREATE TABLE IF NOT EXISTS assay_runs (
-    id              INTEGER PRIMARY KEY AUTOINCREMENT,
-    anvil           TEXT NOT NULL,
-    pr_number       INTEGER NOT NULL,
-    head_sha        TEXT NOT NULL DEFAULT '',
-    started_at      TEXT NOT NULL,
-    finished_at     TEXT,
-    duration_ms     INTEGER NOT NULL DEFAULT 0,
-    cost_usd        REAL NOT NULL DEFAULT 0,
-    findings_count  INTEGER NOT NULL DEFAULT 0,
-    skipped_reason  TEXT NOT NULL DEFAULT '',
-    shadow_mode     INTEGER NOT NULL DEFAULT 0,
-    posted_count    INTEGER NOT NULL DEFAULT 0,
-    error           TEXT NOT NULL DEFAULT ''
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    anvil            TEXT NOT NULL,
+    pr_number        INTEGER NOT NULL,
+    head_sha         TEXT NOT NULL DEFAULT '',
+    started_at       TEXT NOT NULL,
+    finished_at      TEXT,
+    duration_ms      INTEGER NOT NULL DEFAULT 0,
+    cost_usd         REAL NOT NULL DEFAULT 0,
+    findings_count   INTEGER NOT NULL DEFAULT 0,
+    skipped_reason   TEXT NOT NULL DEFAULT '',
+    shadow_mode      INTEGER NOT NULL DEFAULT 0,
+    posted_count     INTEGER NOT NULL DEFAULT 0,
+    error            TEXT NOT NULL DEFAULT '',
+    status           TEXT NOT NULL DEFAULT '',
+    completed_passes INTEGER NOT NULL DEFAULT 0,
+    total_passes     INTEGER NOT NULL DEFAULT 0,
+    failed_passes    TEXT NOT NULL DEFAULT ''
 );
 
 CREATE INDEX IF NOT EXISTS idx_assay_runs_anvil_pr ON assay_runs(anvil, pr_number);
@@ -730,10 +747,16 @@ const (
 	WorkerMonitoring WorkerStatus = "monitoring"
 	WorkerDone       WorkerStatus = "done"
 	WorkerFailed     WorkerStatus = "failed"
-	WorkerTimeout    WorkerStatus = "timeout"
-	WorkerStalled    WorkerStatus = "stalled"
-	WorkerPaused     WorkerStatus = "paused"
-	WorkerKilled     WorkerStatus = "killed"
+	// WorkerPartial is a terminal status for work that half-succeeded: an
+	// Assay run where some review passes covered the head and others never
+	// did. It is deliberately neither done nor failed — "done" would sell an
+	// incomplete review as a full one, and "failed" would bury findings that
+	// are real.
+	WorkerPartial WorkerStatus = "partial"
+	WorkerTimeout WorkerStatus = "timeout"
+	WorkerStalled WorkerStatus = "stalled"
+	WorkerPaused  WorkerStatus = "paused"
+	WorkerKilled  WorkerStatus = "killed"
 )
 
 // pausedTransitions is the authoritative state-machine table for transitions
@@ -900,7 +923,7 @@ func (db *DB) UpdateWorkerPhase(id string, phase string) error {
 
 // UpdateWorkerStatus updates a worker's status and optionally sets completed_at.
 func (db *DB) UpdateWorkerStatus(id string, status WorkerStatus) error {
-	if status == WorkerDone || status == WorkerFailed || status == WorkerTimeout {
+	if status == WorkerDone || status == WorkerFailed || status == WorkerPartial || status == WorkerTimeout {
 		_, err := db.conn.Exec(
 			`UPDATE workers SET status = ?, completed_at = ? WHERE id = ?`,
 			string(status), time.Now().Format(dbTimeLayout), id,
@@ -1187,7 +1210,7 @@ func (db *DB) ActiveWorkers() ([]Worker, error) {
 // rather than by string comparison; the SQL LIMIT only bounds the scan.
 func (db *DB) RecentlyFinishedWorkers(window time.Duration) ([]Worker, error) {
 	workers, err := db.queryWorkers(`SELECT id, bead_id, anvil, branch, pid, status, phase, title, pr_number, started_at, completed_at, log_path, session_id, model
-		FROM workers WHERE status IN ('done', 'failed', 'timeout', 'killed') AND completed_at IS NOT NULL
+		FROM workers WHERE status IN ('done', 'failed', 'partial', 'timeout', 'killed') AND completed_at IS NOT NULL
 		ORDER BY completed_at DESC LIMIT 50`)
 	if err != nil {
 		return nil, err
@@ -1658,11 +1681,11 @@ func (db *DB) OrphanedMonitoringBellowsWorkers() ([]OrphanedWorkerInfo, error) {
 	return result, rows.Err()
 }
 
-// CompletedWorkers returns workers in terminal states (done, failed, timeout),
-// ordered by most recently completed first. Limit 0 means no limit.
+// CompletedWorkers returns workers in terminal states (done, partial, failed,
+// timeout), ordered by most recently completed first. Limit 0 means no limit.
 func (db *DB) CompletedWorkers(limit int) ([]Worker, error) {
 	query := `SELECT id, bead_id, anvil, branch, pid, status, phase, title, pr_number, started_at, completed_at, log_path, session_id, model
-		FROM workers WHERE status IN ('done', 'failed', 'timeout')
+		FROM workers WHERE status IN ('done', 'failed', 'partial', 'timeout')
 		ORDER BY completed_at DESC`
 	if limit > 0 {
 		query += fmt.Sprintf(" LIMIT %d", limit)
@@ -2396,17 +2419,21 @@ const (
 	// EventCopilotLimitHit fires when the copilot daily request cap is reached but
 	// copilot is the only configured provider, so the daemon proceeds with copilot
 	// anyway rather than handing the pipeline zero providers (Forge-d5ns).
-	EventCopilotLimitHit     EventType = "copilot_limit_hit"
-	EventDispatchPaused      EventType = "dispatch_paused"
-	EventDispatchResumed     EventType = "dispatch_resumed"
-	EventSchematicSubBead    EventType = "schematic_sub_bead"
-	EventWorkerStalled       EventType = "worker_stalled"
-	EventWorkerRecovered     EventType = "worker_recovered"
-	EventBeadTagged          EventType = "bead_tagged"
-	EventBeadClosed          EventType = "bead_closed"
-	EventPRReadyToMerge      EventType = "pr_ready_to_merge"
-	EventPRReviewNeeded      EventType = "pr_review_needed"
-	EventAssaySkipped        EventType = "assay_skipped"
+	EventCopilotLimitHit  EventType = "copilot_limit_hit"
+	EventDispatchPaused   EventType = "dispatch_paused"
+	EventDispatchResumed  EventType = "dispatch_resumed"
+	EventSchematicSubBead EventType = "schematic_sub_bead"
+	EventWorkerStalled    EventType = "worker_stalled"
+	EventWorkerRecovered  EventType = "worker_recovered"
+	EventBeadTagged       EventType = "bead_tagged"
+	EventBeadClosed       EventType = "bead_closed"
+	EventPRReadyToMerge   EventType = "pr_ready_to_merge"
+	EventPRReviewNeeded   EventType = "pr_review_needed"
+	EventAssaySkipped     EventType = "assay_skipped"
+	// EventAssayPartial fires when an Assay run reviewed a head with only some
+	// of its passes. The message carries the run status text, so the missing
+	// passes are named in the activity feed and not only on the PR.
+	EventAssayPartial        EventType = "assay_partial"
 	EventPRMergeRequested    EventType = "pr_merge_requested"
 	EventPRMergeFailed       EventType = "pr_merge_failed"
 	EventPRAutoMerged        EventType = "pr_auto_merged"
@@ -4789,6 +4816,26 @@ type Finding struct {
 	CreatedAt  time.Time
 }
 
+// Assay run statuses. They mirror assay.RunStatus, restated here because the
+// state package must not import the engine (the engine imports state).
+const (
+	// AssayStatusComplete — every deep pass reviewed the head.
+	AssayStatusComplete = "complete"
+	// AssayStatusPartial — some deep passes reviewed the head and some did
+	// not. The findings are real but do not cover the whole diff.
+	AssayStatusPartial = "partial"
+	// AssayStatusFailed — the run produced no review of this head.
+	AssayStatusFailed = "failed"
+)
+
+// AssayPassFailure names one deep pass that did not review a head, and why
+// ("error_max_turns", "rate_limited", …). Persisted as JSON on the run record
+// so Hearth and the PR summary comment render the same list.
+type AssayPassFailure struct {
+	Name   string `json:"name"`
+	Reason string `json:"reason"`
+}
+
 // AssayRun records a single Assay review pass over a PR head SHA.
 type AssayRun struct {
 	ID            int
@@ -4804,6 +4851,43 @@ type AssayRun struct {
 	ShadowMode    bool
 	PostedCount   int
 	Error         string
+	// Status is the coverage outcome: AssayStatusComplete, AssayStatusPartial
+	// or AssayStatusFailed. Empty on rows written before coverage was
+	// recorded, and on runs that never reached the engine.
+	Status string
+	// CompletedPasses / TotalPasses are the pass tally behind Status.
+	CompletedPasses int
+	TotalPasses     int
+	// FailedPasses names the passes that did not review this head.
+	FailedPasses []AssayPassFailure
+}
+
+// EncodeAssayPassFailures marshals a failed-pass list for the failed_passes
+// column. An empty list stores "" rather than "null" so old and new empty rows
+// read identically.
+func EncodeAssayPassFailures(failed []AssayPassFailure) string {
+	if len(failed) == 0 {
+		return ""
+	}
+	b, err := json.Marshal(failed)
+	if err != nil {
+		return ""
+	}
+	return string(b)
+}
+
+// DecodeAssayPassFailures parses a failed_passes column value. An empty or
+// unparseable value yields no failures — a row that predates the column reads
+// as "no coverage gap recorded", never as a phantom one.
+func DecodeAssayPassFailures(raw string) []AssayPassFailure {
+	if strings.TrimSpace(raw) == "" {
+		return nil
+	}
+	var out []AssayPassFailure
+	if err := json.Unmarshal([]byte(raw), &out); err != nil {
+		return nil
+	}
+	return out
 }
 
 // InsertFinding inserts a new pr_findings row. Insertion is OR IGNORE so a
@@ -5077,8 +5161,9 @@ func (db *DB) RecordAssayRun(r *AssayRun) error {
 	res, err := db.conn.Exec(
 		`INSERT INTO assay_runs
 		     (anvil, pr_number, head_sha, started_at, finished_at, duration_ms,
-		      cost_usd, findings_count, skipped_reason, shadow_mode, posted_count, error)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		      cost_usd, findings_count, skipped_reason, shadow_mode, posted_count, error,
+		      status, completed_passes, total_passes, failed_passes)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		r.Anvil,
 		r.PRNumber,
 		r.HeadSHA,
@@ -5091,6 +5176,10 @@ func (db *DB) RecordAssayRun(r *AssayRun) error {
 		boolToInt(r.ShadowMode),
 		r.PostedCount,
 		r.Error,
+		r.Status,
+		r.CompletedPasses,
+		r.TotalPasses,
+		EncodeAssayPassFailures(r.FailedPasses),
 	)
 	if err != nil {
 		return err

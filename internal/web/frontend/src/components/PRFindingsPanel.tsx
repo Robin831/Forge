@@ -53,12 +53,28 @@ function statusClass(status: FindingStatus): string {
 }
 
 // RUN_STATUS_CLASSES styles the run pill: running spins, complete is green,
-// skipped is muted, and error is red.
+// skipped is muted, error is red, and partial gets its own amber chip — a run
+// that half-reviewed the head is neither a pass nor a failure, and colouring it
+// as either would misstate the coverage the findings below actually have.
 const RUN_STATUS_CLASSES: Record<string, string> = {
   running: 'border-sky-500/40 bg-sky-500/15 text-sky-200',
   complete: 'border-emerald-500/40 bg-emerald-500/15 text-emerald-200',
   skipped: 'border-slate-600/50 bg-slate-700/40 text-slate-300',
+  partial: 'border-amber-500/40 bg-amber-500/15 text-amber-200',
   error: 'border-red-500/40 bg-red-500/15 text-red-200',
+}
+
+// partialCoverageText renders the caveat shown beside a partial run pill. It
+// prefers the server's status_text so the panel, the worker row and the PR
+// comment all name the same passes; the client-side fallback only fires for a
+// run whose text the server did not render.
+function partialCoverageText(run: AssayRun): string {
+  if (run.status_text) return run.status_text
+  const failed = (run.failed_passes ?? [])
+    .map((f) => (f.reason ? `${f.name} — ${f.reason}` : f.name))
+    .join(', ')
+  const tally = `${run.completed_passes ?? 0} of ${run.total_passes ?? 0} passes completed`
+  return failed ? `partial: ${tally} (failed: ${failed})` : `partial: ${tally}`
 }
 
 function runStatusClass(status: string): string {
@@ -67,6 +83,7 @@ function runStatusClass(status: string): string {
 
 function RunSummary({ run }: { run: AssayRun }) {
   const isRunning = run.status === 'running'
+  const isPartial = run.status === 'partial'
   return (
     <div className="flex flex-wrap items-center gap-2 text-xs text-slate-400">
       <span
@@ -76,11 +93,14 @@ function RunSummary({ run }: { run: AssayRun }) {
           <Loader2 size={11} className="animate-spin" aria-hidden />
         ) : run.status === 'complete' ? (
           <CheckCircle2 size={11} aria-hidden />
-        ) : run.status === 'error' ? (
+        ) : run.status === 'error' || isPartial ? (
           <AlertTriangle size={11} aria-hidden />
         ) : null}
         {run.status}
       </span>
+      {isPartial && (
+        <span className="text-amber-200">{partialCoverageText(run)}</span>
+      )}
       <span>
         {run.findings_count} finding{run.findings_count === 1 ? '' : 's'}
         {run.posted_count > 0 ? ` · ${run.posted_count} posted` : ''}

@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"embed"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"strconv"
@@ -94,6 +95,103 @@ type PassOutput struct {
 // pass name, tier is the model tier, and prompt is the fully-built prompt.
 type PassRunner func(ctx context.Context, pass, tier, prompt string) (PassOutput, error)
 
+// Reason labels for a pass that did not review the head. A provider failure
+// reports its result subtype instead (e.g. "error_max_turns") when it has one,
+// since that is the detail an operator acts on.
+const (
+	// ReasonSpawnFailed — the provider process could not be started.
+	ReasonSpawnFailed = "spawn_failed"
+	// ReasonRateLimited — the provider refused the request as rate limited.
+	ReasonRateLimited = "rate_limited"
+	// ReasonProviderFailed — the provider exited non-zero without naming a
+	// result subtype.
+	ReasonProviderFailed = "provider_failed"
+	// ReasonInvalidJSON — the pass answered, but not with parseable findings
+	// JSON, even after the strict-format retry.
+	ReasonInvalidJSON = "invalid_json"
+	// ReasonPromptFailed — the pass prompt could not be assembled.
+	ReasonPromptFailed = "prompt_failed"
+	// ReasonUnknown — an error from an injected runner that carries no
+	// classifiable cause.
+	ReasonUnknown = "error"
+)
+
+// PassError is the error a pass returns when it produced no findings. It keeps
+// the pass name and a short reason structured rather than leaving them to be
+// re-parsed out of a message: the run record, the worker status text and the PR
+// summary comment all need the same two fields.
+//
+// Error() reproduces the message verbatim, so anything that only logs or joins
+// pass errors is unaffected by the extra structure.
+type PassError struct {
+	// Pass is the pass identifier ("logic", "security", …).
+	Pass string
+	// Reason is a short failure label — a provider result subtype where there
+	// is one, else one of the Reason* constants.
+	Reason string
+	// Message is the full human-readable error text.
+	Message string
+	// Err is the wrapped cause, if any.
+	Err error
+}
+
+func (e *PassError) Error() string { return e.Message }
+
+func (e *PassError) Unwrap() error { return e.Err }
+
+// newPassError builds a PassError whose message follows the "assay pass <name>:
+// <detail>" convention every pass error already used.
+func newPassError(pass, reason, detail string, cause error) *PassError {
+	return &PassError{
+		Pass:    pass,
+		Reason:  reason,
+		Message: fmt.Sprintf("assay pass %s: %s", pass, detail),
+		Err:     cause,
+	}
+}
+
+// classifyPassError returns the PassFailure for a pass error. Errors this
+// package built carry their own name and reason; anything else (an injected
+// runner in a test, or a future alternate backend) is attributed to the pass
+// that was running and has its reason inferred from the message.
+func classifyPassError(pass string, err error) PassFailure {
+	var pe *PassError
+	if errors.As(err, &pe) {
+		name := pe.Pass
+		if name == "" {
+			name = pass
+		}
+		return PassFailure{Name: name, Reason: pe.Reason}
+	}
+	return PassFailure{Name: pass, Reason: inferPassReason(err)}
+}
+
+// inferPassReason is the fallback classifier for an error this package did not
+// construct. It recognises the shapes the provider layer produces — a named
+// result subtype, a rate-limit refusal, unparseable output — and otherwise
+// reports ReasonUnknown rather than guessing.
+func inferPassReason(err error) string {
+	if err == nil {
+		return ""
+	}
+	msg := strings.ToLower(err.Error())
+	if i := strings.Index(msg, "subtype "); i >= 0 {
+		subtype := strings.TrimSpace(msg[i+len("subtype "):])
+		subtype = strings.TrimRight(subtype, ").,;")
+		if f := strings.Fields(subtype); len(f) > 0 && f[0] != "" {
+			return f[0]
+		}
+	}
+	switch {
+	case strings.Contains(msg, "rate limit"):
+		return ReasonRateLimited
+	case strings.Contains(msg, "json"):
+		return ReasonInvalidJSON
+	default:
+		return ReasonUnknown
+	}
+}
+
 // newSmithRunner returns the production PassRunner. It spawns a one-shot Smith
 // session in workDir using the provider/model resolved from cfg for the tier.
 func newSmithRunner(cfg Config, req ReviewRequest) PassRunner {
@@ -108,17 +206,27 @@ func newSmithRunner(cfg Config, req ReviewRequest) PassRunner {
 
 		proc, err := smith.SpawnWithOptions(ctx, workDir, prompt, logDir, pv, flags, smith.SpawnOptions{LogPrefix: "assay"})
 		if err != nil {
-			return PassOutput{}, fmt.Errorf("assay pass %s: spawning %s: %w", pass, pv.Label(), err)
+			return PassOutput{}, newPassError(pass, ReasonSpawnFailed,
+				fmt.Sprintf("spawning %s: %v", pv.Label(), err), err)
 		}
 		if req.OnPassLog != nil && proc.LogPath != "" {
 			req.OnPassLog(proc.LogPath)
 		}
 		res := proc.Wait()
 		if res.RateLimited {
-			return PassOutput{}, fmt.Errorf("assay pass %s: provider %s rate limited", pass, pv.Label())
+			return PassOutput{}, newPassError(pass, ReasonRateLimited,
+				fmt.Sprintf("provider %s rate limited", pv.Label()), nil)
 		}
 		if res.IsError || res.ExitCode != 0 {
-			return PassOutput{}, fmt.Errorf("assay pass %s: provider %s failed (exit %d, subtype %s)", pass, pv.Label(), res.ExitCode, res.ResultSubtype)
+			// The result subtype (e.g. error_max_turns) is the reason an
+			// operator acts on, so it becomes the failure label when the
+			// provider reported one.
+			reason := res.ResultSubtype
+			if strings.TrimSpace(reason) == "" {
+				reason = ReasonProviderFailed
+			}
+			return PassOutput{}, newPassError(pass, reason,
+				fmt.Sprintf("provider %s failed (exit %d, subtype %s)", pv.Label(), res.ExitCode, res.ResultSubtype), nil)
 		}
 		text := res.FullOutput
 		if text == "" {
@@ -231,7 +339,7 @@ func sanitize(s string) string {
 func runDeepPass(ctx context.Context, runner PassRunner, cfg Config, req ReviewRequest, scopedDiff, triageNotes string, p passDef) ([]Finding, float64, error) {
 	prompt, err := buildPassPrompt(p, req, scopedDiff, triageNotes)
 	if err != nil {
-		return nil, 0, err
+		return nil, 0, newPassError(p.Name, ReasonPromptFailed, err.Error(), err)
 	}
 
 	out, err := runner(ctx, p.Name, p.Tier, prompt)
@@ -250,7 +358,8 @@ func runDeepPass(ctx context.Context, runner PassRunner, cfg Config, req ReviewR
 		cost += out2.CostUSD
 		findings, perr = parseFindings(out2.Text)
 		if perr != nil {
-			return nil, cost, fmt.Errorf("assay pass %s: invalid JSON output after retry: %w", p.Name, perr)
+			return nil, cost, newPassError(p.Name, ReasonInvalidJSON,
+				fmt.Sprintf("invalid JSON output after retry: %v", perr), perr)
 		}
 	}
 
