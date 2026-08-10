@@ -50,6 +50,9 @@ forge ingots show <id>                # Show ingot details with test results
 forge ledger                          # Open interactive bead management TUI
 forge quest list                      # List discovered E2E quests
 forge quest run <quest> --anvil <name>  # Execute a quest and report results
+forge assay rerun <pr> --anvil <name> # Re-run Assay over a PR's head, addressed by
+                                      # its GitHub PR number (scoped by the anvil)
+forge assay run --pr <id> --anvil <name>  # Same, addressed by the state.db PR row id
 forge wicket status                   # Show Wicket issue triage status
 forge preview list                    # List running Kiln preview environments
 forge preview list --json             # Raw preview_list payload
@@ -430,7 +433,7 @@ The daemon exposes a named pipe (Windows: `\\.\pipe\forge`) or Unix socket. Mess
 | `merge_pr` | Merge a PR (by PR id or number). |
 | `pr_action` | Multiplexed PR action; `pa.Action` ∈ `close`, `discard`, `recover`, `open_browser`, `merge`, `quench`/`cifix`, `burnish`/`reviewfix`, `rebase`, `assign_bellows`, `unassign_bellows`, `approve`. |
 | `warden_rerun` | Re-run Warden review on a bead. |
-| `assay_rerun` | Re-run the assay (E2E) checks on a PR. |
+| `assay_rerun` | Re-run the assay (E2E) checks on a PR. Payload: `ipc.AssayRerunPayload` — `anvil` required, plus **exactly one** of `pr` (the state.db row id the dashboard holds) or `pr_number` (the GitHub number, scoped by the anvil, which `forge assay rerun <pr> --anvil <a>` sends). Both forms resolve through the daemon's `resolvePRTarget` — the one lookup and one error set it shares with `pr_action`'s **rebase** branch, the other handler that takes either form (the row-id-only handlers still look up directly) — so neither form supplied, or both, is a clear refusal rather than a guess at which PR was meant. `pr_action`'s rebase resolves through the same helper and **refuses** on any failure — DB error, missing row, or an id owned by another anvil — rather than dispatching with an empty base: `rebase.Rebase` reads an empty `BaseBranch` as `main` and force-pushes, which for a crucible child based on `feature/<parent-id>` would rewrite the branch onto main and destroy its head. |
 | `resolve_orphan` | Resolve an orphaned bead/worktree via the given action. |
 
 **Crucible**

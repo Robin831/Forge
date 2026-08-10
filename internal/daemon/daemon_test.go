@@ -3336,13 +3336,40 @@ func TestHandleIPC_AssayRerun(t *testing.T) {
 		assert.Contains(t, msg["message"], "invalid assay_rerun payload")
 	})
 
-	t.Run("missing fields", func(t *testing.T) {
+	t.Run("missing anvil", func(t *testing.T) {
+		payload, _ := json.Marshal(ipc.AssayRerunPayload{PR: 1})
+		resp := d.handleIPC(ipc.Command{Type: "assay_rerun", Payload: payload})
+		assert.Equal(t, "error", resp.Type)
+		var msg map[string]string
+		_ = json.Unmarshal(resp.Payload, &msg)
+		assert.Contains(t, msg["message"], "requires anvil")
+	})
+
+	t.Run("no PR target", func(t *testing.T) {
 		payload, _ := json.Marshal(ipc.AssayRerunPayload{Anvil: "test-anvil"})
 		resp := d.handleIPC(ipc.Command{Type: "assay_rerun", Payload: payload})
 		assert.Equal(t, "error", resp.Type)
 		var msg map[string]string
 		_ = json.Unmarshal(resp.Payload, &msg)
-		assert.Contains(t, msg["message"], "requires anvil and pr")
+		assert.Contains(t, msg["message"], "PR target is required")
+	})
+
+	t.Run("both PR targets", func(t *testing.T) {
+		payload, _ := json.Marshal(ipc.AssayRerunPayload{Anvil: "test-anvil", PR: 1, PRNumber: 2})
+		resp := d.handleIPC(ipc.Command{Type: "assay_rerun", Payload: payload})
+		assert.Equal(t, "error", resp.Type)
+		var msg map[string]string
+		_ = json.Unmarshal(resp.Payload, &msg)
+		assert.Contains(t, msg["message"], "not both")
+	})
+
+	t.Run("unknown PR number", func(t *testing.T) {
+		payload, _ := json.Marshal(ipc.AssayRerunPayload{Anvil: "test-anvil", PRNumber: 4242})
+		resp := d.handleIPC(ipc.Command{Type: "assay_rerun", Payload: payload})
+		assert.Equal(t, "error", resp.Type)
+		var msg map[string]string
+		_ = json.Unmarshal(resp.Payload, &msg)
+		assert.Contains(t, msg["message"], "not found")
 	})
 
 	t.Run("unknown anvil", func(t *testing.T) {
@@ -3413,6 +3440,29 @@ func TestHandleIPC_AssayRerun(t *testing.T) {
 			}
 		}
 		assert.True(t, found, "assay_rerun event should be logged")
+	})
+
+	t.Run("addressing the PR by number", func(t *testing.T) {
+		require.NoError(t, db.InsertPR(&state.PR{
+			Number: 88, Anvil: "test-anvil", BeadID: "BD-ASSAY-NUM",
+			Branch: "forge/BD-ASSAY-NUM", Status: state.PROpen, CreatedAt: time.Now(),
+		}))
+
+		payload, _ := json.Marshal(ipc.AssayRerunPayload{Anvil: "test-anvil", PRNumber: 88})
+		resp := d.handleIPC(ipc.Command{Type: "assay_rerun", Payload: payload})
+		assert.Equal(t, "ok", resp.Type)
+
+		var msg map[string]string
+		_ = json.Unmarshal(resp.Payload, &msg)
+		assert.Contains(t, msg["message"], "PR #88")
+
+		done := make(chan struct{})
+		go func() { d.wg.Wait(); close(done) }()
+		select {
+		case <-done:
+		case <-time.After(10 * time.Second):
+			t.Fatal("timed out waiting for background goroutine")
+		}
 	})
 }
 

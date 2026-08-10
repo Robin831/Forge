@@ -433,14 +433,26 @@ type WardenRerunPayload struct {
 
 // AssayRerunPayload is the payload for an "assay_rerun" command.
 // Triggers a fresh Assay AI review pass over a PR's current head, bypassing the
-// Bellows trigger gate's head-SHA debounce. PR is the state.db PR id (matching
-// the {pr} path parameter the web rerun endpoint forwards, and the `pr` field
-// the api.ts client posts); Anvil resolves the worktree/config for the
-// re-review. The field shape mirrors api.ts RerunAssayParams so the web backend
-// can forward the request without translation.
+// Bellows trigger gate's head-SHA debounce. Anvil is always required — it
+// resolves the worktree/config for the re-review — and names exactly one of the
+// two ways to address the PR:
+//
+//   - PR is the state.db row id (matching the {pr} path parameter the web rerun
+//     endpoint forwards and the `pr` field the api.ts client posts). The field
+//     shape mirrors api.ts RerunAssayParams so the web backend can forward the
+//     request without translation.
+//   - PRNumber is the GitHub PR number, scoped by Anvil — what an operator
+//     actually reads off a PR page, and what `forge assay rerun <pr> --anvil`
+//     sends.
+//
+// Supplying both, or neither, is rejected rather than guessed at; see the
+// daemon's resolvePRTarget, which this command shares with pr_action's rebase
+// branch (the other handler that accepts either form). Handlers that only ever
+// take a row id look it up directly and do not go through it.
 type AssayRerunPayload struct {
-	Anvil string `json:"anvil"`
-	PR    int    `json:"pr"`
+	Anvil    string `json:"anvil"`
+	PR       int    `json:"pr,omitempty"`
+	PRNumber int    `json:"pr_number,omitempty"`
 }
 
 // ApproveAsIsPayload is the payload for an "approve_as_is" command.

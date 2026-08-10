@@ -247,6 +247,17 @@ type Daemon struct {
 	// safely read via Load(). WebhookDispatcher methods are nil-safe.
 	dispatcher atomic.Pointer[notify.WebhookDispatcher]
 
+	// lifecycleDispatch overrides where a manually triggered lifecycle action
+	// (the pr_action fix verbs) is sent. nil selects the real
+	// handleLifecycleAction; tests replace it so the request a handler builds
+	// — the rebase base branch above all — can be observed without spawning a
+	// worker. Routed through dispatchLifecycleAction.
+	//
+	// Read from IPC handler goroutines, so it must be set before Run/IPC
+	// serving begins and never mutated afterwards; swapping it mid-run is a
+	// data race.
+	lifecycleDispatch func(context.Context, lifecycle.ActionRequest)
+
 	cancel context.CancelFunc // cancels the Run context for graceful shutdown
 	runCtx context.Context    // the live run context; set in Run() after signal/cancel wiring
 
@@ -1895,6 +1906,17 @@ func (d *Daemon) ensureAssayReviewedHead(ctx context.Context, anvil, anvilPath, 
 	// No dedicated Assay worker row on this path — the run piggybacks on the
 	// Burnish worker — so there is nothing to point at a log file.
 	_, _ = d.runAssayReview(ctx, anvil, anvilPath, beadID, prNumber, st.HeadSHA, worktreePath, "")
+}
+
+// dispatchLifecycleAction runs a lifecycle action on its own goroutine, through
+// the lifecycleDispatch seam so tests can observe the request instead of
+// spawning a worker.
+func (d *Daemon) dispatchLifecycleAction(req lifecycle.ActionRequest) {
+	fn := d.lifecycleDispatch
+	if fn == nil {
+		fn = d.handleLifecycleAction
+	}
+	go fn(d.runCtx, req)
 }
 
 // handleLifecycleAction handles PR-triggered fixes from Bellows.
@@ -6538,22 +6560,20 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 		if err := json.Unmarshal(cmd.Payload, &arp); err != nil {
 			return errorResponse("invalid assay_rerun payload: " + err.Error())
 		}
-		if arp.Anvil == "" || arp.PR == 0 {
-			return errorResponse("assay_rerun requires anvil and pr")
+		if arp.Anvil == "" {
+			return errorResponse("assay_rerun requires anvil")
 		}
 		anvilCfg, ok := d.cfg.Load().Anvils[arp.Anvil]
 		if !ok {
 			return errorResponse("unknown anvil: " + arp.Anvil)
 		}
-		pr, err := d.db.GetPRByID(arp.PR)
+		// The PR may be addressed by its state.db row id (what the web
+		// dashboard holds) or by its GitHub number scoped to this anvil (what
+		// `forge assay rerun <pr> --anvil` sends); resolvePRTarget is the one
+		// place either form becomes a row.
+		pr, err := resolvePRTarget(d.db, arp.PR, arp.PRNumber, arp.Anvil)
 		if err != nil {
-			return errorResponse(fmt.Sprintf("failed to look up PR id %d: %v", arp.PR, err))
-		}
-		if pr == nil {
-			return errorResponse(fmt.Sprintf("PR id %d not found", arp.PR))
-		}
-		if pr.Anvil != arp.Anvil {
-			return errorResponse(fmt.Sprintf("PR id %d belongs to anvil %q, not %q", arp.PR, pr.Anvil, arp.Anvil))
+			return errorResponse(err.Error())
 		}
 		_ = d.db.LogEvent(state.EventPRReviewNeeded, fmt.Sprintf("Assay re-review requested for PR #%d (manual)", pr.Number), pr.BeadID, arp.Anvil)
 		d.logger.Info("Assay re-review requested", "pr", pr.Number, "anvil", arp.Anvil, "bead", pr.BeadID)
@@ -6993,7 +7013,7 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 				Branch:   pa.Branch,
 				IsManual: true,
 			}
-			go d.handleLifecycleAction(d.runCtx, req)
+			d.dispatchLifecycleAction(req)
 			_ = d.db.LogEvent(state.EventQuenchStarted, fmt.Sprintf("PR #%d CI fix triggered by user", pa.PRNumber), pa.BeadID, pa.Anvil)
 			d.logger.Info("CI fix triggered by user via pr_action", "pr", pa.PRNumber, "anvil", pa.Anvil)
 
@@ -7009,7 +7029,7 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 				Branch:   pa.Branch,
 				IsManual: true,
 			}
-			go d.handleLifecycleAction(d.runCtx, req)
+			d.dispatchLifecycleAction(req)
 			_ = d.db.LogEvent(state.EventBurnishStarted, fmt.Sprintf("PR #%d review fix triggered by user", pa.PRNumber), pa.BeadID, pa.Anvil)
 			d.logger.Info("review fix triggered by user via pr_action", "pr", pa.PRNumber, "anvil", pa.Anvil)
 
@@ -7017,14 +7037,28 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 			if pa.Branch == "" {
 				return errorResponse("rebase action requires branch")
 			}
-			pr, err := d.db.GetPRByID(pa.PRID)
+			// Hearth and the web PR rows send the row id and the number
+			// together, so the id wins and the number is the fallback for a PR
+			// the dashboard knows by number alone (an externally-opened PR).
+			// The prologue already guarantees a PR number, so there is always a
+			// target to resolve.
+			//
+			// A PR that will not resolve is refused outright — DB error,
+			// missing row, or an id owned by another anvil alike — rather than
+			// dispatched with an empty base. rebase.Rebase substitutes "main"
+			// for an empty BaseBranch and force-pushes the result, and this
+			// repo deliberately opens crucible child PRs based on
+			// feature/<parent-id>: proceeding on a guessed base would rewrite
+			// such a branch onto main and destroy its old head. A refusal costs
+			// the operator a retry; a wrong force-push costs the branch (cf.
+			// worktree.RemoveIfPushed — what cannot be proven is not assumed).
+			pr, err := resolvePRTargetPreferID(d.db, pa.PRID, pa.PRNumber, pa.Anvil)
 			if err != nil {
-				return errorResponse(fmt.Sprintf("failed to look up PR: %v", err))
+				d.logger.Warn("rebase refused: could not resolve the PR row",
+					"pr", pa.PRNumber, "pr_id", pa.PRID, "anvil", pa.Anvil, "error", err)
+				return errorResponse(fmt.Sprintf("cannot rebase PR #%d: %v", pa.PRNumber, err))
 			}
-			baseBranch := ""
-			if pr != nil {
-				baseBranch = pr.BaseBranch
-			}
+			baseBranch := pr.BaseBranch
 			req := lifecycle.ActionRequest{
 				Action:     lifecycle.ActionRebase,
 				PRNumber:   pa.PRNumber,
@@ -7034,7 +7068,7 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 				BaseBranch: baseBranch,
 				IsManual:   true,
 			}
-			go d.handleLifecycleAction(d.runCtx, req)
+			d.dispatchLifecycleAction(req)
 			_ = d.db.LogEvent(state.EventRebaseStarted, fmt.Sprintf("PR #%d rebase triggered by user", pa.PRNumber), pa.BeadID, pa.Anvil)
 			d.logger.Info("rebase triggered by user via pr_action", "pr", pa.PRNumber, "anvil", pa.Anvil)
 
