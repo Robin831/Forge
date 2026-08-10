@@ -118,7 +118,10 @@ type PassReport struct {
 	// aggregation.
 	Findings int
 	// CostUSD is the model cost attributed to the pass, summed over every
-	// session it took.
+	// provider session it took — a strict-JSON re-prompt and a turn-budget
+	// retry alike, and failed sessions as well as successful ones. Note that
+	// this counts sessions, not Attempts: the two fields deliberately measure
+	// different things.
 	CostUSD float64
 	// Turns is the turn count of the session the pass recorded — the final
 	// one, not the sum, so the number stays comparable to the --max-turns
@@ -128,8 +131,13 @@ type PassReport struct {
 	// same label FailedPasses carries (a provider result subtype where there
 	// is one, e.g. "error_max_turns").
 	TerminationReason string
-	// Attempts is how many sessions the pass took — 2 when it was retried
-	// after exhausting its turn budget.
+	// Attempts is how many *turn-budget* attempts the pass took — 2 when it was
+	// re-run after exhausting its budget. It is not a session count: an attempt
+	// whose first reply will not parse makes a second provider session with a
+	// stricter reminder, and that session is one attempt's business, not a
+	// second attempt at the budget. CostUSD does count it, which is why the two
+	// fields can disagree; the retry telemetry is what Attempts is for, and
+	// only a turn-budget re-run belongs in it.
 	Attempts int
 	// Retried reports whether the pass was re-run in a fresh session after
 	// hitting error_max_turns.
@@ -231,6 +239,9 @@ func Review(ctx context.Context, req ReviewRequest, db *state.DB, cfg Config) (*
 		return nil, err
 	}
 	totalCost += triageCost
+	// Always one attempt: triage gets no turn-budget retry (see runTriage). Its
+	// strict-JSON re-prompt, when it needs one, is a second session inside that
+	// single attempt — counted in CostUSD, not here.
 	passes = append(passes, PassReport{
 		Name:     passTriage.Name,
 		Findings: 0,
@@ -268,13 +279,16 @@ func Review(ctx context.Context, req ReviewRequest, db *state.DB, cfg Config) (*
 			Findings:          len(o.findings),
 			CostUSD:           o.cost,
 			Turns:             o.turns,
-			TerminationReason: o.reason,
+			TerminationReason: o.failure.Reason,
 			Attempts:          o.attempts,
 			Retried:           o.retried,
 		})
 		if o.err != nil {
 			passErrors = append(passErrors, o.err.Error())
-			failedPasses = append(failedPasses, classifyPassError(deepPasses[i].Name, o.err))
+			// runDeepPass already classified the final attempt's error; reusing
+			// its PassFailure keeps one derivation rather than two that could
+			// drift if classification ever becomes attempt-sensitive.
+			failedPasses = append(failedPasses, o.failure)
 			continue
 		}
 		all = append(all, o.findings...)
