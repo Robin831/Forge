@@ -53,10 +53,13 @@ func DeriveStatus(total int, failed []PassFailure) RunStatus {
 	}
 }
 
-// RenderStatusText renders the one-line status an operator reads on the worker
-// row, e.g.
+// RenderStatusText renders the one-line coverage status, e.g.
 //
 //	partial: 3 of 5 passes completed (failed: logic, repo-specific — error_max_turns)
+//
+// It is what the daemon logs, what the assay_partial event message carries, and
+// what the PR findings panel shows beside the run's status pill. The worker row
+// itself carries only the status ("partial") — the tally lives in these three.
 //
 // Passes sharing a reason are grouped behind a single reason; mixed reasons are
 // rendered as "name — reason" pairs. A complete run reads

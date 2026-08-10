@@ -1774,8 +1774,9 @@ func (d *Daemon) runAssayReview(ctx context.Context, anvil, anvilPath, beadID st
 			run.FindingsCount = len(result.Findings)
 			// Coverage is recorded on the run, not re-derived: the status,
 			// the pass tally and the named failed passes all come from the
-			// engine's single computation, so the worker row, this log line,
-			// Hearth and the PR summary comment cannot disagree.
+			// engine's single computation, so the worker row's status chip,
+			// this log line, the assay_partial event, the PR findings panel
+			// and the PR summary comment cannot disagree.
 			run.Status = string(result.Status)
 			run.CompletedPasses = result.CompletedPasses
 			run.TotalPasses = result.TotalPasses

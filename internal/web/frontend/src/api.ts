@@ -795,8 +795,17 @@ export function steerIsResumeDelivery(worker: Steerable | null | undefined): boo
 
 // FINISHED_WORKER_STATUSES are the terminal worker states whose panels linger
 // as frozen transcripts for a few minutes (the /api/workers?recent= window)
-// before aging out of the payload.
-export const FINISHED_WORKER_STATUSES = new Set(['done', 'failed', 'timeout', 'killed'])
+// before aging out of the payload. 'partial' belongs here for the same reason
+// the others do — it is terminal, and a half-covered Assay run is precisely the
+// one an operator wants to read the log of, so its panel must linger rather
+// than vanish on the poll that lands the status.
+export const FINISHED_WORKER_STATUSES = new Set([
+  'done',
+  'failed',
+  'timeout',
+  'killed',
+  'partial',
+])
 
 // isFinishedWorker reports whether a worker reached a terminal status and
 // carries the completion timestamp the lingering panel's "Xm ago" caption and

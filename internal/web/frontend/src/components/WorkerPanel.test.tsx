@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router'
-import type { WorkerInfo } from '../api'
+import { isFinishedWorker, type WorkerInfo } from '../api'
 import { KEY_PREFIX } from '../hooks/useUIState'
 
 const { useEventSourceMock, killWorkerMock, pauseMock, resumeMock, steerMock } = vi.hoisted(() => ({
@@ -29,7 +29,7 @@ vi.mock('../api', async (importOriginal) => ({
   },
 }))
 
-import WorkerPanel, { formatElapsed } from './WorkerPanel'
+import WorkerPanel, { finishedStatusClass, formatElapsed } from './WorkerPanel'
 
 function worker(overrides: Partial<WorkerInfo>): WorkerInfo {
   return {
@@ -275,5 +275,32 @@ describe('formatElapsed', () => {
 
   it('falls back to an em dash for an unparseable timestamp', () => {
     expect(formatElapsed('not-a-date', base)).toBe('—')
+  })
+})
+
+describe('a partial Assay worker', () => {
+  it('lingers as a finished panel instead of vanishing', () => {
+    expect(
+      isFinishedWorker({ status: 'partial', completed_at: '2024-01-01T00:05:00Z' }),
+    ).toBe(true)
+  })
+
+  it('renders its frozen caption in amber, not the failure red', () => {
+    renderPanel(
+      worker({ id: 'w1', status: 'partial', completed_at: '2024-01-01T00:05:00Z' }),
+    )
+    const caption = screen.getByTestId('worker-panel-finished-w1')
+    expect(caption).toHaveTextContent(/partial/)
+    expect(caption.className).toContain('text-amber-200')
+    expect(caption.className).not.toContain('text-red-300')
+  })
+})
+
+describe('finishedStatusClass', () => {
+  it('separates done, partial, and everything that failed', () => {
+    expect(finishedStatusClass('done')).toBe('text-sky-300')
+    expect(finishedStatusClass('partial')).toBe('text-amber-200')
+    expect(finishedStatusClass('failed')).toBe('text-red-300')
+    expect(finishedStatusClass('timeout')).toBe('text-red-300')
   })
 })
