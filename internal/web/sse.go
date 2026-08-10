@@ -459,6 +459,27 @@ func toActivityEvent(e state.Event) activityEvent {
 // client reconnect.
 const workerLogWaitBudget = 30 * time.Second
 
+// logRepointInterval is how often an open worker log stream re-reads the
+// worker row to notice that its log_path moved to a different file. Workers
+// switch log files mid-life — the pipeline row repoints per Smith iteration
+// and for the Warden review, burnish repoints between its fix and verify
+// sessions — and a stream that keeps tailing the file resolved at connection
+// time sits frozen on finished output until the operator refreshes the page
+// (Forge-hyla). A var, not a const, so tests can shorten it.
+var logRepointInterval = 2 * time.Second
+
+// logStageDivider renders the transition line emitted into a live stream when
+// the worker's log_path moves to a new file. It is a plain (non stream-json)
+// line, which the LogViewer renders as raw text between the two transcripts.
+func logStageDivider(logPath string) string {
+	base := filepath.Base(logPath)
+	stage := base
+	if i := strings.IndexByte(base, '-'); i > 0 {
+		stage = base[:i]
+	}
+	return fmt.Sprintf("── %s log started (%s) ──", stage, base)
+}
+
 // workerMayStillLog reports whether a worker with a currently-empty log_path
 // could still record one. The pipeline inserts the row before Smith spawns, so
 // an active worker's path routinely arrives a few seconds late. Bellows
@@ -856,6 +877,7 @@ func (s *Server) handleWorkerLogStream(w http.ResponseWriter, r *http.Request) {
 	defer ticker.Stop()
 	keepalive := time.NewTicker(30 * time.Second)
 	defer keepalive.Stop()
+	lastRepointCheck := time.Now()
 
 	for {
 		select {
@@ -865,6 +887,30 @@ func (s *Server) handleWorkerLogStream(w http.ResponseWriter, r *http.Request) {
 			fmt.Fprint(w, ": keepalive\n\n")
 			flusher.Flush()
 		case <-ticker.C:
+			// Follow log_path repoints: a worker's log file moves when it
+			// enters its next stage (Smith iteration → Warden review, burnish
+			// fix → verify session). A stream that kept tailing the file
+			// resolved at connection time froze on the finished stage until
+			// the operator refreshed the page. Re-resolve periodically and
+			// swap the tailed file, emitting a divider line so the transcript
+			// shows where the new stage begins. An unopenable new file (not
+			// yet created) keeps the old tail and retries on a later check.
+			if time.Since(lastRepointCheck) >= logRepointInterval {
+				lastRepointCheck = time.Now()
+				if newPath, _, _, rerr := resolveWorkerLogPath(s.db, workerID); rerr == nil && newPath != "" && newPath != logPath {
+					if newF, openErr := os.Open(newPath); openErr == nil { //nolint:gosec
+						divider := map[string]string{"line": logStageDivider(newPath), "timestamp": time.Now().UTC().Format(time.RFC3339)}
+						data, _ := json.Marshal(divider)
+						fmt.Fprintf(w, "data: %s\n\n", data)
+						flusher.Flush()
+						f.Close()
+						f = newF
+						logPath = newPath
+						offset = 0
+						partial = ""
+					}
+				}
+			}
 			fi, err := f.Stat()
 			if err != nil {
 				continue

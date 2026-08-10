@@ -1,6 +1,6 @@
 import { useMemo } from 'react'
 import { MonitorOff, Users } from 'lucide-react'
-import type { WorkerInfo } from '../api'
+import { isFinishedWorker, type WorkerInfo } from '../api'
 import { isBellowsMonitor } from './PipelineBar'
 import WorkerPanel from './WorkerPanel'
 
@@ -38,6 +38,17 @@ export default function WorkerPanelGrid({
   onKilled,
 }: WorkerPanelGridProps) {
   const active = useMemo(() => workers.filter(isSlotWorker), [workers])
+  // Recently-finished workers (the daemon includes them for the linger window
+  // requested via ?recent=) render as frozen panels after the live ones, so a
+  // completed transcript stays readable for a few minutes instead of vanishing
+  // on the next poll. They never count toward the idle-slot math.
+  const finished = useMemo(
+    () =>
+      workers
+        .filter((w) => isFinishedWorker(w) && !isBellowsMonitor(w))
+        .sort((a, b) => (b.completed_at ?? '').localeCompare(a.completed_at ?? '')),
+    [workers],
+  )
   const idleCount = Math.max(0, maxTotalSmiths - active.length)
 
   return (
@@ -50,7 +61,7 @@ export default function WorkerPanelGrid({
         </span>
       </div>
 
-      {active.length === 0 && idleCount === 0 ? (
+      {active.length === 0 && finished.length === 0 && idleCount === 0 ? (
         <div
           data-testid="worker-panel-grid-empty"
           className="rounded-xl border border-dashed border-slate-800 bg-slate-900/40 px-4 py-10 text-center text-sm text-slate-500"
@@ -60,6 +71,14 @@ export default function WorkerPanelGrid({
       ) : (
         <div className="grid grid-cols-1 gap-4 lg:grid-cols-2 2xl:grid-cols-3">
           {active.map((worker) => (
+            <WorkerPanel
+              key={worker.id}
+              worker={worker}
+              onExpand={onExpand}
+              onKilled={onKilled}
+            />
+          ))}
+          {finished.map((worker) => (
             <WorkerPanel
               key={worker.id}
               worker={worker}

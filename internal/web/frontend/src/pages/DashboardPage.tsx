@@ -24,7 +24,11 @@ const POLL_INTERVAL_MS = 5000
 export default function DashboardPage() {
   const status = useApiPoll<StatusResponse>('/api/status', POLL_INTERVAL_MS)
   const queue = useApiPoll<QueueResponse>('/api/queue', POLL_INTERVAL_MS)
-  const workers = useApiPoll<WorkersResponse>('/api/workers', POLL_INTERVAL_MS)
+  // recent=180 keeps workers that finished within the last 3 minutes in the
+  // payload so their panels linger with the final transcript instead of
+  // vanishing on the next poll. PipelineBar and the active-worker metrics
+  // filter on active statuses, so the recents only surface in the panel grid.
+  const workers = useApiPoll<WorkersResponse>('/api/workers?recent=180', POLL_INTERVAL_MS)
   const crucibles = useApiPoll<CruciblesResponse>('/api/crucibles', POLL_INTERVAL_MS)
   const [logWorker, setLogWorker] = useState<WorkerInfo | null>(null)
 

@@ -176,7 +176,7 @@ func TestPause_BetweenSpawns_ParksAtWardenApproval(t *testing.T) {
 	params.ParkHandle = ph
 
 	var wardenCalls int32
-	params.WardenReviewer = func(_ context.Context, _, _, _, _, _ string, _ *state.DB, _ string, _ ...provider.Provider) (*warden.ReviewResult, error) {
+	params.WardenReviewer = func(_ context.Context, _, _, _, _, _ string, _ *state.DB, _, _ string, _ ...provider.Provider) (*warden.ReviewResult, error) {
 		if atomic.AddInt32(&wardenCalls, 1) == 1 {
 			// Operator pauses while the first review is in flight, then Warden
 			// approves. The acknowledged pause must survive the approval.
@@ -249,7 +249,7 @@ func TestPause_BetweenSpawns_DuringTemper_ParksAtApproval(t *testing.T) {
 		}
 		return &temper.Result{Passed: true}
 	}
-	params.WardenReviewer = func(_ context.Context, _, _, _, _, _ string, _ *state.DB, _ string, _ ...provider.Provider) (*warden.ReviewResult, error) {
+	params.WardenReviewer = func(_ context.Context, _, _, _, _, _ string, _ *state.DB, _, _ string, _ ...provider.Provider) (*warden.ReviewResult, error) {
 		return &warden.ReviewResult{Verdict: warden.VerdictApprove, Summary: "LGTM"}, nil
 	}
 
@@ -297,7 +297,7 @@ func TestSteer_BetweenSpawns_AppliedAtWardenApproval(t *testing.T) {
 	params.SteerCh = steer
 
 	var wardenCalls int32
-	params.WardenReviewer = func(_ context.Context, _, _, _, _, _ string, _ *state.DB, _ string, _ ...provider.Provider) (*warden.ReviewResult, error) {
+	params.WardenReviewer = func(_ context.Context, _, _, _, _, _ string, _ *state.DB, _, _ string, _ ...provider.Provider) (*warden.ReviewResult, error) {
 		if atomic.AddInt32(&wardenCalls, 1) == 1 {
 			// Steer arrives while the first review is in flight, then Warden
 			// approves. The steer must apply on a further iteration.
@@ -345,7 +345,7 @@ func TestPause_BetweenSpawns_LoopTop_ParksBeforeNextSpawn(t *testing.T) {
 	params.ParkHandle = ph
 
 	var wardenCalls int32
-	params.WardenReviewer = func(_ context.Context, _, _, _, _, _ string, _ *state.DB, _ string, _ ...provider.Provider) (*warden.ReviewResult, error) {
+	params.WardenReviewer = func(_ context.Context, _, _, _, _, _ string, _ *state.DB, _, _ string, _ ...provider.Provider) (*warden.ReviewResult, error) {
 		if atomic.AddInt32(&wardenCalls, 1) == 1 {
 			// Operator pauses while the first review is in flight; that review
 			// then requests changes (no approval-time drain). The acknowledged
@@ -407,7 +407,7 @@ func TestPause_TerminalPath_SurfacedNotDropped(t *testing.T) {
 	ph := &fakeParkHandle{pause: make(chan struct{}, 1), resume: make(chan string, 1)}
 	params.ParkHandle = ph
 
-	params.WardenReviewer = func(_ context.Context, _, _, _, _, _ string, _ *state.DB, _ string, _ ...provider.Provider) (*warden.ReviewResult, error) {
+	params.WardenReviewer = func(_ context.Context, _, _, _, _, _ string, _ *state.DB, _, _ string, _ ...provider.Provider) (*warden.ReviewResult, error) {
 		// Operator pauses during the only review, which then requests changes at
 		// the iteration cap — a terminal non-approval path.
 		ph.pause <- struct{}{}

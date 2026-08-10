@@ -97,7 +97,7 @@ func TestSteer_ProductionWiring_ModeA_ResumeSpawnBornLive(t *testing.T) {
 		resumeSession = sessionID
 		return smith.NewProcessForTest(&smith.Result{ExitCode: 0, SessionID: "sess-2", ResultSubtype: "success"}), nil
 	}
-	params.WardenReviewer = func(_ context.Context, _, _, _, _, _ string, _ *state.DB, _ string, _ ...provider.Provider) (*warden.ReviewResult, error) {
+	params.WardenReviewer = func(_ context.Context, _, _, _, _, _ string, _ *state.DB, _, _ string, _ ...provider.Provider) (*warden.ReviewResult, error) {
 		return &warden.ReviewResult{Verdict: warden.VerdictApprove, Summary: "LGTM"}, nil
 	}
 
@@ -162,7 +162,7 @@ func TestSteer_ProductionWiring_ModeB_QueuesWithoutAbort(t *testing.T) {
 		resumeCtxErr = ctx.Err()
 		return smith.NewProcessForTest(&smith.Result{ExitCode: 0, SessionID: "sess-2", ResultSubtype: "success"}), nil
 	}
-	params.WardenReviewer = func(_ context.Context, _, _, _, _, _ string, _ *state.DB, _ string, _ ...provider.Provider) (*warden.ReviewResult, error) {
+	params.WardenReviewer = func(_ context.Context, _, _, _, _, _ string, _ *state.DB, _, _ string, _ ...provider.Provider) (*warden.ReviewResult, error) {
 		if atomic.AddInt32(&wardenCalls, 1) == 1 {
 			// No spawn is live during Warden — delivering the steer now exercises
 			// mode B through the real handler. (Runs on the pipeline goroutine,

@@ -99,7 +99,11 @@ type ReviewIssue struct {
 // db is used to log lifecycle events; db may be nil to skip logging.
 // providers is the ordered list of AI providers to try. When empty,
 // provider.Defaults() is used. Provider fallback applies on rate limit.
-func Review(ctx context.Context, worktreePath, beadID, beadTitle, beadDescription, anvilPath string, db *state.DB, priorFeedback string, providers ...provider.Provider) (*ReviewResult, error) {
+// workerID, when non-empty, names the worker row whose log_path is repointed
+// to each Claude session this review spawns, so live log streams follow the
+// pipeline from the Smith transcript into the Warden review instead of
+// freezing on the finished Smith log (Forge-hyla).
+func Review(ctx context.Context, worktreePath, beadID, beadTitle, beadDescription, anvilPath string, db *state.DB, priorFeedback, workerID string, providers ...provider.Provider) (*ReviewResult, error) {
 	start := time.Now()
 	anvilName := filepath.Base(anvilPath)
 
@@ -141,7 +145,7 @@ func Review(ctx context.Context, worktreePath, beadID, beadTitle, beadDescriptio
 	// try to disable tool use, but it was unreliable across providers and caused
 	// error_max_turns before the verdict was emitted. Instead the prompt now
 	// instructs Claude to output the verdict JSON FIRST so partial runs are
-	// still parseable. max-turns is set to 5 to give Claude enough room to
+	// still parseable. max-turns (wardenMaxTurns) gives Claude enough room to
 	// output the verdict and then do analysis (even if it reads a few files).
 	logDir := filepath.Join(worktreePath, ".forge-logs")
 	wardenFlags := []string{"--max-turns", fmt.Sprintf("%d", wardenMaxTurns)}
@@ -154,6 +158,13 @@ func Review(ctx context.Context, worktreePath, beadID, beadTitle, beadDescriptio
 		process, err := smith.SpawnWithOptions(ctx, worktreePath, prompt, logDir, pv, wardenFlags, smith.SpawnOptions{LogPrefix: "warden"})
 		if err != nil {
 			return nil, fmt.Errorf("spawning warden (%s): %w", pv.Label(), err)
+		}
+		// Repoint the worker row at the review session's log so live streams
+		// follow the pipeline into the Warden stage.
+		if db != nil && workerID != "" {
+			if uerr := db.UpdateWorkerLogPath(workerID, process.LogPath); uerr != nil {
+				log.Printf("[warden:%s] failed to repoint worker log path: %v", beadID, uerr)
+			}
 		}
 		smithResult = process.Wait()
 		// Persist quota for every attempt (including rate-limited ones) so the
@@ -206,6 +217,11 @@ func Review(ctx context.Context, worktreePath, beadID, beadTitle, beadDescriptio
 		if ferr != nil {
 			log.Printf("[warden:%s] verdict follow-up spawn failed, keeping default verdict: %v", beadID, ferr)
 		} else {
+			if db != nil && workerID != "" {
+				if uerr := db.UpdateWorkerLogPath(workerID, followUp.LogPath); uerr != nil {
+					log.Printf("[warden:%s] failed to repoint worker log path for verdict follow-up: %v", beadID, uerr)
+				}
+			}
 			followRes := followUp.Wait()
 			result.CostUSD += followRes.CostUSD
 			if smith.ResumeUnavailable(followRes) {

@@ -772,6 +772,18 @@ export function steerIsResumeDelivery(worker: Steerable | null | undefined): boo
   return worker?.status === 'paused'
 }
 
+// FINISHED_WORKER_STATUSES are the terminal worker states whose panels linger
+// as frozen transcripts for a few minutes (the /api/workers?recent= window)
+// before aging out of the payload.
+export const FINISHED_WORKER_STATUSES = new Set(['done', 'failed', 'timeout', 'killed'])
+
+// isFinishedWorker reports whether a worker reached a terminal status and
+// carries the completion timestamp the lingering panel's "Xm ago" caption and
+// frozen elapsed time are derived from.
+export function isFinishedWorker(w: Pick<WorkerInfo, 'status' | 'completed_at'>): boolean {
+  return FINISHED_WORKER_STATUSES.has(w.status) && !!w.completed_at
+}
+
 // steerDisabledReason returns a human-readable reason why a worker cannot be
 // steered, or null when steering is allowed. It mirrors the daemon's steer
 // validation (internal/daemon workerSessionNonClaude + the active-handle check):

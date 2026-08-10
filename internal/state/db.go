@@ -1178,6 +1178,30 @@ func (db *DB) ActiveWorkers() ([]Worker, error) {
 		ORDER BY started_at`)
 }
 
+// RecentlyFinishedWorkers returns workers that reached a terminal status
+// (done/failed) within the given window, newest first. The Hearth dashboard
+// merges these into the live workers payload (opt-in via recent_seconds) so a
+// finished worker's panel lingers with its final transcript for a few minutes
+// instead of vanishing on the next poll (Forge-hyla). Timestamps are stored as
+// text, so the window cutoff is applied in Go on the parsed completed_at
+// rather than by string comparison; the SQL LIMIT only bounds the scan.
+func (db *DB) RecentlyFinishedWorkers(window time.Duration) ([]Worker, error) {
+	workers, err := db.queryWorkers(`SELECT id, bead_id, anvil, branch, pid, status, phase, title, pr_number, started_at, completed_at, log_path, session_id, model
+		FROM workers WHERE status IN ('done', 'failed', 'timeout', 'killed') AND completed_at IS NOT NULL
+		ORDER BY completed_at DESC LIMIT 50`)
+	if err != nil {
+		return nil, err
+	}
+	cutoff := time.Now().Add(-window)
+	recent := make([]Worker, 0, len(workers))
+	for _, w := range workers {
+		if w.CompletedAt != nil && w.CompletedAt.After(cutoff) {
+			recent = append(recent, w)
+		}
+	}
+	return recent, nil
+}
+
 // PausedWorkers returns workers currently parked by an operator pause (status
 // 'paused'). A parked pipeline goroutine still holds its git worktree and will
 // respawn a running smith on resume, so callers that clean up "abandoned"

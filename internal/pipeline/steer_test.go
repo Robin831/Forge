@@ -56,7 +56,7 @@ func TestSteer_InterruptAndResume(t *testing.T) {
 
 	// The resume iteration (iteration 2) produced a diff; Warden approves.
 	params.EmptyDiffChecker = func(_, _ string) bool { return false }
-	params.WardenReviewer = func(_ context.Context, _, _, _, _, _ string, _ *state.DB, _ string, _ ...provider.Provider) (*warden.ReviewResult, error) {
+	params.WardenReviewer = func(_ context.Context, _, _, _, _, _ string, _ *state.DB, _, _ string, _ ...provider.Provider) (*warden.ReviewResult, error) {
 		return &warden.ReviewResult{Verdict: warden.VerdictApprove, Summary: "LGTM"}, nil
 	}
 
@@ -116,7 +116,7 @@ func TestSteer_PersistsBeadSteeredEventAndNote(t *testing.T) {
 		return smith.NewProcessForTest(&smith.Result{ExitCode: 0, SessionID: "sess-2", ResultSubtype: "success"}), nil
 	}
 	params.EmptyDiffChecker = func(_, _ string) bool { return false }
-	params.WardenReviewer = func(_ context.Context, _, _, _, _, _ string, _ *state.DB, _ string, _ ...provider.Provider) (*warden.ReviewResult, error) {
+	params.WardenReviewer = func(_ context.Context, _, _, _, _, _ string, _ *state.DB, _, _ string, _ ...provider.Provider) (*warden.ReviewResult, error) {
 		return &warden.ReviewResult{Verdict: warden.VerdictApprove, Summary: "LGTM"}, nil
 	}
 
@@ -164,7 +164,7 @@ func TestSteer_ModeB_EnqueueBetweenSpawns(t *testing.T) {
 	params.SteerCh = steer
 
 	var wardenCalls int32
-	params.WardenReviewer = func(_ context.Context, _, _, _, _, _ string, _ *state.DB, _ string, _ ...provider.Provider) (*warden.ReviewResult, error) {
+	params.WardenReviewer = func(_ context.Context, _, _, _, _, _ string, _ *state.DB, _, _ string, _ ...provider.Provider) (*warden.ReviewResult, error) {
 		if atomic.AddInt32(&wardenCalls, 1) == 1 {
 			// Enqueue the steer message while the first review is in flight.
 			steer <- "prioritise the caching layer"
@@ -259,7 +259,7 @@ func TestSteer_ModeB_NoSessionFoldsIntoPrompt(t *testing.T) {
 	params.SteerCh = steer
 
 	var wardenCalls int32
-	params.WardenReviewer = func(_ context.Context, _, _, _, _, _ string, _ *state.DB, _ string, _ ...provider.Provider) (*warden.ReviewResult, error) {
+	params.WardenReviewer = func(_ context.Context, _, _, _, _, _ string, _ *state.DB, _, _ string, _ ...provider.Provider) (*warden.ReviewResult, error) {
 		if atomic.AddInt32(&wardenCalls, 1) == 1 {
 			steer <- "use the streaming API"
 			return &warden.ReviewResult{Verdict: warden.VerdictRequestChanges, Summary: "handle the timeout"}, nil

@@ -91,6 +91,42 @@ describe('WorkerPanelGrid slot math', () => {
     expect(screen.getAllByTestId('worker-panel-idle-slot')).toHaveLength(2)
   })
 
+  it('lingers recently-finished workers as extra panels without eating idle slots', () => {
+    render(
+      <WorkerPanelGrid
+        workers={[
+          worker({ id: 'w-live', status: 'running' }),
+          worker({
+            id: 'w-done',
+            status: 'done',
+            completed_at: '2024-01-01T00:10:00Z',
+          }),
+          worker({
+            id: 'w-failed',
+            status: 'failed',
+            completed_at: '2024-01-01T00:05:00Z',
+          }),
+          // Bellows monitor rows never linger, finished or not.
+          worker({
+            id: 'bellows-forge-9',
+            status: 'done',
+            phase: 'bellows',
+            log_path: undefined,
+            completed_at: '2024-01-01T00:09:00Z',
+          }),
+        ]}
+        maxTotalSmiths={2}
+      />,
+    )
+
+    expect(screen.getByTestId('panel-w-live')).toBeInTheDocument()
+    expect(screen.getByTestId('panel-w-done')).toBeInTheDocument()
+    expect(screen.getByTestId('panel-w-failed')).toBeInTheDocument()
+    expect(screen.queryByTestId('panel-bellows-forge-9')).not.toBeInTheDocument()
+    // Finished panels do not consume smith slots: 2 cap − 1 active = 1 idle.
+    expect(screen.getAllByTestId('worker-panel-idle-slot')).toHaveLength(1)
+  })
+
   it('shows the empty state when there are no active workers and no slots', () => {
     render(<WorkerPanelGrid workers={[]} maxTotalSmiths={0} />)
     expect(screen.getByTestId('worker-panel-grid-empty')).toBeInTheDocument()

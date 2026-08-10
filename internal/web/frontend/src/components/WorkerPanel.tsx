@@ -11,14 +11,18 @@ import {
 } from 'lucide-react'
 import {
   actions,
+  apiGet,
+  isFinishedWorker,
   steerDisabledReason,
   steerIsResumeDelivery,
   type LogLine,
+  type LogTailResponse,
   type WorkerInfo,
 } from '../api'
 import { useAction } from '../hooks/useAction'
 import { useEventSource } from '../hooks/useEventSource'
 import { useUIState } from '../hooks/useUIState'
+import { relativeTime } from '../lib/format'
 import { parseTranscript, type TranscriptEntry } from '../lib/logParse'
 import ConfirmModal from './ConfirmModal'
 import LogViewer from './LogViewer'
@@ -44,8 +48,9 @@ const PREVIEW_ENTRIES = 3
 
 // A worker occupies a Smith slot — and therefore streams live output worth
 // showing — while pending, running, reviewing (Warden), or paused. Terminal
-// states (done/failed/…) are handled by the grid, which unmounts the panel on
-// the next poll.
+// workers linger for a few minutes as frozen panels (isFinishedWorker) — the
+// SSE closed, the final transcript shown from the live snapshot or a one-shot
+// tail fetch — until they age out of the ?recent= window and unmount.
 const ACTIVE_STATUSES = new Set(['pending', 'running', 'reviewing', 'paused'])
 
 // STATUS_CLASSES mirrors WorkersPane so the status chip reads identically
@@ -126,15 +131,20 @@ export default function WorkerPanel({
   )
 
   const isActive = ACTIVE_STATUSES.has(worker.status)
+  const isFinished = isFinishedWorker(worker)
   const bodyId = `worker-panel-body-${worker.id}`
 
   // Live elapsed ticker: re-render once a second while the worker is active so
-  // the duration stays fresh. Terminal workers keep their frozen final value.
+  // the duration stays fresh. A finished panel ticks slowly so its "Xm ago"
+  // caption ages; other terminal states keep their frozen final value.
   useEffect(() => {
-    if (!isActive) return
-    const interval = window.setInterval(() => setNow(Date.now()), 1000)
+    if (!isActive && !isFinished) return
+    const interval = window.setInterval(
+      () => setNow(Date.now()),
+      isActive ? 1000 : 15000,
+    )
     return () => window.clearInterval(interval)
-  }, [isActive])
+  }, [isActive, isFinished])
 
   // Only open the SSE for a visible (non-collapsed), active worker. Collapsing
   // sets url=null which closes the connection (the hook's url=null path), so
@@ -155,10 +165,34 @@ export default function WorkerPanel({
     if (streamURL && rawLines.length) setSnapshot(rawLines)
   }, [streamURL, rawLines])
 
+  // A finished panel mounted after the run (page refresh, or the worker
+  // completed before its panel ever streamed) has no live snapshot — fetch the
+  // transcript tail once so the lingering panel still shows what happened.
+  const [tailLines, setTailLines] = useState<string[] | null>(null)
+  useEffect(() => {
+    if (!isFinished || snapshot.length > 0 || tailLines !== null) return
+    let cancelled = false
+    apiGet<LogTailResponse>(
+      `/api/worker/${encodeURIComponent(worker.id)}/log?tail=${maxItems}`,
+    )
+      .then((res) => {
+        if (!cancelled) setTailLines(res.lines ?? [])
+      })
+      .catch(() => {
+        if (!cancelled) setTailLines([])
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [isFinished, snapshot.length, tailLines, worker.id, maxItems])
+
+  const frozenLines = snapshot.length > 0 ? snapshot : (tailLines ?? [])
+
   const previewEntries = useMemo(() => {
-    const entries = parseTranscript(snapshot).filter((e) => e.kind !== 'hidden')
+    const source = snapshot.length > 0 ? snapshot : (tailLines ?? [])
+    const entries = parseTranscript(source).filter((e) => e.kind !== 'hidden')
     return entries.slice(-PREVIEW_ENTRIES)
-  }, [snapshot])
+  }, [snapshot, tailLines])
 
   const handleKill = async () => {
     const ok = await run(() => actions.killWorker(worker.id), {
@@ -210,7 +244,9 @@ export default function WorkerPanel({
       className={`flex flex-col overflow-hidden rounded-xl border ${
         isPaused
           ? 'border-amber-500/50 bg-amber-950/10'
-          : 'border-slate-800 bg-slate-900/60'
+          : isFinished
+            ? 'border-slate-800/80 bg-slate-900/40 opacity-80'
+            : 'border-slate-800 bg-slate-900/60'
       }`}
     >
       <header
@@ -261,7 +297,9 @@ export default function WorkerPanel({
           title={`Started ${worker.started_at}`}
           data-testid={`worker-panel-elapsed-${worker.id}`}
         >
-          {formatElapsed(worker.started_at, now)}
+          {isFinished && worker.completed_at
+            ? formatElapsed(worker.started_at, Date.parse(worker.completed_at))
+            : formatElapsed(worker.started_at, now)}
         </span>
 
         {/* Preview trigger. Most useful on a ready-to-merge card — the branch
@@ -379,6 +417,25 @@ export default function WorkerPanel({
               keyPrefix={worker.id}
               heightClass="max-h-96"
               jumpToBottom={!isPaused}
+            />
+          ) : isFinished ? (
+            <LogViewer
+              rawLines={frozenLines}
+              liveWaiting={false}
+              statusText={
+                <span
+                  className={`inline-flex items-center gap-1.5 ${
+                    worker.status === 'done' ? 'text-sky-300' : 'text-red-300'
+                  }`}
+                  data-testid={`worker-panel-finished-${worker.id}`}
+                >
+                  <Terminal size={12} aria-hidden />
+                  {worker.status} · {relativeTime(worker.completed_at)}
+                </span>
+              }
+              keyPrefix={worker.id}
+              heightClass="max-h-96"
+              jumpToBottom={false}
             />
           ) : (
             <p className="px-4 py-6 text-center text-xs text-slate-500">

@@ -475,7 +475,7 @@ type Params struct {
 	// TemperRunner overrides temper.Run. Used in tests.
 	TemperRunner func(ctx context.Context, wtPath string, cfg temper.Config, db *state.DB, beadID, anvilName string) *temper.Result
 	// WardenReviewer overrides warden.Review. Used in tests.
-	WardenReviewer func(ctx context.Context, wtPath, beadID, beadTitle, beadDescription, anvilPath string, db *state.DB, priorFeedback string, providers ...provider.Provider) (*warden.ReviewResult, error)
+	WardenReviewer func(ctx context.Context, wtPath, beadID, beadTitle, beadDescription, anvilPath string, db *state.DB, priorFeedback, workerID string, providers ...provider.Provider) (*warden.ReviewResult, error)
 	// BeadReleaser overrides the default exec-based bd-update call for releasing
 	// a bead back to open. Used in tests.
 	BeadReleaser func(beadID, anvilPath string) error
@@ -2592,7 +2592,7 @@ func Run(ctx context.Context, p Params) *Outcome {
 			}
 
 			var err error
-			reviewResult, err = reviewWarden(ctx, wt.Path, p.Bead.ID, p.Bead.Title, p.Bead.SpecForPrompt(), p.AnvilConfig.Path, p.DB, wardenFeedbackArg, p.wardenProviders(providers)...)
+			reviewResult, err = reviewWarden(ctx, wt.Path, p.Bead.ID, p.Bead.Title, p.Bead.SpecForPrompt(), p.AnvilConfig.Path, p.DB, wardenFeedbackArg, workerID, p.wardenProviders(providers)...)
 			if err != nil {
 				log.Printf("[pipeline:%s] Warden error: %v", workerID, err)
 				// Warden failure is not fatal — default to approve and let human review

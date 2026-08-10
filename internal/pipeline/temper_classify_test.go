@@ -72,7 +72,7 @@ func TestTemper_TimeoutFailure_RecoversOnRetry(t *testing.T) {
 		}
 		return &temper.Result{Passed: true}
 	}
-	params.WardenReviewer = func(_ context.Context, _, _, _, _, _ string, _ *state.DB, _ string, _ ...provider.Provider) (*warden.ReviewResult, error) {
+	params.WardenReviewer = func(_ context.Context, _, _, _, _, _ string, _ *state.DB, _, _ string, _ ...provider.Provider) (*warden.ReviewResult, error) {
 		return &warden.ReviewResult{Verdict: warden.VerdictApprove, Summary: "ok"}, nil
 	}
 

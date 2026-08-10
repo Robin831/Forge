@@ -43,7 +43,7 @@ func TestBeforeSmithHook_Abort(t *testing.T) {
 	params.AnvilConfig.Hooks = &config.HooksConfig{
 		BeforeSmith: "exit 1",
 	}
-	params.WardenReviewer = func(_ context.Context, _, _, _, _, _ string, _ *state.DB, _ string, _ ...provider.Provider) (*warden.ReviewResult, error) {
+	params.WardenReviewer = func(_ context.Context, _, _, _, _, _ string, _ *state.DB, _, _ string, _ ...provider.Provider) (*warden.ReviewResult, error) {
 		return &warden.ReviewResult{Verdict: warden.VerdictApprove}, nil
 	}
 
@@ -62,7 +62,7 @@ func TestAfterSmithHook_NoAbort(t *testing.T) {
 	params.AnvilConfig.Hooks = &config.HooksConfig{
 		AfterSmith: "exit 1",
 	}
-	params.WardenReviewer = func(_ context.Context, _, _, _, _, _ string, _ *state.DB, _ string, _ ...provider.Provider) (*warden.ReviewResult, error) {
+	params.WardenReviewer = func(_ context.Context, _, _, _, _, _ string, _ *state.DB, _, _ string, _ ...provider.Provider) (*warden.ReviewResult, error) {
 		return &warden.ReviewResult{Verdict: warden.VerdictApprove, Summary: "lgtm"}, nil
 	}
 
@@ -89,7 +89,7 @@ func TestBeforeTemperHook_ReceivesEnv(t *testing.T) {
 		wtPath = wt
 		return &temper.Result{Passed: true}
 	}
-	params.WardenReviewer = func(_ context.Context, _, _, _, _, _ string, _ *state.DB, _ string, _ ...provider.Provider) (*warden.ReviewResult, error) {
+	params.WardenReviewer = func(_ context.Context, _, _, _, _, _ string, _ *state.DB, _, _ string, _ ...provider.Provider) (*warden.ReviewResult, error) {
 		return &warden.ReviewResult{Verdict: warden.VerdictApprove, Summary: "ok"}, nil
 	}
 
@@ -124,7 +124,7 @@ func TestHooks_SuccessfulPipeline(t *testing.T) {
 		wtPath = wt
 		return origSmith(ctx, wt, promptText, logDir, pv, flags)
 	}
-	params.WardenReviewer = func(_ context.Context, _, _, _, _, _ string, _ *state.DB, _ string, _ ...provider.Provider) (*warden.ReviewResult, error) {
+	params.WardenReviewer = func(_ context.Context, _, _, _, _, _ string, _ *state.DB, _, _ string, _ ...provider.Provider) (*warden.ReviewResult, error) {
 		return &warden.ReviewResult{Verdict: warden.VerdictApprove, Summary: "lgtm"}, nil
 	}
 

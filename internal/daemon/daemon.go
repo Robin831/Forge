@@ -5747,6 +5747,27 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 		if err != nil {
 			return errorResponse(fmt.Sprintf("active workers: %v", err))
 		}
+		// Opt-in recently-finished workers (recent_seconds in the payload):
+		// the web dashboard asks for a few minutes of terminal workers so a
+		// finished panel lingers with its transcript instead of vanishing on
+		// the next poll. Clients that send no payload (the TUI) see only
+		// active workers, unchanged.
+		if len(cmd.Payload) > 0 {
+			var wp struct {
+				RecentSeconds int `json:"recent_seconds"`
+			}
+			if jerr := json.Unmarshal(cmd.Payload, &wp); jerr == nil && wp.RecentSeconds > 0 {
+				if wp.RecentSeconds > 3600 {
+					wp.RecentSeconds = 3600
+				}
+				recent, rerr := d.db.RecentlyFinishedWorkers(time.Duration(wp.RecentSeconds) * time.Second)
+				if rerr != nil {
+					d.logger.Warn("workers IPC: RecentlyFinishedWorkers failed; returning active only", "error", rerr)
+				} else {
+					workers = append(workers, recent...)
+				}
+			}
+		}
 		// Build an index of PRs that currently meet every ready-to-merge
 		// condition (CI green, no pending reviews, no unresolved threads, not
 		// conflicting, non-terminal status). Bellows synthetic monitor workers
@@ -9430,7 +9451,7 @@ func (d *Daemon) handleWardenRerun(beadID, anvil, branch string, anvilCfg config
 		baseBranch = beads[0].EpicBranch
 	}
 
-	result, err := warden.Review(ctx, wt.Path, beadID, title, description, anvilCfg.Path, d.db, "", providers...)
+	result, err := warden.Review(ctx, wt.Path, beadID, title, description, anvilCfg.Path, d.db, "", workerID, providers...)
 	if err != nil {
 		d.logger.Error("warden_rerun: review failed", "bead", beadID, "error", err)
 		_ = d.db.UpdateWorkerStatus(workerID, state.WorkerFailed)

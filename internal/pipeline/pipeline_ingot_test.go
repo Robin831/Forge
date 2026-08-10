@@ -116,7 +116,7 @@ func TestIngot_WardenReject_MarksFailed(t *testing.T) {
 	db := newTestDB(t)
 	params, _, _ := baseParams(t, db)
 
-	params.WardenReviewer = func(_ context.Context, _, _, _, _, _ string, _ *state.DB, _ string, _ ...provider.Provider) (*warden.ReviewResult, error) {
+	params.WardenReviewer = func(_ context.Context, _, _, _, _, _ string, _ *state.DB, _, _ string, _ ...provider.Provider) (*warden.ReviewResult, error) {
 		return &warden.ReviewResult{
 			Verdict: warden.VerdictReject,
 			Summary: "Terrible code",
@@ -224,8 +224,8 @@ func TestTruncateOutput(t *testing.T) {
 }
 
 // approveWarden returns a WardenReviewer that always approves.
-func approveWarden() func(context.Context, string, string, string, string, string, *state.DB, string, ...provider.Provider) (*warden.ReviewResult, error) {
-	return func(_ context.Context, _, _, _, _, _ string, _ *state.DB, _ string, _ ...provider.Provider) (*warden.ReviewResult, error) {
+func approveWarden() func(context.Context, string, string, string, string, string, *state.DB, string, string, ...provider.Provider) (*warden.ReviewResult, error) {
+	return func(_ context.Context, _, _, _, _, _ string, _ *state.DB, _, _ string, _ ...provider.Provider) (*warden.ReviewResult, error) {
 		return &warden.ReviewResult{Verdict: warden.VerdictApprove, Summary: "LGTM"}, nil
 	}
 }

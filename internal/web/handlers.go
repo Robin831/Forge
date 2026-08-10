@@ -251,9 +251,26 @@ func (s *Server) handleQueue(w http.ResponseWriter, r *http.Request) {
 
 // handleWorkers mirrors the IPC "workers" command, enriching each worker that
 // has a pr_number with its pr_url so Hearth 2.0's pipeline view and Workers
-// pane (both fed by /api/workers) can render a clickable GitHub link.
+// pane (both fed by /api/workers) can render a clickable GitHub link. An
+// optional ?recent=<seconds> asks the daemon to append workers that finished
+// within that window, so the dashboard can linger completed panels.
 func (s *Server) handleWorkers(w http.ResponseWriter, r *http.Request) {
-	resp := s.dispatchIPC("workers")
+	cmd := ipc.Command{Type: "workers"}
+	if raw := r.URL.Query().Get("recent"); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil || n < 0 {
+			writeError(w, http.StatusBadRequest, "recent must be a non-negative integer")
+			return
+		}
+		if n > 3600 {
+			n = 3600
+		}
+		if n > 0 {
+			payload, _ := json.Marshal(map[string]int{"recent_seconds": n})
+			cmd.Payload = payload
+		}
+	}
+	resp := s.handler(cmd)
 	resp.Payload = s.enrichWorkerPRURLs(resp.Payload)
 	s.writeIPCResponse(w, resp)
 }
