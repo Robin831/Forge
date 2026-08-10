@@ -4858,6 +4858,10 @@ func workerStatusIndicator(status, frame string) string {
 		return "○"
 	case "done":
 		return "✓"
+	case "partial":
+		// Half-filled: an Assay run some of whose passes never reviewed the
+		// head — not a tick, not a cross.
+		return "◐"
 	case "failed":
 		return "✗"
 	default:

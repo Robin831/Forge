@@ -1614,6 +1614,59 @@ func assaySummaryLine(findings []assay.Finding) string {
 	return "Assay (AI review): " + strings.Join(parts, ", ")
 }
 
+// statePassFailures converts the engine's failed-pass list into the persisted
+// form. The two types are deliberately separate — the state package cannot
+// import the engine — but they carry the same two fields, so the run record and
+// the review result always name the same passes for the same reasons.
+// stateAssayStatus converts the engine's run status into the persisted form,
+// the same boundary and the same reason as statePassFailures below: the state
+// package cannot import the engine, so the two restate one set of values. The
+// explicit switch is what makes the three known statuses checked rather than
+// assumed by a bare cast — readers downstream compare against the state
+// constants (assayWorkerStatus, internal/web's PR fallback), and a rename on
+// either side would otherwise fail silently. An unknown status is passed
+// through verbatim so a value the engine adds later is still persisted.
+func stateAssayStatus(s assay.RunStatus) string {
+	switch s {
+	case assay.RunStatusComplete:
+		return state.AssayStatusComplete
+	case assay.RunStatusPartial:
+		return state.AssayStatusPartial
+	case assay.RunStatusFailed:
+		return state.AssayStatusFailed
+	default:
+		return string(s)
+	}
+}
+
+func statePassFailures(failed []assay.PassFailure) []state.AssayPassFailure {
+	if len(failed) == 0 {
+		return nil
+	}
+	out := make([]state.AssayPassFailure, 0, len(failed))
+	for _, f := range failed {
+		out = append(out, state.AssayPassFailure{Name: f.Name, Reason: f.Reason})
+	}
+	return out
+}
+
+// assayWorkerStatus maps a finished Assay run onto the worker row's terminal
+// status. A partial run gets its own status rather than being flattened into
+// failed: findings were produced and posted, so the row must not read as a run
+// that reviewed nothing — nor as a clean one, which "done" would imply.
+func assayWorkerStatus(run *state.AssayRun, recErr error) state.WorkerStatus {
+	switch {
+	case recErr != nil || run == nil:
+		return state.WorkerFailed
+	case run.Status == state.AssayStatusPartial:
+		return state.WorkerPartial
+	case run.Error != "":
+		return state.WorkerFailed
+	default:
+		return state.WorkerDone
+	}
+}
+
 // restoreDispatchPause reads the persisted manual dispatch-pause flag from
 // state.db and, if it was set, restores the in-memory atomic and pausedSince
 // so a pause survives daemon restarts. It logs an event mirroring
@@ -1713,6 +1766,7 @@ func (d *Daemon) runAssayReview(ctx context.Context, anvil, anvilPath, beadID st
 		d.logger.Error("failed to fetch PR diff for Assay", "pr", prNumber, "bead", beadID, "error", diffErr, "stderr", diffStderr.String())
 		run.SkippedReason = "diff fetch failed"
 		run.Error = diffErr.Error()
+		run.Status = state.AssayStatusFailed
 	} else {
 		// Point the worker row at the first pass log to be spawned (triage,
 		// which always runs before the concurrent deep passes) so the Hearth
@@ -1735,18 +1789,37 @@ func (d *Daemon) runAssayReview(ctx context.Context, anvil, anvilPath, beadID st
 		if rerr != nil {
 			d.logger.Error("Assay review failed", "pr", prNumber, "bead", beadID, "error", rerr)
 			run.Error = rerr.Error()
+			run.Status = state.AssayStatusFailed
 		} else {
 			run.CostUSD = result.CostUSD
 			run.FindingsCount = len(result.Findings)
+			// Coverage is recorded on the run, not re-derived: the status,
+			// the pass tally and the named failed passes all come from the
+			// engine's single computation, so the worker row's status chip,
+			// this log line, the assay_partial event, the PR findings panel
+			// and the PR summary comment cannot disagree.
+			run.Status = stateAssayStatus(result.Status)
+			run.CompletedPasses = result.CompletedPasses
+			run.TotalPasses = result.TotalPasses
+			run.FailedPasses = statePassFailures(result.FailedPasses)
+			statusText := result.StatusText()
 			if len(result.PassErrors) > 0 {
 				for _, pe := range result.PassErrors {
 					d.logger.Warn("Assay pass error (partial)", "pr", prNumber, "bead", beadID, "error", pe)
 				}
 				run.Error = strings.Join(result.PassErrors, "; ")
 			}
+			if result.Status == assay.RunStatusPartial {
+				d.logger.Warn("Assay review partial", "pr", prNumber, "bead", beadID, "head", headSHA, "status", statusText)
+				if err := d.db.LogEvent(state.EventAssayPartial,
+					fmt.Sprintf("Assay PR #%d: %s", prNumber, statusText), beadID, anvil); err != nil {
+					d.logger.Warn("failed to log Assay partial event", "pr", prNumber, "bead", beadID, "error", err)
+				}
+			}
 			d.logger.Info("Assay review completed",
 				"pr", prNumber, "bead", beadID, "head", headSHA,
 				"findings", run.FindingsCount, "pass_errors", len(result.PassErrors),
+				"status", statusText,
 				"shadow", engineCfg.ShadowMode, "cost_usd", run.CostUSD,
 				"duration_ms", result.Duration.Milliseconds(),
 			)
@@ -1767,6 +1840,7 @@ func (d *Daemon) runAssayReview(ctx context.Context, anvil, anvilPath, beadID st
 					HeadSHA:      headSHA,
 					WorktreePath: worktreePath,
 					SummaryLine:  assaySummaryLine(result.Findings),
+					FailedPasses: result.FailedPasses,
 					Findings:     result.Findings,
 					Diff:         string(diffBytes),
 				})
@@ -2298,11 +2372,7 @@ func (d *Daemon) handleLifecycleAction(ctx context.Context, req lifecycle.Action
 			}
 
 			run, recErr := d.runAssayReview(workerCtx, req.Anvil, anvilCfg.Path, req.BeadID, req.PRNumber, req.HeadSHA, wt.Path, workerID)
-			if recErr != nil || run.Error != "" {
-				_ = d.db.UpdateWorkerStatus(workerID, state.WorkerFailed)
-			} else {
-				_ = d.db.UpdateWorkerStatus(workerID, state.WorkerDone)
-			}
+			_ = d.db.UpdateWorkerStatus(workerID, assayWorkerStatus(run, recErr))
 			// Reset the snapshot so subsequent head pushes are re-detected by
 			// the gate on the next poll.
 			if d.bellowsMonitor != nil {

@@ -139,6 +139,25 @@ type ReviewResult struct {
 	// result means at least one pass produced findings; aggregation only
 	// fails hard when every deep pass errored.
 	PassErrors []string
+	// FailedPasses is the structured form of PassErrors: which deep passes did
+	// not review this head, and why. It is what the run record persists and
+	// what the worker status text and the PR summary comment both render, so
+	// the three never disagree about coverage.
+	FailedPasses []PassFailure
+	// TotalPasses is the number of deep passes attempted.
+	TotalPasses int
+	// CompletedPasses is how many of them actually reviewed the head.
+	CompletedPasses int
+	// Status is the run's three-way outcome: complete (every pass reviewed the
+	// head), partial (some did), failed (none did — in which case Review
+	// returns an error rather than a result).
+	Status RunStatus
+}
+
+// StatusText renders the run's one-line status, e.g.
+// "partial: 3 of 5 passes completed (failed: logic — error_max_turns)".
+func (r *ReviewResult) StatusText() string {
+	return RenderStatusText(r.Status, r.CompletedPasses, r.TotalPasses, r.FailedPasses)
 }
 
 // Review runs the multi-pass Assay review for req and returns the aggregated
@@ -213,22 +232,29 @@ func Review(ctx context.Context, req ReviewRequest, db *state.DB, cfg Config) (*
 
 	var all []Finding
 	var passErrors []string
-	for _, o := range outcomes {
+	var failedPasses []PassFailure
+	for i, o := range outcomes {
 		// Count cost regardless of success — the model ran either way.
 		totalCost += o.cost
 		passes = append(passes, o.report)
 		if o.err != nil {
 			passErrors = append(passErrors, o.err.Error())
+			failedPasses = append(failedPasses, classifyPassError(deepPasses[i].Name, o.err))
 			continue
 		}
 		all = append(all, o.findings...)
 	}
+	// The pass tally is computed once, here, and carried on the result. Nothing
+	// downstream re-derives coverage from the pass-error count.
+	status := DeriveStatus(len(deepPasses), failedPasses)
+	completedPasses := len(deepPasses) - len(failedPasses)
 
 	// Only hard-fail when every deep pass errored. A single pass hitting
 	// error_max_turns or a transient rate-limit must not throw away findings
-	// from the other four passes. Partial errors are reported via
-	// ReviewResult.PassErrors and recorded in assay_runs.error by the caller.
-	if len(passErrors) == len(deepPasses) {
+	// from the other four passes. Partial runs come back as a result whose
+	// Status is RunStatusPartial, with the missing passes named in
+	// FailedPasses and recorded on the run record by the caller.
+	if status == RunStatusFailed {
 		return nil, fmt.Errorf("all assay deep passes failed: %s", strings.Join(passErrors, "; "))
 	}
 
@@ -279,15 +305,19 @@ func Review(ctx context.Context, req ReviewRequest, db *state.DB, cfg Config) (*
 	}
 
 	return &ReviewResult{
-		Findings:       capped,
-		HeadSHA:        req.HeadSHA,
-		ShadowMode:     cfg.ShadowMode,
-		CostUSD:        totalCost,
-		Duration:       time.Since(start),
-		Passes:         passes,
-		NitsCapped:     nCapped,
-		NitsSuppressed: nSuppressed,
-		PassErrors:     passErrors,
+		Findings:        capped,
+		HeadSHA:         req.HeadSHA,
+		ShadowMode:      cfg.ShadowMode,
+		CostUSD:         totalCost,
+		Duration:        time.Since(start),
+		Passes:          passes,
+		NitsCapped:      nCapped,
+		NitsSuppressed:  nSuppressed,
+		PassErrors:      passErrors,
+		FailedPasses:    failedPasses,
+		TotalPasses:     len(deepPasses),
+		CompletedPasses: completedPasses,
+		Status:          status,
 	}, nil
 }
 

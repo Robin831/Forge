@@ -4034,6 +4034,171 @@ func TestDB_LastReviewedSHA(t *testing.T) {
 	}
 }
 
+// TestDB_AssayRunCoverageRoundTrip pins the coverage columns: a partial run
+// stores its status, pass tally and the passes that did not review the head, and
+// a run that records none of it (an old row, or one that never reached the
+// engine) reads back as no coverage gap rather than a phantom one.
+func TestDB_AssayRunCoverageRoundTrip(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "forge-state-test-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+	db, err := Open(filepath.Join(tmpDir, "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	partial := &AssayRun{
+		Anvil:           "anvil-1",
+		PRNumber:        7,
+		HeadSHA:         "sha-partial",
+		Status:          AssayStatusPartial,
+		CompletedPasses: 3,
+		TotalPasses:     5,
+		FailedPasses: []AssayPassFailure{
+			{Name: "logic", Reason: "error_max_turns"},
+			{Name: "repo-specific", Reason: "error_max_turns"},
+		},
+	}
+	if err := db.RecordAssayRun(partial); err != nil {
+		t.Fatalf("RecordAssayRun (partial): %v", err)
+	}
+	// A run with no coverage recorded at all — the shape of every pre-existing
+	// row after migration.
+	if err := db.RecordAssayRun(&AssayRun{Anvil: "anvil-1", PRNumber: 8, HeadSHA: "sha-legacy"}); err != nil {
+		t.Fatalf("RecordAssayRun (legacy): %v", err)
+	}
+
+	read := func(id int) (status string, completed, total int, failed []AssayPassFailure) {
+		t.Helper()
+		var raw string
+		err := db.Conn().QueryRow(
+			`SELECT status, completed_passes, total_passes, failed_passes FROM assay_runs WHERE id = ?`, id,
+		).Scan(&status, &completed, &total, &raw)
+		if err != nil {
+			t.Fatalf("reading assay run %d: %v", id, err)
+		}
+		return status, completed, total, DecodeAssayPassFailures(raw)
+	}
+
+	status, completed, total, failed := read(partial.ID)
+	if status != AssayStatusPartial || completed != 3 || total != 5 {
+		t.Errorf("partial run read back as %q %d/%d; want %q 3/5", status, completed, total, AssayStatusPartial)
+	}
+	if len(failed) != 2 || failed[0].Name != "logic" || failed[0].Reason != "error_max_turns" {
+		t.Errorf("failed passes round-tripped as %+v", failed)
+	}
+
+	status, completed, total, failed = read(partial.ID + 1)
+	if status != "" || completed != 0 || total != 0 || len(failed) != 0 {
+		t.Errorf("run without coverage read back as %q %d/%d %+v; want empty",
+			status, completed, total, failed)
+	}
+}
+
+// TestDB_AssayRunCoverageMigratesOldSchema exercises the ALTER path for the four
+// coverage columns, which no other test reaches: on a fresh database the CREATE
+// TABLE already declares them, columnExists short-circuits, and the ALTER
+// statements never run. A typo in one of them — or drift between the ALTER
+// column name and the name RecordAssayRun writes — would pass the whole suite
+// and then fail migrate() on every existing production state.db at upgrade,
+// keeping the daemon from starting. So this rebuilds assay_runs in its
+// pre-coverage shape, migrates it, and round-trips a partial run through the
+// columns the migration added.
+func TestDB_AssayRunCoverageMigratesOldSchema(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "forge-state-test-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+	db, err := Open(filepath.Join(tmpDir, "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	// Replace the migrated table with the schema as it stood before coverage
+	// was recorded, holding one row — the state an upgrading daemon meets.
+	if _, err := db.Conn().Exec(`DROP TABLE assay_runs`); err != nil {
+		t.Fatalf("dropping assay_runs: %v", err)
+	}
+	if _, err := db.Conn().Exec(`
+CREATE TABLE assay_runs (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    anvil            TEXT NOT NULL,
+    pr_number        INTEGER NOT NULL,
+    head_sha         TEXT NOT NULL DEFAULT '',
+    started_at       TEXT NOT NULL,
+    finished_at      TEXT,
+    duration_ms      INTEGER NOT NULL DEFAULT 0,
+    cost_usd         REAL NOT NULL DEFAULT 0,
+    findings_count   INTEGER NOT NULL DEFAULT 0,
+    skipped_reason   TEXT NOT NULL DEFAULT '',
+    shadow_mode      INTEGER NOT NULL DEFAULT 0,
+    posted_count     INTEGER NOT NULL DEFAULT 0,
+    error            TEXT NOT NULL DEFAULT ''
+);
+INSERT INTO assay_runs (anvil, pr_number, head_sha, started_at)
+VALUES ('anvil-1', 3, 'sha-old', '2026-01-01T00:00:00Z');`); err != nil {
+		t.Fatalf("creating pre-coverage assay_runs: %v", err)
+	}
+
+	if err := db.migrate(); err != nil {
+		t.Fatalf("migrate() over pre-coverage assay_runs: %v", err)
+	}
+
+	for _, col := range []string{"status", "completed_passes", "total_passes", "failed_passes"} {
+		exists, err := db.columnExists("assay_runs", col)
+		if err != nil {
+			t.Fatalf("columnExists(assay_runs.%s): %v", col, err)
+		}
+		if !exists {
+			t.Errorf("expected assay_runs.%s to exist after migration", col)
+		}
+	}
+
+	// The pre-existing row reads as "coverage not recorded", not as a phantom
+	// gap, and a new run writes and reads back through the added columns.
+	var status string
+	var completed, total int
+	var failed string
+	if err := db.Conn().QueryRow(
+		`SELECT status, completed_passes, total_passes, failed_passes FROM assay_runs WHERE head_sha = 'sha-old'`,
+	).Scan(&status, &completed, &total, &failed); err != nil {
+		t.Fatalf("reading migrated row: %v", err)
+	}
+	if status != "" || completed != 0 || total != 0 || failed != "" {
+		t.Errorf("migrated row carries coverage %q %d/%d %q; want empty defaults",
+			status, completed, total, failed)
+	}
+
+	run := &AssayRun{
+		Anvil:           "anvil-1",
+		PRNumber:        3,
+		HeadSHA:         "sha-new",
+		Status:          AssayStatusPartial,
+		CompletedPasses: 4,
+		TotalPasses:     5,
+		FailedPasses:    []AssayPassFailure{{Name: "logic", Reason: "error_max_turns"}},
+	}
+	if err := db.RecordAssayRun(run); err != nil {
+		t.Fatalf("RecordAssayRun after migration: %v", err)
+	}
+	if err := db.Conn().QueryRow(
+		`SELECT status, completed_passes, total_passes, failed_passes FROM assay_runs WHERE id = ?`, run.ID,
+	).Scan(&status, &completed, &total, &failed); err != nil {
+		t.Fatalf("reading run recorded after migration: %v", err)
+	}
+	if status != AssayStatusPartial || completed != 4 || total != 5 {
+		t.Errorf("partial run read back as %q %d/%d; want %q 4/5", status, completed, total, AssayStatusPartial)
+	}
+	if got := DecodeAssayPassFailures(failed); len(got) != 1 || got[0].Name != "logic" {
+		t.Errorf("failed passes round-tripped as %+v", got)
+	}
+}
+
 func TestDB_CountAssayRuns(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "forge-state-test-*")
 	if err != nil {

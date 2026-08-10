@@ -148,7 +148,7 @@ func TestBuildSummaryBody(t *testing.T) {
 		{Severity: SeverityNit},
 		{Severity: SeverityPreExisting},
 	}
-	got := buildSummaryBody("2 important, 1 nit, 1 pre-existing.", findings)
+	got := buildSummaryBody("2 important, 1 nit, 1 pre-existing.", nil, findings)
 
 	if !strings.HasPrefix(got, "2 important, 1 nit, 1 pre-existing.") {
 		t.Errorf("summary body should start with the summary line, got:\n%s", got)
@@ -165,8 +165,35 @@ func TestBuildSummaryBody(t *testing.T) {
 	}
 }
 
+func TestBuildSummaryBodyNamesFailedPassesAboveFindings(t *testing.T) {
+	findings := []Finding{{Severity: SeverityNit}}
+	failed := []PassFailure{
+		{Name: "logic", Reason: "error_max_turns"},
+		{Name: "repo-specific", Reason: "error_max_turns"},
+	}
+	got := buildSummaryBody("Assay (AI review): 0 important, 1 nit", failed, findings)
+
+	for _, want := range []string{"Partial coverage", "logic, repo-specific", "error_max_turns"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("summary body missing %q, got:\n%s", want, got)
+		}
+	}
+	// The caveat must precede the severity table: a reader who meets it after
+	// the findings has already read them as a full review.
+	if strings.Index(got, "Partial coverage") > strings.Index(got, "| Severity | Count |") {
+		t.Errorf("coverage caveat must come before the severity table, got:\n%s", got)
+	}
+}
+
+func TestBuildSummaryBodyNoCaveatOnFullRun(t *testing.T) {
+	got := buildSummaryBody("Assay (AI review): no issues found.", nil, nil)
+	if strings.Contains(got, "Partial coverage") {
+		t.Errorf("a full run must not claim partial coverage, got:\n%s", got)
+	}
+}
+
 func TestBuildSummaryBodyOmitsZeroRows(t *testing.T) {
-	got := buildSummaryBody("", []Finding{{Severity: SeverityNit}})
+	got := buildSummaryBody("", nil, []Finding{{Severity: SeverityNit}})
 	if strings.Contains(got, "Important") || strings.Contains(got, "PreExisting") {
 		t.Errorf("zero-count severities should be omitted, got:\n%s", got)
 	}
@@ -270,6 +297,31 @@ func hasArg(args []string, want string) bool {
 }
 
 // --- Post: shadow mode short-circuit -------------------------------------
+
+// TestPostSummarisesPartialCoverageWithoutFindings covers the case the caveat
+// exists for: a run whose passes half-failed and found nothing. Staying silent
+// there would leave the PR looking reviewed and clean.
+func TestPostSummarisesPartialCoverageWithoutFindings(t *testing.T) {
+	gh := newStubGh()
+	p := newPoster(nil, gh.exec, nil)
+	req := PostRequest{
+		PRNumber:     7,
+		FailedPasses: []PassFailure{{Name: "logic", Reason: "error_max_turns"}},
+	}
+	res, err := p.Post(context.Background(), Config{}, req)
+	if err != nil {
+		t.Fatalf("Post: %v", err)
+	}
+	if !res.SummaryPosted {
+		t.Fatal("expected a summary review naming the passes that did not run")
+	}
+	body := strings.Join(gh.calls[0].args, " ")
+	for _, want := range []string{"Partial coverage", "logic", "error_max_turns"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("summary review missing %q, got:\n%s", want, body)
+		}
+	}
+}
 
 func TestPostShadowModeNoOp(t *testing.T) {
 	gh := newStubGh()

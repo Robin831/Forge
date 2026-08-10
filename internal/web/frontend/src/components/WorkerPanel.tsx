@@ -62,10 +62,21 @@ const STATUS_CLASSES: Record<string, string> = {
   paused: 'bg-amber-500/20 text-amber-300 border-amber-500/40',
   done: 'bg-sky-500/20 text-sky-300 border-sky-500/40',
   failed: 'bg-red-500/20 text-red-300 border-red-500/40',
+  partial: 'bg-amber-500/20 text-amber-200 border-amber-500/40',
 }
 
 function statusClass(status: string): string {
   return STATUS_CLASSES[status] ?? 'bg-slate-800 text-slate-300 border-slate-700'
+}
+
+// finishedStatusClass colours the caption under a lingering frozen panel. It is
+// deliberately three-way rather than done-or-red: a partial Assay run covered
+// some of the head and failed none of it, so painting it the failure colour
+// here would contradict every other surface that shows it in amber.
+export function finishedStatusClass(status: string): string {
+  if (status === 'done') return 'text-sky-300'
+  if (status === 'partial') return 'text-amber-200'
+  return 'text-red-300'
 }
 
 // formatElapsed renders the wall-clock time since a worker started as a compact
@@ -424,9 +435,9 @@ export default function WorkerPanel({
               liveWaiting={false}
               statusText={
                 <span
-                  className={`inline-flex items-center gap-1.5 ${
-                    worker.status === 'done' ? 'text-sky-300' : 'text-red-300'
-                  }`}
+                  className={`inline-flex items-center gap-1.5 ${finishedStatusClass(
+                    worker.status,
+                  )}`}
                   data-testid={`worker-panel-finished-${worker.id}`}
                 >
                   <Terminal size={12} aria-hidden />

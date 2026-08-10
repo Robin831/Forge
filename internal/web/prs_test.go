@@ -259,6 +259,90 @@ func TestPRFindings_ReturnsFindingsAndRun(t *testing.T) {
 	}
 }
 
+// TestPRFindings_PartialRunReportsCoverage covers the run whose passes only
+// half reviewed the head: it must surface as `partial` (never `error`, which
+// the pass-error string alone would produce) and carry the tally, the named
+// passes and the rendered status text the panel shows.
+func TestPRFindings_PartialRunReportsCoverage(t *testing.T) {
+	srv := newServerWithDefaults(t, nil)
+
+	pr := &state.PR{
+		Number: 11, Anvil: "anvil-a", BeadID: "Forge-bbbb",
+		Branch: "feature/y", Status: state.PROpen, Title: "Change",
+		CreatedAt: time.Now().UTC(),
+	}
+	if err := srv.db.InsertPR(pr); err != nil {
+		t.Fatalf("insert PR: %v", err)
+	}
+
+	finished := time.Now().UTC()
+	if err := srv.db.RecordAssayRun(&state.AssayRun{
+		Anvil: "anvil-a", PRNumber: 11, HeadSHA: "cafebabe",
+		StartedAt: finished.Add(-time.Minute), FinishedAt: &finished,
+		FindingsCount: 1, PostedCount: 1,
+		Error:           "assay pass logic: provider claude failed (exit 1, subtype error_max_turns)",
+		Status:          state.AssayStatusPartial,
+		CompletedPasses: 4, TotalPasses: 5,
+		FailedPasses: []state.AssayPassFailure{{Name: "logic", Reason: "error_max_turns"}},
+	}); err != nil {
+		t.Fatalf("record run: %v", err)
+	}
+
+	cookie := loginAndGetCookie(t, srv)
+	req := httptest.NewRequest("GET", fmt.Sprintf("/api/prs/%d/findings", pr.ID), nil)
+	req.AddCookie(&http.Cookie{Name: "forge_session", Value: cookie})
+	rec := httptest.NewRecorder()
+	srv.routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	var resp prFindingsResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if resp.Run == nil {
+		t.Fatal("expected a run in the payload")
+	}
+	if resp.Run.Status != "partial" {
+		t.Errorf("expected partial status, got %q", resp.Run.Status)
+	}
+	if resp.Run.CompletedPasses != 4 || resp.Run.TotalPasses != 5 {
+		t.Errorf("expected 4/5 passes, got %d/%d", resp.Run.CompletedPasses, resp.Run.TotalPasses)
+	}
+	if len(resp.Run.FailedPasses) != 1 || resp.Run.FailedPasses[0].Name != "logic" ||
+		resp.Run.FailedPasses[0].Reason != "error_max_turns" {
+		t.Errorf("unexpected failed passes: %+v", resp.Run.FailedPasses)
+	}
+	want := "partial: 4 of 5 passes completed (failed: logic — error_max_turns)"
+	if resp.Run.StatusText != want {
+		t.Errorf("status_text = %q; want %q", resp.Run.StatusText, want)
+	}
+}
+
+func TestRunStatus(t *testing.T) {
+	tests := []struct {
+		name                    string
+		finished                bool
+		errMsg, skipped, stored string
+		want                    string
+	}{
+		{"unfinished", false, "", "", "", "running"},
+		{"partial wins over its pass errors", true, "pass blew up", "", state.AssayStatusPartial, "partial"},
+		{"error", true, "boom", "", "", "error"},
+		{"skipped", true, "", "diff fetch failed", "", "skipped"},
+		{"complete", true, "", "", state.AssayStatusComplete, "complete"},
+		{"legacy row with no stored status", true, "", "", "", "complete"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := runStatus(tt.finished, tt.errMsg, tt.skipped, tt.stored); got != tt.want {
+				t.Errorf("runStatus = %q; want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestPRsAll_RecentlyMerged_RespectsWindow(t *testing.T) {
 	// A PR last_checked >7 days ago must be excluded from recently_merged.
 	srv := newServerWithDefaults(t, nil)

@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"embed"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"strconv"
@@ -94,6 +95,170 @@ type PassOutput struct {
 // pass name, tier is the model tier, and prompt is the fully-built prompt.
 type PassRunner func(ctx context.Context, pass, tier, prompt string) (PassOutput, error)
 
+// Reason labels for a pass that did not review the head. A provider failure
+// reports its result subtype instead (e.g. "error_max_turns") when it has one,
+// since that is the detail an operator acts on.
+const (
+	// ReasonSpawnFailed — the provider process could not be started.
+	ReasonSpawnFailed = "spawn_failed"
+	// ReasonRateLimited — the provider refused the request as rate limited.
+	ReasonRateLimited = "rate_limited"
+	// ReasonProviderFailed — the provider exited non-zero without naming a
+	// result subtype.
+	ReasonProviderFailed = "provider_failed"
+	// ReasonInvalidJSON — the pass answered, but not with parseable findings
+	// JSON, even after the strict-format retry.
+	ReasonInvalidJSON = "invalid_json"
+	// ReasonPromptFailed — the pass prompt could not be assembled.
+	ReasonPromptFailed = "prompt_failed"
+	// ReasonUnknown — an error from an injected runner that carries no
+	// classifiable cause.
+	ReasonUnknown = "unknown"
+)
+
+// maxLabelLen bounds a pass name or failure reason. A pass name ("logic") and
+// a provider subtype ("error_max_turns") are labels, not prose; anything longer
+// is not one and does not belong in a status line or a PR comment.
+const maxLabelLen = 48
+
+// labelSafe reports whether s is already the shape of a label an operator can
+// grep for: non-empty, bounded, and built only from lowercase alphanumerics,
+// '_' and '-'. Both halves of a PassFailure reach the public PR summary comment
+// verbatim and neither is trusted markdown — a value like
+// "[x](https://evil.example)" would render there as a live link.
+func labelSafe(s string) bool {
+	if s == "" || len(s) > maxLabelLen {
+		return false
+	}
+	for _, c := range s {
+		switch {
+		case c >= 'a' && c <= 'z', c >= '0' && c <= '9', c == '_', c == '-':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// sanitizeReason constrains a failure reason to a safe label. Neither a
+// provider-supplied result subtype nor a token inferred from a foreign
+// backend's error text is trusted. A reason that does not fit the safe set is
+// replaced wholesale by ReasonUnknown rather than partially scrubbed, since a
+// half-stripped label reads as a real one.
+func sanitizeReason(reason string) string {
+	r := strings.ToLower(strings.TrimSpace(reason))
+	if r == "" {
+		return ""
+	}
+	if !labelSafe(r) {
+		return ReasonUnknown
+	}
+	return r
+}
+
+// passFailureName picks the name a PassFailure carries. running is the pass
+// Forge dispatched — it comes from this package's own pass set and is trusted.
+// claimed is the name an error carried, which is not: PassError is exported, so
+// a foreign backend could set Pass to "[x](https://evil.example)" and have it
+// rendered as a live link in the PR summary comment, the same exposure
+// sanitizeReason exists to close on the other field. An unsafe claim is dropped
+// in favour of the pass that was actually running rather than scrubbed.
+func passFailureName(running, claimed string) string {
+	for _, name := range [2]string{claimed, running} {
+		if n := strings.ToLower(strings.TrimSpace(name)); labelSafe(n) {
+			return n
+		}
+	}
+	return ReasonUnknown
+}
+
+// PassError is the error a pass returns when it produced no findings. It keeps
+// the pass name and a short reason structured rather than leaving them to be
+// re-parsed out of a message: the run record, the worker status text and the PR
+// summary comment all need the same two fields.
+//
+// Error() reproduces the message verbatim, so anything that only logs or joins
+// pass errors is unaffected by the extra structure.
+type PassError struct {
+	// Pass is the pass identifier ("logic", "security", …).
+	Pass string
+	// Reason is a short failure label — a provider result subtype where there
+	// is one, else one of the Reason* constants.
+	Reason string
+	// Message is the full human-readable error text.
+	Message string
+	// Err is the wrapped cause, if any.
+	Err error
+}
+
+func (e *PassError) Error() string { return e.Message }
+
+func (e *PassError) Unwrap() error { return e.Err }
+
+// newPassError builds a PassError whose message follows the "assay pass <name>:
+// <detail>" convention every pass error already used.
+func newPassError(pass, reason, detail string, cause error) *PassError {
+	return &PassError{
+		Pass:    pass,
+		Reason:  reason,
+		Message: fmt.Sprintf("assay pass %s: %s", pass, detail),
+		Err:     cause,
+	}
+}
+
+// classifyPassError returns the PassFailure for a pass error. Errors this
+// package built carry their own name and reason; anything else (an injected
+// runner in a test, or a future alternate backend) is attributed to the pass
+// that was running and has its reason inferred from the message.
+//
+// It is the single place either half of a PassFailure is built, so it is where
+// both are constrained to safe labels (passFailureName, sanitizeReason) —
+// everything downstream, the persisted run record and the public PR comment
+// included, reads what this returns.
+func classifyPassError(pass string, err error) PassFailure {
+	var pe *PassError
+	if errors.As(err, &pe) {
+		return PassFailure{Name: passFailureName(pass, pe.Pass), Reason: sanitizeReason(pe.Reason)}
+	}
+	return PassFailure{Name: passFailureName(pass, ""), Reason: sanitizeReason(inferPassReason(err))}
+}
+
+// inferPassReason is the fallback classifier for an error this package did not
+// construct. It recognises the shapes the provider layer produces — a named
+// result subtype, a rate-limit refusal, unparseable output — and otherwise
+// reports ReasonUnknown rather than guessing.
+func inferPassReason(err error) string {
+	if err == nil {
+		return ""
+	}
+	msg := strings.ToLower(err.Error())
+	if i := strings.Index(msg, "subtype "); i >= 0 {
+		// Take the subtype token first and strip its trailing punctuation
+		// after, not before: a message that continues past the subtype
+		// ("… subtype error_max_turns) after 3 attempts") ends in prose, so
+		// trimming the whole remainder would leave the ')' attached to the
+		// token and collapse the whole reason to unknown.
+		if f := strings.Fields(msg[i+len("subtype "):]); len(f) > 0 {
+			if subtype := strings.TrimRight(f[0], ").,;"); subtype != "" {
+				return subtype
+			}
+		}
+	}
+	switch {
+	case strings.Contains(msg, "rate limit"):
+		return ReasonRateLimited
+	// Deliberately the phrase this package's own parse failure uses, not a
+	// bare "json": an unrelated error that merely names a .json path
+	// ("open /tmp/findings.json: permission denied") would otherwise be
+	// labelled as an output-parsing failure and point the operator at the
+	// wrong cause.
+	case strings.Contains(msg, "invalid json"):
+		return ReasonInvalidJSON
+	default:
+		return ReasonUnknown
+	}
+}
+
 // newSmithRunner returns the production PassRunner. It spawns a one-shot Smith
 // session in workDir using the provider/model resolved from cfg for the tier.
 func newSmithRunner(cfg Config, req ReviewRequest) PassRunner {
@@ -108,17 +273,27 @@ func newSmithRunner(cfg Config, req ReviewRequest) PassRunner {
 
 		proc, err := smith.SpawnWithOptions(ctx, workDir, prompt, logDir, pv, flags, smith.SpawnOptions{LogPrefix: "assay"})
 		if err != nil {
-			return PassOutput{}, fmt.Errorf("assay pass %s: spawning %s: %w", pass, pv.Label(), err)
+			return PassOutput{}, newPassError(pass, ReasonSpawnFailed,
+				fmt.Sprintf("spawning %s: %v", pv.Label(), err), err)
 		}
 		if req.OnPassLog != nil && proc.LogPath != "" {
 			req.OnPassLog(proc.LogPath)
 		}
 		res := proc.Wait()
 		if res.RateLimited {
-			return PassOutput{}, fmt.Errorf("assay pass %s: provider %s rate limited", pass, pv.Label())
+			return PassOutput{}, newPassError(pass, ReasonRateLimited,
+				fmt.Sprintf("provider %s rate limited", pv.Label()), nil)
 		}
 		if res.IsError || res.ExitCode != 0 {
-			return PassOutput{}, fmt.Errorf("assay pass %s: provider %s failed (exit %d, subtype %s)", pass, pv.Label(), res.ExitCode, res.ResultSubtype)
+			// The result subtype (e.g. error_max_turns) is the reason an
+			// operator acts on, so it becomes the failure label when the
+			// provider reported one.
+			reason := res.ResultSubtype
+			if strings.TrimSpace(reason) == "" {
+				reason = ReasonProviderFailed
+			}
+			return PassOutput{}, newPassError(pass, reason,
+				fmt.Sprintf("provider %s failed (exit %d, subtype %s)", pv.Label(), res.ExitCode, res.ResultSubtype), nil)
 		}
 		text := res.FullOutput
 		if text == "" {
@@ -231,7 +406,7 @@ func sanitize(s string) string {
 func runDeepPass(ctx context.Context, runner PassRunner, cfg Config, req ReviewRequest, scopedDiff, triageNotes string, p passDef) ([]Finding, float64, error) {
 	prompt, err := buildPassPrompt(p, req, scopedDiff, triageNotes)
 	if err != nil {
-		return nil, 0, err
+		return nil, 0, newPassError(p.Name, ReasonPromptFailed, err.Error(), err)
 	}
 
 	out, err := runner(ctx, p.Name, p.Tier, prompt)
@@ -250,7 +425,8 @@ func runDeepPass(ctx context.Context, runner PassRunner, cfg Config, req ReviewR
 		cost += out2.CostUSD
 		findings, perr = parseFindings(out2.Text)
 		if perr != nil {
-			return nil, cost, fmt.Errorf("assay pass %s: invalid JSON output after retry: %w", p.Name, perr)
+			return nil, cost, newPassError(p.Name, ReasonInvalidJSON,
+				fmt.Sprintf("invalid JSON output after retry: %v", perr), perr)
 		}
 	}
 

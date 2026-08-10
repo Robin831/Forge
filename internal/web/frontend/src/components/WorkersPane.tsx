@@ -37,6 +37,10 @@ const STATUS_CLASSES: Record<string, string> = {
   running: 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40',
   paused: 'bg-amber-500/20 text-amber-300 border-amber-500/40',
   done: 'bg-sky-500/20 text-sky-300 border-sky-500/40',
+  // partial is its own chip, never the done or failed one: an Assay run whose
+  // passes only half covered the head produced real findings but not a full
+  // review, and either of the other two chips would say otherwise.
+  partial: 'bg-amber-500/20 text-amber-200 border-amber-500/40',
   failed: 'bg-red-500/20 text-red-300 border-red-500/40',
 }
 

@@ -41,18 +41,53 @@ func TestDB_RecentlyFinishedWorkers(t *testing.T) {
 	insert("w-done-old", WorkerDone, 10*time.Minute)
 	insert("w-running", WorkerRunning, -1)
 
+	// A half-covered Assay run finishes 'partial'. It goes through the real
+	// UpdateWorkerStatus rather than a direct UPDATE, since that function's
+	// terminal-status list is the thing that has to stamp completed_at — a
+	// partial worker without one lingers as apparently-running forever.
+	insert("w-partial-recent", WorkerRunning, -1)
+	if err := db.UpdateWorkerStatus("w-partial-recent", WorkerPartial); err != nil {
+		t.Fatal(err)
+	}
+
 	got, err := db.RecentlyFinishedWorkers(3 * time.Minute)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != 2 {
-		ids := make([]string, len(got))
-		for i, w := range got {
-			ids[i] = w.ID
+	if len(got) != 3 {
+		t.Fatalf("expected 3 recent finished workers, got %d: %v", len(got), workerIDs(got))
+	}
+	if ids := workerIDs(got); ids[0] != "w-partial-recent" || ids[1] != "w-failed-recent" || ids[2] != "w-done-recent" {
+		t.Errorf("expected newest-first [w-partial-recent w-failed-recent w-done-recent], got %v", ids)
+	}
+	if got[0].CompletedAt == nil {
+		t.Error("UpdateWorkerStatus(partial) left completed_at unset")
+	}
+
+	// The same status must survive the history query, which keeps its own
+	// hand-maintained terminal-status list.
+	completed, err := db.CompletedWorkers(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !containsWorker(completed, "w-partial-recent") {
+		t.Errorf("CompletedWorkers dropped the partial worker: %v", workerIDs(completed))
+	}
+}
+
+func workerIDs(workers []Worker) []string {
+	ids := make([]string, len(workers))
+	for i, w := range workers {
+		ids[i] = w.ID
+	}
+	return ids
+}
+
+func containsWorker(workers []Worker, id string) bool {
+	for _, w := range workers {
+		if w.ID == id {
+			return true
 		}
-		t.Fatalf("expected 2 recent finished workers, got %d: %v", len(got), ids)
 	}
-	if got[0].ID != "w-failed-recent" || got[1].ID != "w-done-recent" {
-		t.Errorf("expected newest-first [w-failed-recent w-done-recent], got [%s %s]", got[0].ID, got[1].ID)
-	}
+	return false
 }

@@ -84,7 +84,7 @@ func beadLogFileFromEntry(name string, info os.FileInfo) beadLogFile {
 // (and live .forge-logs dir) may already be gone.
 func isTerminalWorkerStatus(s state.WorkerStatus) bool {
 	switch s {
-	case state.WorkerDone, state.WorkerFailed, state.WorkerTimeout, state.WorkerStalled:
+	case state.WorkerDone, state.WorkerFailed, state.WorkerPartial, state.WorkerTimeout, state.WorkerStalled:
 		return true
 	default:
 		return false
