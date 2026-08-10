@@ -82,6 +82,38 @@ func RenderStatusText(status RunStatus, completed, total int, failed []PassFailu
 	return base + fmt.Sprintf(" (failed: %s)", formatFailedPasses(failed, reasonDash))
 }
 
+// RenderPassTelemetry renders the per-pass turn telemetry of a run as one
+// line:
+//
+//	pass=triage turns=3 term=success, pass=logic turns=12 term=error_max_turns retry=1
+//
+// It is additive — a separate field on the Assay log line, never a change to
+// the coverage status text — so nothing that reads the existing line breaks.
+// term is always present so a log query can group by it: a pass that answered
+// reports "success", which is the same word the provider uses for the
+// termination it names. retry is only present when a pass was actually re-run,
+// since that is the rare case worth spotting.
+//
+// Returns "" when there is nothing to report.
+func RenderPassTelemetry(passes []PassReport) string {
+	if len(passes) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(passes))
+	for _, p := range passes {
+		term := p.TerminationReason
+		if term == "" {
+			term = "success"
+		}
+		s := fmt.Sprintf("pass=%s turns=%d term=%s", p.Name, p.Turns, term)
+		if p.Retried {
+			s += fmt.Sprintf(" retry=%d", p.Attempts-1)
+		}
+		parts = append(parts, s)
+	}
+	return strings.Join(parts, ", ")
+}
+
 // PartialCoverageNote renders the caveat line the PR summary comment carries
 // when passes are missing from a run: an explicit statement of which passes did
 // not review this head, so a short findings list is not mistaken for a clean

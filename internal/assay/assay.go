@@ -18,6 +18,7 @@ package assay
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -105,14 +106,43 @@ type Finding struct {
 }
 
 // PassReport captures per-pass execution metadata for observability.
+//
+// The telemetry half (Turns/TerminationReason/Attempts/Retried) exists so the
+// turn budget can be tuned against real runs: a pass that ends on
+// error_max_turns having burned the whole budget on a nine-line diff is
+// exploring, not reading a large change, and only the per-pass numbers say
+// which of the two happened.
 type PassReport struct {
 	// Name is the pass identifier (e.g. "logic").
 	Name string
 	// Findings is the number of findings the pass contributed before
 	// aggregation.
 	Findings int
-	// CostUSD is the model cost attributed to the pass.
+	// CostUSD is the model cost attributed to the pass, summed over every
+	// provider session it took — a strict-JSON re-prompt and a turn-budget
+	// retry alike, and failed sessions as well as successful ones. Note that
+	// this counts sessions, not Attempts: the two fields deliberately measure
+	// different things.
 	CostUSD float64
+	// Turns is the turn count of the session the pass recorded — the final
+	// one, not the sum, so the number stays comparable to the --max-turns
+	// budget a single session is given.
+	Turns int
+	// TerminationReason is how the pass ended: "" when it answered, else the
+	// same label FailedPasses carries (a provider result subtype where there
+	// is one, e.g. "error_max_turns").
+	TerminationReason string
+	// Attempts is how many *turn-budget* attempts the pass took — 2 when it was
+	// re-run after exhausting its budget. It is not a session count: an attempt
+	// whose first reply will not parse makes a second provider session with a
+	// stricter reminder, and that session is one attempt's business, not a
+	// second attempt at the budget. CostUSD does count it, which is why the two
+	// fields can disagree; the retry telemetry is what Attempts is for, and
+	// only a turn-budget re-run belongs in it.
+	Attempts int
+	// Retried reports whether the pass was re-run in a fresh session after
+	// hitting error_max_turns.
+	Retried bool
 }
 
 // ReviewResult is the outcome of a Review.
@@ -160,6 +190,52 @@ func (r *ReviewResult) StatusText() string {
 	return RenderStatusText(r.Status, r.CompletedPasses, r.TotalPasses, r.FailedPasses)
 }
 
+// PassTelemetryText renders the per-pass turn telemetry as one line, e.g.
+// "pass=triage turns=3 term=success, pass=logic turns=12 term=error_max_turns
+// retry=1". It is what the daemon adds to the Assay log line so a turn budget
+// can be tuned from logged runs rather than guessed at.
+func (r *ReviewResult) PassTelemetryText() string {
+	return RenderPassTelemetry(r.Passes)
+}
+
+// RunError is the error Review returns once a run has spent money: it carries
+// the cost billed up to the point the run failed, so a run that produces no
+// result still reaches cost tracking.
+//
+// This is the run-level counterpart of PassError.CostUSD, and it exists for the
+// same reason: a failure is not a refund. The provider bills a triage session
+// that ended on error_max_turns — the subtype that by definition burned the
+// whole turn budget — exactly like one that answered, and a run whose every
+// deep pass failed has paid for six full sessions. Without this the daemon's
+// error path recorded zero cost for both, silently shrinking the numerator of
+// the daily spend that `daily_cost_limit` enforces.
+//
+// Error() reproduces the wrapped message verbatim and Unwrap exposes the cause,
+// so callers that only log or errors.As on the underlying error are unaffected.
+type RunError struct {
+	// CostUSD is what the run had been billed when it failed.
+	CostUSD float64
+	// Err is the underlying failure.
+	Err error
+}
+
+func (e *RunError) Error() string { return e.Err.Error() }
+
+func (e *RunError) Unwrap() error { return e.Err }
+
+// RunCost reports the cost carried by an error from Review. An error raised
+// before any provider session ran (a malformed request, an unbuildable prompt)
+// carries none and reports 0, as does any error this package did not build —
+// an undercount is the safe direction for a number feeding a spend limit, a
+// fabricated one is not.
+func RunCost(err error) float64 {
+	var re *RunError
+	if errors.As(err, &re) {
+		return re.CostUSD
+	}
+	return 0
+}
+
 // Review runs the multi-pass Assay review for req and returns the aggregated
 // result. db may be nil to skip all persistence and posted-Nit suppression
 // (useful for dry runs); when non-nil, findings are written to pr_findings
@@ -196,36 +272,45 @@ func Review(ctx context.Context, req ReviewRequest, db *state.DB, cfg Config) (*
 		totalCost float64
 	)
 
-	// 1. Triage — scope which files warrant deeper review.
-	triage, triageCost, err := runTriage(ctx, runner, cfg, req, filtered)
-	if err != nil {
-		return nil, err
+	// fail wraps an error raised after sessions have run so the run's spend to
+	// that point survives the nil result — see RunError.
+	fail := func(err error) (*ReviewResult, error) {
+		return nil, &RunError{CostUSD: totalCost, Err: err}
 	}
+
+	// 1. Triage — scope which files warrant deeper review. Its cost is banked
+	// before the error check: runTriage reports what its sessions cost whether
+	// or not they answered, and a triage failure aborts the run, so this is the
+	// only place that spend can be attributed.
+	triage, triageCost, triageTurns, err := runTriage(ctx, runner, cfg, req, filtered)
 	totalCost += triageCost
-	passes = append(passes, PassReport{Name: passTriage.Name, Findings: 0, CostUSD: triageCost})
+	if err != nil {
+		return fail(err)
+	}
+	// Always one attempt: triage gets no turn-budget retry (see runTriage). Its
+	// strict-JSON re-prompt, when it needs one, is a second session inside that
+	// single attempt — counted in CostUSD, not here.
+	passes = append(passes, PassReport{
+		Name:     passTriage.Name,
+		Findings: 0,
+		CostUSD:  triageCost,
+		Turns:    triageTurns,
+		Attempts: 1,
+	})
 
 	scoped := scopeDiffToFiles(filtered, triage.ReviewFiles)
 
-	// 2. Deep passes — run concurrently (Smith-style fan-out).
-	type passOutcome struct {
-		report   PassReport
-		findings []Finding
-		cost     float64
-		err      error
-	}
-	outcomes := make([]passOutcome, len(deepPasses))
+	// 2. Deep passes — run concurrently (Smith-style fan-out). A pass that
+	// exhausts its turn budget is re-run once inside runDeepPass; only the
+	// final attempt's outcome reaches this loop, so a pass that recovers on
+	// its retry is an ordinary success here and never reaches PassErrors.
+	outcomes := make([]passResult, len(deepPasses))
 	var wg sync.WaitGroup
 	for i, p := range deepPasses {
 		wg.Add(1)
 		go func(i int, p passDef) {
 			defer wg.Done()
-			findings, cost, perr := runDeepPass(ctx, runner, cfg, req, scoped, triage.Notes, p)
-			outcomes[i] = passOutcome{
-				report:   PassReport{Name: p.Name, Findings: len(findings), CostUSD: cost},
-				findings: findings,
-				cost:     cost,
-				err:      perr,
-			}
+			outcomes[i] = runDeepPass(ctx, runner, cfg, req, scoped, triage.Notes, p)
 		}(i, p)
 	}
 	wg.Wait()
@@ -234,12 +319,24 @@ func Review(ctx context.Context, req ReviewRequest, db *state.DB, cfg Config) (*
 	var passErrors []string
 	var failedPasses []PassFailure
 	for i, o := range outcomes {
-		// Count cost regardless of success — the model ran either way.
+		// Count cost regardless of success — the model ran either way, and a
+		// retried pass ran twice.
 		totalCost += o.cost
-		passes = append(passes, o.report)
+		passes = append(passes, PassReport{
+			Name:              deepPasses[i].Name,
+			Findings:          len(o.findings),
+			CostUSD:           o.cost,
+			Turns:             o.turns,
+			TerminationReason: o.failure.Reason,
+			Attempts:          o.attempts,
+			Retried:           o.retried,
+		})
 		if o.err != nil {
 			passErrors = append(passErrors, o.err.Error())
-			failedPasses = append(failedPasses, classifyPassError(deepPasses[i].Name, o.err))
+			// runDeepPass already classified the final attempt's error; reusing
+			// its PassFailure keeps one derivation rather than two that could
+			// drift if classification ever becomes attempt-sensitive.
+			failedPasses = append(failedPasses, o.failure)
 			continue
 		}
 		all = append(all, o.findings...)
@@ -255,7 +352,7 @@ func Review(ctx context.Context, req ReviewRequest, db *state.DB, cfg Config) (*
 	// Status is RunStatusPartial, with the missing passes named in
 	// FailedPasses and recorded on the run record by the caller.
 	if status == RunStatusFailed {
-		return nil, fmt.Errorf("all assay deep passes failed: %s", strings.Join(passErrors, "; "))
+		return fail(fmt.Errorf("all assay deep passes failed: %s", strings.Join(passErrors, "; ")))
 	}
 
 	// 3. Aggregate: hash-dedupe → collapse near-duplicates across passes →
@@ -276,7 +373,7 @@ func Review(ctx context.Context, req ReviewRequest, db *state.DB, cfg Config) (*
 	if db != nil {
 		raw, ferr := db.ActiveFindings(req.Anvil, req.PRNumber)
 		if ferr != nil {
-			return nil, fmt.Errorf("assay: querying active findings: %w", ferr)
+			return fail(fmt.Errorf("assay: querying active findings: %w", ferr))
 		}
 		if len(raw) > 0 {
 			existing := make([]ExistingFinding, 0, len(raw))
@@ -291,7 +388,7 @@ func Review(ctx context.Context, req ReviewRequest, db *state.DB, cfg Config) (*
 	if db != nil {
 		posted, err = db.PostedFindingHashes(req.Anvil, req.PRNumber)
 		if err != nil {
-			return nil, fmt.Errorf("assay: querying posted findings: %w", err)
+			return fail(fmt.Errorf("assay: querying posted findings: %w", err))
 		}
 	}
 	suppressed, nSuppressed := suppressPostedNits(deduped, posted)
@@ -300,7 +397,7 @@ func Review(ctx context.Context, req ReviewRequest, db *state.DB, cfg Config) (*
 	// 4. Persist findings (idempotent per HeadSHA via OR IGNORE on the hash).
 	if db != nil {
 		if err := persistFindings(db, req, capped); err != nil {
-			return nil, err
+			return fail(err)
 		}
 	}
 

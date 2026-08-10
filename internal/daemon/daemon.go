@@ -1798,7 +1798,12 @@ func (d *Daemon) runAssayReview(ctx context.Context, anvil, anvilPath, beadID st
 			OnPassLog: d.assayLogPathRecorder(workerID),
 		}, d.db, engineCfg)
 		if rerr != nil {
-			d.logger.Error("Assay review failed", "pr", prNumber, "bead", beadID, "error", rerr)
+			// A failed run is still a billed run: the sessions it made before
+			// it died are charged, so the cost the error carries is recorded
+			// exactly like a successful run's. Dropping it would understate
+			// the assay spend that daily_cost_limit is measured against.
+			run.CostUSD = assay.RunCost(rerr)
+			d.logger.Error("Assay review failed", "pr", prNumber, "bead", beadID, "error", rerr, "cost_usd", run.CostUSD)
 			run.Error = rerr.Error()
 			run.Status = state.AssayStatusFailed
 		} else {
@@ -1827,10 +1832,15 @@ func (d *Daemon) runAssayReview(ctx context.Context, anvil, anvilPath, beadID st
 					d.logger.Warn("failed to log Assay partial event", "pr", prNumber, "bead", beadID, "error", err)
 				}
 			}
+			// The per-pass telemetry rides along as its own field: turn
+			// counts and termination reasons are what the assay turn budget
+			// has to be tuned against, and a budget guessed at without them
+			// is what produced max-turns failures on nine-line diffs.
 			d.logger.Info("Assay review completed",
 				"pr", prNumber, "bead", beadID, "head", headSHA,
 				"findings", run.FindingsCount, "pass_errors", len(result.PassErrors),
 				"status", statusText,
+				"passes", result.PassTelemetryText(),
 				"shadow", engineCfg.ShadowMode, "cost_usd", run.CostUSD,
 				"duration_ms", result.Duration.Milliseconds(),
 			)

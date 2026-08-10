@@ -3,7 +3,9 @@ package assay
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"math"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -18,8 +20,17 @@ import (
 
 // stubResp is one scripted runner response.
 type stubResp struct {
-	text string
-	err  error
+	text  string
+	err   error
+	turns int
+	cost  float64
+}
+
+// stubCall records one invocation of the scripted runner, so a test can assert
+// how many sessions a pass took and that a retry re-sent identical inputs.
+type stubCall struct {
+	pass   string
+	prompt string
 }
 
 // scriptRunner is a deterministic PassRunner: each pass name has an ordered
@@ -28,15 +39,17 @@ type scriptRunner struct {
 	mu     sync.Mutex
 	script map[string][]stubResp
 	idx    map[string]int
+	calls  []stubCall
 }
 
 func newScriptRunner(script map[string][]stubResp) *scriptRunner {
 	return &scriptRunner{script: script, idx: map[string]int{}}
 }
 
-func (r *scriptRunner) run(_ context.Context, pass, _, _ string) (PassOutput, error) {
+func (r *scriptRunner) run(_ context.Context, pass, _, prompt string) (PassOutput, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	r.calls = append(r.calls, stubCall{pass: pass, prompt: prompt})
 	seq := r.script[pass]
 	if len(seq) == 0 {
 		// Default: no findings.
@@ -49,9 +62,35 @@ func (r *scriptRunner) run(_ context.Context, pass, _, _ string) (PassOutput, er
 	r.idx[pass]++
 	resp := seq[i]
 	if resp.err != nil {
+		// A failed session's cost rides on the error, exactly as the real
+		// runner reports it — the provider bills an error_max_turns session
+		// like any other, so resp.cost has no separate channel here.
 		return PassOutput{}, resp.err
 	}
-	return PassOutput{Text: resp.text}, nil
+	return PassOutput{Text: resp.text, Turns: resp.turns, CostUSD: resp.cost}, nil
+}
+
+// callsFor returns the recorded invocations for one pass, in order.
+func (r *scriptRunner) callsFor(pass string) []stubCall {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var out []stubCall
+	for _, c := range r.calls {
+		if c.pass == pass {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// passReport returns the named pass's report from a result, or nil.
+func passReport(res *ReviewResult, name string) *PassReport {
+	for i := range res.Passes {
+		if res.Passes[i].Name == name {
+			return &res.Passes[i]
+		}
+	}
+	return nil
 }
 
 func findingsJSON(t *testing.T, fs []Finding) string {
@@ -829,7 +868,7 @@ func TestReviewRetrySucceedsOnSecondAttempt(t *testing.T) {
 	})
 	script := map[string][]stubResp{
 		passTriage.Name: {{text: triageJSON(t, nil, "")}},
-		"logic":         {{text: "garbage"}, {text: good}},
+		"logic":         {{text: "garbage", turns: 9, cost: 0.02}, {text: good, turns: 4, cost: 0.03}},
 	}
 	cfg := DefaultConfig().WithRunner(newScriptRunner(script).run)
 
@@ -839,6 +878,457 @@ func TestReviewRetrySucceedsOnSecondAttempt(t *testing.T) {
 	}
 	if len(res.Findings) != 1 {
 		t.Errorf("expected retry to recover 1 finding, got %d", len(res.Findings))
+	}
+
+	rep := passReport(res, "logic")
+	if rep == nil {
+		t.Fatal("no PassReport for logic")
+	}
+	// The recorded turn count must be the session whose output was kept — that
+	// is the number comparable to the --max-turns budget a single session gets.
+	// Keeping the discarded session's 9, or summing the two into 13, would both
+	// make the budget look tighter than it was.
+	if rep.Turns != 4 {
+		t.Errorf("Turns = %d; want 4 (the strict-JSON session whose output was kept)", rep.Turns)
+	}
+	// Cost, unlike turns, is cumulative: the discarded session was still billed.
+	if math.Abs(rep.CostUSD-0.05) > 1e-9 {
+		t.Errorf("CostUSD = %v; want 0.05 (both sessions)", rep.CostUSD)
+	}
+	// A strict-JSON re-prompt is not a turn-budget attempt.
+	if rep.Retried || rep.Attempts != 1 {
+		t.Errorf("telemetry = {Retried:%v Attempts:%d}; want {false 1}", rep.Retried, rep.Attempts)
+	}
+}
+
+// maxTurnsErr is the error the provider layer produces for a session that
+// spent its turn budget without answering. It carries a cost because the real
+// one does: the result event reports total_cost_usd on error subtypes too, and
+// a session that burned the whole budget is the most expensive kind there is.
+func maxTurnsErr(pass string, turns int, cost float64) error {
+	return &PassError{
+		Pass:    pass,
+		Reason:  ReasonMaxTurns,
+		Message: fmt.Sprintf("assay pass %s: provider claude/claude-opus-4-8 failed (exit 1, subtype error_max_turns)", pass),
+		Turns:   turns,
+		CostUSD: cost,
+	}
+}
+
+// TestReviewRetriesMaxTurnsPassInFreshSession pins the recovery case: a pass
+// that burns its turn budget exploring is re-run once with identical inputs,
+// and a retry that answers is an ordinary success — it must not leave a
+// residue in PassErrors or FailedPasses, which is what would turn a fully
+// covered run into a "partial" one and put a coverage caveat on the PR.
+func TestReviewRetriesMaxTurnsPassInFreshSession(t *testing.T) {
+	good := findingsJSON(t, []Finding{
+		{File: "a.go", Anchor: "a.go:1", Category: "logic", Severity: SeverityImportant, Title: "t", Body: "b"},
+	})
+	script := map[string][]stubResp{passTriage.Name: {{text: triageJSON(t, nil, ""), turns: 3, cost: 0.01}}}
+	for _, p := range deepPasses {
+		script[p.Name] = []stubResp{{text: findingsJSON(t, nil), turns: 4, cost: 0.02}}
+	}
+	script["logic"] = []stubResp{{err: maxTurnsErr("logic", 12, 0.25)}, {text: good, turns: 7, cost: 0.05}}
+
+	runner := newScriptRunner(script)
+	res, err := Review(context.Background(), testRequest(), openTestDB(t), DefaultConfig().WithRunner(runner.run))
+	if err != nil {
+		t.Fatalf("Review: %v", err)
+	}
+	if len(res.PassErrors) != 0 {
+		t.Errorf("a pass that succeeded on retry must not count as a pass error; got %v", res.PassErrors)
+	}
+	if len(res.FailedPasses) != 0 {
+		t.Errorf("expected no failed passes; got %v", res.FailedPasses)
+	}
+	if res.Status != RunStatusComplete {
+		t.Errorf("Status = %q; want %q", res.Status, RunStatusComplete)
+	}
+	if res.CompletedPasses != len(deepPasses) {
+		t.Errorf("CompletedPasses = %d; want %d", res.CompletedPasses, len(deepPasses))
+	}
+	if len(res.Findings) != 1 {
+		t.Errorf("expected the retry's finding to survive; got %d findings", len(res.Findings))
+	}
+
+	// Two sessions, same inputs: the retry is a fresh session with the
+	// identical prompt, not a resume of the exhausted one.
+	calls := runner.callsFor("logic")
+	if len(calls) != 2 {
+		t.Fatalf("expected 2 logic sessions (attempt + retry); got %d", len(calls))
+	}
+	if calls[0].prompt != calls[1].prompt {
+		t.Error("retry sent a different prompt; the re-run must use identical inputs")
+	}
+
+	rep := passReport(res, "logic")
+	if rep == nil {
+		t.Fatal("no PassReport for logic")
+	}
+	if !rep.Retried {
+		t.Error("Retried = false; want true")
+	}
+	if rep.Attempts != 2 {
+		t.Errorf("Attempts = %d; want 2", rep.Attempts)
+	}
+	if rep.TerminationReason != "" {
+		t.Errorf("TerminationReason = %q; want empty for a pass that answered", rep.TerminationReason)
+	}
+	if rep.Turns != 7 {
+		t.Errorf("Turns = %d; want 7 (the session the pass recorded)", rep.Turns)
+	}
+	// Cost is cumulative across sessions, and the exhausted session counts.
+	// The provider bills an error_max_turns run — by definition one that spent
+	// its whole turn budget — like any other, so charging the run only for the
+	// retry that answered would under-report a retried pass by roughly a full
+	// session, and with it the daily spend Review's total feeds.
+	if math.Abs(rep.CostUSD-0.30) > 1e-9 {
+		t.Errorf("logic CostUSD = %v; want 0.30 (0.25 exhausted session + 0.05 retry)", rep.CostUSD)
+	}
+	// triage 0.01 + logic 0.30 + four other deep passes at 0.02.
+	if math.Abs(res.CostUSD-0.39) > 1e-9 {
+		t.Errorf("ReviewResult.CostUSD = %v; want 0.39", res.CostUSD)
+	}
+	if got := res.PassTelemetryText(); !strings.Contains(got, "pass=logic turns=7 term=success retry=1") {
+		t.Errorf("PassTelemetryText() = %q; want it to report the logic retry", got)
+	}
+}
+
+// TestReviewDoesNotRetryMaxTurnsFromStrictJSONSession bounds the retry from the
+// other side. A max-turns failure earns a fresh session only when it was the
+// attempt's first: here the base prompt answered (unparseably) and the strict
+// -JSON re-prompt is what ran out of turns, so the attempt has already made two
+// full-price sessions and a re-run could buy two more — four for one pass,
+// double what the documented "re-run once" bound implies.
+func TestReviewDoesNotRetryMaxTurnsFromStrictJSONSession(t *testing.T) {
+	script := map[string][]stubResp{passTriage.Name: {{text: triageJSON(t, nil, ""), turns: 2}}}
+	for _, p := range deepPasses {
+		script[p.Name] = []stubResp{{text: findingsJSON(t, nil), turns: 4}}
+	}
+	script["logic"] = []stubResp{{text: "not json", turns: 3, cost: 0.02}, {err: maxTurnsErr("logic", 12, 0.25)}}
+
+	runner := newScriptRunner(script)
+	res, err := Review(context.Background(), testRequest(), openTestDB(t), DefaultConfig().WithRunner(runner.run))
+	if err != nil {
+		t.Fatalf("Review: %v", err)
+	}
+	if n := len(runner.callsFor("logic")); n != 2 {
+		t.Fatalf("expected exactly 2 logic sessions (base prompt + strict re-prompt, no turn-budget retry); got %d", n)
+	}
+	if len(res.FailedPasses) != 1 || res.FailedPasses[0].Name != "logic" || res.FailedPasses[0].Reason != ReasonMaxTurns {
+		t.Fatalf("FailedPasses = %v; want one {logic error_max_turns} entry", res.FailedPasses)
+	}
+	rep := passReport(res, "logic")
+	if rep == nil {
+		t.Fatal("no PassReport for logic")
+	}
+	if rep.Retried || rep.Attempts != 1 {
+		t.Errorf("telemetry = {Retried:%v Attempts:%d}; want {false 1} — no turn-budget attempt was retried", rep.Retried, rep.Attempts)
+	}
+	// Attempts stays at 1 while CostUSD covers both sessions: the two fields
+	// measure different things and this is the case that separates them.
+	if math.Abs(rep.CostUSD-0.27) > 1e-9 {
+		t.Errorf("logic CostUSD = %v; want 0.27 (both sessions of the single attempt)", rep.CostUSD)
+	}
+}
+
+// TestReviewDoesNotRetryTriageMaxTurns pins the triage side of the retry
+// boundary, which runTriage's doc comment declares but nothing enforced. Triage
+// is a hard gate — its failure aborts the run rather than costing one pass's
+// coverage — so there is no partial outcome for a retry to salvage, and routing
+// it through the deep passes' retry path would only spend a second session
+// before failing the run anyway.
+func TestReviewDoesNotRetryTriageMaxTurns(t *testing.T) {
+	script := map[string][]stubResp{passTriage.Name: {{err: maxTurnsErr(passTriage.Name, 12, 0.25)}}}
+	for _, p := range deepPasses {
+		script[p.Name] = []stubResp{{text: findingsJSON(t, nil)}}
+	}
+
+	runner := newScriptRunner(script)
+	res, err := Review(context.Background(), testRequest(), openTestDB(t), DefaultConfig().WithRunner(runner.run))
+	if err == nil {
+		t.Fatalf("Review succeeded; want a run error when triage fails (result %+v)", res)
+	}
+	if n := len(runner.callsFor(passTriage.Name)); n != 1 {
+		t.Errorf("expected exactly 1 triage session (no turn-budget retry); got %d", n)
+	}
+	// The gate is closed before any deep pass runs, so nothing downstream is
+	// billed for a run that never had a scoped diff.
+	for _, p := range deepPasses {
+		if n := len(runner.callsFor(p.Name)); n != 0 {
+			t.Errorf("deep pass %s ran %d session(s); want 0 after a triage failure", p.Name, n)
+		}
+	}
+	// The one session that did run is billed, and with no result to carry the
+	// total it leaves on the error instead. An error_max_turns triage burned
+	// its whole budget, so this is the expensive kind of failure to lose.
+	if got := RunCost(err); math.Abs(got-0.25) > 1e-9 {
+		t.Errorf("RunCost(err) = %v; want 0.25 (the failed triage session)", got)
+	}
+}
+
+// TestReviewCountsTriageStrictJSONRetryCost pins triage's strict-JSON re-prompt
+// — the branch where the first reply is unparseable and a second session with
+// the stricter reminder answers. The pass keeps *both* sessions' cost (the
+// provider billed the unparseable one) but only the recorded session's turn
+// count, since a sum would say nothing about how close either session came to
+// the --max-turns budget. The deep passes have the same contract and their own
+// test; without this one, dropping `turns = out2.Turns` would silently report
+// the discarded session's count.
+func TestReviewCountsTriageStrictJSONRetryCost(t *testing.T) {
+	script := map[string][]stubResp{passTriage.Name: {
+		{text: "not json at all", turns: 9, cost: 0.04},
+		{text: triageJSON(t, nil, ""), turns: 2, cost: 0.01},
+	}}
+	for _, p := range deepPasses {
+		script[p.Name] = []stubResp{{text: findingsJSON(t, nil), turns: 4, cost: 0.02}}
+	}
+
+	runner := newScriptRunner(script)
+	res, err := Review(context.Background(), testRequest(), openTestDB(t), DefaultConfig().WithRunner(runner.run))
+	if err != nil {
+		t.Fatalf("Review: %v", err)
+	}
+	if n := len(runner.callsFor(passTriage.Name)); n != 2 {
+		t.Fatalf("expected 2 triage sessions (base prompt + strict re-prompt); got %d", n)
+	}
+	rep := passReport(res, passTriage.Name)
+	if rep == nil {
+		t.Fatal("no PassReport for triage")
+	}
+	if rep.Turns != 2 {
+		t.Errorf("triage Turns = %d; want 2 (the session whose output was recorded, not the discarded one's 9)", rep.Turns)
+	}
+	// The strict re-prompt is a second session inside the single attempt, not a
+	// second attempt — Attempts stays 1 while cost covers both.
+	if rep.Attempts != 1 || rep.Retried {
+		t.Errorf("triage telemetry = {Attempts:%d Retried:%v}; want {1 false}", rep.Attempts, rep.Retried)
+	}
+	if math.Abs(rep.CostUSD-0.05) > 1e-9 {
+		t.Errorf("triage CostUSD = %v; want 0.05 (0.04 unparseable session + 0.01 re-prompt)", rep.CostUSD)
+	}
+	// triage 0.05 + five deep passes at 0.02.
+	if math.Abs(res.CostUSD-0.15) > 1e-9 {
+		t.Errorf("ReviewResult.CostUSD = %v; want 0.15", res.CostUSD)
+	}
+}
+
+// TestReviewCarriesCostWhenTriageStrictRetryFails is the error half of the same
+// branch: the re-prompt session fails outright, so runTriage pairs the first
+// session's cost with the failed one's and Review carries the sum out on the
+// RunError rather than dropping it with the nil result.
+func TestReviewCarriesCostWhenTriageStrictRetryFails(t *testing.T) {
+	script := map[string][]stubResp{passTriage.Name: {
+		{text: "not json at all", turns: 9, cost: 0.04},
+		{err: maxTurnsErr(passTriage.Name, 12, 0.25)},
+	}}
+	for _, p := range deepPasses {
+		script[p.Name] = []stubResp{{text: findingsJSON(t, nil), cost: 0.02}}
+	}
+
+	runner := newScriptRunner(script)
+	res, err := Review(context.Background(), testRequest(), openTestDB(t), DefaultConfig().WithRunner(runner.run))
+	if err == nil {
+		t.Fatalf("Review succeeded; want a run error when triage's retry fails (result %+v)", res)
+	}
+	if n := len(runner.callsFor(passTriage.Name)); n != 2 {
+		t.Errorf("expected 2 triage sessions (base prompt + strict re-prompt); got %d", n)
+	}
+	if got := RunCost(err); math.Abs(got-0.29) > 1e-9 {
+		t.Errorf("RunCost(err) = %v; want 0.29 (0.04 unparseable session + 0.25 failed re-prompt)", got)
+	}
+}
+
+// TestReviewCarriesCostWhenEveryDeepPassFails covers the other run-level
+// failure: every deep pass errors, so Review returns no result at all. Six
+// billed sessions are the most expensive way a run can end, and the daemon's
+// error path has nothing but the error to read the total from.
+func TestReviewCarriesCostWhenEveryDeepPassFails(t *testing.T) {
+	script := map[string][]stubResp{passTriage.Name: {{text: triageJSON(t, nil, ""), turns: 2, cost: 0.01}}}
+	for _, p := range deepPasses {
+		script[p.Name] = []stubResp{{err: &PassError{
+			Pass:    p.Name,
+			Reason:  ReasonRateLimited,
+			Message: "assay pass " + p.Name + ": provider claude/claude-opus-4-8 rate limited",
+			CostUSD: 0.02,
+		}}}
+	}
+
+	res, err := Review(context.Background(), testRequest(), openTestDB(t), DefaultConfig().WithRunner(newScriptRunner(script).run))
+	if err == nil {
+		t.Fatalf("Review succeeded; want a run error when every deep pass fails (result %+v)", res)
+	}
+	// triage 0.01 + five failed deep passes at 0.02.
+	if got := RunCost(err); math.Abs(got-0.11) > 1e-9 {
+		t.Errorf("RunCost(err) = %v; want 0.11 (triage plus every failed deep pass)", got)
+	}
+	// The wrapped cause is still what a caller logs or matches on.
+	if !strings.Contains(err.Error(), "all assay deep passes failed") {
+		t.Errorf("err = %q; want the underlying message verbatim", err.Error())
+	}
+}
+
+// TestRunCostIgnoresForeignErrors keeps the accessor from fabricating a number.
+// An error raised before any session ran, or one from a caller this package did
+// not build, reports 0 — an undercount is the safe direction for a value that
+// feeds a spend limit.
+func TestRunCostIgnoresForeignErrors(t *testing.T) {
+	if got := RunCost(nil); got != 0 {
+		t.Errorf("RunCost(nil) = %v; want 0", got)
+	}
+	if got := RunCost(errors.New("something else")); got != 0 {
+		t.Errorf("RunCost(foreign) = %v; want 0", got)
+	}
+	// A RunError wrapped further up still reports its cost.
+	wrapped := fmt.Errorf("assay: %w", &RunError{CostUSD: 0.42, Err: errors.New("boom")})
+	if got := RunCost(wrapped); math.Abs(got-0.42) > 1e-9 {
+		t.Errorf("RunCost(wrapped) = %v; want 0.42", got)
+	}
+}
+
+// TestReviewMaxTurnsPassFailsTwice pins the bounded half: the retry happens
+// exactly once, and a pass that exhausts its budget twice is reported once,
+// with the reason it ended on, rather than once per attempt.
+//
+// It also carries the cost invariant on the path where nothing is recovered —
+// a pass that burns its budget twice produced no findings at all, but the run
+// paid for both sessions and the total must say so. That is the same scenario,
+// so it lives in this one function rather than a second copy of the script.
+func TestReviewMaxTurnsPassFailsTwice(t *testing.T) {
+	script := map[string][]stubResp{passTriage.Name: {{text: triageJSON(t, nil, ""), turns: 2, cost: 0.01}}}
+	for _, p := range deepPasses {
+		script[p.Name] = []stubResp{{text: findingsJSON(t, nil), turns: 4, cost: 0.02}}
+	}
+	script["logic"] = []stubResp{{err: maxTurnsErr("logic", 12, 0.25)}, {err: maxTurnsErr("logic", 11, 0.30)}}
+
+	runner := newScriptRunner(script)
+	res, err := Review(context.Background(), testRequest(), openTestDB(t), DefaultConfig().WithRunner(runner.run))
+	if err != nil {
+		t.Fatalf("Review: %v", err)
+	}
+	if n := len(runner.callsFor("logic")); n != 2 {
+		t.Fatalf("expected exactly 2 logic sessions (one retry, never a third); got %d", n)
+	}
+	if len(res.FailedPasses) != 1 {
+		t.Fatalf("expected the failed pass listed exactly once; got %v", res.FailedPasses)
+	}
+	if res.FailedPasses[0].Name != "logic" || res.FailedPasses[0].Reason != ReasonMaxTurns {
+		t.Errorf("FailedPasses[0] = %+v; want {logic error_max_turns}", res.FailedPasses[0])
+	}
+	if len(res.PassErrors) != 1 {
+		t.Errorf("expected one PassErrors entry; got %d (%v)", len(res.PassErrors), res.PassErrors)
+	}
+	if res.Status != RunStatusPartial {
+		t.Errorf("Status = %q; want %q", res.Status, RunStatusPartial)
+	}
+	// The same failure reaches both surfaces from the one structure.
+	if got := res.StatusText(); !strings.Contains(got, "logic — error_max_turns") {
+		t.Errorf("StatusText() = %q; want it to name logic — error_max_turns", got)
+	}
+	if got := PartialCoverageNote(res.FailedPasses); !strings.Contains(got, "logic (error_max_turns)") {
+		t.Errorf("PartialCoverageNote() = %q; want it to name logic (error_max_turns)", got)
+	}
+
+	rep := passReport(res, "logic")
+	if rep == nil {
+		t.Fatal("no PassReport for logic")
+	}
+	if !rep.Retried || rep.Attempts != 2 {
+		t.Errorf("telemetry = {Retried:%v Attempts:%d}; want {true 2}", rep.Retried, rep.Attempts)
+	}
+	if rep.TerminationReason != ReasonMaxTurns {
+		t.Errorf("TerminationReason = %q; want %q", rep.TerminationReason, ReasonMaxTurns)
+	}
+	if rep.Turns != 11 {
+		t.Errorf("Turns = %d; want 11 (the final attempt's session)", rep.Turns)
+	}
+	if got := res.PassTelemetryText(); !strings.Contains(got, "pass=logic turns=11 term=error_max_turns retry=1") {
+		t.Errorf("PassTelemetryText() = %q; want the failed logic pass with its turn count", got)
+	}
+	if math.Abs(rep.CostUSD-0.55) > 1e-9 {
+		t.Errorf("logic CostUSD = %v; want 0.55 (both exhausted sessions)", rep.CostUSD)
+	}
+	// triage 0.01 + logic 0.55 + four other deep passes at 0.02.
+	if math.Abs(res.CostUSD-0.64) > 1e-9 {
+		t.Errorf("ReviewResult.CostUSD = %v; want 0.64", res.CostUSD)
+	}
+}
+
+// TestReviewDoesNotRetryNonMaxTurnsFailure keeps the retry narrow. A rate
+// limit or a spawn failure says nothing about turn budgets and would fail the
+// same way a second time, so re-running it only spends money and time.
+func TestReviewDoesNotRetryNonMaxTurnsFailure(t *testing.T) {
+	script := map[string][]stubResp{passTriage.Name: {{text: triageJSON(t, nil, ""), turns: 2}}}
+	for _, p := range deepPasses {
+		script[p.Name] = []stubResp{{text: findingsJSON(t, nil), turns: 4}}
+	}
+	script["security"] = []stubResp{{err: &PassError{
+		Pass:    "security",
+		Reason:  ReasonRateLimited,
+		Message: "assay pass security: provider claude/claude-opus-4-8 rate limited",
+	}}}
+
+	runner := newScriptRunner(script)
+	res, err := Review(context.Background(), testRequest(), openTestDB(t), DefaultConfig().WithRunner(runner.run))
+	if err != nil {
+		t.Fatalf("Review: %v", err)
+	}
+	if n := len(runner.callsFor("security")); n != 1 {
+		t.Fatalf("expected a single security session (no retry); got %d", n)
+	}
+	if len(res.FailedPasses) != 1 || res.FailedPasses[0].Reason != ReasonRateLimited {
+		t.Fatalf("FailedPasses = %v; want one rate_limited entry", res.FailedPasses)
+	}
+	rep := passReport(res, "security")
+	if rep == nil {
+		t.Fatal("no PassReport for security")
+	}
+	if rep.Retried || rep.Attempts != 1 {
+		t.Errorf("telemetry = {Retried:%v Attempts:%d}; want {false 1}", rep.Retried, rep.Attempts)
+	}
+	if rep.TerminationReason != ReasonRateLimited {
+		t.Errorf("TerminationReason = %q; want %q", rep.TerminationReason, ReasonRateLimited)
+	}
+}
+
+// TestReviewRecordsPerPassTurnTelemetry pins the tuning data itself: every
+// pass of a healthy run — triage included — carries the turns it used and how
+// it terminated, on the result and in the rendered log field.
+func TestReviewRecordsPerPassTurnTelemetry(t *testing.T) {
+	script := map[string][]stubResp{passTriage.Name: {{text: triageJSON(t, nil, ""), turns: 3}}}
+	for i, p := range deepPasses {
+		script[p.Name] = []stubResp{{text: findingsJSON(t, nil), turns: 5 + i}}
+	}
+	runner := newScriptRunner(script)
+	res, err := Review(context.Background(), testRequest(), openTestDB(t), DefaultConfig().WithRunner(runner.run))
+	if err != nil {
+		t.Fatalf("Review: %v", err)
+	}
+	if len(res.Passes) != 1+len(deepPasses) {
+		t.Fatalf("expected %d pass reports, got %d", 1+len(deepPasses), len(res.Passes))
+	}
+	if rep := passReport(res, passTriage.Name); rep == nil || rep.Turns != 3 {
+		t.Errorf("triage report = %+v; want Turns 3", rep)
+	}
+	telemetry := res.PassTelemetryText()
+	for i, p := range deepPasses {
+		rep := passReport(res, p.Name)
+		if rep == nil {
+			t.Fatalf("no PassReport for %s", p.Name)
+		}
+		if rep.Turns != 5+i {
+			t.Errorf("%s Turns = %d; want %d", p.Name, rep.Turns, 5+i)
+		}
+		if rep.TerminationReason != "" || rep.Retried || rep.Attempts != 1 {
+			t.Errorf("%s telemetry = %+v; want a clean single-attempt pass", p.Name, *rep)
+		}
+		want := fmt.Sprintf("pass=%s turns=%d term=success", p.Name, 5+i)
+		if !strings.Contains(telemetry, want) {
+			t.Errorf("PassTelemetryText() = %q; want it to contain %q", telemetry, want)
+		}
+	}
+	if strings.Contains(telemetry, "retry=") {
+		t.Errorf("PassTelemetryText() = %q; a run with no retries must not report one", telemetry)
 	}
 }
 
