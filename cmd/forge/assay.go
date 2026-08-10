@@ -30,7 +30,9 @@ var assayCmd = &cobra.Command{
 	GroupID: "work",
 }
 
-const assayRerunLong = `Trigger a fresh Assay AI review pass over a PR's current head.
+// assayLongCommon is the shared prologue of both assay verbs' help text. Each
+// command appends the paragraph describing how it addresses the PR.
+const assayLongCommon = `Trigger a fresh Assay AI review pass over a PR's current head.
 
 The rerun bypasses the Bellows trigger gate's head-SHA debounce, so it forces a
 review even when the current head has already been reviewed. This is the same
@@ -39,7 +41,7 @@ action the web UI's "Re-run" button invokes via the daemon.`
 var assayRunCmd = &cobra.Command{
 	Use:   "run",
 	Short: "Re-run Assay review over a PR's current head (by state.db PR id)",
-	Long: assayRerunLong + `
+	Long: assayLongCommon + `
 
 This verb addresses the PR by its state.db row id — the id the dashboard holds.
 To use the GitHub PR number instead, run 'forge assay rerun <pr> --anvil <a>'.`,
@@ -54,7 +56,7 @@ To use the GitHub PR number instead, run 'forge assay rerun <pr> --anvil <a>'.`,
 var assayRerunCmd = &cobra.Command{
 	Use:   "rerun <pr>",
 	Short: "Re-run Assay review over a PR's current head (by GitHub PR number)",
-	Long: assayRerunLong + `
+	Long: assayLongCommon + `
 
 <pr> is the GitHub pull request number — what the PR page shows — scoped by
 --anvil, since PR numbers are per-repository. To address the PR by its state.db

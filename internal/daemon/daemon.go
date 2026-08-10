@@ -252,6 +252,10 @@ type Daemon struct {
 	// handleLifecycleAction; tests replace it so the request a handler builds
 	// — the rebase base branch above all — can be observed without spawning a
 	// worker. Routed through dispatchLifecycleAction.
+	//
+	// Read from IPC handler goroutines, so it must be set before Run/IPC
+	// serving begins and never mutated afterwards; swapping it mid-run is a
+	// data race.
 	lifecycleDispatch func(context.Context, lifecycle.ActionRequest)
 
 	cancel context.CancelFunc // cancels the Run context for graceful shutdown
