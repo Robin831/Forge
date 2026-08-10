@@ -116,6 +116,41 @@ func TestClassifyPassErrorUnwrapsThroughWrapping(t *testing.T) {
 	}
 }
 
+// A reason reaches the public PR summary comment verbatim, so anything outside
+// the label charset must not survive classification as live markdown.
+func TestClassifyPassErrorSanitizesReason(t *testing.T) {
+	tests := []struct {
+		name   string
+		reason string
+		want   string
+	}{
+		{"markdown link", "[click](https://evil.example)", ReasonUnknown},
+		{"html", "<img src=x onerror=alert(1)>", ReasonUnknown},
+		{"overlong prose", strings.Repeat("a", maxReasonLen+1), ReasonUnknown},
+		{"uppercased subtype", "Error_Max_Turns", "error_max_turns"},
+		{"plain subtype", "error_max_turns", "error_max_turns"},
+		{"empty", "", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := classifyPassError("logic", newPassError("logic", tt.reason, "detail", nil))
+			if got.Reason != tt.want {
+				t.Errorf("classifyPassError reason = %q; want %q", got.Reason, tt.want)
+			}
+		})
+	}
+
+	// And the same for a reason inferred out of a foreign error's text, which
+	// is the path the comment called out as the future risk.
+	got := classifyPassError("logic", errors.New("backend failed (exit 1, subtype [x](https://evil.example))"))
+	if got.Reason != ReasonUnknown {
+		t.Errorf("inferred reason = %q; want %q", got.Reason, ReasonUnknown)
+	}
+	if note := PartialCoverageNote([]PassFailure{got}); strings.Contains(note, "evil.example") {
+		t.Errorf("unsanitized reason reached the PR comment: %s", note)
+	}
+}
+
 func TestClassifyPassErrorInfersReasonFromForeignError(t *testing.T) {
 	tests := []struct {
 		err  error
@@ -125,6 +160,10 @@ func TestClassifyPassErrorInfersReasonFromForeignError(t *testing.T) {
 		{errors.New("assay pass logic: provider claude/opus rate limited"), ReasonRateLimited},
 		{errors.New("assay pass logic: invalid JSON output after retry"), ReasonInvalidJSON},
 		{errors.New("something else entirely"), ReasonUnknown},
+		// A foreign error that merely names a .json path never parsed any
+		// output — labelling it invalid_json would point the operator at the
+		// wrong cause.
+		{errors.New("open /tmp/findings.json: permission denied"), ReasonUnknown},
 	}
 	for _, tt := range tests {
 		got := classifyPassError("logic", tt.err)

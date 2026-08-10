@@ -790,6 +790,39 @@ func TestReviewCompleteStatus(t *testing.T) {
 	}
 }
 
+// TestReviewAllPassesFailed pins the other end of the three-way status call:
+// when no deep pass reviewed the head there is nothing to report, so Review
+// must return an error and no result. The gate reads DeriveStatus rather than
+// counting pass errors, so this covers the case where failedPasses and
+// passErrors fall out of step — a run that reviewed nothing coming back as a
+// 'partial' result with zero findings would have the caller post a summary
+// presenting a review that never happened.
+func TestReviewAllPassesFailed(t *testing.T) {
+	script := map[string][]stubResp{passTriage.Name: {{text: triageJSON(t, nil, "")}}}
+	for _, p := range deepPasses {
+		err := fmt.Errorf("assay pass %s: provider claude/claude-opus-4-8 failed (exit 1, subtype error_max_turns)", p.Name)
+		// Two responses: the first attempt and the strict-format retry.
+		script[p.Name] = []stubResp{{err: err}, {err: err}}
+	}
+	cfg := DefaultConfig().WithRunner(newScriptRunner(script).run)
+
+	result, err := Review(context.Background(), testRequest(), openTestDB(t), cfg)
+	if err == nil {
+		t.Fatal("expected an error when every deep pass failed")
+	}
+	if result != nil {
+		t.Fatalf("expected no result when every deep pass failed; got %+v", result)
+	}
+	if !strings.Contains(err.Error(), "all assay deep passes failed") {
+		t.Errorf("error = %q; want it to name the total failure", err)
+	}
+	for _, p := range deepPasses {
+		if !strings.Contains(err.Error(), p.Name) {
+			t.Errorf("error does not name failed pass %q: %v", p.Name, err)
+		}
+	}
+}
+
 func TestReviewRetrySucceedsOnSecondAttempt(t *testing.T) {
 	good := findingsJSON(t, []Finding{
 		{File: "a.go", Anchor: "a.go:1", Category: "logic", Severity: SeverityImportant, Title: "t", Body: "b"},

@@ -2,7 +2,6 @@ package assay
 
 import (
 	"fmt"
-	"sort"
 	"strings"
 )
 
@@ -16,7 +15,8 @@ type PassFailure struct {
 	// Reason is the short failure label — the provider result subtype where
 	// there is one ("error_max_turns"), else a category from the Reason*
 	// constants. May be empty when a foreign runner produced an error whose
-	// cause could not be classified.
+	// cause could not be classified. Always a bare label — classifyPassError
+	// constrains it, since it is rendered into the public PR comment.
 	Reason string `json:"reason"`
 }
 
@@ -69,7 +69,7 @@ func RenderStatusText(status RunStatus, completed, total int, failed []PassFailu
 	if len(failed) == 0 {
 		return base
 	}
-	return base + fmt.Sprintf(" (failed: %s)", formatFailedPasses(failed, " — "))
+	return base + fmt.Sprintf(" (failed: %s)", formatFailedPasses(failed, reasonDash))
 }
 
 // PartialCoverageNote renders the caveat line the PR summary comment carries
@@ -81,16 +81,23 @@ func PartialCoverageNote(failed []PassFailure) string {
 		return ""
 	}
 	return "⚠️ **Partial coverage** — these Assay passes did not review this head: " +
-		formatFailedPassesParen(failed) +
+		formatFailedPasses(failed, reasonParen) +
 		". The findings below are not a complete review of this diff."
 }
+
+// reasonDash and reasonParen are the two ways a reason is attached to the pass
+// names it belongs to: a dash for the one-line status text, parentheses for the
+// prose of the PR summary comment ("logic, repo-specific (error_max_turns)").
+func reasonDash(names, reason string) string  { return names + " — " + reason }
+func reasonParen(names, reason string) string { return names + " (" + reason + ")" }
 
 // formatFailedPasses renders the failed passes as a comma-separated list. When
 // every pass failed for the same reason the reason is stated once at the end
 // ("logic, repo-specific — error_max_turns"); otherwise each pass carries its
-// own ("logic — error_max_turns, repo-specific — rate_limited"). sep is the
-// separator between a pass name and its reason.
-func formatFailedPasses(failed []PassFailure, sep string) string {
+// own ("logic — error_max_turns, repo-specific — rate_limited"). attach joins a
+// name (or the joined list of them) to a reason, so the grouping logic stays in
+// one place and the log form and the PR-comment form cannot drift apart.
+func formatFailedPasses(failed []PassFailure, attach func(names, reason string) string) string {
 	if len(failed) == 0 {
 		return ""
 	}
@@ -99,7 +106,7 @@ func formatFailedPasses(failed []PassFailure, sep string) string {
 		if reason == "" {
 			return strings.Join(names, ", ")
 		}
-		return strings.Join(names, ", ") + sep + reason
+		return attach(strings.Join(names, ", "), reason)
 	}
 	parts := make([]string, 0, len(failed))
 	for _, f := range failed {
@@ -107,32 +114,7 @@ func formatFailedPasses(failed []PassFailure, sep string) string {
 			parts = append(parts, f.Name)
 			continue
 		}
-		parts = append(parts, f.Name+sep+f.Reason)
-	}
-	return strings.Join(parts, ", ")
-}
-
-// formatFailedPassesParen is formatFailedPasses with the reason in parentheses,
-// which reads better inside the prose of the PR summary comment:
-// "logic, repo-specific (error_max_turns)".
-func formatFailedPassesParen(failed []PassFailure) string {
-	if len(failed) == 0 {
-		return ""
-	}
-	names := passNames(failed)
-	if reason, uniform := sharedReason(failed); uniform {
-		if reason == "" {
-			return strings.Join(names, ", ")
-		}
-		return strings.Join(names, ", ") + " (" + reason + ")"
-	}
-	parts := make([]string, 0, len(failed))
-	for _, f := range failed {
-		if f.Reason == "" {
-			parts = append(parts, f.Name)
-			continue
-		}
-		parts = append(parts, f.Name+" ("+f.Reason+")")
+		parts = append(parts, attach(f.Name, f.Reason))
 	}
 	return strings.Join(parts, ", ")
 }
@@ -156,10 +138,8 @@ func sharedReason(failed []PassFailure) (string, bool) {
 	if len(seen) != 1 {
 		return "", false
 	}
-	reasons := make([]string, 0, 1)
 	for r := range seen {
-		reasons = append(reasons, r)
+		return r, true
 	}
-	sort.Strings(reasons)
-	return reasons[0], true
+	return "", false
 }

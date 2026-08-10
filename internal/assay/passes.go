@@ -113,8 +113,39 @@ const (
 	ReasonPromptFailed = "prompt_failed"
 	// ReasonUnknown — an error from an injected runner that carries no
 	// classifiable cause.
-	ReasonUnknown = "error"
+	ReasonUnknown = "unknown"
 )
+
+// maxReasonLen bounds a failure reason. A provider subtype is a label
+// ("error_max_turns"), not prose; anything longer is not one and does not
+// belong in a status line or a PR comment.
+const maxReasonLen = 48
+
+// sanitizeReason constrains a failure reason to the shape of a label an
+// operator can grep for: lowercase alphanumerics, '_' and '-', bounded in
+// length. Reasons reach the public PR summary comment verbatim, and neither a
+// provider-supplied result subtype nor a token inferred from a foreign
+// backend's error text is trusted markdown — a value like
+// "[x](https://evil.example)" would render as a live link. A reason that does
+// not fit the safe set is replaced wholesale by ReasonUnknown rather than
+// partially scrubbed, since a half-stripped label reads as a real one.
+func sanitizeReason(reason string) string {
+	r := strings.ToLower(strings.TrimSpace(reason))
+	if r == "" {
+		return ""
+	}
+	if len(r) > maxReasonLen {
+		return ReasonUnknown
+	}
+	for _, c := range r {
+		switch {
+		case c >= 'a' && c <= 'z', c >= '0' && c <= '9', c == '_', c == '-':
+		default:
+			return ReasonUnknown
+		}
+	}
+	return r
+}
 
 // PassError is the error a pass returns when it produced no findings. It keeps
 // the pass name and a short reason structured rather than leaving them to be
@@ -154,6 +185,11 @@ func newPassError(pass, reason, detail string, cause error) *PassError {
 // package built carry their own name and reason; anything else (an injected
 // runner in a test, or a future alternate backend) is attributed to the pass
 // that was running and has its reason inferred from the message.
+//
+// It is the single place a reason enters a PassFailure, so it is where the
+// reason is constrained to a safe label (sanitizeReason) — everything
+// downstream, the persisted run record and the public PR comment included,
+// reads what this returns.
 func classifyPassError(pass string, err error) PassFailure {
 	var pe *PassError
 	if errors.As(err, &pe) {
@@ -161,9 +197,9 @@ func classifyPassError(pass string, err error) PassFailure {
 		if name == "" {
 			name = pass
 		}
-		return PassFailure{Name: name, Reason: pe.Reason}
+		return PassFailure{Name: name, Reason: sanitizeReason(pe.Reason)}
 	}
-	return PassFailure{Name: pass, Reason: inferPassReason(err)}
+	return PassFailure{Name: pass, Reason: sanitizeReason(inferPassReason(err))}
 }
 
 // inferPassReason is the fallback classifier for an error this package did not
@@ -185,7 +221,12 @@ func inferPassReason(err error) string {
 	switch {
 	case strings.Contains(msg, "rate limit"):
 		return ReasonRateLimited
-	case strings.Contains(msg, "json"):
+	// Deliberately the phrase this package's own parse failure uses, not a
+	// bare "json": an unrelated error that merely names a .json path
+	// ("open /tmp/findings.json: permission denied") would otherwise be
+	// labelled as an output-parsing failure and point the operator at the
+	// wrong cause.
+	case strings.Contains(msg, "invalid json"):
 		return ReasonInvalidJSON
 	default:
 		return ReasonUnknown
