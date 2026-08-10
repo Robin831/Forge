@@ -105,14 +105,35 @@ type Finding struct {
 }
 
 // PassReport captures per-pass execution metadata for observability.
+//
+// The telemetry half (Turns/TerminationReason/Attempts/Retried) exists so the
+// turn budget can be tuned against real runs: a pass that ends on
+// error_max_turns having burned the whole budget on a nine-line diff is
+// exploring, not reading a large change, and only the per-pass numbers say
+// which of the two happened.
 type PassReport struct {
 	// Name is the pass identifier (e.g. "logic").
 	Name string
 	// Findings is the number of findings the pass contributed before
 	// aggregation.
 	Findings int
-	// CostUSD is the model cost attributed to the pass.
+	// CostUSD is the model cost attributed to the pass, summed over every
+	// session it took.
 	CostUSD float64
+	// Turns is the turn count of the session the pass recorded — the final
+	// one, not the sum, so the number stays comparable to the --max-turns
+	// budget a single session is given.
+	Turns int
+	// TerminationReason is how the pass ended: "" when it answered, else the
+	// same label FailedPasses carries (a provider result subtype where there
+	// is one, e.g. "error_max_turns").
+	TerminationReason string
+	// Attempts is how many sessions the pass took — 2 when it was retried
+	// after exhausting its turn budget.
+	Attempts int
+	// Retried reports whether the pass was re-run in a fresh session after
+	// hitting error_max_turns.
+	Retried bool
 }
 
 // ReviewResult is the outcome of a Review.
@@ -160,6 +181,14 @@ func (r *ReviewResult) StatusText() string {
 	return RenderStatusText(r.Status, r.CompletedPasses, r.TotalPasses, r.FailedPasses)
 }
 
+// PassTelemetryText renders the per-pass turn telemetry as one line, e.g.
+// "pass=triage turns=3 term=success, pass=logic turns=12 term=error_max_turns
+// retry=1". It is what the daemon adds to the Assay log line so a turn budget
+// can be tuned from logged runs rather than guessed at.
+func (r *ReviewResult) PassTelemetryText() string {
+	return RenderPassTelemetry(r.Passes)
+}
+
 // Review runs the multi-pass Assay review for req and returns the aggregated
 // result. db may be nil to skip all persistence and posted-Nit suppression
 // (useful for dry runs); when non-nil, findings are written to pr_findings
@@ -197,35 +226,32 @@ func Review(ctx context.Context, req ReviewRequest, db *state.DB, cfg Config) (*
 	)
 
 	// 1. Triage — scope which files warrant deeper review.
-	triage, triageCost, err := runTriage(ctx, runner, cfg, req, filtered)
+	triage, triageCost, triageTurns, err := runTriage(ctx, runner, cfg, req, filtered)
 	if err != nil {
 		return nil, err
 	}
 	totalCost += triageCost
-	passes = append(passes, PassReport{Name: passTriage.Name, Findings: 0, CostUSD: triageCost})
+	passes = append(passes, PassReport{
+		Name:     passTriage.Name,
+		Findings: 0,
+		CostUSD:  triageCost,
+		Turns:    triageTurns,
+		Attempts: 1,
+	})
 
 	scoped := scopeDiffToFiles(filtered, triage.ReviewFiles)
 
-	// 2. Deep passes — run concurrently (Smith-style fan-out).
-	type passOutcome struct {
-		report   PassReport
-		findings []Finding
-		cost     float64
-		err      error
-	}
-	outcomes := make([]passOutcome, len(deepPasses))
+	// 2. Deep passes — run concurrently (Smith-style fan-out). A pass that
+	// exhausts its turn budget is re-run once inside runDeepPass; only the
+	// final attempt's outcome reaches this loop, so a pass that recovers on
+	// its retry is an ordinary success here and never reaches PassErrors.
+	outcomes := make([]passResult, len(deepPasses))
 	var wg sync.WaitGroup
 	for i, p := range deepPasses {
 		wg.Add(1)
 		go func(i int, p passDef) {
 			defer wg.Done()
-			findings, cost, perr := runDeepPass(ctx, runner, cfg, req, scoped, triage.Notes, p)
-			outcomes[i] = passOutcome{
-				report:   PassReport{Name: p.Name, Findings: len(findings), CostUSD: cost},
-				findings: findings,
-				cost:     cost,
-				err:      perr,
-			}
+			outcomes[i] = runDeepPass(ctx, runner, cfg, req, scoped, triage.Notes, p)
 		}(i, p)
 	}
 	wg.Wait()
@@ -234,9 +260,18 @@ func Review(ctx context.Context, req ReviewRequest, db *state.DB, cfg Config) (*
 	var passErrors []string
 	var failedPasses []PassFailure
 	for i, o := range outcomes {
-		// Count cost regardless of success — the model ran either way.
+		// Count cost regardless of success — the model ran either way, and a
+		// retried pass ran twice.
 		totalCost += o.cost
-		passes = append(passes, o.report)
+		passes = append(passes, PassReport{
+			Name:              deepPasses[i].Name,
+			Findings:          len(o.findings),
+			CostUSD:           o.cost,
+			Turns:             o.turns,
+			TerminationReason: o.reason,
+			Attempts:          o.attempts,
+			Retried:           o.retried,
+		})
 		if o.err != nil {
 			passErrors = append(passErrors, o.err.Error())
 			failedPasses = append(failedPasses, classifyPassError(deepPasses[i].Name, o.err))

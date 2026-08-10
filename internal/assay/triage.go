@@ -19,32 +19,40 @@ type triageResult struct {
 }
 
 // runTriage runs the scoping pass. Like the deep passes it parses strict JSON
-// with a single retry; a second failure is surfaced as a run error.
-func runTriage(ctx context.Context, runner PassRunner, cfg Config, req ReviewRequest, filteredDiff string) (triageResult, float64, error) {
+// with a single retry; a second failure is surfaced as a run error. It reports
+// the cost and the turn count of the session it recorded, so triage appears in
+// the run's per-pass telemetry alongside the deep passes.
+//
+// Triage gets no turn-budget retry: unlike a deep pass it is a hard gate — a
+// triage failure aborts the whole run rather than costing one pass's coverage,
+// so there is no partial outcome for a retry to salvage.
+func runTriage(ctx context.Context, runner PassRunner, cfg Config, req ReviewRequest, filteredDiff string) (triageResult, float64, int, error) {
 	prompt, err := buildTriagePrompt(req, filteredDiff)
 	if err != nil {
-		return triageResult{}, 0, err
+		return triageResult{}, 0, 0, err
 	}
 
 	out, err := runner(ctx, passTriage.Name, passTriage.Tier, prompt)
 	if err != nil {
-		return triageResult{}, 0, err
+		return triageResult{}, 0, passErrorTurns(err), err
 	}
 	cost := out.CostUSD
+	turns := out.Turns
 
 	res, perr := parseTriage(out.Text)
 	if perr != nil {
 		out2, err2 := runner(ctx, passTriage.Name, passTriage.Tier, prompt+"\n\n"+strictJSONReminder)
 		if err2 != nil {
-			return triageResult{}, cost, err2
+			return triageResult{}, cost, passErrorTurns(err2), err2
 		}
 		cost += out2.CostUSD
+		turns = out2.Turns
 		res, perr = parseTriage(out2.Text)
 		if perr != nil {
-			return triageResult{}, cost, fmt.Errorf("assay pass %s: invalid JSON output after retry: %w", passTriage.Name, perr)
+			return triageResult{}, cost, turns, fmt.Errorf("assay pass %s: invalid JSON output after retry: %w", passTriage.Name, perr)
 		}
 	}
-	return res, cost, nil
+	return res, cost, turns, nil
 }
 
 // buildTriagePrompt assembles the Triage prompt from its embedded instructions,

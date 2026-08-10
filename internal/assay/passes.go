@@ -87,6 +87,10 @@ type PassOutput struct {
 	Text string
 	// CostUSD is the estimated cost of the invocation.
 	CostUSD float64
+	// Turns is how many agent turns the invocation consumed, as reported by
+	// the provider. Zero when the backend reports none — it is telemetry, and
+	// nothing branches on it.
+	Turns int
 }
 
 // PassRunner invokes a model for one pass and returns its output. It is the
@@ -114,7 +118,20 @@ const (
 	// ReasonUnknown — an error from an injected runner that carries no
 	// classifiable cause.
 	ReasonUnknown = "unknown"
+	// ReasonMaxTurns — the provider's own subtype for a session that ran out
+	// of turns before answering. It is not a verdict on the diff: the pass
+	// spent its budget exploring the repository and never got to emit JSON, so
+	// it is the one failure Assay re-runs in a fresh session (see
+	// maxTurnsRetries).
+	ReasonMaxTurns = "error_max_turns"
 )
+
+// maxTurnsRetries is how many extra attempts a pass gets after exhausting its
+// turn budget. One: a fresh session with identical inputs often lands a shorter
+// exploration path, but a pass that burns the whole budget twice is telling us
+// the budget is wrong, not that a third session would help — and every attempt
+// is a full-price model run.
+const maxTurnsRetries = 1
 
 // maxLabelLen bounds a pass name or failure reason. A pass name ("logic") and
 // a provider subtype ("error_max_turns") are labels, not prose; anything longer
@@ -189,6 +206,11 @@ type PassError struct {
 	Message string
 	// Err is the wrapped cause, if any.
 	Err error
+	// Turns is how many agent turns the failed session consumed, where the
+	// provider reported it. Telemetry only — it is what tells an operator
+	// whether an error_max_turns pass sat right on the budget or nowhere near
+	// it.
+	Turns int
 }
 
 func (e *PassError) Error() string { return e.Message }
@@ -281,8 +303,10 @@ func newSmithRunner(cfg Config, req ReviewRequest) PassRunner {
 		}
 		res := proc.Wait()
 		if res.RateLimited {
-			return PassOutput{}, newPassError(pass, ReasonRateLimited,
+			perr := newPassError(pass, ReasonRateLimited,
 				fmt.Sprintf("provider %s rate limited", pv.Label()), nil)
+			perr.Turns = res.NumTurns
+			return PassOutput{}, perr
 		}
 		if res.IsError || res.ExitCode != 0 {
 			// The result subtype (e.g. error_max_turns) is the reason an
@@ -292,14 +316,16 @@ func newSmithRunner(cfg Config, req ReviewRequest) PassRunner {
 			if strings.TrimSpace(reason) == "" {
 				reason = ReasonProviderFailed
 			}
-			return PassOutput{}, newPassError(pass, reason,
+			perr := newPassError(pass, reason,
 				fmt.Sprintf("provider %s failed (exit %d, subtype %s)", pv.Label(), res.ExitCode, res.ResultSubtype), nil)
+			perr.Turns = res.NumTurns
+			return PassOutput{}, perr
 		}
 		text := res.FullOutput
 		if text == "" {
 			text = res.Output
 		}
-		return PassOutput{Text: text, CostUSD: res.CostUSD}, nil
+		return PassOutput{Text: text, CostUSD: res.CostUSD, Turns: res.NumTurns}, nil
 	}
 }
 
@@ -401,37 +427,118 @@ func sanitize(s string) string {
 	return s
 }
 
-// runDeepPass runs one finding-producing pass, parsing its JSON output with a
-// single retry. On a second parse failure the pass returns a run error.
-func runDeepPass(ctx context.Context, runner PassRunner, cfg Config, req ReviewRequest, scopedDiff, triageNotes string, p passDef) ([]Finding, float64, error) {
+// passResult is one deep pass's outcome together with the telemetry the run
+// records for it: how the pass's session ended, how many turns it burned, and
+// whether it took a second session to get there.
+type passResult struct {
+	// findings is what the pass produced (nil when it failed).
+	findings []Finding
+	// cost is the cumulative model cost across every invocation the pass made,
+	// retries included — the run paid for all of them.
+	cost float64
+	// turns is the turn count of the session whose output the pass recorded,
+	// i.e. the final one. Cumulating turns across sessions would say nothing
+	// about how close any single session came to the --max-turns budget, which
+	// is the number the budget is tuned against.
+	turns int
+	// reason is the termination label: "" when the pass answered, else the
+	// same label classifyPassError would derive (a provider result subtype
+	// where there is one).
+	reason string
+	// attempts is how many sessions the pass took — 2 when it was retried.
+	attempts int
+	// retried reports whether a fresh session was started after the first one
+	// exhausted its turn budget.
+	retried bool
+	// err is the failure, if any. It is the *final* attempt's error, so the
+	// reason a retried pass reports is the one it ended on.
+	err error
+}
+
+// runDeepPass runs one finding-producing pass and returns its outcome plus
+// telemetry.
+//
+// A pass that exhausts its turn budget (error_max_turns) is re-run once in a
+// fresh session with identical inputs. That failure means the model spent the
+// budget exploring and never emitted its JSON — not that it looked at the diff
+// and found nothing — so throwing the pass away on the first occurrence drops
+// coverage the run could still have had. The retry count is bounded by
+// maxTurnsRetries and driven from this loop, never from runPassAttempt, so a
+// retry can never itself retry.
+func runDeepPass(ctx context.Context, runner PassRunner, cfg Config, req ReviewRequest, scopedDiff, triageNotes string, p passDef) passResult {
+	var res passResult
+	for attempt := 1; attempt <= 1+maxTurnsRetries; attempt++ {
+		findings, cost, turns, err := runPassAttempt(ctx, runner, cfg, req, scopedDiff, triageNotes, p)
+		res.cost += cost
+		res.turns = turns
+		res.attempts = attempt
+		res.findings = findings
+		res.err = err
+		res.reason = ""
+		if err != nil {
+			res.reason = classifyPassError(p.Name, err).Reason
+		}
+		if res.reason != ReasonMaxTurns {
+			break
+		}
+		if attempt < 1+maxTurnsRetries {
+			res.retried = true
+		}
+	}
+	return res
+}
+
+// runPassAttempt runs one deep-pass session, parsing its JSON output with a
+// single strict-format retry inside that same attempt. On a second parse
+// failure the attempt returns a pass error. It knows nothing about turn-budget
+// retries — its caller owns those, which is what keeps the retry from
+// recursing.
+//
+// Each call to runner is a fresh provider session (the default runner spawns a
+// new process and never resumes one), so re-calling this with the same inputs
+// is exactly the "same prompt, clean session" re-run a max-turns failure wants.
+func runPassAttempt(ctx context.Context, runner PassRunner, cfg Config, req ReviewRequest, scopedDiff, triageNotes string, p passDef) ([]Finding, float64, int, error) {
 	prompt, err := buildPassPrompt(p, req, scopedDiff, triageNotes)
 	if err != nil {
-		return nil, 0, newPassError(p.Name, ReasonPromptFailed, err.Error(), err)
+		return nil, 0, 0, newPassError(p.Name, ReasonPromptFailed, err.Error(), err)
 	}
 
 	out, err := runner(ctx, p.Name, p.Tier, prompt)
 	if err != nil {
-		return nil, 0, err
+		return nil, 0, passErrorTurns(err), err
 	}
 	cost := out.CostUSD
+	turns := out.Turns
 
 	findings, perr := parseFindings(out.Text)
 	if perr != nil {
 		// One retry with a stricter reminder.
 		out2, err2 := runner(ctx, p.Name, p.Tier, prompt+"\n\n"+strictJSONReminder)
 		if err2 != nil {
-			return nil, cost, err2
+			return nil, cost, passErrorTurns(err2), err2
 		}
 		cost += out2.CostUSD
+		turns = out2.Turns
 		findings, perr = parseFindings(out2.Text)
 		if perr != nil {
-			return nil, cost, newPassError(p.Name, ReasonInvalidJSON,
+			return nil, cost, turns, newPassError(p.Name, ReasonInvalidJSON,
 				fmt.Sprintf("invalid JSON output after retry: %v", perr), perr)
 		}
 	}
 
 	finalizeFindings(findings, p.Name, req.Anvil, req.PRNumber)
-	return findings, cost, nil
+	return findings, cost, turns, nil
+}
+
+// passErrorTurns reports the turn count a failed session burned, where the
+// error carries one. An error from a foreign runner reports 0 rather than a
+// guess.
+func passErrorTurns(err error) int {
+	var pe *PassError
+	if errors.As(err, &pe) {
+		return pe.Turns
+	}
+	return 0
 }
 
 // findingsEnvelope is the wire shape the model returns for a deep pass.

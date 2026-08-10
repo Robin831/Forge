@@ -1827,10 +1827,15 @@ func (d *Daemon) runAssayReview(ctx context.Context, anvil, anvilPath, beadID st
 					d.logger.Warn("failed to log Assay partial event", "pr", prNumber, "bead", beadID, "error", err)
 				}
 			}
+			// The per-pass telemetry rides along as its own field: turn
+			// counts and termination reasons are what the assay turn budget
+			// has to be tuned against, and a budget guessed at without them
+			// is what produced max-turns failures on nine-line diffs.
 			d.logger.Info("Assay review completed",
 				"pr", prNumber, "bead", beadID, "head", headSHA,
 				"findings", run.FindingsCount, "pass_errors", len(result.PassErrors),
 				"status", statusText,
+				"passes", result.PassTelemetryText(),
 				"shadow", engineCfg.ShadowMode, "cost_usd", run.CostUSD,
 				"duration_ms", result.Duration.Milliseconds(),
 			)

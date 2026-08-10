@@ -143,13 +143,14 @@ func TestReadStreamJSON_NilCallbackUnchanged(t *testing.T) {
 }
 
 func TestReadStreamJSON_ResultEvent(t *testing.T) {
-	input := `{"type":"result","subtype":"success","result":"All done.","total_cost_usd":0.0123,"usage":{"input_tokens":100,"output_tokens":50}}`
+	input := `{"type":"result","subtype":"success","result":"All done.","total_cost_usd":0.0123,"num_turns":4,"usage":{"input_tokens":100,"output_tokens":50}}`
 
 	var buf strings.Builder
 	result := &Result{}
 	readStreamJSON(strings.NewReader(input), &buf, newTestLogFile(t), result)
 
 	assert.Equal(t, "success", result.ResultSubtype)
+	assert.Equal(t, 4, result.NumTurns)
 	assert.InDelta(t, 0.0123, result.CostUSD, 1e-6)
 	assert.Equal(t, 100, result.TokensIn)
 	assert.Equal(t, 50, result.TokensOut)
@@ -158,14 +159,17 @@ func TestReadStreamJSON_ResultEvent(t *testing.T) {
 }
 
 func TestReadStreamJSON_ResultEvent_ErrorSubtype(t *testing.T) {
-	// error_max_turns: no "result" field, is_error=false — not a rate limit
-	input := `{"type":"result","subtype":"error_max_turns","is_error":false}`
+	// error_max_turns: no "result" field, is_error=false — not a rate limit.
+	// num_turns is the whole point of this subtype for a caller tuning a turn
+	// budget: it says how many turns the session actually got through.
+	input := `{"type":"result","subtype":"error_max_turns","is_error":false,"num_turns":12}`
 
 	var buf strings.Builder
 	result := &Result{}
 	readStreamJSON(strings.NewReader(input), &buf, newTestLogFile(t), result)
 
 	assert.Equal(t, "error_max_turns", result.ResultSubtype)
+	assert.Equal(t, 12, result.NumTurns)
 	assert.False(t, result.RateLimited)
 }
 

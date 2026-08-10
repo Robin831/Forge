@@ -60,6 +60,12 @@ type Result struct {
 	// ResultSubtype is the stream-json result event subtype (e.g. "success",
 	// "error_max_turns", "error_rate_limit_exceeded").
 	ResultSubtype string
+	// NumTurns is the number of agent turns the session consumed, as reported
+	// by the provider on its result event. Zero for providers that report none.
+	// It is the only in-band measure of how close a session came to its
+	// --max-turns budget, which is what makes a turn budget tunable against
+	// real runs rather than guessed at.
+	NumTurns int
 	// ProviderUsed records which provider produced this result.
 	ProviderUsed provider.Kind
 	// Quota contains the latest known quota information from the provider.
@@ -110,6 +116,7 @@ type StreamEvent struct {
 	Result       string       `json:"result,omitempty"`
 	IsError      bool         `json:"is_error,omitempty"`
 	TotalCostUSD float64      `json:"total_cost_usd,omitempty"`
+	NumTurns     int          `json:"num_turns,omitempty"`
 	Usage        *StreamUsage `json:"usage,omitempty"`
 	// Stats from Gemini result event
 	Stats *StreamStats `json:"stats,omitempty"`
@@ -710,6 +717,7 @@ func readStreamJSONEvents(r io.Reader, buf *strings.Builder, logFile *os.File, r
 				result.ResultSubtype = event.Subtype
 				result.IsError = event.IsError
 				result.CostUSD = event.TotalCostUSD
+				result.NumTurns = event.NumTurns
 				if event.Usage != nil {
 					result.TokensIn = event.Usage.effectiveInputTokens()
 					result.TokensOut = event.Usage.effectiveOutputTokens()

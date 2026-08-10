@@ -217,3 +217,48 @@ func TestClassifyPassErrorInfersReasonFromForeignError(t *testing.T) {
 		}
 	}
 }
+
+func TestRenderPassTelemetry(t *testing.T) {
+	tests := []struct {
+		name   string
+		passes []PassReport
+		want   string
+	}{
+		{"no passes", nil, ""},
+		{
+			"clean run",
+			[]PassReport{
+				{Name: "triage", Turns: 3, Attempts: 1},
+				{Name: "logic", Turns: 9, Attempts: 1},
+			},
+			"pass=triage turns=3 term=success, pass=logic turns=9 term=success",
+		},
+		{
+			// The retry marker only appears where a pass was actually re-run,
+			// so a grep for "retry=" finds the rare case and nothing else.
+			"retried then answered",
+			[]PassReport{{Name: "logic", Turns: 7, Attempts: 2, Retried: true}},
+			"pass=logic turns=7 term=success retry=1",
+		},
+		{
+			"retried and still out of turns",
+			[]PassReport{{Name: "logic", Turns: 12, TerminationReason: ReasonMaxTurns, Attempts: 2, Retried: true}},
+			"pass=logic turns=12 term=error_max_turns retry=1",
+		},
+		{
+			// A provider that reports no turn count leaves the field at 0
+			// rather than omitting it: an absent key would read as a parse
+			// failure in a log query, a zero reads as "not reported".
+			"no turn count reported",
+			[]PassReport{{Name: "security", TerminationReason: ReasonRateLimited, Attempts: 1}},
+			"pass=security turns=0 term=rate_limited",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := RenderPassTelemetry(tt.passes); got != tt.want {
+				t.Errorf("RenderPassTelemetry() = %q; want %q", got, tt.want)
+			}
+		})
+	}
+}

@@ -18,8 +18,16 @@ import (
 
 // stubResp is one scripted runner response.
 type stubResp struct {
-	text string
-	err  error
+	text  string
+	err   error
+	turns int
+}
+
+// stubCall records one invocation of the scripted runner, so a test can assert
+// how many sessions a pass took and that a retry re-sent identical inputs.
+type stubCall struct {
+	pass   string
+	prompt string
 }
 
 // scriptRunner is a deterministic PassRunner: each pass name has an ordered
@@ -28,15 +36,17 @@ type scriptRunner struct {
 	mu     sync.Mutex
 	script map[string][]stubResp
 	idx    map[string]int
+	calls  []stubCall
 }
 
 func newScriptRunner(script map[string][]stubResp) *scriptRunner {
 	return &scriptRunner{script: script, idx: map[string]int{}}
 }
 
-func (r *scriptRunner) run(_ context.Context, pass, _, _ string) (PassOutput, error) {
+func (r *scriptRunner) run(_ context.Context, pass, _, prompt string) (PassOutput, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	r.calls = append(r.calls, stubCall{pass: pass, prompt: prompt})
 	seq := r.script[pass]
 	if len(seq) == 0 {
 		// Default: no findings.
@@ -51,7 +61,30 @@ func (r *scriptRunner) run(_ context.Context, pass, _, _ string) (PassOutput, er
 	if resp.err != nil {
 		return PassOutput{}, resp.err
 	}
-	return PassOutput{Text: resp.text}, nil
+	return PassOutput{Text: resp.text, Turns: resp.turns}, nil
+}
+
+// callsFor returns the recorded invocations for one pass, in order.
+func (r *scriptRunner) callsFor(pass string) []stubCall {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var out []stubCall
+	for _, c := range r.calls {
+		if c.pass == pass {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// passReport returns the named pass's report from a result, or nil.
+func passReport(res *ReviewResult, name string) *PassReport {
+	for i := range res.Passes {
+		if res.Passes[i].Name == name {
+			return &res.Passes[i]
+		}
+	}
+	return nil
 }
 
 func findingsJSON(t *testing.T, fs []Finding) string {
@@ -839,6 +872,218 @@ func TestReviewRetrySucceedsOnSecondAttempt(t *testing.T) {
 	}
 	if len(res.Findings) != 1 {
 		t.Errorf("expected retry to recover 1 finding, got %d", len(res.Findings))
+	}
+}
+
+// maxTurnsErr is the error the provider layer produces for a session that
+// spent its turn budget without answering.
+func maxTurnsErr(pass string, turns int) error {
+	return &PassError{
+		Pass:    pass,
+		Reason:  ReasonMaxTurns,
+		Message: fmt.Sprintf("assay pass %s: provider claude/claude-opus-4-8 failed (exit 1, subtype error_max_turns)", pass),
+		Turns:   turns,
+	}
+}
+
+// TestReviewRetriesMaxTurnsPassInFreshSession pins the recovery case: a pass
+// that burns its turn budget exploring is re-run once with identical inputs,
+// and a retry that answers is an ordinary success — it must not leave a
+// residue in PassErrors or FailedPasses, which is what would turn a fully
+// covered run into a "partial" one and put a coverage caveat on the PR.
+func TestReviewRetriesMaxTurnsPassInFreshSession(t *testing.T) {
+	good := findingsJSON(t, []Finding{
+		{File: "a.go", Anchor: "a.go:1", Category: "logic", Severity: SeverityImportant, Title: "t", Body: "b"},
+	})
+	script := map[string][]stubResp{passTriage.Name: {{text: triageJSON(t, nil, ""), turns: 3}}}
+	for _, p := range deepPasses {
+		script[p.Name] = []stubResp{{text: findingsJSON(t, nil), turns: 4}}
+	}
+	script["logic"] = []stubResp{{err: maxTurnsErr("logic", 12)}, {text: good, turns: 7}}
+
+	runner := newScriptRunner(script)
+	res, err := Review(context.Background(), testRequest(), openTestDB(t), DefaultConfig().WithRunner(runner.run))
+	if err != nil {
+		t.Fatalf("Review: %v", err)
+	}
+	if len(res.PassErrors) != 0 {
+		t.Errorf("a pass that succeeded on retry must not count as a pass error; got %v", res.PassErrors)
+	}
+	if len(res.FailedPasses) != 0 {
+		t.Errorf("expected no failed passes; got %v", res.FailedPasses)
+	}
+	if res.Status != RunStatusComplete {
+		t.Errorf("Status = %q; want %q", res.Status, RunStatusComplete)
+	}
+	if res.CompletedPasses != len(deepPasses) {
+		t.Errorf("CompletedPasses = %d; want %d", res.CompletedPasses, len(deepPasses))
+	}
+	if len(res.Findings) != 1 {
+		t.Errorf("expected the retry's finding to survive; got %d findings", len(res.Findings))
+	}
+
+	// Two sessions, same inputs: the retry is a fresh session with the
+	// identical prompt, not a resume of the exhausted one.
+	calls := runner.callsFor("logic")
+	if len(calls) != 2 {
+		t.Fatalf("expected 2 logic sessions (attempt + retry); got %d", len(calls))
+	}
+	if calls[0].prompt != calls[1].prompt {
+		t.Error("retry sent a different prompt; the re-run must use identical inputs")
+	}
+
+	rep := passReport(res, "logic")
+	if rep == nil {
+		t.Fatal("no PassReport for logic")
+	}
+	if !rep.Retried {
+		t.Error("Retried = false; want true")
+	}
+	if rep.Attempts != 2 {
+		t.Errorf("Attempts = %d; want 2", rep.Attempts)
+	}
+	if rep.TerminationReason != "" {
+		t.Errorf("TerminationReason = %q; want empty for a pass that answered", rep.TerminationReason)
+	}
+	if rep.Turns != 7 {
+		t.Errorf("Turns = %d; want 7 (the session the pass recorded)", rep.Turns)
+	}
+	if got := res.PassTelemetryText(); !strings.Contains(got, "pass=logic turns=7 term=success retry=1") {
+		t.Errorf("PassTelemetryText() = %q; want it to report the logic retry", got)
+	}
+}
+
+// TestReviewMaxTurnsPassFailsTwice pins the bounded half: the retry happens
+// exactly once, and a pass that exhausts its budget twice is reported once,
+// with the reason it ended on, rather than once per attempt.
+func TestReviewMaxTurnsPassFailsTwice(t *testing.T) {
+	script := map[string][]stubResp{passTriage.Name: {{text: triageJSON(t, nil, ""), turns: 2}}}
+	for _, p := range deepPasses {
+		script[p.Name] = []stubResp{{text: findingsJSON(t, nil), turns: 4}}
+	}
+	script["logic"] = []stubResp{{err: maxTurnsErr("logic", 12)}, {err: maxTurnsErr("logic", 11)}}
+
+	runner := newScriptRunner(script)
+	res, err := Review(context.Background(), testRequest(), openTestDB(t), DefaultConfig().WithRunner(runner.run))
+	if err != nil {
+		t.Fatalf("Review: %v", err)
+	}
+	if n := len(runner.callsFor("logic")); n != 2 {
+		t.Fatalf("expected exactly 2 logic sessions (one retry, never a third); got %d", n)
+	}
+	if len(res.FailedPasses) != 1 {
+		t.Fatalf("expected the failed pass listed exactly once; got %v", res.FailedPasses)
+	}
+	if res.FailedPasses[0].Name != "logic" || res.FailedPasses[0].Reason != ReasonMaxTurns {
+		t.Errorf("FailedPasses[0] = %+v; want {logic error_max_turns}", res.FailedPasses[0])
+	}
+	if len(res.PassErrors) != 1 {
+		t.Errorf("expected one PassErrors entry; got %d (%v)", len(res.PassErrors), res.PassErrors)
+	}
+	if res.Status != RunStatusPartial {
+		t.Errorf("Status = %q; want %q", res.Status, RunStatusPartial)
+	}
+	// The same failure reaches both surfaces from the one structure.
+	if got := res.StatusText(); !strings.Contains(got, "logic — error_max_turns") {
+		t.Errorf("StatusText() = %q; want it to name logic — error_max_turns", got)
+	}
+	if got := PartialCoverageNote(res.FailedPasses); !strings.Contains(got, "logic (error_max_turns)") {
+		t.Errorf("PartialCoverageNote() = %q; want it to name logic (error_max_turns)", got)
+	}
+
+	rep := passReport(res, "logic")
+	if rep == nil {
+		t.Fatal("no PassReport for logic")
+	}
+	if !rep.Retried || rep.Attempts != 2 {
+		t.Errorf("telemetry = {Retried:%v Attempts:%d}; want {true 2}", rep.Retried, rep.Attempts)
+	}
+	if rep.TerminationReason != ReasonMaxTurns {
+		t.Errorf("TerminationReason = %q; want %q", rep.TerminationReason, ReasonMaxTurns)
+	}
+	if rep.Turns != 11 {
+		t.Errorf("Turns = %d; want 11 (the final attempt's session)", rep.Turns)
+	}
+	if got := res.PassTelemetryText(); !strings.Contains(got, "pass=logic turns=11 term=error_max_turns retry=1") {
+		t.Errorf("PassTelemetryText() = %q; want the failed logic pass with its turn count", got)
+	}
+}
+
+// TestReviewDoesNotRetryNonMaxTurnsFailure keeps the retry narrow. A rate
+// limit or a spawn failure says nothing about turn budgets and would fail the
+// same way a second time, so re-running it only spends money and time.
+func TestReviewDoesNotRetryNonMaxTurnsFailure(t *testing.T) {
+	script := map[string][]stubResp{passTriage.Name: {{text: triageJSON(t, nil, ""), turns: 2}}}
+	for _, p := range deepPasses {
+		script[p.Name] = []stubResp{{text: findingsJSON(t, nil), turns: 4}}
+	}
+	script["security"] = []stubResp{{err: &PassError{
+		Pass:    "security",
+		Reason:  ReasonRateLimited,
+		Message: "assay pass security: provider claude/claude-opus-4-8 rate limited",
+	}}}
+
+	runner := newScriptRunner(script)
+	res, err := Review(context.Background(), testRequest(), openTestDB(t), DefaultConfig().WithRunner(runner.run))
+	if err != nil {
+		t.Fatalf("Review: %v", err)
+	}
+	if n := len(runner.callsFor("security")); n != 1 {
+		t.Fatalf("expected a single security session (no retry); got %d", n)
+	}
+	if len(res.FailedPasses) != 1 || res.FailedPasses[0].Reason != ReasonRateLimited {
+		t.Fatalf("FailedPasses = %v; want one rate_limited entry", res.FailedPasses)
+	}
+	rep := passReport(res, "security")
+	if rep == nil {
+		t.Fatal("no PassReport for security")
+	}
+	if rep.Retried || rep.Attempts != 1 {
+		t.Errorf("telemetry = {Retried:%v Attempts:%d}; want {false 1}", rep.Retried, rep.Attempts)
+	}
+	if rep.TerminationReason != ReasonRateLimited {
+		t.Errorf("TerminationReason = %q; want %q", rep.TerminationReason, ReasonRateLimited)
+	}
+}
+
+// TestReviewRecordsPerPassTurnTelemetry pins the tuning data itself: every
+// pass of a healthy run — triage included — carries the turns it used and how
+// it terminated, on the result and in the rendered log field.
+func TestReviewRecordsPerPassTurnTelemetry(t *testing.T) {
+	script := map[string][]stubResp{passTriage.Name: {{text: triageJSON(t, nil, ""), turns: 3}}}
+	for i, p := range deepPasses {
+		script[p.Name] = []stubResp{{text: findingsJSON(t, nil), turns: 5 + i}}
+	}
+	runner := newScriptRunner(script)
+	res, err := Review(context.Background(), testRequest(), openTestDB(t), DefaultConfig().WithRunner(runner.run))
+	if err != nil {
+		t.Fatalf("Review: %v", err)
+	}
+	if len(res.Passes) != 1+len(deepPasses) {
+		t.Fatalf("expected %d pass reports, got %d", 1+len(deepPasses), len(res.Passes))
+	}
+	if rep := passReport(res, passTriage.Name); rep == nil || rep.Turns != 3 {
+		t.Errorf("triage report = %+v; want Turns 3", rep)
+	}
+	telemetry := res.PassTelemetryText()
+	for i, p := range deepPasses {
+		rep := passReport(res, p.Name)
+		if rep == nil {
+			t.Fatalf("no PassReport for %s", p.Name)
+		}
+		if rep.Turns != 5+i {
+			t.Errorf("%s Turns = %d; want %d", p.Name, rep.Turns, 5+i)
+		}
+		if rep.TerminationReason != "" || rep.Retried || rep.Attempts != 1 {
+			t.Errorf("%s telemetry = %+v; want a clean single-attempt pass", p.Name, *rep)
+		}
+		want := fmt.Sprintf("pass=%s turns=%d term=success", p.Name, 5+i)
+		if !strings.Contains(telemetry, want) {
+			t.Errorf("PassTelemetryText() = %q; want it to contain %q", telemetry, want)
+		}
+	}
+	if strings.Contains(telemetry, "retry=") {
+		t.Errorf("PassTelemetryText() = %q; a run with no retries must not report one", telemetry)
 	}
 }
 
