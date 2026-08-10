@@ -152,7 +152,11 @@ COPY --from=bd-builder --chmod=0755 /out/bd /usr/local/bin/bd
 # `dolt checkout -b beads-sync` after `bd init --remote`, since the local
 # clone defaults to main and pushes are rejected on main (the server has
 # main checked out). Dolt is distributed as a single static Linux binary.
-ARG DOLT_VERSION=1.88.1
+# Keep this in step with the dolt-beads server (currently 2.2.3). A 1.x CLI
+# talks to a 2.x server fine — clone and push were both verified against 2.2.3
+# before the server was upgraded — so this pin is not a flag day, but there is
+# no reason to lag it either.
+ARG DOLT_VERSION=2.2.3
 RUN set -eux; \
     arch=$(dpkg --print-architecture); \
     case "$arch" in \
@@ -239,6 +243,22 @@ WORKDIR /home/forge
 # container. The CMD also passes --foreground explicitly as a belt-and-
 # suspenders measure for users who override CMD.
 ENV FORGE_FOREGROUND=1
+
+# bd ships anonymous usage metrics ON, not off: internal/config sets
+# metrics.disabled=false with endpoint https://gastownhall-eventsapi.com/mp/collect.
+# It sends command names, bd version and OS platform under a machine-derived id
+# — no issue content — but it is still outbound third-party telemetry from an
+# FHI-operated container, so it is off by default here.
+#
+# This must be the env var, not `bd metrics off`. That writes
+# $HOME/.config/bd/config.yaml, and /home/forge is a PVC mount at runtime, so
+# anything baked into the image under that path is masked by the volume — the
+# setting would silently vanish on a fresh pod. BD_DISABLE_METRICS also
+# outranks the saved config, so a stale file on the volume cannot re-enable it.
+# The devbox image is FROM this one and inherits it.
+#
+# Set BD_DISABLE_METRICS=0 on a container to opt back in.
+ENV BD_DISABLE_METRICS=1
 
 # tini provides a proper PID 1: it reaps zombies (Smith → claude → helpers)
 # and forwards SIGTERM cleanly so graceful shutdown runs.
