@@ -6538,22 +6538,20 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 		if err := json.Unmarshal(cmd.Payload, &arp); err != nil {
 			return errorResponse("invalid assay_rerun payload: " + err.Error())
 		}
-		if arp.Anvil == "" || arp.PR == 0 {
-			return errorResponse("assay_rerun requires anvil and pr")
+		if arp.Anvil == "" {
+			return errorResponse("assay_rerun requires anvil")
 		}
 		anvilCfg, ok := d.cfg.Load().Anvils[arp.Anvil]
 		if !ok {
 			return errorResponse("unknown anvil: " + arp.Anvil)
 		}
-		pr, err := d.db.GetPRByID(arp.PR)
+		// The PR may be addressed by its state.db row id (what the web
+		// dashboard holds) or by its GitHub number scoped to this anvil (what
+		// `forge assay rerun <pr> --anvil` sends); resolvePRTarget is the one
+		// place either form becomes a row.
+		pr, err := resolvePRTarget(d.db, arp.PR, arp.PRNumber, arp.Anvil)
 		if err != nil {
-			return errorResponse(fmt.Sprintf("failed to look up PR id %d: %v", arp.PR, err))
-		}
-		if pr == nil {
-			return errorResponse(fmt.Sprintf("PR id %d not found", arp.PR))
-		}
-		if pr.Anvil != arp.Anvil {
-			return errorResponse(fmt.Sprintf("PR id %d belongs to anvil %q, not %q", arp.PR, pr.Anvil, arp.Anvil))
+			return errorResponse(err.Error())
 		}
 		_ = d.db.LogEvent(state.EventPRReviewNeeded, fmt.Sprintf("Assay re-review requested for PR #%d (manual)", pr.Number), pr.BeadID, arp.Anvil)
 		d.logger.Info("Assay re-review requested", "pr", pr.Number, "anvil", arp.Anvil, "bead", pr.BeadID)
@@ -7017,9 +7015,15 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 			if pa.Branch == "" {
 				return errorResponse("rebase action requires branch")
 			}
-			pr, err := d.db.GetPRByID(pa.PRID)
+			// Hearth and the web PR rows send the row id and the number
+			// together, so the id wins and the number is the fallback for a PR
+			// the dashboard knows by number alone. A miss is not fatal here:
+			// the rebase runs against the branch, and an empty base branch only
+			// costs the worker its explicit base.
+			pr, err := resolvePRTargetPreferID(d.db, pa.PRID, pa.PRNumber, pa.Anvil)
 			if err != nil {
-				return errorResponse(fmt.Sprintf("failed to look up PR: %v", err))
+				d.logger.Warn("rebase: could not resolve PR row; running without an explicit base branch",
+					"pr", pa.PRNumber, "pr_id", pa.PRID, "anvil", pa.Anvil, "error", err)
 			}
 			baseBranch := ""
 			if pr != nil {
