@@ -10,9 +10,13 @@ import (
 // A PR reaches the daemon under one of two names: the `prs` table row id (what
 // the web dashboard and Hearth hold, because that is what their list payloads
 // carry) or the GitHub PR number scoped by an anvil (what an operator reads off
-// a PR page, and the only form a CLI verb can reasonably ask for). Every IPC
-// handler that needs the row itself resolves through resolvePRTarget, so the
-// two forms have one lookup and one set of error messages between them.
+// a PR page, and the only form a CLI verb can reasonably ask for). The handlers
+// that accept both forms — assay_rerun, and pr_action's rebase branch via
+// resolvePRTargetPreferID — resolve through here, so those two share one lookup
+// and one set of error messages. It is not (yet) a universal invariant: the
+// handlers that only ever take a row id (retry_bead, dismiss_bead, merge_pr)
+// still call db.GetPRByID directly and do not get the anvil-ownership check, so
+// validation added here does not reach them.
 var (
 	// errNoPRTarget is returned when neither addressing form was supplied.
 	errNoPRTarget = errors.New("a PR target is required: pr (state.db row id) or pr_number with an anvil")

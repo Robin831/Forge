@@ -1,6 +1,10 @@
 package main
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/spf13/cobra"
+)
 
 func TestParsePRNumberArg(t *testing.T) {
 	tests := []struct {
@@ -57,7 +61,9 @@ func TestAssayRerunCmdWiring(t *testing.T) {
 	if flag == nil {
 		t.Fatal("assay rerun must expose --anvil")
 	}
-	if flag.Annotations[cobraRequiredAnnotation] == nil {
+	// BashCompOneRequiredFlag is the annotation MarkFlagRequired sets; reading
+	// cobra's own constant keeps the check true if the key ever changes.
+	if flag.Annotations[cobra.BashCompOneRequiredFlag] == nil {
 		t.Error("--anvil must be required on assay rerun")
 	}
 
@@ -65,8 +71,3 @@ func TestAssayRerunCmdWiring(t *testing.T) {
 		t.Errorf("assay rerun must hang off the assay command, got %v", parent)
 	}
 }
-
-// cobraRequiredAnnotation is cobra's BashCompOneRequiredFlag key, which
-// MarkFlagRequired sets. Spelled out here so the test does not depend on the
-// completion package's export.
-const cobraRequiredAnnotation = "cobra_annotation_bash_completion_one_required_flag"

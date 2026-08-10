@@ -446,8 +446,9 @@ type WardenRerunPayload struct {
 //     sends.
 //
 // Supplying both, or neither, is rejected rather than guessed at; see the
-// daemon's resolvePRTarget, which both this command and pr_action's row lookup
-// share.
+// daemon's resolvePRTarget, which this command shares with pr_action's rebase
+// branch (the other handler that accepts either form). Handlers that only ever
+// take a row id look it up directly and do not go through it.
 type AssayRerunPayload struct {
 	Anvil    string `json:"anvil"`
 	PR       int    `json:"pr,omitempty"`
