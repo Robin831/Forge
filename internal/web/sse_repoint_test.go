@@ -13,6 +13,52 @@ import (
 	"github.com/Robin831/Forge/internal/state"
 )
 
+// Regression (Forge-x8ew): schematic used to record its temp-workdir log path
+// on the worker row; the allowlist rejects it and the stream answered 400,
+// which permanently closes the browser's EventSource — the panel sat on
+// "reconnecting…" for the whole run. An invalid path on a still-active worker
+// must instead hold a 200 stream open and recover once the row is repointed
+// at a usable location.
+func TestWorkerLogStream_InvalidPathOnActiveWorker_WaitsAndRecovers(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	logDir := filepath.Join(tempHome, ".forge", "logs", "Forge-abc1")
+	if err := os.MkdirAll(logDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	goodLog := filepath.Join(logDir, "schematic-1.log")
+
+	srv := newServerWithDefaults(t, nil)
+	cookie := loginAndGetCookie(t, srv)
+	insertWorkerRow(t, srv, "w-badpath", state.WorkerRunning, "schematic",
+		"/tmp/forge-schematic-123/logs/schematic-1.log")
+
+	go func() {
+		time.Sleep(300 * time.Millisecond)
+		if err := os.WriteFile(goodLog, []byte("schematic plan ready\n"), 0o644); err != nil {
+			t.Error(err)
+			return
+		}
+		if err := srv.db.UpdateWorkerLogPath("w-badpath", goodLog); err != nil {
+			t.Error(err)
+		}
+	}()
+
+	req := httptest.NewRequest("GET", "/api/worker/w-badpath/stream", nil)
+	req.AddCookie(&http.Cookie{Name: "forge_session", Value: cookie})
+	ctx, cancel := context.WithTimeout(req.Context(), 2*time.Second)
+	defer cancel()
+	rec := httptest.NewRecorder()
+	srv.routes().ServeHTTP(rec, req.WithContext(ctx))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("invalid log path on an active worker must stream 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "schematic plan ready") {
+		t.Errorf("stream must recover once the path is repointed\nbody:\n%s", rec.Body.String())
+	}
+}
+
 // Regression (Forge-hyla): a live worker stream resolved the row's log_path
 // once at connection time and tailed that file forever. Workers switch log
 // files mid-life (Smith iterations, the Warden review, burnish fix → verify),

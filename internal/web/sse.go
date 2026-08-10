@@ -784,8 +784,17 @@ func (s *Server) handleWorkerLogStream(w http.ResponseWriter, r *http.Request) {
 
 	logPath, _, status, err := resolveWorkerLogPath(s.db, workerID)
 	if err != nil {
-		writeError(w, status, err.Error())
-		return
+		// An invalid (non-allowlisted) log path is not terminal while the
+		// worker is still active: rows have carried transient locations
+		// (schematic used to record its temp-dir log, Forge-x8ew) and are
+		// repointed when the next stage spawns. A non-2xx would permanently
+		// close the browser's EventSource, so treat it like "no path yet"
+		// and wait for a usable one instead.
+		if status != http.StatusBadRequest || !workerMayStillLog(s.db, workerID) {
+			writeError(w, status, err.Error())
+			return
+		}
+		logPath = ""
 	}
 	// An empty log path is not necessarily permanent: the pipeline inserts the
 	// worker row (status running) *before* Smith spawns and records its log

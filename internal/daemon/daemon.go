@@ -3805,6 +3805,13 @@ func (d *Daemon) dispatchBead(ctx context.Context, bead poller.Bead, anvilCfg co
 			schemCfg := schematic.DefaultConfig()
 			schemCfg.Enabled = true
 			schemCfg.ExtraFlags = d.cfg.Load().Settings.ClaudeFlags
+			// Durable session log: without a LogDir the log lands in the
+			// check's temp workdir, whose path fails the Hearth allowlist and
+			// is deleted with the dir — leaving the worker panel unable to
+			// stream or tail anything (Forge-x8ew).
+			if home, herr := os.UserHomeDir(); herr == nil {
+				schemCfg.LogDir = filepath.Join(home, ".forge", "logs", forge.SanitizeBeadID(bead.ID))
+			}
 			workerIDForSpawn := claimWorkerID
 			schemCfg.OnSpawn = func(pid int, logPath string) {
 				if err := d.db.UpdateWorkerPID(workerIDForSpawn, pid); err != nil {

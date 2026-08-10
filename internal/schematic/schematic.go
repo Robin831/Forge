@@ -13,7 +13,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log"
 	"os"
 	"os/exec"
@@ -155,9 +154,12 @@ type Config struct {
 	// monitoring records (e.g. the worker DB row) so that live-tail and
 	// progress tracking work during the schematic phase.
 	OnSpawn func(pid int, logPath string)
-	// LogDir, when set, receives a copy of the schematic session log so it
-	// survives the temp-dir cleanup. Typically set to the worktree's
-	// .forge-logs directory by the pipeline.
+	// LogDir, when set, is where the schematic session log is written — a
+	// durable location that survives the temp-workdir cleanup and passes the
+	// Hearth log allowlist, so live panels can stream it and lingering panels
+	// can tail it (Forge-x8ew). Typically the worktree's .forge-logs directory
+	// (pipeline) or ~/.forge/logs/<bead> (daemon crucible check). When empty,
+	// the log lands inside the temp workdir and dies with it.
 	LogDir string
 	// OnEvent, when set, surfaces notable schematic sub-events to the caller so
 	// they can be recorded in the activity feed. It is used for partial
@@ -290,7 +292,17 @@ func Run(ctx context.Context, cfg Config, bead poller.Bead, anvilPath string, pv
 	}
 	defer os.RemoveAll(workDir)
 
+	// Write the session log straight into the caller's durable log dir when
+	// one is provided (the pipeline's worktree .forge-logs, or the daemon's
+	// ~/.forge/logs/<bead> for crucible checks). The temp workdir is deleted
+	// the moment the session ends, and its path fails the Hearth log
+	// allowlist — so a panel could neither stream the log live (the 400
+	// permanently closed the browser's EventSource, leaving "reconnecting…")
+	// nor tail it after completion (Forge-x8ew).
 	logDir := filepath.Join(workDir, "logs")
+	if cfg.LogDir != "" {
+		logDir = cfg.LogDir
+	}
 	extraFlags := append([]string{"--max-turns", fmt.Sprintf("%d", cfg.MaxTurns)}, cfg.ExtraFlags...)
 	process, err := smith.SpawnWithOptions(ctx, workDir, promptText, logDir, pv, extraFlags, smith.SpawnOptions{LogPrefix: "schematic"})
 	if err != nil {
@@ -306,10 +318,6 @@ func Run(ctx context.Context, cfg Config, bead poller.Bead, anvilPath string, pv
 	}
 
 	smithResult := process.Wait()
-
-	if cfg.LogDir != "" {
-		copySessionLog(process.LogPath, cfg.LogDir)
-	}
 
 	result := &Result{
 		Duration: time.Since(start),
@@ -1056,7 +1064,13 @@ func RunCrucibleCheck(ctx context.Context, cfg Config, parent poller.Bead, child
 	}
 	defer os.RemoveAll(workDir)
 
+	// Same durable-log-dir handling as Analyze: the temp workdir (and any log
+	// inside it) is deleted when the check ends, and its path fails the
+	// Hearth log allowlist (Forge-x8ew).
 	logDir := filepath.Join(workDir, "logs")
+	if cfg.LogDir != "" {
+		logDir = cfg.LogDir
+	}
 	extraFlags := append([]string{"--max-turns", fmt.Sprintf("%d", cfg.MaxTurns)}, cfg.ExtraFlags...)
 	process, err := smith.SpawnWithOptions(ctx, workDir, promptText, logDir, pv, extraFlags, smith.SpawnOptions{LogPrefix: "schematic"})
 	if err != nil {
@@ -1071,10 +1085,6 @@ func RunCrucibleCheck(ctx context.Context, cfg Config, parent poller.Bead, child
 	}
 
 	smithResult := process.Wait()
-
-	if cfg.LogDir != "" {
-		copySessionLog(process.LogPath, cfg.LogDir)
-	}
 
 	result := &CrucibleCheckResult{
 		Duration: time.Since(start),
@@ -1227,33 +1237,4 @@ Output your verdict as a JSON block:
 `)
 
 	return b.String()
-}
-
-func copySessionLog(src, dstDir string) {
-	if src == "" {
-		return
-	}
-	sf, err := os.Open(src)
-	if err != nil {
-		log.Printf("[schematic] failed to open session log for copy: %v", err)
-		return
-	}
-	defer sf.Close()
-
-	if err := os.MkdirAll(dstDir, 0o755); err != nil {
-		log.Printf("[schematic] failed to create log dir %s: %v", dstDir, err)
-		return
-	}
-
-	dst := filepath.Join(dstDir, filepath.Base(src))
-	df, err := os.Create(dst)
-	if err != nil {
-		log.Printf("[schematic] failed to create log copy %s: %v", dst, err)
-		return
-	}
-	defer df.Close()
-
-	if _, err := io.Copy(df, sf); err != nil {
-		log.Printf("[schematic] failed to copy session log: %v", err)
-	}
 }
