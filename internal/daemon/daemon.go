@@ -247,6 +247,22 @@ type Daemon struct {
 	// safely read via Load(). WebhookDispatcher methods are nil-safe.
 	dispatcher atomic.Pointer[notify.WebhookDispatcher]
 
+	// assayDiffFetch and assayReview override the two external steps of an
+	// Assay run — `gh pr diff` and the multi-pass engine. nil selects the real
+	// ones; tests replace them so runAssayReview itself can be driven to each
+	// of its terminal outcomes without a GitHub CLI or a provider.
+	//
+	// They exist for one invariant: every path out of runAssayReview emits
+	// exactly one terminal event, so the pr_review_needed that opened a review
+	// always has a matching resolution in the feed. That is a property of the
+	// function, not of emitAssayTerminalEvent, and an early return added above
+	// the emit would break it while every unit test of the emitter still
+	// passed.
+	//
+	// Set before Run/IPC serving begins and never mutated afterwards.
+	assayDiffFetch func(ctx context.Context, worktreePath string, prNumber int) ([]byte, error)
+	assayReview    func(ctx context.Context, req assay.ReviewRequest, db *state.DB, cfg assay.Config) (*assay.ReviewResult, error)
+
 	// lifecycleDispatch overrides where a manually triggered lifecycle action
 	// (the pr_action fix verbs) is sent. nil selects the real
 	// handleLifecycleAction; tests replace it so the request a handler builds
@@ -1753,6 +1769,36 @@ func (d *Daemon) assayLogPathRecorder(workerID string) func(string) {
 	}
 }
 
+// fetchAssayDiff returns the net base..head diff Assay reviews, via
+// `gh pr diff <N>` run in the PR's worktree. gh's stderr is logged here rather
+// than folded into the returned error: the error is what lands in the run
+// record and the feed row, and both are one bounded line.
+//
+// d.assayDiffFetch replaces it in tests — see the field's doc.
+func (d *Daemon) fetchAssayDiff(ctx context.Context, worktreePath string, prNumber int) ([]byte, error) {
+	if d.assayDiffFetch != nil {
+		return d.assayDiffFetch(ctx, worktreePath, prNumber)
+	}
+	cmd := executil.HideWindow(exec.CommandContext(ctx, "gh", "pr", "diff", strconv.Itoa(prNumber)))
+	cmd.Dir = worktreePath
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+	if err != nil && stderr.Len() > 0 {
+		d.logger.Error("gh pr diff failed for Assay", "pr", prNumber, "stderr", stderr.String())
+	}
+	return out, err
+}
+
+// reviewAssay runs the multi-pass engine over req. d.assayReview replaces it in
+// tests — see the field's doc.
+func (d *Daemon) reviewAssay(ctx context.Context, req assay.ReviewRequest, db *state.DB, cfg assay.Config) (*assay.ReviewResult, error) {
+	if d.assayReview != nil {
+		return d.assayReview(ctx, req, db, cfg)
+	}
+	return assay.Review(ctx, req, db, cfg)
+}
+
 func (d *Daemon) runAssayReview(ctx context.Context, anvil, anvilPath, beadID string, prNumber int, headSHA, worktreePath, workerID string) (*state.AssayRun, error) {
 	resolved := d.cfg.Load().ResolvedAssay(anvil)
 	engineCfg := assay.FromAssayConfig(resolved)
@@ -1766,15 +1812,11 @@ func (d *Daemon) runAssayReview(ctx context.Context, anvil, anvilPath, beadID st
 		ShadowMode: engineCfg.ShadowMode,
 	}
 
-	// Fetch the PR diff via `gh pr diff <N>` from the worktree — the full net
-	// diff base..head, i.e. the cumulative change across every commit.
-	diffCmd := executil.HideWindow(exec.CommandContext(ctx, "gh", "pr", "diff", strconv.Itoa(prNumber)))
-	diffCmd.Dir = worktreePath
-	var diffStderr strings.Builder
-	diffCmd.Stderr = &diffStderr
-	diffBytes, diffErr := diffCmd.Output()
+	// Fetch the PR diff — the full net diff base..head, i.e. the cumulative
+	// change across every commit.
+	diffBytes, diffErr := d.fetchAssayDiff(ctx, worktreePath, prNumber)
 	if diffErr != nil {
-		d.logger.Error("failed to fetch PR diff for Assay", "pr", prNumber, "bead", beadID, "error", diffErr, "stderr", diffStderr.String())
+		d.logger.Error("failed to fetch PR diff for Assay", "pr", prNumber, "bead", beadID, "error", diffErr)
 		run.SkippedReason = "diff fetch failed"
 		run.Error = diffErr.Error()
 		run.Status = state.AssayStatusFailed
@@ -1786,7 +1828,7 @@ func (d *Daemon) runAssayReview(ctx context.Context, anvil, anvilPath, beadID st
 		// the entire run and read as a missing worker. sync.Once keeps this to
 		// the first pass: the deep passes fan out concurrently, so without it
 		// the panel would flip between logs mid-run.
-		result, rerr := assay.Review(ctx, assay.ReviewRequest{
+		result, rerr := d.reviewAssay(ctx, assay.ReviewRequest{
 			Anvil:     anvil,
 			AnvilPath: anvilPath,
 			PRNumber:  prNumber,
@@ -1812,8 +1854,9 @@ func (d *Daemon) runAssayReview(ctx context.Context, anvil, anvilPath, beadID st
 			// Coverage is recorded on the run, not re-derived: the status,
 			// the pass tally and the named failed passes all come from the
 			// engine's single computation, so the worker row's status chip,
-			// this log line, the assay_partial event, the PR findings panel
-			// and the PR summary comment cannot disagree.
+			// this log line, the terminal feed event (completed/partial/failed,
+			// rendered from this record below), the PR findings panel and the
+			// PR summary comment cannot disagree.
 			run.Status = stateAssayStatus(result.Status)
 			run.CompletedPasses = result.CompletedPasses
 			run.TotalPasses = result.TotalPasses
@@ -1827,10 +1870,6 @@ func (d *Daemon) runAssayReview(ctx context.Context, anvil, anvilPath, beadID st
 			}
 			if result.Status == assay.RunStatusPartial {
 				d.logger.Warn("Assay review partial", "pr", prNumber, "bead", beadID, "head", headSHA, "status", statusText)
-				if err := d.db.LogEvent(state.EventAssayPartial,
-					fmt.Sprintf("Assay PR #%d: %s", prNumber, statusText), beadID, anvil); err != nil {
-					d.logger.Warn("failed to log Assay partial event", "pr", prNumber, "bead", beadID, "error", err)
-				}
 			}
 			// The per-pass telemetry rides along as its own field: turn
 			// counts and termination reasons are what the assay turn budget
@@ -1887,6 +1926,12 @@ func (d *Daemon) runAssayReview(ctx context.Context, anvil, anvilPath, beadID st
 	if recErr != nil {
 		d.logger.Error("failed to record Assay run", "pr", prNumber, "bead", beadID, "error", recErr)
 	}
+	// One terminal event per run, from the one place a run ends: this is what
+	// closes in the activity feed the pr_review_needed that opened the review.
+	// It is emitted even when recording the run failed — the review happened,
+	// and a lost row in assay_runs is no reason to also lose the feed's only
+	// notice that it did.
+	d.emitAssayTerminalEvent(run, beadID)
 	return run, recErr
 }
 

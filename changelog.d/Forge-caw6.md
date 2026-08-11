@@ -1,0 +1,2 @@
+category: Added
+- **Assay terminal events in the activity feed** - Every Assay run now emits exactly one of `assay_completed`, `assay_partial` or `assay_failed`, so the `pr_review_needed` that opened a review is always resolved in Hearth instead of only in the daemon log or on the PR. The message carries the pass tally, findings count, cost and duration, labels shadow-mode runs (which post nothing on the PR by design) as shadow, and names the cause on a failure. (Forge-caw6)

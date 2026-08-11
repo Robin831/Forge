@@ -19,7 +19,6 @@ import (
 	"slices"
 	"strings"
 	"time"
-	"unicode"
 
 	"github.com/charmbracelet/bubbles/help"
 	"github.com/charmbracelet/bubbles/progress"
@@ -35,6 +34,7 @@ import (
 	"github.com/Robin831/Forge/internal/ingot"
 	"github.com/Robin831/Forge/internal/ipc"
 	"github.com/Robin831/Forge/internal/state"
+	"github.com/Robin831/Forge/internal/termtext"
 )
 
 // Panel identifies a TUI panel.
@@ -4971,47 +4971,46 @@ func renderQueuePRCell(prNumber int, prURL string) string {
 
 // eventTypeStyle returns a styled event type.
 func eventTypeStyle(t string) string {
+	return lipgloss.NewStyle().Foreground(eventTypeColor(t)).Render(t)
+}
+
+// eventTypeColor maps an event type onto its feed colour. It is split out of
+// eventTypeStyle so the mapping can be asserted directly: the rendered string
+// carries no escape codes under a test terminal profile, so a test of the
+// styled output would pass whatever colour it chose.
+func eventTypeColor(t string) lipgloss.AdaptiveColor {
 	switch {
-	case strings.Contains(t, "pass") || strings.Contains(t, "done") || strings.Contains(t, "merged"):
-		return lipgloss.NewStyle().Foreground(colorSuccess).Render(t)
+	// Partial before the success and failure matches: assay_partial is neither
+	// — some passes reviewed the head and some never did — and the substring
+	// heuristics below would otherwise leave it in the neutral default, reading
+	// exactly like an informational row.
+	case strings.Contains(t, "partial"):
+		return colorWarning
+	// "complete" rather than "completed" so crucible_complete lands here too:
+	// toast.go already classifies it as a success, and the two surfaces
+	// colouring the same event differently is the drift worth closing. No other
+	// event type in state/db.go contains the substring.
+	case strings.Contains(t, "pass") || strings.Contains(t, "done") ||
+		strings.Contains(t, "merged") || strings.Contains(t, "complete"):
+		return colorSuccess
 	case strings.Contains(t, "fail") || strings.Contains(t, "reject") || strings.Contains(t, "error"):
-		return lipgloss.NewStyle().Foreground(colorDanger).Render(t)
+		return colorDanger
 	default:
-		return lipgloss.NewStyle().Foreground(colorInfo).Render(t)
+		return colorInfo
 	}
 }
 
 // sanitizeTitle removes ANSI escape sequences, replaces newlines/carriage
-// returns with spaces, and strips non-printable control characters from a
-// bead title before rendering it in the TUI.
+// returns/tabs with spaces, and strips non-printable runes from a bead title
+// before rendering it in the TUI.
+//
+// It delegates to internal/termtext, which is also what Assay's terminal event
+// messages go through. The hand-rolled loop this replaced recognised only CSI
+// sequences, so an OSC title write (ESC ] 0 ; … BEL) in a bead title lost its
+// ESC to the control-character branch and left the rest as visible residue —
+// two strippers with different coverage over equally untrusted text.
 func sanitizeTitle(s string) string {
-	// Replace newlines/CR with a space so the second title line stays single-line.
-	s = strings.NewReplacer("\n", " ", "\r", " ").Replace(s)
-
-	// Strip ANSI escape sequences (ESC [ ... m and similar).
-	var b strings.Builder
-	b.Grow(len(s))
-	i := 0
-	runes := []rune(s)
-	for i < len(runes) {
-		if runes[i] == '\x1b' && i+1 < len(runes) && runes[i+1] == '[' {
-			// Skip until the final byte of the CSI sequence (a letter).
-			i += 2
-			for i < len(runes) && !unicode.IsLetter(runes[i]) {
-				i++
-			}
-			i++ // consume the terminating letter
-			continue
-		}
-		// Skip other C0/C1 control characters (except space).
-		if runes[i] < 0x20 || (runes[i] >= 0x7f && runes[i] < 0xa0) {
-			i++
-			continue
-		}
-		b.WriteRune(runes[i])
-		i++
-	}
-	return b.String()
+	return termtext.Line(s)
 }
 
 // --- Helpers ---

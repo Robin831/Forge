@@ -46,10 +46,25 @@ export function priorityClasses(p: number): string {
 }
 
 export function eventClasses(type: string): string {
+  // Partial first: assay_partial is neither a success nor a failure — some
+  // passes reviewed the head and some never did — and every rule below would
+  // leave it in the neutral default, reading like an informational row.
+  if (type.includes('partial')) {
+    return 'text-amber-300'
+  }
   if (type.includes('fail') || type.includes('error') || type.includes('stuck')) {
     return 'text-red-300'
   }
-  if (type.includes('warden_pass') || type.includes('pr_merged') || type.includes('done')) {
+  // 'complete' rather than 'completed' so crucible_complete lands here too —
+  // the same substring the TUI's eventTypeColor matches, so the two surfaces
+  // cannot colour one event type differently. assay_completed matches either
+  // way; crucible_complete only matches this one.
+  if (
+    type.includes('warden_pass') ||
+    type.includes('pr_merged') ||
+    type.includes('done') ||
+    type.includes('complete')
+  ) {
     return 'text-emerald-300'
   }
   if (type.includes('pr_created')) {

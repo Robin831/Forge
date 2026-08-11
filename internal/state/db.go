@@ -2431,9 +2431,25 @@ const (
 	EventPRReviewNeeded   EventType = "pr_review_needed"
 	EventAssaySkipped     EventType = "assay_skipped"
 	// EventAssayPartial fires when an Assay run reviewed a head with only some
-	// of its passes. The message carries the run status text, so the missing
-	// passes are named in the activity feed and not only on the PR.
-	EventAssayPartial        EventType = "assay_partial"
+	// of its passes. The message is rendered by assay.RunEvent.Message from the
+	// run record, so the missing passes are named in the activity feed and not
+	// only on the PR.
+	//
+	// It is one of the three terminal Assay events — EventAssayCompleted,
+	// EventAssayPartial, EventAssayFailed — of which every run emits exactly
+	// one. Together they close in the feed what EventPRReviewNeeded opens:
+	// before them a completed review said nothing at all, so an operator
+	// watching Hearth saw reviews queued and never resolved. A shadow-mode run
+	// is the sharpest case — it posts nothing on the PR by design, so with no
+	// event it was invisible end to end.
+	EventAssayPartial EventType = "assay_partial"
+	// EventAssayCompleted fires when every deep pass reviewed the head — the
+	// common case, and the one that was previously silent.
+	EventAssayCompleted EventType = "assay_completed"
+	// EventAssayFailed fires when no pass reviewed the head (triage died, the
+	// diff was unfetchable, or every deep pass failed). The message carries
+	// the cause, which otherwise surfaced only as the worker row's state.
+	EventAssayFailed         EventType = "assay_failed"
 	EventPRMergeRequested    EventType = "pr_merge_requested"
 	EventPRMergeFailed       EventType = "pr_merge_failed"
 	EventPRAutoMerged        EventType = "pr_auto_merged"

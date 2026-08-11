@@ -196,7 +196,13 @@ func TestSanitizeTitle(t *testing.T) {
 		{"line\none", "line one"},
 		{"line\r\none", "line  one"},
 		{"\x1b[31mred\x1b[0m", "red"},
-		{"tab\there", "tabhere"}, // \t is a control char
+		// A tab becomes a space rather than vanishing: dropping it ran the two
+		// words either side of it together.
+		{"tab\there", "tab here"},
+		// OSC (title/clipboard write) is stripped whole. The hand-rolled loop
+		// this delegates to internal/sanitize for handled only CSI, so the ESC
+		// went and "]0;pwned" stayed.
+		{"title \x1b]0;pwned\amore", "title more"},
 		{"", ""},
 	}
 	for _, tt := range tests {
