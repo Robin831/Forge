@@ -19,6 +19,9 @@ func TestEventTypeColorAssayTerminals(t *testing.T) {
 		{"assay_completed", colorSuccess},
 		{"assay_partial", colorWarning},
 		{"assay_failed", colorDanger},
+		// Matching "complete" rather than "completed" is what brings this one
+		// in; toast.go has always treated it as a success.
+		{"crucible_complete", colorSuccess},
 		// Unchanged neighbours — the new rules must not recolour them.
 		{"warden_pass", colorSuccess},
 		{"pr_merged", colorSuccess},

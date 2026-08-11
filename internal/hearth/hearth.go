@@ -4986,8 +4986,12 @@ func eventTypeColor(t string) lipgloss.AdaptiveColor {
 	// exactly like an informational row.
 	case strings.Contains(t, "partial"):
 		return colorWarning
+	// "complete" rather than "completed" so crucible_complete lands here too:
+	// toast.go already classifies it as a success, and the two surfaces
+	// colouring the same event differently is the drift worth closing. No other
+	// event type in state/db.go contains the substring.
 	case strings.Contains(t, "pass") || strings.Contains(t, "done") ||
-		strings.Contains(t, "merged") || strings.Contains(t, "completed"):
+		strings.Contains(t, "merged") || strings.Contains(t, "complete"):
 		return colorSuccess
 	case strings.Contains(t, "fail") || strings.Contains(t, "reject") || strings.Contains(t, "error"):
 		return colorDanger

@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode"
 )
 
 // TestRunEventMessage pins the one-line terminal message for each outcome. The
@@ -140,6 +141,57 @@ func TestRunEventMessageIsOneBoundedLine(t *testing.T) {
 	}
 	if len(got) > eventReasonMax+120 {
 		t.Errorf("Message() unbounded (%d chars): %q", len(got), got)
+	}
+}
+
+// TestRunEventMessageStripsControlSequences: the reason is the one part of the
+// message Forge did not write — it can quote provider output shaped by the diff
+// under review — and Hearth renders a feed row straight to the terminal. An
+// escape sequence surviving into it could repaint or spoof neighbouring rows,
+// so the row must carry the text of a hostile reason and none of its commands.
+func TestRunEventMessageStripsControlSequences(t *testing.T) {
+	tests := []struct {
+		name       string
+		reason     string
+		wantReason string
+	}{
+		{
+			"csi colour and cursor movement",
+			"triage failed \x1b[31mRED\x1b[0m\x1b[2A\x1b[Kspoofed",
+			"triage failed REDspoofed",
+		},
+		{
+			"osc title/clipboard write",
+			"triage failed \x1b]0;pwned\apost",
+			"triage failed post",
+		},
+		{
+			"bare control runes",
+			"triage\x07 failed\x08\x00 hard",
+			"triage failed hard",
+		},
+		{
+			"tabs become spaces rather than vanishing",
+			"triage failed:\tconnection reset",
+			"triage failed: connection reset",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := RunEvent{PRNumber: 9, Status: RunStatusFailed, Reason: tt.reason}.Message()
+			want := "Assay PR #9: failed — " + tt.wantReason + " ($0.00, 0s)"
+			if got != want {
+				t.Errorf("Message() =\n  %q\nwant\n  %q", got, want)
+			}
+			if strings.ContainsRune(got, '\x1b') {
+				t.Errorf("Message() kept an escape byte: %q", got)
+			}
+			for _, r := range got {
+				if !unicode.IsPrint(r) {
+					t.Errorf("Message() kept non-printable %q in %q", r, got)
+				}
+			}
+		})
 	}
 }
 

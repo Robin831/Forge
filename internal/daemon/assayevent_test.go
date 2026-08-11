@@ -104,6 +104,19 @@ func TestEmitAssayTerminalEventPerOutcome(t *testing.T) {
 			"Assay PR #348: failed — diff fetch failed ($0.00, 0s)",
 		},
 		{
+			// The live diff-fetch path sets both: the skip reason names the
+			// stage and `gh pr diff` contributes a bare exit status. Leading
+			// with the error alone would render "failed — exit status 1".
+			"failed joins the skip reason and the error",
+			&state.AssayRun{
+				Anvil: "forge", PRNumber: 350, Status: state.AssayStatusFailed,
+				SkippedReason: "diff fetch failed", Error: "exit status 1",
+				CostUSD: 0.1, DurationMs: 2000,
+			},
+			state.EventAssayFailed,
+			"Assay PR #350: failed — diff fetch failed: exit status 1 ($0.10, 2s)",
+		},
+		{
 			// A run that died before the engine set a status is still a run
 			// that reviewed nothing — never a completion.
 			"unset status is failed",

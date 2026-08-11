@@ -52,19 +52,34 @@ func assayTerminalEvent(status string) state.EventType {
 	}
 }
 
+// assayRunReason picks what a failed run's feed row says went wrong.
+//
+// SkippedReason leads because it is the only one of the two that names the
+// stage: on the path that sets it (an unfetchable PR diff) Error is whatever
+// `gh pr diff` exited with — typically the bare "exit status 1", which on its
+// own tells the operator nothing. Where both are set they are joined, so the
+// stage names the failure and the error qualifies it; where only one is, it
+// stands alone.
+func assayRunReason(run *state.AssayRun) string {
+	switch {
+	case run.SkippedReason != "" && run.Error != "":
+		return run.SkippedReason + ": " + run.Error
+	case run.SkippedReason != "":
+		return run.SkippedReason
+	case run.Error != "":
+		return run.Error
+	default:
+		return "no passes reviewed the head"
+	}
+}
+
 // assayRunEventMessage renders the feed message for a finished run. It reads
 // the run record rather than the review result because the record is the one
 // thing both terminal paths produce — a run that failed before the engine
 // returned has no result at all — and because the record is what the daemon
 // already logs, so the two cannot report different numbers.
 func assayRunEventMessage(run *state.AssayRun) string {
-	reason := run.Error
-	if reason == "" {
-		reason = run.SkippedReason
-	}
-	if reason == "" {
-		reason = "no passes reviewed the head"
-	}
+	reason := assayRunReason(run)
 	return assay.RunEvent{
 		PRNumber:        run.PRNumber,
 		Status:          assayEventStatus(run.Status),

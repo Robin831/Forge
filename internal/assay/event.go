@@ -2,8 +2,10 @@ package assay
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
+	"unicode"
 )
 
 // eventReasonMax caps the failure reason rendered into a terminal event
@@ -78,25 +80,56 @@ func (e RunEvent) Message() string {
 		b.WriteString(" — " + strings.Join(details, ", "))
 	}
 
-	fmt.Fprintf(&b, " ($%.2f, %ds)", e.CostUSD, int64(e.Duration.Round(time.Second)/time.Second))
+	fmt.Fprintf(&b, " ($%.2f, %ds)", e.CostUSD, int(e.Duration.Round(time.Second).Seconds()))
 	if e.ShadowMode && e.Status != RunStatusFailed {
 		b.WriteString(" (shadow — findings in panel only)")
 	}
 	return b.String()
 }
 
-// trimEventReason reduces a failure cause to one bounded line. Provider errors
-// arrive multi-line and can be arbitrarily long; the feed renders one row per
-// event, so anything past the first line (or past eventReasonMax) is dropped
-// with an ellipsis rather than allowed to push the numbers off the row.
+// ansiEscape matches the escape sequences a provider's stderr can carry: CSI
+// (colour, cursor movement, erase), OSC (title and clipboard writes, terminated
+// by BEL or ST) and the bare two-byte forms. Matching the whole sequence rather
+// than the lone ESC is what keeps a stripped "\x1b[31m" from leaving a visible
+// "[31m" behind in the row.
+var ansiEscape = regexp.MustCompile("\x1b\\[[0-9;:?]*[ -/]*[@-~]" +
+	"|\x1b[\\]P^_X][^\a\x1b]*(?:\a|\x1b\\\\)?" +
+	"|\x1b[@-Z\\\\-_]")
+
+// trimEventReason reduces a failure cause to one bounded, printable line.
+//
+// Provider errors arrive multi-line and can be arbitrarily long, so anything
+// past the first line (or past eventReasonMax) is dropped with an ellipsis
+// rather than allowed to push the numbers off the row. They are also the one
+// thing in the message Forge did not write: the text can quote provider output
+// shaped by the diff under review, and Hearth renders a feed row through
+// lipgloss without sanitizing it. So escape sequences and control runes are
+// stripped too — otherwise a crafted reason could repaint or spoof rows in the
+// operator's activity feed rather than merely occupy one.
 func trimEventReason(reason string) string {
 	reason = strings.TrimSpace(reason)
 	if nl := strings.IndexAny(reason, "\r\n"); nl != -1 {
 		reason = strings.TrimSpace(reason[:nl])
 	}
+	reason = strings.TrimSpace(sanitizeEventReason(reason))
 	runes := []rune(reason)
 	if len(runes) > eventReasonMax {
 		return strings.TrimSpace(string(runes[:eventReasonMax])) + "…"
 	}
 	return reason
+}
+
+// sanitizeEventReason removes ANSI escape sequences and any remaining
+// non-printable rune, so what reaches the feed can only add characters to a row
+// and never commands to the terminal drawing it. Tabs become spaces (a tab is
+// not printable, but dropping it would run two words together).
+func sanitizeEventReason(s string) string {
+	s = ansiEscape.ReplaceAllString(s, "")
+	s = strings.ReplaceAll(s, "\t", " ")
+	return strings.Map(func(r rune) rune {
+		if unicode.IsPrint(r) {
+			return r
+		}
+		return -1
+	}, s)
 }
