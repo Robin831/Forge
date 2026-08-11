@@ -195,6 +195,60 @@ func TestRunEventMessageStripsControlSequences(t *testing.T) {
 	}
 }
 
+// TestRunEventMessageStripsFailedPassText: the failed-pass names and reasons go
+// into the same terminal-rendered row as the failure reason, so they get the
+// same treatment. Today they are engine constants and provider result subtypes,
+// but the row's safety must not depend on every future producer of a
+// PassFailure keeping that true.
+func TestRunEventMessageStripsFailedPassText(t *testing.T) {
+	ev := RunEvent{
+		PRNumber: 9, Status: RunStatusPartial,
+		CompletedPasses: 1, TotalPasses: 3,
+		FailedPasses: []PassFailure{
+			{Name: "logic\x1b[31m", Reason: "provider died\nstack trace"},
+			{Name: "\x1b]0;pwned\atests", Reason: "rate\tlimited\x1b[2K"},
+		},
+		Findings: 2, CostUSD: 1, Duration: 30 * time.Second,
+	}
+	want := "Assay PR #9: partial — 1/3 passes " +
+		"(failed: logic — provider died, tests — rate limited), " +
+		"2 findings ($1.00, 30s)"
+	got := ev.Message()
+	if got != want {
+		t.Errorf("Message() =\n  %q\nwant\n  %q", got, want)
+	}
+	if strings.ContainsAny(got, "\x1b\r\n") {
+		t.Errorf("Message() kept an escape byte or line break: %q", got)
+	}
+	for _, r := range got {
+		if !unicode.IsPrint(r) {
+			t.Errorf("Message() kept non-printable %q in %q", r, got)
+		}
+	}
+}
+
+// TestRunEventMessageBoundsFailedPassReason: a pass reason is bounded the same
+// way the failure reason is, so a single hostile pass cannot push the tally and
+// the numbers off the row.
+func TestRunEventMessageBoundsFailedPassReason(t *testing.T) {
+	ev := RunEvent{
+		PRNumber: 9, Status: RunStatusPartial,
+		CompletedPasses: 1, TotalPasses: 2,
+		FailedPasses: []PassFailure{{Name: "logic", Reason: strings.Repeat("x", 500)}},
+		Findings:     0, CostUSD: 0.5, Duration: time.Second,
+	}
+	got := ev.Message()
+	if !strings.Contains(got, "…") {
+		t.Errorf("Message() did not mark the truncated pass reason: %q", got)
+	}
+	if !strings.HasSuffix(got, "($0.50, 1s)") {
+		t.Errorf("Message() lost its trailing numbers: %q", got)
+	}
+	if len(got) > eventReasonMax+120 {
+		t.Errorf("Message() unbounded (%d chars): %q", len(got), got)
+	}
+}
+
 // TestRunEventMessageDropsTrailingReasonLines keeps a short first line intact
 // rather than eliding it just because later lines exist.
 func TestRunEventMessageDropsTrailingReasonLines(t *testing.T) {

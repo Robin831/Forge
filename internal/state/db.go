@@ -2431,8 +2431,9 @@ const (
 	EventPRReviewNeeded   EventType = "pr_review_needed"
 	EventAssaySkipped     EventType = "assay_skipped"
 	// EventAssayPartial fires when an Assay run reviewed a head with only some
-	// of its passes. The message carries the run status text, so the missing
-	// passes are named in the activity feed and not only on the PR.
+	// of its passes. The message is rendered by assay.RunEvent.Message from the
+	// run record, so the missing passes are named in the activity feed and not
+	// only on the PR.
 	//
 	// It is one of the three terminal Assay events — EventAssayCompleted,
 	// EventAssayPartial, EventAssayFailed — of which every run emits exactly

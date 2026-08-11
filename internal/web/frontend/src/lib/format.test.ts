@@ -15,6 +15,13 @@ describe('eventClasses', () => {
     expect(eventClasses('assay_failed')).toBe('text-red-300')
   })
 
+  // The success rule matches 'complete', not 'completed', so crucible_complete
+  // is green here exactly as it is in the TUI. Matching only 'completed' left
+  // the same event neutral on this surface and green on the other.
+  it('colours crucible_complete like the TUI does', () => {
+    expect(eventClasses('crucible_complete')).toBe('text-emerald-300')
+  })
+
   it('leaves neighbouring event types unchanged', () => {
     expect(eventClasses('warden_pass')).toBe('text-emerald-300')
     expect(eventClasses('pr_merged')).toBe('text-emerald-300')

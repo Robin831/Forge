@@ -55,11 +55,15 @@ export function eventClasses(type: string): string {
   if (type.includes('fail') || type.includes('error') || type.includes('stuck')) {
     return 'text-red-300'
   }
+  // 'complete' rather than 'completed' so crucible_complete lands here too —
+  // the same substring the TUI's eventTypeColor matches, so the two surfaces
+  // cannot colour one event type differently. assay_completed matches either
+  // way; crucible_complete only matches this one.
   if (
     type.includes('warden_pass') ||
     type.includes('pr_merged') ||
     type.includes('done') ||
-    type.includes('completed')
+    type.includes('complete')
   ) {
     return 'text-emerald-300'
   }

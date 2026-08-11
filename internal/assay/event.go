@@ -2,10 +2,10 @@ package assay
 
 import (
 	"fmt"
-	"regexp"
 	"strings"
 	"time"
-	"unicode"
+
+	"github.com/Robin831/Forge/internal/termtext"
 )
 
 // eventReasonMax caps the failure reason rendered into a terminal event
@@ -57,6 +57,10 @@ type RunEvent struct {
 // clause the operator has no way to tell a silent-by-design run from one whose
 // findings simply never arrived. A failed run carries no findings, so the
 // clause would only mislead there and is left off.
+//
+// Every part of the message Forge did not write itself — the failure reason and
+// the failed-pass names/reasons — goes through trimEventReason on the way in,
+// so the row is safe to render whatever a producer put in those fields.
 func (e RunEvent) Message() string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "Assay PR #%d: %s", e.PRNumber, e.Status)
@@ -65,7 +69,7 @@ func (e RunEvent) Message() string {
 	if e.TotalPasses > 0 {
 		tally := fmt.Sprintf("%d/%d passes", e.CompletedPasses, e.TotalPasses)
 		if len(e.FailedPasses) > 0 {
-			tally += fmt.Sprintf(" (failed: %s)", formatFailedPasses(e.FailedPasses, reasonDash))
+			tally += fmt.Sprintf(" (failed: %s)", formatFailedPasses(sanitizeFailedPasses(e.FailedPasses), reasonDash))
 		}
 		details = append(details, tally)
 	}
@@ -86,15 +90,6 @@ func (e RunEvent) Message() string {
 	}
 	return b.String()
 }
-
-// ansiEscape matches the escape sequences a provider's stderr can carry: CSI
-// (colour, cursor movement, erase), OSC (title and clipboard writes, terminated
-// by BEL or ST) and the bare two-byte forms. Matching the whole sequence rather
-// than the lone ESC is what keeps a stripped "\x1b[31m" from leaving a visible
-// "[31m" behind in the row.
-var ansiEscape = regexp.MustCompile("\x1b\\[[0-9;:?]*[ -/]*[@-~]" +
-	"|\x1b[\\]P^_X][^\a\x1b]*(?:\a|\x1b\\\\)?" +
-	"|\x1b[@-Z\\\\-_]")
 
 // trimEventReason reduces a failure cause to one bounded, printable line.
 //
@@ -121,15 +116,35 @@ func trimEventReason(reason string) string {
 
 // sanitizeEventReason removes ANSI escape sequences and any remaining
 // non-printable rune, so what reaches the feed can only add characters to a row
-// and never commands to the terminal drawing it. Tabs become spaces (a tab is
-// not printable, but dropping it would run two words together).
+// and never commands to the terminal drawing it.
+//
+// It is the shared internal/termtext stripper rather than a local one: Hearth
+// strips bead titles with the same helper, and two implementations of this
+// meant the surface with the weaker coverage decided how much of a sequence
+// reached the screen.
 func sanitizeEventReason(s string) string {
-	s = ansiEscape.ReplaceAllString(s, "")
-	s = strings.ReplaceAll(s, "\t", " ")
-	return strings.Map(func(r rune) rune {
-		if unicode.IsPrint(r) {
-			return r
-		}
-		return -1
-	}, s)
+	return termtext.Line(s)
+}
+
+// sanitizeFailedPasses puts the failed-pass list through the same trimming the
+// failure reason gets, so the safety property the feed row depends on is local
+// to Message() instead of an invariant every producer of a PassFailure has to
+// keep.
+//
+// Today a pass name is an engine constant and a reason is a provider result
+// subtype, so nothing here is currently hostile. But run errors already carry
+// raw provider text, and the day a PassError reason is populated the same way,
+// this is the only thing between it and a lipgloss row.
+func sanitizeFailedPasses(failed []PassFailure) []PassFailure {
+	if len(failed) == 0 {
+		return nil
+	}
+	out := make([]PassFailure, 0, len(failed))
+	for _, f := range failed {
+		out = append(out, PassFailure{
+			Name:   trimEventReason(f.Name),
+			Reason: trimEventReason(f.Reason),
+		})
+	}
+	return out
 }
