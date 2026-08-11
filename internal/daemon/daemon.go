@@ -1812,8 +1812,9 @@ func (d *Daemon) runAssayReview(ctx context.Context, anvil, anvilPath, beadID st
 			// Coverage is recorded on the run, not re-derived: the status,
 			// the pass tally and the named failed passes all come from the
 			// engine's single computation, so the worker row's status chip,
-			// this log line, the assay_partial event, the PR findings panel
-			// and the PR summary comment cannot disagree.
+			// this log line, the terminal feed event (completed/partial/failed,
+			// rendered from this record below), the PR findings panel and the
+			// PR summary comment cannot disagree.
 			run.Status = stateAssayStatus(result.Status)
 			run.CompletedPasses = result.CompletedPasses
 			run.TotalPasses = result.TotalPasses
@@ -1827,10 +1828,6 @@ func (d *Daemon) runAssayReview(ctx context.Context, anvil, anvilPath, beadID st
 			}
 			if result.Status == assay.RunStatusPartial {
 				d.logger.Warn("Assay review partial", "pr", prNumber, "bead", beadID, "head", headSHA, "status", statusText)
-				if err := d.db.LogEvent(state.EventAssayPartial,
-					fmt.Sprintf("Assay PR #%d: %s", prNumber, statusText), beadID, anvil); err != nil {
-					d.logger.Warn("failed to log Assay partial event", "pr", prNumber, "bead", beadID, "error", err)
-				}
 			}
 			// The per-pass telemetry rides along as its own field: turn
 			// counts and termination reasons are what the assay turn budget
@@ -1887,6 +1884,12 @@ func (d *Daemon) runAssayReview(ctx context.Context, anvil, anvilPath, beadID st
 	if recErr != nil {
 		d.logger.Error("failed to record Assay run", "pr", prNumber, "bead", beadID, "error", recErr)
 	}
+	// One terminal event per run, from the one place a run ends: this is what
+	// closes in the activity feed the pr_review_needed that opened the review.
+	// It is emitted even when recording the run failed — the review happened,
+	// and a lost row in assay_runs is no reason to also lose the feed's only
+	// notice that it did.
+	d.emitAssayTerminalEvent(run, beadID)
 	return run, recErr
 }
 

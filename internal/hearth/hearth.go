@@ -4971,13 +4971,28 @@ func renderQueuePRCell(prNumber int, prURL string) string {
 
 // eventTypeStyle returns a styled event type.
 func eventTypeStyle(t string) string {
+	return lipgloss.NewStyle().Foreground(eventTypeColor(t)).Render(t)
+}
+
+// eventTypeColor maps an event type onto its feed colour. It is split out of
+// eventTypeStyle so the mapping can be asserted directly: the rendered string
+// carries no escape codes under a test terminal profile, so a test of the
+// styled output would pass whatever colour it chose.
+func eventTypeColor(t string) lipgloss.AdaptiveColor {
 	switch {
-	case strings.Contains(t, "pass") || strings.Contains(t, "done") || strings.Contains(t, "merged"):
-		return lipgloss.NewStyle().Foreground(colorSuccess).Render(t)
+	// Partial before the success and failure matches: assay_partial is neither
+	// — some passes reviewed the head and some never did — and the substring
+	// heuristics below would otherwise leave it in the neutral default, reading
+	// exactly like an informational row.
+	case strings.Contains(t, "partial"):
+		return colorWarning
+	case strings.Contains(t, "pass") || strings.Contains(t, "done") ||
+		strings.Contains(t, "merged") || strings.Contains(t, "completed"):
+		return colorSuccess
 	case strings.Contains(t, "fail") || strings.Contains(t, "reject") || strings.Contains(t, "error"):
-		return lipgloss.NewStyle().Foreground(colorDanger).Render(t)
+		return colorDanger
 	default:
-		return lipgloss.NewStyle().Foreground(colorInfo).Render(t)
+		return colorInfo
 	}
 }
 

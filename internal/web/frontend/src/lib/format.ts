@@ -46,10 +46,21 @@ export function priorityClasses(p: number): string {
 }
 
 export function eventClasses(type: string): string {
+  // Partial first: assay_partial is neither a success nor a failure — some
+  // passes reviewed the head and some never did — and every rule below would
+  // leave it in the neutral default, reading like an informational row.
+  if (type.includes('partial')) {
+    return 'text-amber-300'
+  }
   if (type.includes('fail') || type.includes('error') || type.includes('stuck')) {
     return 'text-red-300'
   }
-  if (type.includes('warden_pass') || type.includes('pr_merged') || type.includes('done')) {
+  if (
+    type.includes('warden_pass') ||
+    type.includes('pr_merged') ||
+    type.includes('done') ||
+    type.includes('completed')
+  ) {
     return 'text-emerald-300'
   }
   if (type.includes('pr_created')) {
