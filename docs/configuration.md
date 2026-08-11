@@ -691,6 +691,7 @@ anvils:
 | `max_runs` | int\|null | `2` | Maximum number of executed Assay reviews per PR (Assay re-reviews on every new head SHA). A value `<= 0` means no cap. |
 | `max_diff_bytes` | int\|null | `250000` | Caps the size of the diff embedded in pass prompts. `<= 0` falls back to the shared `diff.MaxBytes` default. |
 | `max_base_file_bytes` | int\|null | `100000` | Caps the base-file context bytes included with the diff. |
+| `max_turns_per_pass` | int | `0` (engine default, 12) | | Agent turn budget for each review pass (every file read costs a turn). Raise for repos whose rules file and layout need more reading than the default — the telltale is passes failing `error_max_turns` at exactly the cap on modest diffs. |
 | `nit_cap` | int\|null | `5` | Caps the number of Nit-severity findings retained after aggregation. `<= 0` means no cap. |
 | `triage_provider` | string | `""` (Claude) | Provider spec (same syntax as `settings.providers`) for the cheap triage pass. Empty defaults to Claude. |
 | `review_provider` | string | `""` (Claude) | Provider spec for the five deep passes. Empty defaults to Claude. |

@@ -49,6 +49,10 @@ type Config struct {
 	// <= 0 fall back to diff.MaxBytes.
 	MaxDiffBytes int
 
+	// MaxTurnsPerPass bounds each pass agent session. Values <= 0 fall back
+	// to the engine default (assayMaxTurns).
+	MaxTurnsPerPass int
+
 	// SkipPaths are doublestar globs whose files are excluded from review
 	// (their hunks are dropped before the diff reaches any pass).
 	SkipPaths []string
@@ -94,6 +98,9 @@ func FromAssayConfig(ac config.AssayConfig) Config {
 	cfg.ReviewModel = ac.ReviewModel
 	if mdb := ac.GetMaxDiffBytes(); mdb > 0 {
 		cfg.MaxDiffBytes = mdb
+	}
+	if mt := ac.GetMaxTurnsPerPass(); mt > 0 {
+		cfg.MaxTurnsPerPass = mt
 	}
 	if len(ac.SkipPaths) > 0 {
 		cfg.SkipPaths = ac.SkipPaths

@@ -28,7 +28,10 @@ const (
 // passes like tests-missing and repo-specific legitimately want to look at a
 // handful of supporting files before emitting JSON, so 6 turns was too tight
 // (the model would hit error_max_turns before answering on non-trivial diffs).
-// 12 leaves headroom for ~10 tool calls plus the final JSON emission.
+// 12 leaves headroom for ~10 tool calls plus the final JSON emission. Repos
+// whose rules file and layout need more reading can raise it per config via
+// assay.max_turns_per_pass (Config.MaxTurnsPerPass); this constant is only
+// the fallback default.
 const assayMaxTurns = 12
 
 //go:embed prompts/*.md
@@ -298,7 +301,11 @@ func newSmithRunner(cfg Config, req ReviewRequest) PassRunner {
 		// lifecycle teardown preserves them to ~/.forge/logs/<beadID>/ before
 		// the worktree is removed.
 		logDir := filepath.Join(workDir, ".forge-logs")
-		flags := []string{"--max-turns", strconv.Itoa(assayMaxTurns)}
+		maxTurns := cfg.MaxTurnsPerPass
+		if maxTurns <= 0 {
+			maxTurns = assayMaxTurns
+		}
+		flags := []string{"--max-turns", strconv.Itoa(maxTurns)}
 
 		proc, err := smith.SpawnWithOptions(ctx, workDir, prompt, logDir, pv, flags, smith.SpawnOptions{LogPrefix: "assay"})
 		if err != nil {

@@ -2012,6 +2012,12 @@ type AssayConfig struct {
 	NitCap            *int     `mapstructure:"nit_cap" yaml:"nit_cap,omitempty"`
 	SkipDrafts        *bool    `mapstructure:"skip_drafts" yaml:"skip_drafts,omitempty"`
 	SkipPaths         []string `mapstructure:"skip_paths" yaml:"skip_paths,omitempty"`
+	// MaxTurnsPerPass bounds each review pass agent session (every file read
+	// costs a turn). Unset or <= 0 uses the engine default. Raise it for repos
+	// whose rules file and code layout need more reading than the default
+	// allows — the telltale is passes dying at error_max_turns with turns at
+	// exactly the cap on modest diffs.
+	MaxTurnsPerPass *int `mapstructure:"max_turns_per_pass" yaml:"max_turns_per_pass,omitempty"`
 }
 
 // IsEnabled returns whether Assay is active. Defaults to false when unset.
@@ -2092,6 +2098,15 @@ func (a AssayConfig) GetNitCap() int {
 		return 0
 	}
 	return *a.NitCap
+}
+
+// GetMaxTurnsPerPass returns the per-pass agent turn budget, or 0 when unset
+// (the assay engine then applies its built-in default).
+func (a AssayConfig) GetMaxTurnsPerPass() int {
+	if a.MaxTurnsPerPass == nil {
+		return 0
+	}
+	return *a.MaxTurnsPerPass
 }
 
 // ResolvedAssay returns the effective Assay configuration for the named anvil.

@@ -111,3 +111,15 @@ settings:
 	assert.True(t, reloaded.Anvils["api"].PreviewQuests)
 	assert.True(t, reloaded.IsPreviewQuestsEnabledForAnvil("api"))
 }
+
+func TestAssayMaxTurnsPerPass(t *testing.T) {
+	var a AssayConfig
+	if got := a.GetMaxTurnsPerPass(); got != 0 {
+		t.Fatalf("unset should be 0 (engine default), got %d", got)
+	}
+	v := 24
+	a.MaxTurnsPerPass = &v
+	if got := a.GetMaxTurnsPerPass(); got != 24 {
+		t.Fatalf("want 24, got %d", got)
+	}
+}
