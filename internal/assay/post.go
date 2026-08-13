@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/Robin831/Forge/internal/executil"
 	"github.com/Robin831/Forge/internal/state"
@@ -25,6 +26,26 @@ const hashMarkerPrefix = "assay-hash:"
 // stacking a new one per run (N runs used to mean N summary comments). Same
 // idempotency mechanism as QuestGiver's forge-preview-quest marker.
 const summaryMarker = "<!-- assay-summary -->"
+
+// summaryHistoryMarker separates the comment's current section (this run's
+// summary) from the archived summaries of superseded runs. Editing in place
+// must not destroy what it supersedes: the old summary is the record of what
+// an earlier head was told, so it moves below this marker instead of being
+// overwritten.
+const summaryHistoryMarker = "<!-- assay-summary-history -->"
+
+// summaryEntryMarker opens each archived summary inside the history section.
+// It is what lets a later edit split the history back into entries without
+// guessing at content delimiters — summaries legitimately contain "---" (the
+// out-of-diff section) and markdown tables, so nothing prose-shaped is safe to
+// split on.
+const summaryEntryMarker = "<!-- assay-summary-entry -->"
+
+// maxSummaryBytes bounds the whole rendered summary comment. GitHub rejects
+// issue comments over 65536 characters; when the history would push past this,
+// the oldest archived summaries are trimmed (the current summary is never
+// sacrificed to history).
+const maxSummaryBytes = 60000
 
 // resolveMissThreshold is the number of consecutive reviews a previously-posted
 // finding must go undetected before its review thread is auto-resolved.
@@ -163,14 +184,17 @@ func (p *Poster) Post(ctx context.Context, cfg Config, req PostRequest) (*PostRe
 	// 1. Top-level summary comment: severity table over all findings, plus the
 	// full detail of any out-of-diff findings so their content is never lost.
 	// Upserted against the per-PR summaryMarker — a repeat review edits the
-	// existing summary in place rather than adding another one. A run with
-	// missing passes always posts a summary, even with no findings and no
-	// summary line: "nothing to report" from a review that only half ran is
-	// exactly the impression the coverage line exists to prevent.
+	// existing summary in place rather than adding another one, opening with a
+	// stamp that says which head was reviewed and that the comment is edited
+	// by later runs, and archiving the superseded summary in the collapsible
+	// history section rather than overwriting it. A run with missing passes
+	// always posts a summary, even with no findings and no summary line:
+	// "nothing to report" from a review that only half ran is exactly the
+	// impression the coverage line exists to prevent.
 	if req.SummaryLine != "" || len(req.Findings) > 0 || len(req.FailedPasses) > 0 {
-		body := summaryMarker + "\n" +
+		current := summaryStamp(req.HeadSHA) + "\n\n" +
 			buildSummaryBody(req.SummaryLine, req.FailedPasses, req.Findings) + buildOutOfDiffSection(outOfDiff)
-		created, updated, err := p.upsertSummary(ctx, req, body)
+		created, updated, err := p.upsertSummary(ctx, req, current)
 		if err != nil {
 			p.logf("assay: posting summary for PR #%d: %v", req.PRNumber, err)
 		}
@@ -250,11 +274,14 @@ func (p *Poster) Post(ctx context.Context, cfg Config, req PostRequest) (*PostRe
 
 // upsertSummary creates or edits the PR's single summary comment, keyed by
 // summaryMarker: the existing comment carrying the marker is PATCHed in place,
-// and only when none exists is a new issue comment POSTed. A failed lookup
+// and only when none exists is a new issue comment POSTed. current is this
+// run's summary section (no marker); on an edit, the existing comment's own
+// current section is archived into the history block rather than overwritten,
+// so an edit supersedes the old summary without destroying it. A failed lookup
 // aborts rather than posting blind — without knowing whether a summary already
 // exists, posting a new one is exactly the duplication the marker prevents.
 // Returns (created, updated, err).
-func (p *Poster) upsertSummary(ctx context.Context, req PostRequest, body string) (bool, bool, error) {
+func (p *Poster) upsertSummary(ctx context.Context, req PostRequest, current string) (bool, bool, error) {
 	listEndpoint := fmt.Sprintf("repos/{owner}/{repo}/issues/%d/comments?per_page=100", req.PRNumber)
 	out, err := p.gh(ctx, req.WorktreePath, "api", "--paginate", listEndpoint)
 	if err != nil {
@@ -271,7 +298,7 @@ func (p *Poster) upsertSummary(ctx context.Context, req PostRequest, body string
 		if strings.Contains(c.Body, summaryMarker) {
 			editEndpoint := fmt.Sprintf("repos/{owner}/{repo}/issues/comments/%d", c.ID)
 			if _, err := p.gh(ctx, req.WorktreePath,
-				"api", "--method", "PATCH", editEndpoint, "-f", "body="+body,
+				"api", "--method", "PATCH", editEndpoint, "-f", "body="+buildSummaryComment(current, c.Body),
 			); err != nil {
 				return false, false, fmt.Errorf("editing summary comment %d: %w", c.ID, err)
 			}
@@ -280,11 +307,109 @@ func (p *Poster) upsertSummary(ctx context.Context, req PostRequest, body string
 	}
 	createEndpoint := fmt.Sprintf("repos/{owner}/{repo}/issues/%d/comments", req.PRNumber)
 	if _, err := p.gh(ctx, req.WorktreePath,
-		"api", "--method", "POST", createEndpoint, "-f", "body="+body,
+		"api", "--method", "POST", createEndpoint, "-f", "body="+buildSummaryComment(current, ""),
 	); err != nil {
 		return false, false, fmt.Errorf("creating summary comment: %w", err)
 	}
 	return true, false, nil
+}
+
+// summaryStamp opens the summary's current section: which head this run
+// reviewed, when, and the standing explanation of why the comment's content
+// changes — the reader of an edited comment otherwise has no way to know the
+// edit was a newer review pass superseding the old one rather than a
+// retraction.
+func summaryStamp(headSHA string) string {
+	short := headSHA
+	if len(short) > 7 {
+		short = short[:7]
+	}
+	when := time.Now().UTC().Format("2006-01-02 15:04 UTC")
+	if short == "" {
+		return fmt.Sprintf("_Assay review — %s. Later runs edit this comment in place; superseded summaries are archived below._", when)
+	}
+	return fmt.Sprintf("_Assay review of `%s` — %s. Later runs edit this comment in place; superseded summaries are archived below._", short, when)
+}
+
+// buildSummaryComment renders the full summary comment body: the marker, this
+// run's current section, and — when a previous body exists — a collapsible
+// history section holding the superseded summaries, newest first. prevBody is
+// the existing comment's body ("" on create); its current section becomes the
+// newest history entry and its own history entries are carried forward. The
+// oldest entries are trimmed when the assembled body would exceed
+// maxSummaryBytes, with the trim noted in the section heading.
+func buildSummaryComment(current, prevBody string) string {
+	var entries []string
+	if strings.TrimSpace(prevBody) != "" {
+		prevCurrent, prevEntries := splitSummaryBody(prevBody)
+		if prevCurrent != "" {
+			entries = append(entries, prevCurrent)
+		}
+		entries = append(entries, prevEntries...)
+	}
+	trimmed := false
+	for {
+		body := assembleSummaryComment(current, entries, trimmed)
+		if len(body) <= maxSummaryBytes || len(entries) == 0 {
+			return body
+		}
+		entries = entries[:len(entries)-1]
+		trimmed = true
+	}
+}
+
+// assembleSummaryComment is buildSummaryComment's renderer for one candidate
+// entry set. History entries live inside a <details> block so a long-running
+// PR's comment stays one screen of current summary, not a scroll of archives.
+func assembleSummaryComment(current string, entries []string, trimmed bool) string {
+	var b strings.Builder
+	b.WriteString(summaryMarker)
+	b.WriteByte('\n')
+	b.WriteString(strings.TrimSpace(current))
+	if len(entries) == 0 && !trimmed {
+		return b.String()
+	}
+	heading := fmt.Sprintf("Previous Assay summaries (%d)", len(entries))
+	if trimmed {
+		heading += " — oldest trimmed to fit the comment size limit"
+	}
+	b.WriteString("\n\n")
+	b.WriteString(summaryHistoryMarker)
+	fmt.Fprintf(&b, "\n<details>\n<summary>%s</summary>\n", heading)
+	for _, e := range entries {
+		b.WriteByte('\n')
+		b.WriteString(summaryEntryMarker)
+		b.WriteByte('\n')
+		b.WriteString(e)
+		b.WriteByte('\n')
+	}
+	b.WriteString("\n</details>")
+	return b.String()
+}
+
+// splitSummaryBody parses a previously posted summary comment back into its
+// current section (markers stripped) and its archived history entries. A body
+// with no history marker — including one posted before the history section
+// existed — is all current section, so pre-history summaries archive cleanly
+// on their first edit instead of being lost.
+func splitSummaryBody(body string) (current string, entries []string) {
+	head := body
+	if idx := strings.Index(body, summaryHistoryMarker); idx >= 0 {
+		head = body[:idx]
+		tail := body[idx:]
+		chunks := strings.Split(tail, summaryEntryMarker)
+		// chunks[0] is the history marker + <details> boilerplate; entries
+		// follow, with the closing </details> riding on the last one.
+		for _, c := range chunks[1:] {
+			c = strings.TrimSpace(c)
+			c = strings.TrimSuffix(c, "</details>")
+			if c = strings.TrimSpace(c); c != "" {
+				entries = append(entries, c)
+			}
+		}
+	}
+	current = strings.TrimSpace(strings.ReplaceAll(head, summaryMarker, ""))
+	return current, entries
 }
 
 // postInline posts a single inline review comment for f and returns the new

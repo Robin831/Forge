@@ -657,9 +657,14 @@ Repeat reviews are **incremental** by default: once a PR has been reviewed, a
 new head is reviewed as the delta since the last reviewed commit, with earlier
 findings injected into the prompts as already-reported. The top-level summary
 is a single per-PR comment edited in place on each run (keyed by a hidden
-`<!-- assay-summary -->` marker), and the `nit_cap` / `max_findings_per_pr`
-budgets are cumulative across the PR's whole review history — together these
-are what keep a PR's comment volume flat across repeat reviews.
+`<!-- assay-summary -->` marker); each edit opens with a stamp naming the
+reviewed head and explaining that later runs edit the comment, and superseded
+summaries are archived — newest first — in a collapsible "Previous Assay
+summaries" section rather than overwritten (oldest entries are trimmed if the
+comment would exceed GitHub's size limit). The `nit_cap` /
+`max_findings_per_pr` budgets are cumulative across the PR's whole review
+history — together these are what keep a PR's comment volume flat across
+repeat reviews.
 
 ```yaml
 assay:

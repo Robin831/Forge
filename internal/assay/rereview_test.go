@@ -6,6 +6,7 @@ package assay
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -375,4 +376,119 @@ func TestPostSkipsResolvedFinding(t *testing.T) {
 	if gh.inlineCalls() != 0 {
 		t.Errorf("expected no inline gh call for a resolved finding, got %d", gh.inlineCalls())
 	}
+}
+
+// --- summary edit history ----------------------------------------------------
+
+func TestBuildSummaryCommentArchivesSupersededSummary(t *testing.T) {
+	first := buildSummaryComment(summaryStamp("aaaa111")+"\n\nfirst-run summary table", "")
+	if strings.Contains(first, summaryHistoryMarker) {
+		t.Errorf("first post should have no history section:\n%s", first)
+	}
+	if !strings.Contains(first, "aaaa111") || !strings.Contains(first, "edit this comment in place") {
+		t.Errorf("first post missing the stamp explaining future edits:\n%s", first)
+	}
+
+	second := buildSummaryComment(summaryStamp("bbbb222")+"\n\nsecond-run summary table", first)
+	if !strings.Contains(second, "second-run summary table") {
+		t.Errorf("second body missing new summary:\n%s", second)
+	}
+	if !strings.Contains(second, "first-run summary table") {
+		t.Errorf("superseded summary must be archived, not overwritten:\n%s", second)
+	}
+	if !strings.Contains(second, "Previous Assay summaries (1)") || !strings.Contains(second, "<details>") {
+		t.Errorf("second body missing collapsible history section:\n%s", second)
+	}
+	if strings.Index(second, "second-run") > strings.Index(second, "first-run") {
+		t.Error("current summary must precede the archived one")
+	}
+
+	third := buildSummaryComment(summaryStamp("cccc333")+"\n\nthird-run summary table", second)
+	if !strings.Contains(third, "Previous Assay summaries (2)") {
+		t.Errorf("third body should carry both archived summaries:\n%s", third)
+	}
+	// Newest archive first: the second run's summary above the first run's.
+	if strings.Index(third, "second-run") > strings.Index(third, "first-run") {
+		t.Error("history should be newest-first")
+	}
+	if got := strings.Count(third, summaryMarker); got != 1 {
+		t.Errorf("exactly one summary marker must survive re-editing, got %d", got)
+	}
+}
+
+func TestBuildSummaryCommentArchivesPreHistoryBody(t *testing.T) {
+	// A summary posted before the history section existed: marker + content,
+	// no history marker. Its content must archive on the first edit.
+	legacy := summaryMarker + "\nlegacy summary body"
+	got := buildSummaryComment("new current", legacy)
+	if !strings.Contains(got, "legacy summary body") || !strings.Contains(got, "Previous Assay summaries (1)") {
+		t.Errorf("pre-history body should become the first archive entry:\n%s", got)
+	}
+}
+
+func TestBuildSummaryCommentTrimsOldestWhenOverLimit(t *testing.T) {
+	huge := strings.Repeat("x", maxSummaryBytes/2)
+	body := buildSummaryComment("current-a "+huge, "")
+	body = buildSummaryComment("current-b "+huge, body)
+
+	// Archiving current-a next to current-b would blow the limit, so the
+	// oldest entry is trimmed and the trim is noted on this edit.
+	if len(body) > maxSummaryBytes {
+		t.Fatalf("assembled body exceeds the size limit: %d bytes", len(body))
+	}
+	if !strings.Contains(body, "current-b") {
+		t.Error("the current summary must always survive")
+	}
+	if strings.Contains(body, "current-a") {
+		t.Error("the oldest archive entry should have been trimmed")
+	}
+	if !strings.Contains(body, "oldest trimmed") {
+		t.Errorf("trim should be noted in the history heading:\n%s", body)
+	}
+
+	// The next edit archives current-b cleanly; nothing is trimmed this time,
+	// so the note does not stick around.
+	body = buildSummaryComment("current-c small", body)
+	if len(body) > maxSummaryBytes {
+		t.Fatalf("assembled body exceeds the size limit: %d bytes", len(body))
+	}
+	if !strings.Contains(body, "current-c small") || !strings.Contains(body, "current-b") {
+		t.Errorf("expected current-c with current-b archived")
+	}
+	if strings.Contains(body, "oldest trimmed") {
+		t.Error("a clean edit should not carry a stale trim note")
+	}
+}
+
+func TestPostSummaryEditArchivesOldSummary(t *testing.T) {
+	old := buildSummaryComment(summaryStamp("aaaa111")+"\n\nolder findings table", "")
+	gh := newStubGh()
+	gh.existingComments = []byte(`[{"id": 9001, "body": ` + jsonString(old) + `}]`)
+	p := newPoster(nil, gh.exec, nil)
+
+	res, err := p.Post(context.Background(), Config{}, PostRequest{
+		PRNumber: 7, HeadSHA: "bbbb2223333", WorktreePath: "/wt", SummaryLine: "Assay (AI review)",
+	})
+	if err != nil {
+		t.Fatalf("Post: %v", err)
+	}
+	if !res.SummaryUpdated {
+		t.Fatalf("expected an in-place edit, got %+v", res)
+	}
+	body := gh.summaryBody()
+	if !strings.Contains(body, "bbbb222") {
+		t.Errorf("edited body missing the new head stamp:\n%s", body)
+	}
+	if !strings.Contains(body, "older findings table") {
+		t.Errorf("edited body must archive the previous summary:\n%s", body)
+	}
+	if !strings.Contains(body, "superseded summaries are archived below") {
+		t.Errorf("edited body missing the why-edited explanation:\n%s", body)
+	}
+}
+
+// jsonString marshals s as a JSON string literal for stub comment bodies.
+func jsonString(s string) string {
+	b, _ := json.Marshal(s)
+	return string(b)
 }
