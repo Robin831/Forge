@@ -1,8 +1,9 @@
 import '@testing-library/jest-dom/vitest'
-import { describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { render, screen, within } from '@testing-library/react'
 import PipelineBar, { phaseToStage } from './PipelineBar'
 import type { WorkerInfo } from '../api'
+import { resetPreviewsStore } from '../hooks/usePreview'
 
 function worker(overrides: Partial<WorkerInfo>): WorkerInfo {
   return {
@@ -15,6 +16,33 @@ function worker(overrides: Partial<WorkerInfo>): WorkerInfo {
     ...overrides,
   }
 }
+
+// The bead rows in the PR half of the pipeline mount PreviewButton, whose
+// shared store fetches /api/previews on first subscribe. Stub it so rows can
+// decide their preview affordance deterministically (Kiln on, the forge anvil
+// previewable, no live previews).
+beforeEach(() => {
+  resetPreviewsStore()
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async () =>
+      new Response(
+        JSON.stringify({
+          enabled: true,
+          anvils: ['forge'],
+          quest_anvils: [],
+          previews: [],
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      ),
+    ),
+  )
+})
+
+afterEach(() => {
+  vi.unstubAllGlobals()
+  resetPreviewsStore()
+})
 
 describe('phaseToStage', () => {
   it('maps the ready_to_merge phase to its own stage', () => {
@@ -152,6 +180,46 @@ describe('PipelineBar', () => {
     expect(icon).not.toBeNull()
     // Colour remains a secondary cue on the active marker.
     expect(icon).toHaveClass('text-pink-400')
+  })
+
+  it('offers preview controls on a ready-to-merge bead row', async () => {
+    render(
+      <PipelineBar
+        workers={[
+          worker({
+            id: 'bellows-forge-7',
+            bead_id: 'Forge-gggg',
+            phase: 'ready_to_merge',
+            pr_number: 7,
+          }),
+        ]}
+      />,
+    )
+
+    // findBy waits out the previews store's initial fetch, which is what
+    // authorises the button to render at all.
+    expect(await screen.findByTestId('preview-controls-Forge-gggg')).toBeInTheDocument()
+    expect(screen.getByTestId('preview-start-Forge-gggg')).toBeInTheDocument()
+  })
+
+  it('offers no preview controls before the bead reaches the PR stage', async () => {
+    render(
+      <PipelineBar
+        workers={[
+          worker({
+            id: 'smith-forge-8',
+            bead_id: 'Forge-hhhh',
+            phase: 'smith',
+            status: 'running',
+          }),
+        ]}
+      />,
+    )
+
+    // Give the previews store's fetch a chance to land so the absence is a
+    // decision, not a not-loaded-yet artifact.
+    await screen.findByTestId('pipeline-bead-row')
+    expect(screen.queryByTestId('preview-controls-Forge-hhhh')).not.toBeInTheDocument()
   })
 
   it('does not truncate long bead IDs', () => {

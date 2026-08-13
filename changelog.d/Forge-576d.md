@@ -1,0 +1,2 @@
+category: Added
+- **Preview controls on the pipeline bead rows** - The dashboard's in-flight bead rows now carry the compact Kiln preview controls (Start, a spinning status chip while the environment comes up, Open once it is healthy, and Stop) for beads in the PR, Assay and Ready-to-merge stages — starting a preview for a finished bead no longer requires a detour through the bead detail page. The controls only appear where a preview is possible: Kiln enabled, the anvil declares a preview manifest, and the bead's branch is pushed. (Forge-576d)

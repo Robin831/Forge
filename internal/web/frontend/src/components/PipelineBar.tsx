@@ -11,6 +11,7 @@ import {
   type LucideIcon,
 } from 'lucide-react'
 import type { WorkerInfo } from '../api'
+import PreviewButton from './PreviewButton'
 
 // StageKey labels the seven visible columns of the pipeline bar. The Bellows
 // PR-monitor is intentionally folded into the "pr" stage as a sub-label
@@ -306,6 +307,14 @@ interface BeadRowProps {
   stage: StageKey
 }
 
+// PREVIEW_STAGES are the bead-row stages that get inline Kiln preview
+// controls. A preview is a detached checkout of the bead's pushed branch, so
+// it only makes sense once the bead has reached the PR stage — before that
+// there is nothing on the remote to build. Ready-to-merge is the case the
+// controls exist for: judging a finished bead no longer requires a detour
+// through the bead detail page.
+const PREVIEW_STAGES: ReadonlySet<StageKey> = new Set(['pr', 'assay', 'ready_to_merge'])
+
 function BeadRow({ worker, stage }: BeadRowProps) {
   return (
     <li
@@ -336,6 +345,18 @@ function BeadRow({ worker, stage }: BeadRowProps) {
           </span>
         )
       ) : null}
+      {/* Start / status-spinner / Open / Stop for the bead's Kiln preview,
+          right on the row — the button hides itself when Kiln is off or the
+          anvil declares no preview manifest, so rows only gain controls where
+          a preview is actually possible. */}
+      {PREVIEW_STAGES.has(stage) && (
+        <PreviewButton
+          beadId={worker.bead_id}
+          anvil={worker.anvil}
+          compact
+          className="shrink-0"
+        />
+      )}
       <div className="flex items-center gap-1">
         {STAGES.map((s) => {
           const MarkerIcon = STAGE_ICON[s]
