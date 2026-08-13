@@ -26,6 +26,57 @@ func Truncate(diff string, maxLen int) string {
 	return diff[:maxLen] + "\n\n... (diff truncated, " + fmt.Sprintf("%d", len(diff)-maxLen) + " bytes omitted)"
 }
 
+// KeepFiles returns only the blocks of unifiedDiff whose b-side path is in
+// files. Unlike Assay's triage scoping (which falls back to the full diff when
+// scoping would drop everything), an empty result here IS the answer: it is
+// how an incremental review discovers that nothing in the delta survives into
+// the net PR diff (upstream merge churn, reverted changes) and that there is
+// nothing to review. A diff with no parseable block headers comes back empty
+// for the same reason.
+func KeepFiles(unifiedDiff string, files []string) string {
+	if strings.TrimSpace(unifiedDiff) == "" || len(files) == 0 {
+		return ""
+	}
+	keep := make(map[string]bool, len(files))
+	for _, f := range files {
+		keep[strings.TrimSpace(f)] = true
+	}
+
+	const marker = "diff --git "
+	const sep = "\ndiff --git "
+
+	remaining := unifiedDiff
+	if !strings.HasPrefix(remaining, marker) {
+		idx := strings.Index(remaining, sep)
+		if idx == -1 {
+			return ""
+		}
+		remaining = remaining[idx+1:]
+	}
+
+	var kept strings.Builder
+	for len(remaining) > 0 {
+		nextIdx := strings.Index(remaining[len(marker):], sep)
+		var block string
+		if nextIdx == -1 {
+			block = remaining
+			remaining = ""
+		} else {
+			end := len(marker) + nextIdx + 1
+			block = remaining[:end]
+			remaining = remaining[end:]
+		}
+		headerLine := block
+		if nl := strings.IndexByte(block, '\n'); nl != -1 {
+			headerLine = block[:nl]
+		}
+		if path := ParseGitPath(headerLine); path != "" && keep[path] {
+			kept.WriteString(block)
+		}
+	}
+	return kept.String()
+}
+
 // ParseGitPath extracts the b-side file path from a git diff header line of the
 // form "diff --git a/<path> b/<path>". Returns "" if the header cannot be
 // parsed. The b-side path is preferred because it reflects the file's

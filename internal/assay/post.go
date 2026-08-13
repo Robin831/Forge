@@ -20,6 +20,12 @@ import (
 // resolver matches review threads against.
 const hashMarkerPrefix = "assay-hash:"
 
+// summaryMarker opens the top-level summary comment. One marker per PR — not
+// per head — so a repeat review edits the existing summary in place instead of
+// stacking a new one per run (N runs used to mean N summary comments). Same
+// idempotency mechanism as QuestGiver's forge-preview-quest marker.
+const summaryMarker = "<!-- assay-summary -->"
+
 // resolveMissThreshold is the number of consecutive reviews a previously-posted
 // finding must go undetected before its review thread is auto-resolved.
 const resolveMissThreshold = 2
@@ -74,8 +80,12 @@ type PostRequest struct {
 
 // PostResult summarizes a posting run.
 type PostResult struct {
-	// SummaryPosted reports whether the top-level review comment was posted.
+	// SummaryPosted reports whether the top-level summary comment was posted
+	// (created or updated in place).
 	SummaryPosted bool
+	// SummaryUpdated reports that the summary was an in-place edit of the
+	// PR's existing summary comment rather than a new comment.
+	SummaryUpdated bool
 	// Posted is the number of inline comments successfully posted.
 	Posted int
 	// Failed is the number of inline comments whose gh call failed (left with
@@ -150,25 +160,31 @@ func (p *Poster) Post(ctx context.Context, cfg Config, req PostRequest) (*PostRe
 	}
 	res.OutOfDiff = len(outOfDiff)
 
-	// 1. Top-level summary review: severity table over all findings, plus the
+	// 1. Top-level summary comment: severity table over all findings, plus the
 	// full detail of any out-of-diff findings so their content is never lost.
-	// A run with missing passes always posts a summary, even with no findings
-	// and no summary line: "nothing to report" from a review that only half
-	// ran is exactly the impression the coverage line exists to prevent.
+	// Upserted against the per-PR summaryMarker — a repeat review edits the
+	// existing summary in place rather than adding another one. A run with
+	// missing passes always posts a summary, even with no findings and no
+	// summary line: "nothing to report" from a review that only half ran is
+	// exactly the impression the coverage line exists to prevent.
 	if req.SummaryLine != "" || len(req.Findings) > 0 || len(req.FailedPasses) > 0 {
-		body := buildSummaryBody(req.SummaryLine, req.FailedPasses, req.Findings) + buildOutOfDiffSection(outOfDiff)
-		if _, err := p.gh(ctx, req.WorktreePath,
-			"pr", "review", strconv.Itoa(req.PRNumber), "--comment", "--body", body,
-		); err != nil {
-			p.logf("assay: posting summary review for PR #%d: %v", req.PRNumber, err)
-		} else {
-			res.SummaryPosted = true
+		body := summaryMarker + "\n" +
+			buildSummaryBody(req.SummaryLine, req.FailedPasses, req.Findings) + buildOutOfDiffSection(outOfDiff)
+		created, updated, err := p.upsertSummary(ctx, req, body)
+		if err != nil {
+			p.logf("assay: posting summary for PR #%d: %v", req.PRNumber, err)
 		}
+		res.SummaryPosted = created || updated
+		res.SummaryUpdated = updated
 	}
 
 	// Findings already posted (and still open) on this PR. Used to avoid
-	// double-posting and to detect consecutive misses.
-	var postedHashes map[string]bool
+	// double-posting and to detect consecutive misses. Resolved hashes are
+	// loaded separately: a resolved finding regenerated verbatim carries the
+	// same hash but is absent from the open set, and without the extra guard
+	// it would be posted again as a brand-new comment on a thread that was
+	// just auto-resolved.
+	var postedHashes, resolvedHashes map[string]bool
 	var openPosted []state.Finding
 	if p.db != nil {
 		var err error
@@ -179,6 +195,10 @@ func (p *Poster) Post(ctx context.Context, cfg Config, req PostRequest) (*PostRe
 		postedHashes = make(map[string]bool, len(openPosted))
 		for _, f := range openPosted {
 			postedHashes[f.FindingHash] = true
+		}
+		resolvedHashes, err = p.db.ResolvedFindingHashes(req.Anvil, req.PRNumber)
+		if err != nil {
+			p.logf("assay: loading resolved findings for PR #%d: %v", req.PRNumber, err)
 		}
 	}
 
@@ -198,6 +218,11 @@ func (p *Poster) Post(ctx context.Context, cfg Config, req PostRequest) (*PostRe
 					p.logf("assay: resetting misses for %s: %v", f.Hash, err)
 				}
 			}
+			continue
+		}
+		if resolvedHashes[f.Hash] {
+			// Posted once, thread since resolved. Re-posting would resurrect
+			// a concern the resolution already closed out.
 			continue
 		}
 
@@ -221,6 +246,45 @@ func (p *Poster) Post(ctx context.Context, cfg Config, req PostRequest) (*PostRe
 	res.Resolved = p.resolveMisses(ctx, req, openPosted, current)
 
 	return res, nil
+}
+
+// upsertSummary creates or edits the PR's single summary comment, keyed by
+// summaryMarker: the existing comment carrying the marker is PATCHed in place,
+// and only when none exists is a new issue comment POSTed. A failed lookup
+// aborts rather than posting blind — without knowing whether a summary already
+// exists, posting a new one is exactly the duplication the marker prevents.
+// Returns (created, updated, err).
+func (p *Poster) upsertSummary(ctx context.Context, req PostRequest, body string) (bool, bool, error) {
+	listEndpoint := fmt.Sprintf("repos/{owner}/{repo}/issues/%d/comments?per_page=100", req.PRNumber)
+	out, err := p.gh(ctx, req.WorktreePath, "api", "--paginate", listEndpoint)
+	if err != nil {
+		return false, false, fmt.Errorf("listing PR comments: %w", err)
+	}
+	var comments []struct {
+		ID   int64  `json:"id"`
+		Body string `json:"body"`
+	}
+	if err := json.Unmarshal(out, &comments); err != nil {
+		return false, false, fmt.Errorf("parsing comment list: %w", err)
+	}
+	for _, c := range comments {
+		if strings.Contains(c.Body, summaryMarker) {
+			editEndpoint := fmt.Sprintf("repos/{owner}/{repo}/issues/comments/%d", c.ID)
+			if _, err := p.gh(ctx, req.WorktreePath,
+				"api", "--method", "PATCH", editEndpoint, "-f", "body="+body,
+			); err != nil {
+				return false, false, fmt.Errorf("editing summary comment %d: %w", c.ID, err)
+			}
+			return false, true, nil
+		}
+	}
+	createEndpoint := fmt.Sprintf("repos/{owner}/{repo}/issues/%d/comments", req.PRNumber)
+	if _, err := p.gh(ctx, req.WorktreePath,
+		"api", "--method", "POST", createEndpoint, "-f", "body="+body,
+	); err != nil {
+		return false, false, fmt.Errorf("creating summary comment: %w", err)
+	}
+	return true, false, nil
 }
 
 // postInline posts a single inline review comment for f and returns the new

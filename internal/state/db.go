@@ -4946,15 +4946,20 @@ func (db *DB) InsertFinding(f Finding) error {
 	return err
 }
 
-// LastReviewedSHA returns the head_sha of the most recent assay_runs row for
-// the given anvil and PR number. Returns "" (no error) when no run exists.
+// LastReviewedSHA returns the head_sha of the most recent assay_runs row that
+// actually reviewed the head for the given anvil and PR number — failed runs
+// are excluded, so a head whose only run died (diff fetch failed, every pass
+// errored) is still eligible for a retry rather than silently marked reviewed.
+// Rows written before coverage tracking have status = '' and count as reviewed
+// (they were, under the old semantics). Returns "" (no error) when no run
+// exists.
 func (db *DB) LastReviewedSHA(anvil string, prNumber int) (string, error) {
 	var headSHA string
 	err := db.conn.QueryRow(
 		`SELECT head_sha FROM assay_runs
-		 WHERE anvil = ? AND pr_number = ?
+		 WHERE anvil = ? AND pr_number = ? AND status != ?
 		 ORDER BY id DESC LIMIT 1`,
-		anvil, prNumber,
+		anvil, prNumber, AssayStatusFailed,
 	).Scan(&headSHA)
 	if err == sql.ErrNoRows {
 		return "", nil
@@ -5133,6 +5138,77 @@ func (db *DB) ActiveFindings(anvil string, prNumber int) ([]Finding, error) {
 		}
 		f.Posted = posted != 0
 		out = append(out, f)
+	}
+	return out, rows.Err()
+}
+
+// AllFindings returns every finding for the given anvil and PR, resolved or
+// not. Assay uses this for cross-run dedup on repeat reviews: a finding whose
+// thread was auto-resolved (fixed, or stale for two consecutive reviews) must
+// still suppress a reworded regeneration of itself — dedup against only the
+// active set is what let resolved findings reappear as brand-new comments.
+// The returned slice is never nil.
+func (db *DB) AllFindings(anvil string, prNumber int) ([]Finding, error) {
+	rows, err := db.conn.Query(
+		`SELECT head_sha, finding_hash, file, anchor, severity, category, title,
+		        body, evidence, source_pass, posted, gh_comment_id, gh_thread_id,
+		        consecutive_misses, resolved_at
+		   FROM pr_findings
+		  WHERE anvil = ? AND pr_number = ?`,
+		anvil, prNumber,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make([]Finding, 0)
+	for rows.Next() {
+		f := Finding{Anvil: anvil, PRNumber: prNumber}
+		var posted int
+		var resolvedAt sql.NullString
+		if err := rows.Scan(
+			&f.HeadSHA, &f.FindingHash, &f.File, &f.Anchor, &f.Severity,
+			&f.Category, &f.Title, &f.Body, &f.Evidence, &f.SourcePass,
+			&posted, &f.GHCommentID, &f.GHThreadID, &f.ConsecutiveMisses,
+			&resolvedAt,
+		); err != nil {
+			return nil, err
+		}
+		f.Posted = posted != 0
+		if resolvedAt.Valid && resolvedAt.String != "" {
+			t := parseTime(resolvedAt.String)
+			f.ResolvedAt = &t
+		}
+		out = append(out, f)
+	}
+	return out, rows.Err()
+}
+
+// ResolvedFindingHashes returns the set of finding_hash values whose finding
+// has been resolved (resolved_at set) for the given anvil and PR. The Assay
+// posting layer skips these: a resolved finding regenerated verbatim on a later
+// review carries the same hash, is absent from OpenPostedFindings, and would
+// otherwise be posted again as a brand-new comment. The returned map is never
+// nil.
+func (db *DB) ResolvedFindingHashes(anvil string, prNumber int) (map[string]bool, error) {
+	rows, err := db.conn.Query(
+		`SELECT finding_hash FROM pr_findings
+		 WHERE anvil = ? AND pr_number = ? AND resolved_at IS NOT NULL`,
+		anvil, prNumber,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make(map[string]bool)
+	for rows.Next() {
+		var h string
+		if err := rows.Scan(&h); err != nil {
+			return nil, err
+		}
+		out[h] = true
 	}
 	return out, rows.Err()
 }

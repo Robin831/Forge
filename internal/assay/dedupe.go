@@ -35,6 +35,19 @@ const sameFileNearAnchorThreshold = 0.45
 // dedupe sensibly).
 const nearAnchorMaxLineDistance = 15
 
+// sameFileFarAnchorThreshold is the strictest overlap-coefficient bar, applied
+// only during cross-run suppression when two findings share a file AND a
+// category but sit further apart than nearAnchorMaxLineDistance. On a repeat
+// review the whole PR often shifts (code inserted above moves every later
+// line), so a regenerated paraphrase routinely drifts well past 15 lines and
+// escaped the near-anchor regime entirely — each re-run then posted it as a
+// fresh comment. Requiring the same category (stable across runs: it defaults
+// to the emitting pass name) plus very high body overlap keeps genuinely
+// distinct same-file concerns apart while catching the drifted rewording.
+// Intra-run dedup deliberately does not use this regime: within one run the
+// line numbers cannot have shifted, so a far pair there is two real findings.
+const sameFileFarAnchorThreshold = 0.6
+
 // minSimilarityTokens is the minimum number of meaningful tokens both findings
 // must contain before similarity-dedup considers them. Tiny bodies are too
 // noisy to compare reliably with Jaccard — a one-line nit and a one-line
@@ -58,11 +71,13 @@ func dedupeByHash(findings []Finding) []Finding {
 }
 
 // ExistingFinding is the narrow shape suppressSimilarToExisting needs from a
-// persisted finding: just the anchor and body. Defining it locally keeps the
-// dedup helper decoupled from state.Finding (and from sql/db wiring in tests).
+// persisted finding: the anchor, the body, and the category (which gates the
+// far-anchor regime). Defining it locally keeps the dedup helper decoupled
+// from state.Finding (and from sql/db wiring in tests).
 type ExistingFinding struct {
-	Anchor string
-	Body   string
+	Anchor   string
+	Body     string
+	Category string
 }
 
 // suppressSimilarToExisting drops new findings whose body has high overlap
@@ -85,10 +100,11 @@ func suppressSimilarToExisting(newFindings []Finding, existing []ExistingFinding
 	// the near-anchor check run in O(1) per (file, new) pair instead of
 	// scanning the whole existing list for every new finding.
 	type idxEntry struct {
-		anchor string
-		parsed anchorParts
-		tokens map[string]struct{}
-		body   string
+		anchor   string
+		parsed   anchorParts
+		tokens   map[string]struct{}
+		body     string
+		category string
 	}
 	byFile := make(map[string][]idxEntry)
 	for _, e := range existing {
@@ -100,10 +116,11 @@ func suppressSimilarToExisting(newFindings []Finding, existing []ExistingFinding
 			continue
 		}
 		byFile[p.file] = append(byFile[p.file], idxEntry{
-			anchor: e.Anchor,
-			parsed: p,
-			tokens: tokenizeForSimilarity(e.Body),
-			body:   e.Body,
+			anchor:   e.Anchor,
+			parsed:   p,
+			tokens:   tokenizeForSimilarity(e.Body),
+			body:     e.Body,
+			category: e.Category,
 		})
 	}
 	out := make([]Finding, 0, len(newFindings))
@@ -133,6 +150,14 @@ func suppressSimilarToExisting(newFindings []Finding, existing []ExistingFinding
 				continue
 			}
 			threshold, eligible := pairThreshold(f.Anchor, e.anchor, np, e.parsed)
+			if !eligible {
+				// Cross-run only: a same-file, same-category pair beyond the
+				// near-anchor distance is still comparable at the strictest
+				// threshold — repeat reviews shift line numbers wholesale, so
+				// a regenerated paraphrase routinely drifts past the near
+				// window (see sameFileFarAnchorThreshold).
+				threshold, eligible = farPairThreshold(f.Category, e.category, np, e.parsed)
+			}
 			if !eligible {
 				continue
 			}
@@ -292,6 +317,22 @@ func pairThreshold(anchorA, anchorB string, a, b anchorParts) (float64, bool) {
 	return sameFileNearAnchorThreshold, true
 }
 
+// farPairThreshold is the cross-run-only fallback regime for a pair that
+// pairThreshold rejected: same non-empty file, same non-empty category, at any
+// line distance, compared at sameFileFarAnchorThreshold. The category gate is
+// what keeps two genuinely distinct concerns in one large file apart — they
+// would have to come from the same pass AND share >60% of their meaningful
+// tokens to collapse.
+func farPairThreshold(catA, catB string, a, b anchorParts) (float64, bool) {
+	if catA == "" || catA != catB {
+		return 0, false
+	}
+	if a.file == "" || a.file != b.file {
+		return 0, false
+	}
+	return sameFileFarAnchorThreshold, true
+}
+
 // tokenizeForSimilarity lowercases the input, splits on non-alphanumeric runs,
 // and keeps tokens of length >= 3 that are not in a small English stopword set.
 // Identifiers (camelCase, snake_case) are preserved because they are the
@@ -403,12 +444,25 @@ func capNits(findings []Finding, limit int) ([]Finding, int) {
 	if limit <= 0 {
 		return findings, 0
 	}
+	return capNitsBudget(findings, limit)
+}
+
+// capNitsBudget is capNits with an explicit remaining budget: a budget < 0
+// means "no cap", while a budget of 0 drops every Nit. The distinction matters
+// for the cumulative per-PR Nit budget — a PR that already carries nit_cap
+// posted Nits has a budget of exactly 0 for this run, which capNits' "<= 0 is
+// unlimited" convention would invert into no cap at all (that inversion is why
+// each re-run used to add nit_cap fresh Nits).
+func capNitsBudget(findings []Finding, budget int) ([]Finding, int) {
+	if budget < 0 {
+		return findings, 0
+	}
 	out := make([]Finding, 0, len(findings))
 	kept := 0
 	dropped := 0
 	for _, f := range findings {
 		if f.Severity == SeverityNit {
-			if kept >= limit {
+			if kept >= budget {
 				dropped++
 				continue
 			}
@@ -417,4 +471,38 @@ func capNits(findings []Finding, limit int) ([]Finding, int) {
 		out = append(out, f)
 	}
 	return out, dropped
+}
+
+// capTotalFindings bounds the total number of findings this run may emit,
+// severity included: unlike the Nit cap, this is the hard brake on overall
+// per-PR comment volume, so Important findings are subject to it too. A
+// budget < 0 means "no cap". When over budget, the lowest-severity findings
+// are dropped first (Nit, then PreExisting, then Important), later findings
+// before earlier ones within a severity, so what survives is the highest-value
+// prefix of the aggregated set. Returns the capped slice (order preserved) and
+// the number of findings dropped.
+func capTotalFindings(findings []Finding, budget int) ([]Finding, int) {
+	if budget < 0 || len(findings) <= budget {
+		return findings, 0
+	}
+	drop := len(findings) - budget
+	dropIdx := make(map[int]bool, drop)
+	for _, sev := range []Severity{SeverityNit, SeverityPreExisting, SeverityImportant} {
+		for i := len(findings) - 1; i >= 0 && drop > 0; i-- {
+			if findings[i].Severity == sev && !dropIdx[i] {
+				dropIdx[i] = true
+				drop--
+			}
+		}
+		if drop == 0 {
+			break
+		}
+	}
+	out := make([]Finding, 0, budget)
+	for i, f := range findings {
+		if !dropIdx[i] {
+			out = append(out, f)
+		}
+	}
+	return out, len(findings) - len(out)
 }

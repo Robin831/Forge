@@ -653,6 +653,14 @@ anvil's `assay` key. Pointer-typed fields are tri-state: an unset value inherits
 from the global `assay` block (and, for the per-anvil overlay, from the built-in
 default).
 
+Repeat reviews are **incremental** by default: once a PR has been reviewed, a
+new head is reviewed as the delta since the last reviewed commit, with earlier
+findings injected into the prompts as already-reported. The top-level summary
+is a single per-PR comment edited in place on each run (keyed by a hidden
+`<!-- assay-summary -->` marker), and the `nit_cap` / `max_findings_per_pr`
+budgets are cumulative across the PR's whole review history — together these
+are what keep a PR's comment volume flat across repeat reviews.
+
 ```yaml
 assay:
   enabled: false             # master switch (default false)
@@ -663,7 +671,11 @@ assay:
   max_runs: 2                # executed reviews per PR; <=0 = no cap (default 2)
   max_diff_bytes: 250000     # cap on the diff embedded in pass prompts (default 250000)
   max_base_file_bytes: 100000 # cap on base-file context bytes (default 100000)
-  nit_cap: 5                 # max Nit-severity findings retained; <=0 = no cap (default 5)
+  nit_cap: 5                 # cumulative per-PR Nit budget; <=0 = no cap (default 5)
+  incremental: true          # repeat reviews read only the changes since the last
+                             # reviewed commit (default true)
+  max_findings_per_pr: 30    # cumulative per-PR findings cap, every severity;
+                             # <=0 = no cap (default 30)
   triage_provider: claude    # provider spec for the cheap triage pass
   review_provider: claude    # provider spec for the five deep passes
   model_tier: default        # semantic label recorded for observability
@@ -692,7 +704,9 @@ anvils:
 | `max_diff_bytes` | int\|null | `250000` | Caps the size of the diff embedded in pass prompts. `<= 0` falls back to the shared `diff.MaxBytes` default. |
 | `max_base_file_bytes` | int\|null | `100000` | Caps the base-file context bytes included with the diff. |
 | `max_turns_per_pass` | int | `0` (engine default, 12) | | Agent turn budget for each review pass (every file read costs a turn). Raise for repos whose rules file and layout need more reading than the default — the telltale is passes failing `error_max_turns` at exactly the cap on modest diffs. |
-| `nit_cap` | int\|null | `5` | Caps the number of Nit-severity findings retained after aggregation. `<= 0` means no cap. |
+| `nit_cap` | int\|null | `5` | Cumulative per-PR budget for Nit-severity findings. Nits still open from earlier reviews count against it, so a repeat review cannot add another `nit_cap` on top of the last run's. `<= 0` means no cap. |
+| `incremental` | bool\|null | `true` | On a repeat review, feed the passes only the changes pushed since the last successfully reviewed commit (the delta), with the prior findings listed in the prompt as already-reported. Falls back to a full review automatically when the last reviewed commit is no longer an ancestor of the head (force-push/rebase). A repeat push whose delta touches nothing in the net PR diff (upstream merge, revert) is recorded as a skipped run instead of re-reviewing the whole PR. |
+| `max_findings_per_pr` | int\|null | `30` | Cumulative cap on the findings a PR may accumulate across all of its reviews — every severity, Important included. Open findings from earlier runs count against it. The hard brake on total comment volume; `<= 0` means no cap. |
 | `triage_provider` | string | `""` (Claude) | Provider spec (same syntax as `settings.providers`) for the cheap triage pass. Empty defaults to Claude. |
 | `review_provider` | string | `""` (Claude) | Provider spec for the five deep passes. Empty defaults to Claude. |
 | `model_tier` | string | `"default"` | Semantic label describing desired model strength (e.g. `default`, `fast`). Recorded for observability; the concrete model always comes from the model hints below, never a baked-in ID. |

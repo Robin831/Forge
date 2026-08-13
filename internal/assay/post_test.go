@@ -21,12 +21,15 @@ type recordedCall struct {
 
 // stubGh is a deterministic ghExec. It records every call and returns either a
 // scripted stdout or an error. failPaths makes inline POSTs for a given file
-// path fail (to exercise per-comment continue-on-failure).
+// path fail (to exercise per-comment continue-on-failure). existingComments,
+// when set, is the JSON array the summary-upsert list call returns (default:
+// no comments, so the summary is created).
 type stubGh struct {
-	mu        sync.Mutex
-	calls     []recordedCall
-	nextID    int64
-	failPaths map[string]bool
+	mu               sync.Mutex
+	calls            []recordedCall
+	nextID           int64
+	failPaths        map[string]bool
+	existingComments []byte
 }
 
 func newStubGh() *stubGh {
@@ -40,6 +43,7 @@ func (s *stubGh) exec(_ context.Context, _ string, args ...string) ([]byte, erro
 
 	// Inline comment POST? Find the path field to decide success/failure.
 	isInline := false
+	isCommentList := hasArg(args, "--paginate")
 	path := ""
 	for _, a := range args {
 		if strings.HasPrefix(a, "path=") {
@@ -55,6 +59,12 @@ func (s *stubGh) exec(_ context.Context, _ string, args ...string) ([]byte, erro
 		}
 		s.nextID++
 		return []byte(fmt.Sprintf(`{"id": %d}`, s.nextID)), nil
+	}
+	if isCommentList {
+		if s.existingComments != nil {
+			return s.existingComments, nil
+		}
+		return []byte(`[]`), nil
 	}
 	return []byte(`{}`), nil
 }
@@ -73,15 +83,55 @@ func (s *stubGh) inlineCalls() int {
 	return n
 }
 
+// summaryPosted reports whether a summary comment was created or edited: a
+// POST to the PR's issue-comments endpoint or a PATCH to an issue comment.
 func (s *stubGh) summaryPosted() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, c := range s.calls {
-		if len(c.args) >= 2 && c.args[0] == "pr" && c.args[1] == "review" {
+		if s.isSummaryWrite(c.args) {
 			return true
 		}
 	}
 	return false
+}
+
+// summaryBody returns the body= payload of the summary create/edit call, or ""
+// when none happened.
+func (s *stubGh) summaryBody() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, c := range s.calls {
+		if !s.isSummaryWrite(c.args) {
+			continue
+		}
+		for _, a := range c.args {
+			if strings.HasPrefix(a, "body=") {
+				return strings.TrimPrefix(a, "body=")
+			}
+		}
+	}
+	return ""
+}
+
+func (s *stubGh) isSummaryWrite(args []string) bool {
+	method := ""
+	endpoint := ""
+	for i, a := range args {
+		if a == "--method" && i+1 < len(args) {
+			method = args[i+1]
+		}
+		if strings.Contains(a, "/issues/") {
+			endpoint = a
+		}
+	}
+	if endpoint == "" {
+		return false
+	}
+	if method == "POST" && strings.HasSuffix(endpoint, "/comments") {
+		return true
+	}
+	return method == "PATCH" && strings.Contains(endpoint, "/issues/comments/")
 }
 
 // --- thread resolver stub -------------------------------------------------
@@ -315,7 +365,7 @@ func TestPostSummarisesPartialCoverageWithoutFindings(t *testing.T) {
 	if !res.SummaryPosted {
 		t.Fatal("expected a summary review naming the passes that did not run")
 	}
-	body := strings.Join(gh.calls[0].args, " ")
+	body := gh.summaryBody()
 	for _, want := range []string{"Partial coverage", "logic", "error_max_turns"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("summary review missing %q, got:\n%s", want, body)
@@ -552,23 +602,7 @@ func TestBuildDiffIndex(t *testing.T) {
 
 func summaryBody(t *testing.T, gh *stubGh) string {
 	t.Helper()
-	for _, c := range gh.calls {
-		isReview := false
-		for _, a := range c.args {
-			if a == "review" {
-				isReview = true
-			}
-		}
-		if !isReview {
-			continue
-		}
-		for i, a := range c.args {
-			if a == "--body" && i+1 < len(c.args) {
-				return c.args[i+1]
-			}
-		}
-	}
-	return ""
+	return gh.summaryBody()
 }
 
 func TestPostRoutesOutOfDiffFindingsToSummary(t *testing.T) {

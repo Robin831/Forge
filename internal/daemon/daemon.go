@@ -40,6 +40,7 @@ import (
 	"github.com/Robin831/Forge/internal/cost"
 	"github.com/Robin831/Forge/internal/crucible"
 	"github.com/Robin831/Forge/internal/depcheck"
+	"github.com/Robin831/Forge/internal/diff"
 	"github.com/Robin831/Forge/internal/executil"
 	"github.com/Robin831/Forge/internal/forge"
 	"github.com/Robin831/Forge/internal/hotreload"
@@ -262,6 +263,14 @@ type Daemon struct {
 	// Set before Run/IPC serving begins and never mutated afterwards.
 	assayDiffFetch func(ctx context.Context, worktreePath string, prNumber int) ([]byte, error)
 	assayReview    func(ctx context.Context, req assay.ReviewRequest, db *state.DB, cfg assay.Config) (*assay.ReviewResult, error)
+
+	// assayDeltaFetch overrides the incremental-diff step of a repeat Assay
+	// run (`git diff <lastReviewed> <head>` behind an ancestry check). nil
+	// selects the real one; tests replace it to drive the delta/fallback
+	// branches without git. Errors here are never fatal — every error falls
+	// back to a full base..head review. Set before Run/IPC serving begins and
+	// never mutated afterwards.
+	assayDeltaFetch func(ctx context.Context, worktreePath, sinceSHA, headSHA string) ([]byte, error)
 
 	// lifecycleDispatch overrides where a manually triggered lifecycle action
 	// (the pr_action fix verbs) is sent. nil selects the real
@@ -1790,6 +1799,68 @@ func (d *Daemon) fetchAssayDiff(ctx context.Context, worktreePath string, prNumb
 	return out, err
 }
 
+// fetchAssayDeltaDiff returns the incremental diff sinceSHA..headSHA for a
+// repeat Assay review, via git in the PR's worktree. It first proves sinceSHA
+// is an ancestor of headSHA — after a force-push or rebase the last reviewed
+// commit is not, and the only honest scope is the full diff again. Any error
+// (unknown object, detached history, git missing) is returned for the caller
+// to log and fall back on; nothing here is fatal to the run.
+//
+// d.assayDeltaFetch replaces it in tests — see the field's doc.
+func (d *Daemon) fetchAssayDeltaDiff(ctx context.Context, worktreePath, sinceSHA, headSHA string) ([]byte, error) {
+	if d.assayDeltaFetch != nil {
+		return d.assayDeltaFetch(ctx, worktreePath, sinceSHA, headSHA)
+	}
+	check := executil.HideWindow(exec.CommandContext(ctx, "git", "-C", worktreePath, "merge-base", "--is-ancestor", sinceSHA, headSHA))
+	check.Env = executil.CleanGitEnv()
+	if err := check.Run(); err != nil {
+		return nil, fmt.Errorf("last reviewed commit %s is not an ancestor of head %s: %w", sinceSHA, headSHA, err)
+	}
+	cmd := executil.HideWindow(exec.CommandContext(ctx, "git", "-C", worktreePath, "diff", sinceSHA, headSHA))
+	cmd.Env = executil.CleanGitEnv()
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+	if err != nil {
+		if stderr.Len() > 0 {
+			d.logger.Warn("git diff failed for incremental Assay", "since", sinceSHA, "head", headSHA, "stderr", stderr.String())
+		}
+		return nil, err
+	}
+	return out, nil
+}
+
+// assayIncrementalScope decides the diff a repeat review actually reads. Given
+// the full net base..head diff, it looks up the last successfully reviewed
+// commit and, when incremental review applies, returns the delta since that
+// commit scoped to files that survive into the net diff (dropping upstream
+// merge churn and reverted files). Returns the diff to review, whether it is
+// incremental, the baseline SHA, and whether there is anything to review at
+// all — a repeat push whose scoped delta is empty changed nothing reviewable,
+// and running the passes over the full diff again is exactly the duplicate
+// spam this scope exists to prevent.
+func (d *Daemon) assayIncrementalScope(ctx context.Context, anvil, worktreePath, headSHA string, prNumber int, fullDiff []byte) (reviewDiff string, incremental bool, baseline string, reviewable bool) {
+	reviewDiff = string(fullDiff)
+	reviewable = true
+	if !d.cfg.Load().ResolvedAssay(anvil).IsIncremental() {
+		return
+	}
+	since, err := d.db.LastReviewedSHA(anvil, prNumber)
+	if err != nil || since == "" || since == headSHA {
+		return
+	}
+	delta, derr := d.fetchAssayDeltaDiff(ctx, worktreePath, since, headSHA)
+	if derr != nil {
+		d.logger.Info("incremental Assay unavailable; reviewing full diff", "pr", prNumber, "anvil", anvil, "since", since, "error", derr)
+		return
+	}
+	scoped := diff.KeepFiles(string(delta), diff.ChangedFiles(string(fullDiff)))
+	if strings.TrimSpace(scoped) == "" {
+		return "", true, since, false
+	}
+	return scoped, true, since, true
+}
+
 // reviewAssay runs the multi-pass engine over req. d.assayReview replaces it in
 // tests — see the field's doc.
 func (d *Daemon) reviewAssay(ctx context.Context, req assay.ReviewRequest, db *state.DB, cfg assay.Config) (*assay.ReviewResult, error) {
@@ -1813,13 +1884,32 @@ func (d *Daemon) runAssayReview(ctx context.Context, anvil, anvilPath, beadID st
 	}
 
 	// Fetch the PR diff — the full net diff base..head, i.e. the cumulative
-	// change across every commit.
+	// change across every commit. On a repeat review, the diff the passes
+	// actually read is then narrowed to the changes since the last reviewed
+	// commit (assayIncrementalScope); the full diff is still what the posting
+	// layer anchors inline comments against, since GitHub only accepts
+	// positions present in the net diff.
 	diffBytes, diffErr := d.fetchAssayDiff(ctx, worktreePath, prNumber)
+	var reviewDiff, baselineSHA string
+	incremental, reviewable := false, false
+	if diffErr == nil {
+		reviewDiff, incremental, baselineSHA, reviewable = d.assayIncrementalScope(ctx, anvil, worktreePath, headSHA, prNumber, diffBytes)
+	}
 	if diffErr != nil {
 		d.logger.Error("failed to fetch PR diff for Assay", "pr", prNumber, "bead", beadID, "error", diffErr)
 		run.SkippedReason = "diff fetch failed"
 		run.Error = diffErr.Error()
 		run.Status = state.AssayStatusFailed
+	} else if !reviewable {
+		// The head moved but nothing reviewable changed since the last review
+		// (upstream merge, revert). Running the passes over the full diff
+		// again would only regenerate comments about already-reviewed code.
+		// The run is recorded as skipped-complete: the head counts as
+		// reviewed, and a skipped run never consumes the per-PR run cap.
+		d.logger.Info("Assay skipped: no reviewable changes since last review",
+			"pr", prNumber, "bead", beadID, "head", headSHA, "since", baselineSHA)
+		run.SkippedReason = "no reviewable changes since last review"
+		run.Status = state.AssayStatusComplete
 	} else {
 		// Point the worker row at the first pass log to be spawned (triage,
 		// which always runs before the concurrent deep passes) so the Hearth
@@ -1829,15 +1919,17 @@ func (d *Daemon) runAssayReview(ctx context.Context, anvil, anvilPath, beadID st
 		// the first pass: the deep passes fan out concurrently, so without it
 		// the panel would flip between logs mid-run.
 		result, rerr := d.reviewAssay(ctx, assay.ReviewRequest{
-			Anvil:     anvil,
-			AnvilPath: anvilPath,
-			PRNumber:  prNumber,
-			HeadSHA:   headSHA,
-			Diff:      string(diffBytes),
-			BeadID:    beadID,
-			Title:     d.db.BeadTitle(beadID, anvil),
-			WorkDir:   worktreePath,
-			OnPassLog: d.assayLogPathRecorder(workerID),
+			Anvil:       anvil,
+			AnvilPath:   anvilPath,
+			PRNumber:    prNumber,
+			HeadSHA:     headSHA,
+			Diff:        reviewDiff,
+			Incremental: incremental,
+			BaselineSHA: baselineSHA,
+			BeadID:      beadID,
+			Title:       d.db.BeadTitle(beadID, anvil),
+			WorkDir:     worktreePath,
+			OnPassLog:   d.assayLogPathRecorder(workerID),
 		}, d.db, engineCfg)
 		if rerr != nil {
 			// A failed run is still a billed run: the sessions it made before
@@ -1880,6 +1972,8 @@ func (d *Daemon) runAssayReview(ctx context.Context, anvil, anvilPath, beadID st
 				"findings", run.FindingsCount, "pass_errors", len(result.PassErrors),
 				"status", statusText,
 				"passes", result.PassTelemetryText(),
+				"incremental", incremental,
+				"total_capped", result.TotalCapped,
 				"shadow", engineCfg.ShadowMode, "cost_usd", run.CostUSD,
 				"duration_ms", result.Duration.Milliseconds(),
 			)

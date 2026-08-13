@@ -381,8 +381,9 @@ const jsonOutputContract = "## Required Output\n\n" +
 	"- Do NOT invent issues to fill space; precision matters more than volume."
 
 // buildPassPrompt assembles the full prompt for a deep pass: the pass-specific
-// instructions, the shared JSON contract, untrusted bead/PR context, the triage
-// notes, and the scoped diff.
+// instructions, the shared JSON contract, untrusted bead/PR context, the
+// incremental-review framing and already-reported list (on repeat reviews),
+// the triage notes, and the scoped diff.
 func buildPassPrompt(p passDef, req ReviewRequest, scopedDiff, triageNotes string) (string, error) {
 	instructions, err := loadPrompt(p.promptFile)
 	if err != nil {
@@ -395,6 +396,8 @@ func buildPassPrompt(p passDef, req ReviewRequest, scopedDiff, triageNotes strin
 	b.WriteString("\n\n")
 	b.WriteString(repoGuidanceSection(req))
 	b.WriteString(contextSection(req))
+	b.WriteString(incrementalSection(req))
+	b.WriteString(priorFindingsSection(req))
 	if strings.TrimSpace(triageNotes) != "" {
 		b.WriteString("\n## Triage Notes\n\n")
 		b.WriteString(sanitize(triageNotes))
@@ -404,6 +407,73 @@ func buildPassPrompt(p passDef, req ReviewRequest, scopedDiff, triageNotes strin
 	b.WriteString(scopedDiff)
 	b.WriteString("\n```\n")
 	return b.String(), nil
+}
+
+// maxPriorFindingsListed bounds the already-reported list injected into pass
+// prompts. A PR with hundreds of recorded findings gets the first hundred plus
+// a count — the list exists to stop restatement, not to be an archive, and an
+// unbounded one would crowd out the diff it is protecting.
+const maxPriorFindingsListed = 100
+
+// incrementalSection tells the passes, on a delta review, that the diff is the
+// changes since the last reviewed commit and not the whole PR. Without it the
+// model reads the delta as a complete (and suspiciously small) PR.
+func incrementalSection(req ReviewRequest) string {
+	if !req.Incremental {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("\n## Incremental Review\n\n")
+	b.WriteString("This PR has been reviewed before. The diff below contains ONLY the changes pushed since the previously reviewed commit")
+	if req.BaselineSHA != "" {
+		fmt.Fprintf(&b, " (%s)", sanitize(shortSHA(req.BaselineSHA)))
+	}
+	b.WriteString(". The rest of the PR was already reviewed and commented on; unchanged code is out of scope. ")
+	b.WriteString("Review just this delta for new issues. Do not re-raise concerns about code outside it.\n")
+	return b.String()
+}
+
+// priorFindingsSection renders the already-reported list: findings from
+// earlier reviews of this PR that the passes must not restate, verbatim or
+// reworded. Titles and anchors are model-authored on a prior run, so they are
+// sanitized like every other untrusted prompt ingredient.
+func priorFindingsSection(req ReviewRequest) string {
+	if len(req.PriorFindings) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("\n## Already-Reported Findings (do NOT restate)\n\n")
+	b.WriteString("Earlier reviews of this PR already reported the findings below. ")
+	b.WriteString("Do not report any of them again — not verbatim, not reworded, not re-anchored to a shifted line. ")
+	b.WriteString("If the changes under review address one, simply omit it. ")
+	b.WriteString("Findings marked (resolved) were closed and must not be re-reported at all. ")
+	b.WriteString("Report only NEW issues.\n\n")
+	list := req.PriorFindings
+	extra := 0
+	if len(list) > maxPriorFindingsListed {
+		extra = len(list) - maxPriorFindingsListed
+		list = list[:maxPriorFindingsListed]
+	}
+	for _, p := range list {
+		fmt.Fprintf(&b, "- [%s] %s — `%s`", sanitize(p.Severity), sanitize(p.Title), sanitize(p.Anchor))
+		if p.Resolved {
+			b.WriteString(" (resolved)")
+		}
+		b.WriteByte('\n')
+	}
+	if extra > 0 {
+		fmt.Fprintf(&b, "- …and %d more not listed; the same rule applies.\n", extra)
+	}
+	return b.String()
+}
+
+// shortSHA abbreviates a commit OID for prose; non-hex or short values pass
+// through unchanged.
+func shortSHA(sha string) string {
+	if len(sha) > 12 {
+		return sha[:12]
+	}
+	return sha
 }
 
 // contextSection renders the untrusted bead/PR metadata as data only.

@@ -2018,6 +2018,17 @@ type AssayConfig struct {
 	// allows — the telltale is passes dying at error_max_turns with turns at
 	// exactly the cap on modest diffs.
 	MaxTurnsPerPass *int `mapstructure:"max_turns_per_pass" yaml:"max_turns_per_pass,omitempty"`
+	// Incremental controls delta reviews: when a PR has been reviewed before,
+	// review only the changes pushed since the last reviewed commit instead of
+	// the whole base..head diff again. Defaults to true when unset. Falls back
+	// to a full review automatically when the last reviewed commit is no
+	// longer an ancestor of the head (force-push/rebase).
+	Incremental *bool `mapstructure:"incremental" yaml:"incremental,omitempty"`
+	// MaxFindingsPerPR caps the cumulative number of findings — every
+	// severity, Important included — a PR may accumulate across all of its
+	// Assay reviews. Unset uses defaultAssayMaxFindingsPerPR; <= 0 means no
+	// cap.
+	MaxFindingsPerPR *int `mapstructure:"max_findings_per_pr" yaml:"max_findings_per_pr,omitempty"`
 }
 
 // IsEnabled returns whether Assay is active. Defaults to false when unset.
@@ -2109,6 +2120,31 @@ func (a AssayConfig) GetMaxTurnsPerPass() int {
 	return *a.MaxTurnsPerPass
 }
 
+// IsIncremental returns whether repeat reviews are scoped to the changes since
+// the last reviewed commit. Defaults to true when unset — re-reviewing the
+// whole PR on every push is what buried PRs in duplicate comments.
+func (a AssayConfig) IsIncremental() bool {
+	if a.Incremental == nil {
+		return true
+	}
+	return *a.Incremental
+}
+
+// defaultAssayMaxFindingsPerPR is the fallback cumulative per-PR findings cap
+// when max_findings_per_pr is unset. Generous enough that a healthy PR never
+// notices it; a hard brake on the pathological runs that used to accumulate
+// comments without bound.
+const defaultAssayMaxFindingsPerPR = 30
+
+// GetMaxFindingsPerPR returns the cumulative per-PR findings cap, defaulting
+// to defaultAssayMaxFindingsPerPR when unset. A value <= 0 means no cap.
+func (a AssayConfig) GetMaxFindingsPerPR() int {
+	if a.MaxFindingsPerPR == nil {
+		return defaultAssayMaxFindingsPerPR
+	}
+	return *a.MaxFindingsPerPR
+}
+
 // ResolvedAssay returns the effective Assay configuration for the named anvil.
 // It starts from the global c.Assay and overlays the anvil's *AssayConfig when
 // present: pointer fields (*bool, *int, *float64) override when non-nil; string
@@ -2162,6 +2198,15 @@ func (c *Config) ResolvedAssay(anvilName string) AssayConfig {
 	}
 	if o.NitCap != nil {
 		resolved.NitCap = o.NitCap
+	}
+	if o.MaxTurnsPerPass != nil {
+		resolved.MaxTurnsPerPass = o.MaxTurnsPerPass
+	}
+	if o.Incremental != nil {
+		resolved.Incremental = o.Incremental
+	}
+	if o.MaxFindingsPerPR != nil {
+		resolved.MaxFindingsPerPR = o.MaxFindingsPerPR
 	}
 	if len(o.SkipPaths) > 0 {
 		resolved.SkipPaths = o.SkipPaths

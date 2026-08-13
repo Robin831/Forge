@@ -37,8 +37,16 @@ type Config struct {
 	ReviewModel string
 
 	// NitCap caps the number of Nit-severity findings retained after
-	// aggregation. Values <= 0 mean "no cap".
+	// aggregation. Values <= 0 mean "no cap". The cap is cumulative per PR:
+	// Nits still open from earlier reviews count against it, so a repeat
+	// review cannot add another NitCap on top of the last run's.
 	NitCap int
+
+	// MaxFindingsPerPR caps the cumulative number of findings — every
+	// severity, Important included — a PR may accumulate across all of its
+	// reviews. Findings still open from earlier runs count against it. It is
+	// the hard brake on total comment volume; values <= 0 mean "no cap".
+	MaxFindingsPerPR int
 
 	// ShadowMode, when true, signals that the review must not produce public
 	// side effects: Review still writes findings to pr_findings, but the caller
@@ -89,6 +97,7 @@ func FromAssayConfig(ac config.AssayConfig) Config {
 	cfg := DefaultConfig()
 	cfg.ShadowMode = ac.IsShadowMode()
 	cfg.NitCap = ac.GetNitCap()
+	cfg.MaxFindingsPerPR = ac.GetMaxFindingsPerPR()
 	if ac.ModelTier != "" {
 		cfg.ModelTier = ac.ModelTier
 	}
