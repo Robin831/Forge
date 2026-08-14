@@ -1,0 +1,2 @@
+category: Fixed
+- **Flaky anvil-health notification test** - `TestCheckAnvilHealth_NotifiesOnWedgeAndRecovery` raced its wedge and recovery webhook deliveries (each is its own goroutine) and failed the v0.25.0 release-commit CI run when the recovery POST landed first on a slow runner; the test now drains the dispatcher between transitions. Test-only — production ordering was never at stake. (Forge-5mue)
