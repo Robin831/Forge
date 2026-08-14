@@ -289,7 +289,7 @@ func renderPreviewList(w io.Writer, list ipc.PreviewListResponse) {
 	fmt.Fprintf(tw, "BEAD\tSTATUS\tURL\tIDLE\tRESOURCES\n")
 	for _, p := range list.Previews {
 		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n",
-			p.BeadID,
+			termtext.Line(p.BeadID),
 			p.Status,
 			previewURLCell(p),
 			formatPreviewIdle(p.IdleRemainingSeconds),
@@ -306,8 +306,13 @@ func renderPreviewList(w io.Writer, list ipc.PreviewListResponse) {
 	for _, p := range list.Previews {
 		for _, svc := range p.Services {
 			if detail := previewServiceIssue(svc); detail != "" {
+				// The bead id is stripped alongside the service name and the
+				// detail: a preview id is a registry key, not a bd id — `forge
+				// preview start <anything>` and the dashboard's ad-hoc form both
+				// accept an arbitrary string — so it is text Forge did not write
+				// and is free to carry escape sequences into this line.
 				fmt.Fprintf(w, "  ! %s/%s: %s\n",
-					p.BeadID, termtext.Line(svc.Name), termtext.Line(detail))
+					termtext.Line(p.BeadID), termtext.Line(svc.Name), termtext.Line(detail))
 			}
 		}
 	}

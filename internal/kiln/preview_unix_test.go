@@ -467,6 +467,98 @@ services:
 	}
 }
 
+// The other half of the same suppression: on daemon shutdown it is the run
+// context's cancellation that kills preview processes, and that can reach the
+// watchers before Stop/StopAll has set `stopped`. A shutdown must be as quiet
+// as a stop — no demotion, no persisted `exited` record, no feed event.
+func TestRuntimeDoesNotDemoteServicesKilledByLifetimeCancel(t *testing.T) {
+	fakeHome(t)
+	worktree := t.TempDir()
+	store := &fakeStore{}
+
+	lo := freePort(t)
+	ports, err := NewPortAllocator("127.0.0.1", lo, lo+50)
+	if err != nil {
+		t.Fatalf("NewPortAllocator: %v", err)
+	}
+	lifetime, shutdown := context.WithCancel(context.Background())
+	defer shutdown()
+
+	var exits int32
+	rt, err := NewRuntime(RuntimeConfig{
+		Store:         store,
+		Ports:         ports,
+		BindHost:      "127.0.0.1",
+		StopTimeout:   2 * time.Second,
+		Lifetime:      lifetime,
+		OnServiceExit: func(ServiceExit) { atomic.AddInt32(&exits, 1) },
+	})
+	if err != nil {
+		t.Fatalf("NewRuntime: %v", err)
+	}
+
+	manifest := mustParse(t, `
+version: 1
+services:
+  api:
+    command: `+strconv.Quote(helperCommand())+`
+    env:
+      KILN_HELPER_PORT: "{{.Port}}"
+      KILN_HELPER_MODE: "tcp"
+    ready_timeout: 30s
+`)
+	preview, err := rt.Start(context.Background(), StartRequest{
+		BeadID:       "Forge-shutdown",
+		Anvil:        "forge",
+		WorktreePath: worktree,
+		Manifest:     manifest,
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(func() { _ = preview.Stop() })
+
+	if preview.Status() != state.PreviewRunning {
+		t.Fatalf("status right after start = %q, want %q", preview.Status(), state.PreviewRunning)
+	}
+	api, ok := preview.Record().Service("api")
+	if !ok {
+		t.Fatal("the manifest's api service is missing from the record")
+	}
+
+	// Daemon shutdown: cancel the lifetime and let the processes die. The port
+	// closing is the proof the service is actually gone, so the assertions below
+	// are about a death that happened rather than one that has yet to.
+	shutdown()
+	waitFor(t, 20*time.Second, "the service process to die", func() bool {
+		conn, err := net.DialTimeout("tcp",
+			net.JoinHostPort("127.0.0.1", strconv.Itoa(api.Port)), 200*time.Millisecond)
+		if err != nil {
+			return true
+		}
+		conn.Close()
+		return false
+	})
+
+	// The watchers run on their own goroutines, so give a wrong demotion time to
+	// land before concluding it did not.
+	time.Sleep(500 * time.Millisecond)
+	if got := atomic.LoadInt32(&exits); got != 0 {
+		t.Errorf("OnServiceExit fired %d times for a shutdown", got)
+	}
+	if got := preview.Status(); got != state.PreviewRunning {
+		t.Errorf("status = %q, want %q — a shutdown must not demote the preview", got, state.PreviewRunning)
+	}
+	if svc, _ := preview.Record().Service("api"); svc.Health != state.PreviewServiceHealthy {
+		t.Errorf("api health = %q, want %q", svc.Health, state.PreviewServiceHealthy)
+	}
+	for _, rec := range store.snapshots() {
+		if rec.Status != state.PreviewRunning && rec.Status != state.PreviewStarting {
+			t.Errorf("persisted status = %q, want the shutdown to have written nothing new", rec.Status)
+		}
+	}
+}
+
 func TestRuntimeMarksEverythingFailedWhenNothingComesUp(t *testing.T) {
 	fakeHome(t)
 	worktree := t.TempDir()

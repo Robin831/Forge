@@ -90,6 +90,30 @@ func TestHandlePreviewServiceExit_NamesTheEntryService(t *testing.T) {
 	assert.Contains(t, events[0].Message, "(entry service — no preview URL)")
 }
 
+// TestHandlePreviewServiceExit_StripsTerminalEscapes: the service name comes
+// from a previewed repo's `.forge/preview.yaml` and the detail can carry a
+// process's own wait-error text, while Hearth renders an event message with
+// nothing but word-wrapping. So the producer strips, as Assay's event reasons
+// do — otherwise a manifest could inject control sequences into every Hearth
+// session showing the feed.
+func TestHandlePreviewServiceExit_StripsTerminalEscapes(t *testing.T) {
+	d, db := newPreviewExitDaemon(t)
+
+	d.handlePreviewServiceExit(kiln.ServiceExit{
+		BeadID:  "Forge-abc1",
+		Anvil:   "forge",
+		Service: "a\x1b[2Kpi",
+		Detail:  "exited (\x1b]0;pwn\x07exit 1, lived 7m31s)",
+		Status:  state.PreviewDegraded,
+	})
+
+	events := previewExitEvents(t, db)
+	require.Len(t, events, 1)
+	assert.NotContains(t, events[0].Message, "\x1b")
+	assert.Contains(t, events[0].Message, `preview service "api"`)
+	assert.Contains(t, events[0].Message, "exited (exit 1, lived 7m31s)")
+}
+
 // TestHandlePreviewServiceExit_WithoutADBIsANoOp — the hook is wired to the
 // manager unconditionally, so it has to survive a daemon with no state DB rather
 // than panic on the way to reporting a dead process.

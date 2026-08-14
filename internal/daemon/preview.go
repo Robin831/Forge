@@ -15,6 +15,7 @@ import (
 	"github.com/Robin831/Forge/internal/kiln"
 	"github.com/Robin831/Forge/internal/questgiver"
 	"github.com/Robin831/Forge/internal/state"
+	"github.com/Robin831/Forge/internal/termtext"
 	"github.com/Robin831/Forge/internal/worktree"
 )
 
@@ -524,8 +525,13 @@ func (d *Daemon) handlePreviewServiceExit(exit kiln.ServiceExit) {
 	if d == nil || d.db == nil {
 		return
 	}
+	// The service name comes from a manifest and the detail can carry a
+	// process's own wait-error text, so both are stripped here rather than at
+	// each surface: Hearth renders an event message with nothing but
+	// word-wrapping, so the producer is the last place an escape sequence in
+	// `.forge/preview.yaml` can be stopped before it reaches a terminal.
 	msg := fmt.Sprintf("preview service %q %s — preview is now %s",
-		exit.Service, exit.Detail, exit.Status)
+		termtext.Line(exit.Service), termtext.Line(exit.Detail), exit.Status)
 	if exit.Entry {
 		// The entry service is the preview's address, so its death is the
 		// difference between "part of this is broken" and "the link is dead".

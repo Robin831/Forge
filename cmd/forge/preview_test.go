@@ -184,17 +184,19 @@ func TestRenderPreviewList_ExitedService(t *testing.T) {
 
 // TestRenderPreviewList_StripsTerminalEscapes: everything a preview row prints
 // that Forge did not write — the manifest's service names, a process's failure
-// text, the daemon's notes assembled out of both — goes through termtext.Line
-// first. A manifest is merged code from a previewed repo, so an escape sequence
-// in one would otherwise be free to rewrite the operator's terminal: overwrite
-// the status column, spoof a URL, or set the window title.
+// text, the daemon's notes assembled out of both, the bead id itself — goes
+// through termtext.Line first. A manifest is merged code from a previewed repo
+// and a preview's bead id is an arbitrary registry key anyone who can reach the
+// daemon may choose, so an escape sequence in either would otherwise be free to
+// rewrite the operator's terminal: overwrite the status column, spoof a URL, or
+// set the window title.
 func TestRenderPreviewList_StripsTerminalEscapes(t *testing.T) {
 	var buf bytes.Buffer
 	renderPreviewList(&buf, ipc.PreviewListResponse{
 		Enabled: true,
 		Previews: []ipc.PreviewInfo{
 			{
-				BeadID:    "Forge-abc1",
+				BeadID:    "Forge-\x1b]0;pwn\x07abc1",
 				Status:    "degraded",
 				EntryNote: "entry service \x1b[31m\"web\"\x1b[0m is not serving",
 				Services: []ipc.PreviewServiceInfo{
