@@ -2499,15 +2499,20 @@ func TestDB_ReadyToMerge_PendingAssayWorker(t *testing.T) {
 		t.Errorf("with running assay worker ReadyToMergePRs: got %d (err %v), want 0", len(list), err)
 	}
 
-	// A stalled Assay worker still blocks readiness (it may recover).
+	// A stalled Assay worker does NOT block readiness. Nothing ever terminates
+	// a stalled row, and once the per-PR run cap is exhausted no fresh dispatch
+	// supersedes it either, so blocking here was a permanent wedge: bellows
+	// declared the PR ready (cap release) while this query kept it out of the
+	// Ready-to-Merge panel and the pipeline's ready_to_merge stage forever
+	// (PR #4903 / Fhi.Metadata-ndbc7).
 	if err := db.UpdateWorkerStatus(worker.ID, WorkerStalled); err != nil {
 		t.Fatalf("UpdateWorkerStatus stalled: %v", err)
 	}
-	if ok, err := db.IsPRReadyToMerge(pr.ID); err != nil || ok {
-		t.Errorf("with stalled assay worker IsPRReadyToMerge: got %v (err %v), want false", ok, err)
+	if ok, err := db.IsPRReadyToMerge(pr.ID); err != nil || !ok {
+		t.Errorf("with stalled assay worker IsPRReadyToMerge: got %v (err %v), want true", ok, err)
 	}
-	if list, err := db.ReadyToMergePRs(); err != nil || len(list) != 0 {
-		t.Errorf("with stalled assay worker ReadyToMergePRs: got %d (err %v), want 0", len(list), err)
+	if list, err := db.ReadyToMergePRs(); err != nil || len(list) != 1 {
+		t.Errorf("with stalled assay worker ReadyToMergePRs: got %d (err %v), want 1", len(list), err)
 	}
 
 	// Once the worker completes, the PR is ready again.

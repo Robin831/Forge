@@ -2142,15 +2142,25 @@ func (db *DB) UpdatePRTitle(id int, title string) error {
 // (matched on anvil + pr_number). A PR with an in-flight Assay is not ready to
 // merge: its inline findings have not yet posted, so green CI and no unresolved
 // threads cannot yet be trusted — once the assay lands it may add threads and
-// bounce the PR back to Burnish (Forge-75cx). Stalled workers are included
-// because they may recover and still post findings. When Assay is disabled for
+// bounce the PR back to Burnish (Forge-75cx). When Assay is disabled for
 // an anvil no such workers are ever created, so this predicate naturally
 // evaluates to false and readiness is unaffected.
+//
+// Stalled workers are deliberately NOT included, matching AssayWorkerInFlight's
+// stance that a stalled worker may be stuck for good. Stale detection only ever
+// marks a worker stalled — nothing terminates the row — and once the per-PR run
+// cap is exhausted no fresh dispatch will supersede it either, so a stalled
+// veto here is a permanent one: the PR's bellows side declares it ready (the
+// cap release in assayUpToDate) while this query wedges it out of the
+// Ready-to-Merge panel and the pipeline's ready_to_merge stage forever
+// (observed: PR #4903 / Fhi.Metadata-ndbc7). The safety the veto bought still
+// holds downstream — a stalled assay that does recover and post findings flips
+// has_unresolved_threads on the next poll and pulls the PR back out of ready.
 func pendingAssayExistsSQL(prAlias string) string {
 	return `EXISTS (
 		SELECT 1 FROM workers w
 		WHERE w.phase = 'assay'
-		  AND w.status IN ('pending', 'running', 'stalled')
+		  AND w.status IN ('pending', 'running')
 		  AND w.anvil = ` + prAlias + `.anvil
 		  AND w.pr_number = ` + prAlias + `.number
 	)`
