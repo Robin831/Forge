@@ -1,4 +1,4 @@
-import { ExternalLink, MonitorPlay, ScrollText, Square, Timer } from 'lucide-react'
+import { ExternalLink, MonitorPlay, ScrollText, Square, Timer, Unplug } from 'lucide-react'
 import { useState } from 'react'
 import { Link } from 'react-router'
 import type { StatusResponse } from '../api'
@@ -133,6 +133,19 @@ function PreviewRow({ preview, now, fetchedAt, onViewLog }: PreviewRowProps) {
               idles in {countdown}
             </span>
           )}
+          {/* No link, and a reason for it: the entry service failed or has
+              since died. Shown where the Open button would be, because its
+              absence is the thing that needs explaining. */}
+          {!preview.entry_url && preview.entry_note && (
+            <span
+              data-testid={`preview-row-entry-note-${preview.bead_id}`}
+              title={preview.entry_note}
+              className="inline-flex items-center gap-1 rounded-md border border-amber-600/30 bg-amber-600/15 px-2 py-1 text-xs font-medium text-amber-200"
+            >
+              <Unplug size={12} aria-hidden />
+              No URL
+            </span>
+          )}
           {preview.entry_url && (
             <a
               href={preview.entry_url}
@@ -199,8 +212,15 @@ function PreviewRow({ preview, now, fetchedAt, onViewLog }: PreviewRowProps) {
               {svc.port > 0 ? `:${svc.port}` : ''}
             </span>
             <PreviewServiceHealthBadge health={svc.health} error={svc.error} />
+            {/* An exited service's number is frozen at its death by the daemon,
+                so it reads as the life it had rather than a clock still running
+                over a dead process. */}
             <span className="text-slate-500">
-              {svc.health === 'failed' ? '—' : formatDuration(svc.uptime_seconds)}
+              {svc.health === 'failed'
+                ? '—'
+                : svc.health === 'exited'
+                  ? `lived ${formatDuration(svc.uptime_seconds)}`
+                  : formatDuration(svc.uptime_seconds)}
             </span>
             {svc.log_url && (
               <button

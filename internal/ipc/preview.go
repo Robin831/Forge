@@ -21,12 +21,26 @@ type PreviewServiceInfo struct {
 	Name string `json:"name"`
 	Port int    `json:"port"`
 	// Health is one of the state.PreviewService* values
-	// (starting/healthy/failed).
+	// (starting/healthy/failed/exited). `exited` means the service passed its
+	// readiness check and its process later died — a different problem from
+	// `failed` ("never came up"), and the one the supervisor used to observe
+	// without telling anybody.
 	Health string `json:"health"`
 	// Entry marks the service whose URL is *the* preview link.
 	Entry bool `json:"entry,omitempty"`
-	// Error explains a failed service (spawn error, health timeout, early exit).
+	// Error explains a failed service (spawn error, health timeout, early exit)
+	// or an exited one (`exited (exit 1, lived 7m31s)`).
 	Error string `json:"error,omitempty"`
+	// StartedAt is when the service's process was spawned; ExitedAt is when it
+	// was reaped, and is zero while it is still running. Together they are the
+	// interval every uptime on every surface is measured over, which is what
+	// freezes a dead service's uptime at its death instead of letting it grow.
+	StartedAt time.Time `json:"started_at,omitzero"`
+	ExitedAt  time.Time `json:"exited_at,omitzero"`
+	// ExitCode is the process's exit status, or null while it runs and for a
+	// process killed by a signal — which has no exit status, only the cause that
+	// Error names.
+	ExitCode *int `json:"exit_code,omitempty"`
 }
 
 // PreviewInfo is one running preview environment.
@@ -52,6 +66,15 @@ type PreviewInfo struct {
 	// internal/web.previewEntryURL). A CLI has no request to fall back on, so
 	// it prints this.
 	EntryURL string `json:"entry_url,omitempty"`
+	// EntryNote explains a *withheld* entry URL — the entry service failed its
+	// readiness check, or became healthy and later exited. It is set exactly
+	// when EntryURL was suppressed for that reason, so a client can render why
+	// the Open link is gone instead of leaving an operator to guess.
+	//
+	// Handing out a link to a dead process is the failure mode this exists to
+	// stop: the browser answers ERR_EMPTY_RESPONSE, which reads as a network or
+	// tunnel problem rather than as the service being gone.
+	EntryNote string `json:"entry_note,omitempty"`
 	// Port is the entry service's port — the one EntryURL points at — or the
 	// first allocated port when no service is marked as the entry. 0 while
 	// ports are still being allocated.
@@ -169,6 +192,12 @@ const (
 	PreviewResolveNoService = "no_service"
 	// PreviewResolveNoPort means the service has no port allocated yet.
 	PreviewResolveNoPort = "no_port"
+	// PreviewResolveNotServing means the preview is live and the service has a
+	// port, but that service is not answering on it — it failed its readiness
+	// check, or became healthy and later exited. Distinct from
+	// PreviewResolveNoPort, which is a preview still coming up: one is "wait",
+	// the other is "look at the log".
+	PreviewResolveNotServing = "not_serving"
 )
 
 // PreviewResolveResponse is the answer to a "preview_resolve".

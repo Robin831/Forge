@@ -478,6 +478,63 @@ func TestPreviewsList_FailedServiceReportsZeroUptime(t *testing.T) {
 	}
 }
 
+// Forge-bci1: a service that became healthy and later died must report the
+// lifetime it had — frozen — rather than a clock that keeps counting over a
+// dead process, and the browser must not be offered its address.
+func TestPreviewsList_ExitedServiceFreezesUptimeAndWithholdsTheLink(t *testing.T) {
+	created := time.Now().Add(-10 * time.Minute).UTC()
+	startedAt := created
+	exitedAt := created.Add(7*time.Minute + 31*time.Second)
+	code := 1
+
+	p := samplePreview(created, created)
+	p.Status = state.PreviewDegraded
+	p.Services[0].StartedAt = startedAt
+	// The entry service is the one that died, so there is no link to give.
+	p.Services[1].Health = state.PreviewServiceExited
+	p.Services[1].Error = "exited (exit 1, lived 7m31s)"
+	p.Services[1].StartedAt = startedAt
+	p.Services[1].ExitedAt = exitedAt
+	p.Services[1].ExitCode = &code
+	p.EntryNote = `entry service "client" is not serving: exited (exit 1, lived 7m31s)`
+
+	srv := newServerWithDefaults(t, previewsHandler(t, ipc.PreviewsResponse{
+		Enabled:  true,
+		Previews: []ipc.PreviewInfo{p},
+	}))
+
+	out := decodePreviews(t, getPreviews(t, srv, "hearth.example:9000"))
+	preview := out.Previews[0]
+	if preview.EntryURL != "" {
+		t.Errorf("entry_url = %q, want it withheld once the entry service exited", preview.EntryURL)
+	}
+	if !strings.Contains(preview.EntryNote, "not serving") {
+		t.Errorf("entry_note = %q, want it to explain the withheld link", preview.EntryNote)
+	}
+
+	client := preview.Services[1]
+	if client.Health != state.PreviewServiceExited {
+		t.Errorf("health = %q, want %q", client.Health, state.PreviewServiceExited)
+	}
+	if client.UptimeSeconds != 451 {
+		t.Errorf("uptime_seconds = %d, want 451 (7m31s frozen at the exit)", client.UptimeSeconds)
+	}
+	if client.ExitCode == nil || *client.ExitCode != 1 {
+		t.Errorf("exit_code = %v, want 1", client.ExitCode)
+	}
+	if client.ExitedAt == nil || !client.ExitedAt.Equal(exitedAt) {
+		t.Errorf("exited_at = %v, want %v", client.ExitedAt, exitedAt)
+	}
+
+	// The surviving sibling keeps counting, measured from its own start.
+	if up := preview.Services[0].UptimeSeconds; up < 600 || up > 900 {
+		t.Errorf("live service uptime_seconds = %d, want ~600", up)
+	}
+	if preview.Services[0].ExitedAt != nil {
+		t.Errorf("live service reported exited_at = %v", preview.Services[0].ExitedAt)
+	}
+}
+
 func TestPreviewsList_EntryURLUsesConfiguredPublicHost(t *testing.T) {
 	now := time.Now().UTC()
 	srv := newServerWithDefaults(t, previewsHandler(t, ipc.PreviewsResponse{

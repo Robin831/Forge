@@ -403,12 +403,125 @@ func TestPreviewEntryPort(t *testing.T) {
 			services: []state.PreviewService{{Name: "api", Port: 4310}, {Name: "web", Port: 4311, Entry: true}},
 			want:     4311,
 		},
+		{
+			// Forge-bci1: the entry service still holds its port after it dies,
+			// so the old "first port that exists" rule handed out a link that
+			// answered ERR_EMPTY_RESPONSE — which reads as a broken tunnel.
+			name: "withholds the port when the entry service has exited",
+			services: []state.PreviewService{
+				{Name: "api", Port: 4310, Health: state.PreviewServiceHealthy},
+				{Name: "web", Port: 4311, Health: state.PreviewServiceExited, Entry: true},
+			},
+			want: 0,
+		},
+		{
+			name: "withholds the port when the entry service failed",
+			services: []state.PreviewService{
+				{Name: "web", Port: 4311, Health: state.PreviewServiceFailed, Entry: true},
+			},
+			want: 0,
+		},
+		{
+			// Never a healthy sibling's port: that link works and shows the
+			// wrong application, which is worse than no link at all.
+			name: "does not fall back to a healthy sibling",
+			services: []state.PreviewService{
+				{Name: "web", Port: 4311, Health: state.PreviewServiceExited, Entry: true},
+				{Name: "api", Port: 4310, Health: state.PreviewServiceHealthy},
+			},
+			want: 0,
+		},
+		{
+			name: "a starting entry service still gets its port",
+			services: []state.PreviewService{
+				{Name: "web", Port: 4311, Health: state.PreviewServiceStarting, Entry: true},
+			},
+			want: 4311,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			assert.Equal(t, tt.want, previewEntryPort(state.Preview{Services: tt.services}))
 		})
 	}
+}
+
+// A withheld entry URL has to say why, or the link simply disappears and the
+// operator is left guessing. Nothing to explain — a preview still allocating
+// ports — produces no note at all, so the absence of a note stays meaningful.
+func TestPreviewEntryNote(t *testing.T) {
+	tests := []struct {
+		name     string
+		services []state.PreviewService
+		want     string
+	}{
+		{name: "no services"},
+		{
+			name:     "still coming up",
+			services: []state.PreviewService{{Name: "web", Port: 4311, Health: state.PreviewServiceStarting, Entry: true}},
+		},
+		{
+			name:     "healthy",
+			services: []state.PreviewService{{Name: "web", Port: 4311, Health: state.PreviewServiceHealthy, Entry: true}},
+		},
+		{
+			name: "exited entry service names its cause",
+			services: []state.PreviewService{{
+				Name: "client", Port: 4311, Entry: true,
+				Health: state.PreviewServiceExited,
+				Error:  "exited (exit 1, lived 7m31s)",
+			}},
+			want: `entry service "client" is not serving: exited (exit 1, lived 7m31s)`,
+		},
+		{
+			name: "exited without recorded detail falls back to the state",
+			services: []state.PreviewService{{
+				Name: "client", Port: 4311, Entry: true, Health: state.PreviewServiceExited,
+			}},
+			want: `entry service "client" is not serving: exited`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, previewEntryNote(state.Preview{Services: tt.services}))
+		})
+	}
+}
+
+// The exit has to survive the mapping onto the IPC payload, or it stops at the
+// daemon and neither front end ever hears about it.
+func TestPreviewInfo_CarriesServiceExits(t *testing.T) {
+	now := time.Date(2026, 8, 11, 12, 0, 0, 0, time.UTC)
+	code := 1
+	rec := state.Preview{
+		BeadID: "Forge-abc1",
+		Status: state.PreviewDegraded,
+		Services: []state.PreviewService{
+			{Name: "api", Port: 4310, Health: state.PreviewServiceHealthy, StartedAt: now.Add(-10 * time.Minute)},
+			{
+				Name: "client", Port: 4311, Entry: true,
+				Health:    state.PreviewServiceExited,
+				Error:     "exited (exit 1, lived 7m31s)",
+				StartedAt: now.Add(-10 * time.Minute),
+				ExitedAt:  now.Add(-2*time.Minute - 29*time.Second),
+				ExitCode:  &code,
+			},
+		},
+	}
+
+	info := previewInfo(rec, "", 0, now)
+
+	assert.Empty(t, info.EntryURL, "a dead entry service hands out no link")
+	assert.Zero(t, info.Port)
+	assert.Contains(t, info.EntryNote, `entry service "client" is not serving`)
+	require.Len(t, info.Services, 2)
+	client := info.Services[1]
+	assert.Equal(t, state.PreviewServiceExited, client.Health)
+	require.NotNil(t, client.ExitCode)
+	assert.Equal(t, 1, *client.ExitCode)
+	assert.False(t, client.ExitedAt.IsZero())
+	assert.Equal(t, rec.Services[1].StartedAt, client.StartedAt)
+	assert.True(t, info.Services[0].ExitedAt.IsZero(), "a live service reports no exit")
 }
 
 // TestPreviewEntryURL — the operator-facing link. It is the one every client

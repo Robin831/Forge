@@ -2,6 +2,7 @@ package kiln
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -193,6 +194,29 @@ func (p *ServiceProcess) ExitErr() error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.waitErr
+}
+
+// ExitCode returns the exit status of a process that has exited.
+//
+// The bool is false while it is still running, and also when it was killed by a
+// signal: a signalled process has no exit status, and reporting one anyway
+// (exec's -1) would read as an exit code the program chose. The cause in that
+// case is in ExitErr, which names the signal.
+func (p *ServiceProcess) ExitCode() (int, bool) {
+	if p == nil || !p.Exited() {
+		return 0, false
+	}
+	err := p.ExitErr()
+	if err == nil {
+		return 0, true
+	}
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		if code := exitErr.ExitCode(); code >= 0 {
+			return code, true
+		}
+	}
+	return 0, false
 }
 
 // Stop terminates the service and everything it spawned.

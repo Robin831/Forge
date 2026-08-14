@@ -85,6 +85,26 @@ Readiness is per-service: a service becomes `healthy` when its check passes
 within `ready_timeout`, otherwise `failed`. One failed service does not stop the
 others; the preview panel shows the state of each.
 
+Health is not one-shot. A service that became `healthy` and whose process later
+dies goes to `exited`, carrying its exit code and the lifetime it had
+(`exited (exit 1, lived 7m31s)`). It is a separate state from `failed` because
+it is a different problem: `failed` never came up, `exited` came up and stopped,
+and only the second one has its answer in the *end* of the service log. The
+transition happens within one supervisor observation of the exit and shows up
+everywhere at once — the preview panel, `forge preview list`, the previews
+payload — along with a `preview_service_exited` event in the activity feed. The
+preview's status is recomputed by the same rule that ran at startup, so a dead
+service among healthy ones is `degraded` and a preview with nothing left serving
+is `failed`.
+
+An `exited` (or `failed`) **entry** service also withholds the preview link
+rather than handing out an address nothing answers on: a browser reports that as
+a network error, which reads like a broken tunnel rather than a dead process.
+The panel and `forge preview list` say why instead.
+
+Kiln never restarts a service on its own. A service that dies stays dead until
+the preview is stopped and started again.
+
 ## Template variables
 
 `command` and every `env` value — plus `setup` and `teardown` — are Go
@@ -167,8 +187,10 @@ dropped for the same reason.
   started, runs `teardown`, removes the checkout and deletes the state row. The
   per-service logs survive under `~/.forge/logs/<beadID>/` for the post-mortem.
 - **Status**: the preview is `running` when every service is healthy,
-  `degraded` when some are healthy and some failed, and `failed` when none came
-  up. A failed service is never allowed to stop its siblings.
+  `degraded` when some are healthy and some are not, and `failed` when nothing
+  is serving. A failed service is never allowed to stop its siblings. The same
+  rule is re-applied whenever a service dies later, so the status keeps
+  describing what is actually running rather than what once came up.
 - **Idle teardown**: a preview that goes untouched for `preview_idle_timeout`
   (default 30m) is torn down exactly as an explicit stop would tear it down —
   `teardown`, checkout, ports, state row. Any use of the preview through Forge

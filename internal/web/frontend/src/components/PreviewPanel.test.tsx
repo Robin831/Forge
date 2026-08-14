@@ -242,6 +242,66 @@ describe('PreviewPanel service rows', () => {
     expect(screen.queryByTestId('preview-panel-open')).not.toBeInTheDocument()
   })
 
+  // Forge-bci1: the incident this whole state exists for. A service that passed
+  // its readiness check and died seven minutes later used to keep reporting
+  // `healthy` with a growing uptime, and the panel kept offering its URL.
+  it('reports a service that exited after readiness, frozen at its lifetime', async () => {
+    previews = {
+      ...previews,
+      previews: [
+        preview({
+          status: 'degraded',
+          entry_url: '',
+          entry_note: 'entry service "web" is not serving: exited (exit 1, lived 7m31s)',
+          services: [
+            {
+              name: 'web',
+              port: 42001,
+              health: 'exited',
+              entry: true,
+              uptime_seconds: 451,
+              log_url: '/api/preview/Forge-abc1/log/web',
+              error: 'exited (exit 1, lived 7m31s)',
+              exited_at: '2026-08-06T10:00:00Z',
+              exit_code: 1,
+            },
+          ],
+        }),
+      ],
+    }
+    await mount()
+
+    const web = screen.getByTestId('preview-service-web')
+    expect(within(web).getByTestId('preview-service-health-web')).toHaveAttribute(
+      'data-health',
+      'exited',
+    )
+    // The lifetime is the fact that distinguishes this from "never came up", so
+    // it is shown rather than dashed out the way a failed service is.
+    expect(within(web).getByTestId('preview-service-lifetime-web')).toHaveTextContent(
+      'lived 7m 31s',
+    )
+    expect(screen.getByTestId('preview-service-issue-web')).toHaveTextContent(
+      'exited (exit 1, lived 7m31s)',
+    )
+
+    // No dead link, and a sentence where the button was.
+    expect(screen.queryByTestId('preview-panel-open')).not.toBeInTheDocument()
+    expect(screen.getByTestId('preview-panel-entry-note')).toHaveTextContent(
+      'No preview URL — entry service "web" is not serving: exited (exit 1, lived 7m31s)',
+    )
+  })
+
+  it('says nothing about the entry URL while a preview is still coming up', async () => {
+    previews = {
+      ...previews,
+      previews: [preview({ status: 'starting', entry_url: '' })],
+    }
+    await mount()
+
+    expect(screen.queryByTestId('preview-panel-entry-note')).not.toBeInTheDocument()
+  })
+
   it('invites a start, with no service table, when no preview is running', async () => {
     previews = { ...previews, previews: [] }
     await mount()

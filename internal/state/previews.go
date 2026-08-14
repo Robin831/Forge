@@ -27,12 +27,33 @@ const (
 )
 
 // Per-service health states, mirroring the manifest's starting → healthy |
-// failed machine.
+// failed machine, plus the one transition that happens after it: a service that
+// passed its readiness check and later died.
 const (
 	PreviewServiceStarting = "starting"
 	PreviewServiceHealthy  = "healthy"
 	PreviewServiceFailed   = "failed"
+	// PreviewServiceExited means the service became healthy and then its process
+	// exited. It is deliberately distinct from PreviewServiceFailed: "never came
+	// up" and "came up and then died" are different problems, and a service that
+	// served for seven minutes before dying is the case where the log holds the
+	// answer. Both count as not-serving everywhere the distinction does not
+	// matter (the preview status fold, the entry link).
+	PreviewServiceExited = "exited"
 )
+
+// PreviewServiceServing reports whether a service in this state is expected to
+// answer requests. Starting counts: ports are allocated up front and a preview
+// link is offered while it comes up, which is the behaviour a readiness check
+// exists to resolve. Failed and exited do not.
+func PreviewServiceServing(health string) bool {
+	switch health {
+	case PreviewServiceFailed, PreviewServiceExited:
+		return false
+	default:
+		return true
+	}
+}
 
 // PreviewService is one supervised process inside a preview, as persisted in
 // the previews.services JSON column.
@@ -41,7 +62,7 @@ type PreviewService struct {
 	Name string `json:"name"`
 	// Port is the port allocated to this service from the preview port range.
 	Port int `json:"port"`
-	// Health is one of PreviewServiceStarting/Healthy/Failed.
+	// Health is one of PreviewServiceStarting/Healthy/Failed/Exited.
 	Health string `json:"health"`
 	// PID is the process group leader's PID; 0 when the service never started
 	// or has already exited.
@@ -53,6 +74,38 @@ type PreviewService struct {
 	Entry bool `json:"entry,omitempty"`
 	// Error explains a failed service (health timeout, spawn error, early exit).
 	Error string `json:"error,omitempty"`
+	// StartedAt is when this service's process was spawned. Zero when it never
+	// started.
+	StartedAt time.Time `json:"started_at,omitzero"`
+	// ExitedAt is when its process was reaped. Zero while it is still running,
+	// which is what makes it the end of the uptime interval: a service that died
+	// reports the lifetime it had, not a clock that keeps counting.
+	ExitedAt time.Time `json:"exited_at,omitzero"`
+	// ExitCode is the process's exit status once it has exited. nil while it
+	// runs, and also for a process killed by a signal — which has no exit code,
+	// only a cause, and that is what Error carries.
+	ExitCode *int `json:"exit_code,omitempty"`
+}
+
+// Lifetime is how long this service's process ran: from its spawn to its exit,
+// or to now while it is still running. Zero when the service never started.
+//
+// It is the one place uptime is derived, so a dead service's number freezes at
+// its death on every surface rather than in whichever renderer remembered to
+// stop counting.
+func (s PreviewService) Lifetime(now time.Time) time.Duration {
+	if s.StartedAt.IsZero() {
+		return 0
+	}
+	end := now
+	if !s.ExitedAt.IsZero() {
+		end = s.ExitedAt
+	}
+	d := end.Sub(s.StartedAt)
+	if d < 0 {
+		return 0
+	}
+	return d
 }
 
 // Preview is the persisted record of one preview environment.

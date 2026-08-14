@@ -126,6 +126,44 @@ describe('PreviewsPage', () => {
     expect(within(other).queryByTestId('preview-row-open-Forge-def2')).not.toBeInTheDocument()
   })
 
+  // Forge-bci1: the fleet view has to agree with the bead panel about a service
+  // that came up and later died — a preview that reads healthy on one page and
+  // dead on the other is the same lie in a different place.
+  it('shows an exited service with its frozen lifetime and no dead link', async () => {
+    previews = {
+      ...previews,
+      previews: [
+        preview({
+          status: 'degraded',
+          entry_url: '',
+          entry_note: 'entry service "web" is not serving: exited (exit 1, lived 7m31s)',
+          services: [
+            {
+              name: 'web',
+              port: 42001,
+              health: 'exited',
+              entry: true,
+              uptime_seconds: 451,
+              log_url: '/api/preview/Forge-abc1/log/web',
+              error: 'exited (exit 1, lived 7m31s)',
+              exit_code: 1,
+            },
+          ],
+        }),
+      ],
+    }
+    await mount()
+
+    const row = screen.getByTestId('preview-row-Forge-abc1')
+    const service = within(row).getByTestId('preview-row-service-Forge-abc1-web')
+    expect(within(service).getByText('lived 7m 31s')).toBeInTheDocument()
+    expect(within(row).queryByTestId('preview-row-open-Forge-abc1')).not.toBeInTheDocument()
+    expect(within(row).getByTestId('preview-row-entry-note-Forge-abc1')).toHaveAttribute(
+      'title',
+      'entry service "web" is not serving: exited (exit 1, lived 7m31s)',
+    )
+  })
+
   it('counts down each preview to its idle deadline and keeps ticking', async () => {
     await mount()
     expect(screen.getByTestId('preview-row-countdown-Forge-abc1')).toHaveTextContent(

@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"github.com/Robin831/Forge/internal/ipc"
+	"github.com/Robin831/Forge/internal/kiln"
+	"github.com/Robin831/Forge/internal/state"
 	"github.com/spf13/cobra"
 )
 
@@ -288,25 +290,55 @@ func renderPreviewList(w io.Writer, list ipc.PreviewListResponse) {
 		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n",
 			p.BeadID,
 			p.Status,
-			orDash(p.EntryURL),
+			previewURLCell(p),
 			formatPreviewIdle(p.IdleRemainingSeconds),
 			orDash(p.ResourceNote),
 		)
 	}
 	tw.Flush()
 
-	// A failed service is why a preview reads as degraded or failed, and the
-	// error is the only part of it the operator can act on — so it gets its own
-	// lines rather than being truncated into the table.
+	// A service that failed or has since exited is why a preview reads as
+	// degraded or failed, and its error is the only part of it the operator can
+	// act on — so it gets its own line rather than being truncated into the
+	// table. An exited service always gets one, error text or not: "this was
+	// working and is now dead" is the fact worth printing.
 	for _, p := range list.Previews {
 		for _, svc := range p.Services {
-			if svc.Error != "" {
-				fmt.Fprintf(w, "  ! %s/%s: %s\n", p.BeadID, svc.Name, svc.Error)
+			if detail := previewServiceIssue(svc); detail != "" {
+				fmt.Fprintf(w, "  ! %s/%s: %s\n", p.BeadID, svc.Name, detail)
 			}
 		}
 	}
 
 	fmt.Fprintf(w, "\n%d preview(s)\n", len(list.Previews))
+}
+
+// previewURLCell renders the URL column. A preview with no link shows why it
+// has none — an entry service that failed or has exited — rather than a bare
+// dash, because a dash next to a `degraded` status invites the reading "the
+// daemon has not got round to it yet". A preview that is merely still coming up
+// has no note and keeps the dash.
+func previewURLCell(p ipc.PreviewInfo) string {
+	if p.EntryURL != "" {
+		return p.EntryURL
+	}
+	if p.EntryNote != "" {
+		return "(" + p.EntryNote + ")"
+	}
+	return "-"
+}
+
+// previewServiceIssue returns what is wrong with a service, or "" when nothing
+// is. An exited service reports its exit even when the daemon recorded no error
+// text; a healthy or starting one reports nothing.
+func previewServiceIssue(svc ipc.PreviewServiceInfo) string {
+	if svc.Error != "" {
+		return svc.Error
+	}
+	if svc.Health == state.PreviewServiceExited {
+		return kiln.FormatServiceExit(svc.ExitCode, nil, svc.ExitedAt.Sub(svc.StartedAt))
+	}
+	return ""
 }
 
 // formatPreviewIdle renders the countdown to the idle reaper. A nil countdown

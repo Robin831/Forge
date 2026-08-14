@@ -1,4 +1,4 @@
-import { CircleCheck, Loader2, XCircle } from 'lucide-react'
+import { CircleCheck, Loader2, PowerOff, XCircle } from 'lucide-react'
 import type { PreviewServiceHealth } from '../api/previews'
 
 interface HealthStyle {
@@ -20,6 +20,13 @@ const HEALTH: Record<string, HealthStyle> = {
   failed: {
     classes: 'border-red-500/40 bg-red-500/10 text-red-300',
     Icon: XCircle,
+  },
+  // A service that came up and later died. Amber rather than red, and its own
+  // icon: it is not the same event as "never started", and the difference is
+  // what tells an operator whether to read the log's first lines or its last.
+  exited: {
+    classes: 'border-amber-500/40 bg-amber-500/10 text-amber-300',
+    Icon: PowerOff,
   },
 }
 

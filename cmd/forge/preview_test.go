@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Robin831/Forge/internal/ipc"
+	"github.com/Robin831/Forge/internal/state"
 )
 
 func idlePtr(v int64) *int64 { return &v }
@@ -133,5 +135,113 @@ func TestRenderPreviewList_ServiceError(t *testing.T) {
 	}
 	if strings.Contains(got, "Forge-abc1/web") {
 		t.Errorf("healthy services must not be listed as errors:\n%s", got)
+	}
+}
+
+// Forge-bci1: a service that came up and later died reads as `exited (exit 1,
+// lived 7m31s)` here, and the URL column says why it has no link instead of
+// showing a bare dash next to a `degraded` status.
+func TestRenderPreviewList_ExitedService(t *testing.T) {
+	started := time.Now().Add(-10 * time.Minute)
+	code := 1
+	var buf bytes.Buffer
+	renderPreviewList(&buf, ipc.PreviewListResponse{
+		Enabled: true,
+		Previews: []ipc.PreviewInfo{
+			{
+				BeadID:    "Forge-abc1",
+				Status:    "degraded",
+				EntryNote: `entry service "client" is not serving: exited (exit 1, lived 7m31s)`,
+				Services: []ipc.PreviewServiceInfo{
+					{Name: "api", Port: 41001, Health: state.PreviewServiceHealthy},
+					{
+						Name: "client", Port: 41000, Entry: true,
+						Health:    state.PreviewServiceExited,
+						Error:     "exited (exit 1, lived 7m31s)",
+						StartedAt: started,
+						ExitedAt:  started.Add(7*time.Minute + 31*time.Second),
+						ExitCode:  &code,
+					},
+				},
+				ResourceNote: "2 services, ports 41000, 41001",
+			},
+		},
+	})
+
+	got := buf.String()
+	for _, want := range []string{
+		"Forge-abc1/client: exited (exit 1, lived 7m31s)",
+		`entry service "client" is not serving`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("output missing %q:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "Forge-abc1/api") {
+		t.Errorf("a healthy service must not be listed as an issue:\n%s", got)
+	}
+}
+
+// An exit the daemon recorded without error text still gets a line: "this was
+// working and is now dead" is the fact worth printing, with or without prose.
+func TestPreviewServiceIssue(t *testing.T) {
+	started := time.Now().Add(-time.Hour)
+	code := 2
+	tests := []struct {
+		name string
+		svc  ipc.PreviewServiceInfo
+		want string
+	}{
+		{name: "healthy", svc: ipc.PreviewServiceInfo{Health: state.PreviewServiceHealthy}},
+		{name: "starting", svc: ipc.PreviewServiceInfo{Health: state.PreviewServiceStarting}},
+		{
+			name: "failed keeps its recorded error",
+			svc:  ipc.PreviewServiceInfo{Health: state.PreviewServiceFailed, Error: "health check timed out"},
+			want: "health check timed out",
+		},
+		{
+			name: "exited without prose is rendered from its fields",
+			svc: ipc.PreviewServiceInfo{
+				Health:    state.PreviewServiceExited,
+				StartedAt: started,
+				ExitedAt:  started.Add(90 * time.Second),
+				ExitCode:  &code,
+			},
+			want: "exited (exit 2, lived 1m30s)",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := previewServiceIssue(tt.svc); got != tt.want {
+				t.Errorf("previewServiceIssue = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestPreviewURLCell(t *testing.T) {
+	tests := []struct {
+		name string
+		info ipc.PreviewInfo
+		want string
+	}{
+		{name: "still coming up shows a dash", want: "-"},
+		{
+			name: "a live preview shows its link",
+			info: ipc.PreviewInfo{EntryURL: "http://localhost:41000"},
+			want: "http://localhost:41000",
+		},
+		{
+			name: "a withheld link shows why",
+			info: ipc.PreviewInfo{EntryNote: "entry service \"web\" is not serving: exited (exit 1)"},
+			want: "(entry service \"web\" is not serving: exited (exit 1))",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := previewURLCell(tt.info); got != tt.want {
+				t.Errorf("previewURLCell = %q, want %q", got, tt.want)
+			}
+		})
 	}
 }

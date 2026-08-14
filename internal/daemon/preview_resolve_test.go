@@ -141,6 +141,35 @@ func TestHandlePreviewResolve_Refusals(t *testing.T) {
 			wantReason: ipc.PreviewResolveNoPort,
 			wantBead:   "Forge-abc1",
 		},
+		{
+			// Forge-bci1: the preview is still degraded (a sibling survives), so
+			// it is not "stopped" — but forwarding to the dead entry service's
+			// port would answer with a connection error the browser reports as a
+			// network fault.
+			name:   "entry service exited after becoming healthy",
+			beadID: "Forge-abc1",
+			status: state.PreviewDegraded,
+			services: []state.PreviewService{
+				{Name: "web", Port: 1, Entry: true, Health: state.PreviewServiceExited},
+				{Name: "api", Port: 2, Health: state.PreviewServiceHealthy},
+			},
+			label:      "forge-abc1",
+			wantReason: ipc.PreviewResolveNotServing,
+			wantBead:   "Forge-abc1",
+		},
+		{
+			name:   "named service exited after becoming healthy",
+			beadID: "Forge-abc1",
+			status: state.PreviewDegraded,
+			services: []state.PreviewService{
+				{Name: "web", Port: 1, Entry: true, Health: state.PreviewServiceHealthy},
+				{Name: "api", Port: 2, Health: state.PreviewServiceExited},
+			},
+			label:      "forge-abc1",
+			service:    "api",
+			wantReason: ipc.PreviewResolveNotServing,
+			wantBead:   "Forge-abc1",
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
