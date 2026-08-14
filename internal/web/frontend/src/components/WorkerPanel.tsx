@@ -1,13 +1,17 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router'
 import {
+  AlertTriangle,
   ChevronDown,
   ChevronRight,
+  CircleCheck,
   Maximize2,
   Pause,
   Play,
   Skull,
   Terminal,
+  XCircle,
+  type LucideIcon,
 } from 'lucide-react'
 import {
   actions,
@@ -77,6 +81,21 @@ export function finishedStatusClass(status: string): string {
   if (status === 'done') return 'text-sky-300'
   if (status === 'partial') return 'text-amber-200'
   return 'text-red-300'
+}
+
+// finishedBanner picks the tint and icon for the banner strip across the top
+// of a lingering frozen panel. The strip exists because the container-level
+// dimming is invisible on the dark theme at a glance — the banner is the one
+// unmissable "this panel is a record, not a live worker" marker, so it uses
+// the same three-way outcome split as finishedStatusClass.
+export function finishedBanner(status: string): { classes: string; Icon: LucideIcon } {
+  if (status === 'done') {
+    return { classes: 'border-sky-500/40 bg-sky-500/10 text-sky-300', Icon: CircleCheck }
+  }
+  if (status === 'partial') {
+    return { classes: 'border-amber-500/40 bg-amber-500/10 text-amber-200', Icon: AlertTriangle }
+  }
+  return { classes: 'border-red-500/40 bg-red-500/10 text-red-300', Icon: XCircle }
 }
 
 // formatElapsed renders the wall-clock time since a worker started as a compact
@@ -256,10 +275,27 @@ export default function WorkerPanel({
         isPaused
           ? 'border-amber-500/50 bg-amber-950/10'
           : isFinished
-            ? 'border-slate-800/80 bg-slate-900/40 opacity-80'
+            ? // saturate-50 does the visual separation on the dark theme —
+              // the opacity drop alone was imperceptible next to a live panel.
+              'border-slate-800/80 bg-slate-900/40 opacity-80 saturate-50'
             : 'border-slate-800 bg-slate-900/60'
       }`}
     >
+      {isFinished && (() => {
+        const { classes, Icon } = finishedBanner(worker.status)
+        return (
+          <div
+            data-testid={`worker-panel-finished-banner-${worker.id}`}
+            className={`flex items-center gap-1.5 border-b px-3 py-1 text-[11px] font-semibold uppercase tracking-wide ${classes}`}
+          >
+            <Icon size={12} aria-hidden />
+            <span>
+              Finished — {worker.status}
+              {worker.completed_at ? <> · {relativeTime(worker.completed_at)}</> : null}
+            </span>
+          </div>
+        )
+      })()}
       <header
         className={`flex items-center gap-2 border-b px-3 py-2 ${
           isPaused ? 'border-amber-500/30' : 'border-slate-800'

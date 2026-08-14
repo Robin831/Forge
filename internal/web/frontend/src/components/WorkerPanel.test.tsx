@@ -304,3 +304,41 @@ describe('finishedStatusClass', () => {
     expect(finishedStatusClass('timeout')).toBe('text-red-300')
   })
 })
+
+describe('a finished panel', () => {
+  it('carries the outcome banner and desaturates the container', () => {
+    renderPanel(
+      worker({ id: 'w2', status: 'done', completed_at: '2024-01-01T00:05:00Z' }),
+    )
+    const banner = screen.getByTestId('worker-panel-finished-banner-w2')
+    expect(banner).toHaveTextContent(/Finished — done/)
+    expect(banner.className).toContain('text-sky-300')
+
+    const panel = screen.getByTestId('worker-panel-w2')
+    expect(panel.className).toContain('saturate-50')
+  })
+
+  it('tints the banner amber for a partial run and red for a failed one', () => {
+    renderPanel(
+      worker({ id: 'w3', status: 'partial', completed_at: '2024-01-01T00:05:00Z' }),
+    )
+    expect(
+      screen.getByTestId('worker-panel-finished-banner-w3').className,
+    ).toContain('text-amber-200')
+
+    renderPanel(
+      worker({ id: 'w4', status: 'failed', completed_at: '2024-01-01T00:05:00Z' }),
+    )
+    expect(
+      screen.getByTestId('worker-panel-finished-banner-w4').className,
+    ).toContain('text-red-300')
+  })
+
+  it('shows no banner and no desaturation while the worker is live', () => {
+    renderPanel(worker({ id: 'w5', status: 'running' }))
+    expect(
+      screen.queryByTestId('worker-panel-finished-banner-w5'),
+    ).not.toBeInTheDocument()
+    expect(screen.getByTestId('worker-panel-w5').className).not.toContain('saturate-50')
+  })
+})
