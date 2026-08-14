@@ -182,6 +182,50 @@ func TestRenderPreviewList_ExitedService(t *testing.T) {
 	}
 }
 
+// TestRenderPreviewList_StripsTerminalEscapes: everything a preview row prints
+// that Forge did not write — the manifest's service names, a process's failure
+// text, the daemon's notes assembled out of both — goes through termtext.Line
+// first. A manifest is merged code from a previewed repo, so an escape sequence
+// in one would otherwise be free to rewrite the operator's terminal: overwrite
+// the status column, spoof a URL, or set the window title.
+func TestRenderPreviewList_StripsTerminalEscapes(t *testing.T) {
+	var buf bytes.Buffer
+	renderPreviewList(&buf, ipc.PreviewListResponse{
+		Enabled: true,
+		Previews: []ipc.PreviewInfo{
+			{
+				BeadID:    "Forge-abc1",
+				Status:    "degraded",
+				EntryNote: "entry service \x1b[31m\"web\"\x1b[0m is not serving",
+				Services: []ipc.PreviewServiceInfo{
+					{
+						Name:   "we\x1b[2Kb",
+						Port:   41000,
+						Entry:  true,
+						Health: state.PreviewServiceFailed,
+						Error:  "spawn failed: \x1b]0;pwn\x07npm run dev",
+					},
+				},
+				ResourceNote: "1 service, port \x1b[1m41000",
+			},
+		},
+	})
+
+	got := buf.String()
+	if strings.ContainsRune(got, 0x1b) {
+		t.Errorf("escape sequences reached the terminal:\n%q", got)
+	}
+	for _, want := range []string{
+		`entry service "web" is not serving`,
+		"Forge-abc1/web: spawn failed: npm run dev",
+		"1 service, port 41000",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("output missing %q:\n%s", want, got)
+		}
+	}
+}
+
 // An exit the daemon recorded without error text still gets a line: "this was
 // working and is now dead" is the fact worth printing, with or without prose.
 func TestPreviewServiceIssue(t *testing.T) {
@@ -209,6 +253,20 @@ func TestPreviewServiceIssue(t *testing.T) {
 			},
 			want: "exited (exit 2, lived 1m30s)",
 		},
+		{
+			// A record with an exit but no spawn time (a version-skewed row)
+			// has no interval to report. Subtracting anyway would measure from
+			// the zero time and print `lived 17700000h` — an invented
+			// measurement, which is exactly what state.PreviewService.Lifetime
+			// exists to refuse.
+			name: "exited with no spawn time reports no lifetime",
+			svc: ipc.PreviewServiceInfo{
+				Health:   state.PreviewServiceExited,
+				ExitedAt: started.Add(90 * time.Second),
+				ExitCode: &code,
+			},
+			want: "exited (exit 2)",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -235,6 +293,15 @@ func TestPreviewURLCell(t *testing.T) {
 			name: "a withheld link shows why",
 			info: ipc.PreviewInfo{EntryNote: "entry service \"web\" is not serving: exited (exit 1)"},
 			want: "(entry service \"web\" is not serving: exited (exit 1))",
+		},
+		{
+			// The note is built from a manifest's service name and a process's
+			// own failure text, neither of which Forge wrote — so an escape
+			// sequence in either must not reach the terminal, where it could
+			// rewrite the status and URL printed around it.
+			name: "escape sequences in the note are stripped",
+			info: ipc.PreviewInfo{EntryNote: "entry service \x1b[2K\x1b]0;pwn\x07\"web\" is not serving"},
+			want: "(entry service \"web\" is not serving)",
 		},
 	}
 	for _, tt := range tests {

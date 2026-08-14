@@ -252,6 +252,12 @@ func (s *Server) previewSummary(r *http.Request, p ipc.PreviewInfo, publicHost s
 //
 // A failed service reports 0 rather than a number that would read as "it has
 // been serving for ten minutes".
+//
+// The interval itself comes from state.PreviewService.Lifetime — the one place
+// it is derived, so this renderer and `forge preview list` cannot disagree about
+// how long a dead service lived. All this adds is the two things the persisted
+// record cannot know: which health means "report nothing", and the pre-timestamp
+// fallback.
 func serviceUptimeSeconds(svc ipc.PreviewServiceInfo, createdAt, now time.Time) int64 {
 	if svc.Health == state.PreviewServiceFailed {
 		return 0
@@ -260,18 +266,8 @@ func serviceUptimeSeconds(svc ipc.PreviewServiceInfo, createdAt, now time.Time) 
 	if startedAt.IsZero() {
 		startedAt = createdAt
 	}
-	if startedAt.IsZero() {
-		return 0
-	}
-	end := now
-	if !svc.ExitedAt.IsZero() {
-		end = svc.ExitedAt
-	}
-	secs := int64(end.Sub(startedAt) / time.Second)
-	if secs < 0 {
-		return 0
-	}
-	return secs
+	lifetime := state.PreviewService{StartedAt: startedAt, ExitedAt: svc.ExitedAt}.Lifetime(now)
+	return int64(lifetime / time.Second)
 }
 
 // previewLogPath is the tail endpoint for one service's log.
@@ -306,6 +302,14 @@ func previewLogPath(beadID, service string) string {
 // That form's scheme is always http: preview services bind a plain port and are
 // not behind Hearth's TLS.
 func (s *Server) previewEntryURL(r *http.Request, p ipc.PreviewInfo, publicHost string) string {
+	// A dead entry service withholds the link in both forms. The port form does
+	// it through previewEntryPort, but the host-based form is built from the bead
+	// id alone and never looks at a port — so this check is the only thing
+	// stopping a proxy deployment from rendering an Open button (and minting a
+	// token for it) beside the note explaining why there is no link.
+	if previewEntryDown(p.Services) {
+		return ""
+	}
 	opts := kiln.EntryURLOptions{
 		BeadID: p.BeadID,
 		Host:   previewHost(r, publicHost),
@@ -341,19 +345,39 @@ func (s *Server) previewEntryURL(r *http.Request, p ipc.PreviewInfo, publicHost 
 // access token), so this rule has to hold in both places or the browser would
 // be handed the dead link the CLI correctly withholds.
 func previewEntryPort(services []ipc.PreviewServiceInfo) int {
-	port := 0
+	svc, ok := previewEntryService(services)
+	if !ok || !state.PreviewServiceServing(svc.Health) {
+		return 0
+	}
+	return svc.Port
+}
+
+// previewEntryService picks the service the link points at, health aside: the
+// one flagged as the manifest's entry, else the first with a port. It is the
+// daemon's previewEntryService over the IPC payload — deliberately the same
+// order, including the part that reads as an omission: the fallback never skips
+// past a dead service to a healthy sibling, because a link that works and serves
+// the wrong application is worse than no link.
+func previewEntryService(services []ipc.PreviewServiceInfo) (ipc.PreviewServiceInfo, bool) {
 	for _, svc := range services {
 		if svc.Entry && svc.Port > 0 {
-			if !state.PreviewServiceServing(svc.Health) {
-				return 0
-			}
-			return svc.Port
-		}
-		if port == 0 && svc.Port > 0 && state.PreviewServiceServing(svc.Health) {
-			port = svc.Port
+			return svc, true
 		}
 	}
-	return port
+	for _, svc := range services {
+		if svc.Port > 0 {
+			return svc, true
+		}
+	}
+	return ipc.PreviewServiceInfo{}, false
+}
+
+// previewEntryDown reports that this preview has an entry service and it is not
+// serving — the condition on which the link is withheld and EntryNote explains
+// why, in either addressing form.
+func previewEntryDown(services []ipc.PreviewServiceInfo) bool {
+	svc, ok := previewEntryService(services)
+	return ok && !state.PreviewServiceServing(svc.Health)
 }
 
 // previewHost resolves the hostname preview links point at: the configured

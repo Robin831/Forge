@@ -576,12 +576,74 @@ func TestPreviewEntryURL(t *testing.T) {
 			rec:      state.Preview{BeadID: "Forge-abc1"},
 			want:     "",
 		},
+		{
+			// The host-based form is built from the bead id alone, so nothing
+			// about the port suppression reaches it: without an explicit check
+			// a proxy deployment printed a preview hostname beside the note
+			// explaining why there was no link.
+			name: "proxy base: an exited entry service withholds the hostname link too",
+			settings: config.SettingsConfig{
+				PreviewPublicHost: "forge.wg",
+				PreviewProxyBase:  "preview.example.com",
+			},
+			rec: state.Preview{
+				BeadID: "Forge-abc1",
+				Services: []state.PreviewService{
+					{Name: "api", Port: 4310, Health: state.PreviewServiceHealthy},
+					{Name: "web", Port: 4311, Entry: true, Health: state.PreviewServiceExited},
+				},
+			},
+			want: "",
+		},
+		{
+			name: "proxy base: a failed entry service withholds the hostname link",
+			settings: config.SettingsConfig{
+				PreviewProxyBase: "preview.example.com",
+			},
+			rec: state.Preview{
+				BeadID: "Forge-abc1",
+				Services: []state.PreviewService{
+					{Name: "web", Port: 4311, Entry: true, Health: state.PreviewServiceFailed},
+				},
+			},
+			want: "",
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got := previewEntryURL(&config.Config{Settings: tt.settings}, tt.rec)
 			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+// TestPreviewEntryURLAndNoteAgree pins the contract on ipc.PreviewInfo.EntryNote:
+// the note is set exactly when the link was withheld because the entry service
+// is not serving — in *either* addressing form. A client that renders "Open"
+// from EntryURL and the reason from EntryNote would otherwise show both at once,
+// which is how a dead preview kept an Open button in proxy deployments.
+func TestPreviewEntryURLAndNoteAgree(t *testing.T) {
+	dead := state.Preview{
+		BeadID: "Forge-abc1",
+		Status: state.PreviewDegraded,
+		Services: []state.PreviewService{
+			{Name: "api", Port: 4310, Health: state.PreviewServiceHealthy},
+			{Name: "web", Port: 4311, Entry: true, Health: state.PreviewServiceExited,
+				Error: "exited (exit 1, lived 7m31s)"},
+		},
+	}
+	settings := map[string]config.SettingsConfig{
+		"direct": {PreviewPublicHost: "forge.wg"},
+		"proxy":  {PreviewPublicHost: "forge.wg", PreviewProxyBase: "preview.example.com"},
+	}
+
+	for name, s := range settings {
+		t.Run(name, func(t *testing.T) {
+			cfg := &config.Config{Settings: s}
+			info := previewInfo(dead, previewEntryURL(cfg, dead), 0, time.Now())
+			assert.Empty(t, info.EntryURL, "a dead entry service hands out no link")
+			assert.NotEmpty(t, info.EntryNote, "and says why instead")
 		})
 	}
 }

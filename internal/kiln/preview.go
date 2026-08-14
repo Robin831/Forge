@@ -405,6 +405,15 @@ func (p *Preview) watchServiceExits() {
 // degraded on its way out would be noise on every stop. A service that never
 // became healthy is left alone too — its readiness check already had the final
 // word, and re-reporting the same failure under a second name helps nobody.
+//
+// The demote decision, the status fold and the store write all happen under one
+// hold of p.mu, and that is the ordering against teardown rather than an
+// incidental tidiness: Stop takes p.mu to set `stopped`, so a stop cannot begin
+// between "this preview is still live" and the upsert that assumes it. Deciding
+// under the lock and writing after it let a descheduled watcher re-create, with
+// UpsertPreview, the row Manager.teardown had already deleted — a phantom
+// preview served by `forge preview list` until the next daemon restart
+// reconciled it away.
 func (p *Preview) handleServiceExit(i int) {
 	svc := p.serviceAt(i)
 	if svc == nil || svc.proc == nil {
@@ -427,27 +436,23 @@ func (p *Preview) handleServiceExit(i int) {
 	}
 	intentional := p.stopped || (p.procCtx != nil && p.procCtx.Err() != nil)
 	demote := !intentional && svc.health == state.PreviewServiceHealthy
-	lifetime := time.Duration(0)
-	if !svc.startedAt.IsZero() {
-		lifetime = svc.exitedAt.Sub(svc.startedAt)
-	}
+	lifetime := state.PreviewService{StartedAt: svc.startedAt, ExitedAt: svc.exitedAt}.Lifetime(exitedAt)
 	detail := FormatServiceExit(svc.exitCode, exitErr, lifetime)
-	if demote {
-		svc.health = state.PreviewServiceExited
-		svc.failure = detail
+	if !demote {
+		p.mu.Unlock()
+		return
 	}
+	svc.health = state.PreviewServiceExited
+	svc.failure = detail
+	status := p.deriveStatusLocked()
+	p.status = status
+	persistErr := p.runtime.persistRecord(p.recordLocked())
 	name, entry, startedAt := svc.name, svc.entry, svc.startedAt
 	p.mu.Unlock()
 
-	if !demote {
-		return
-	}
-
-	status := p.deriveStatus()
-	p.setStatus(status)
-	if err := p.runtime.persist(p); err != nil {
+	if persistErr != nil {
 		p.runtime.logger.Warn("kiln: persisting a preview service exit failed",
-			"bead", p.BeadID, "service", name, "error", err)
+			"bead", p.BeadID, "service", name, "error", persistErr)
 	}
 	p.runtime.logger.Warn("kiln: preview service exited after becoming healthy",
 		"bead", p.BeadID, "service", name, "entry", entry,
@@ -594,6 +599,13 @@ func (p *Preview) EntryURL() string {
 func (p *Preview) Record() state.Preview {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	return p.recordLocked()
+}
+
+// recordLocked builds the snapshot with p.mu already held, so a caller that has
+// to write it without releasing the lock (handleServiceExit, which is ordered
+// against teardown by that hold) can.
+func (p *Preview) recordLocked() state.Preview {
 	rec := state.Preview{
 		BeadID:       p.BeadID,
 		Anvil:        p.Anvil,
@@ -644,8 +656,18 @@ func (r *Runtime) persist(p *Preview) error {
 	if r.store == nil {
 		return nil
 	}
-	if err := r.store.UpsertPreview(p.Record()); err != nil {
-		return fmt.Errorf("kiln: persisting preview %s: %w", p.BeadID, err)
+	return r.persistRecord(p.Record())
+}
+
+// persistRecord writes an already-built snapshot. It exists for the one caller
+// that must take its snapshot and write it under a single hold of p.mu
+// (handleServiceExit); everything else goes through persist.
+func (r *Runtime) persistRecord(rec state.Preview) error {
+	if r.store == nil {
+		return nil
+	}
+	if err := r.store.UpsertPreview(rec); err != nil {
+		return fmt.Errorf("kiln: persisting preview %s: %w", rec.BeadID, err)
 	}
 	return nil
 }
@@ -659,6 +681,11 @@ func (r *Runtime) persist(p *Preview) error {
 func (p *Preview) deriveStatus() string {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	return p.deriveStatusLocked()
+}
+
+// deriveStatusLocked is deriveStatus with p.mu already held.
+func (p *Preview) deriveStatusLocked() string {
 	healthy, failed := 0, 0
 	for _, svc := range p.services {
 		switch svc.health {

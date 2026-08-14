@@ -756,10 +756,8 @@ func (d *Daemon) handlePreviewResolve(p ipc.PreviewResolvePayload) ipc.Response 
 		out.Reason = ipc.PreviewResolveNotServing
 		return okResponse(out)
 	}
-	port := target.Port
-
 	out.Host = previewDialHost(d.cfg.Load())
-	out.Port = port
+	out.Port = target.Port
 	out.Found = true
 	// Proxied traffic is activity — the whole point of resolving through the
 	// daemon rather than reading the ports out of the previews payload.
@@ -856,7 +854,18 @@ func previewInfo(rec state.Preview, entryURL string, idle time.Duration, now tim
 // which has the secret and knows whether the caller's session cookie already
 // reaches the preview host; the token-carrying link is built there (see
 // internal/web.previewEntryURL) on top of this same builder.
+//
+// A dead entry service withholds the link in *both* forms. The port form does it
+// by way of previewEntryPort returning 0, but the host-based form is assembled
+// from the bead id alone and ignores the port entirely — so without the check
+// here a proxy deployment would keep printing a preview hostname next to the
+// EntryNote explaining why there is no link, which is the contract on
+// ipc.PreviewInfo.EntryNote broken in exactly the deployment mode the note was
+// built for.
 func previewEntryURL(cfg *config.Config, rec state.Preview) string {
+	if previewEntryDown(rec) {
+		return ""
+	}
 	opts := kiln.EntryURLOptions{BeadID: rec.BeadID, Port: previewEntryPort(rec)}
 	if cfg != nil {
 		opts.ProxyBase = cfg.Settings.ResolvedPreviewProxyBase()
@@ -903,15 +912,29 @@ func previewEntryPort(rec state.Preview) int {
 	return svc.Port
 }
 
+// previewEntryDown reports that the preview has an entry service and that
+// service is not serving — it failed its readiness check, or became healthy and
+// later exited.
+//
+// It is the one condition behind both halves of a withheld link: previewEntryURL
+// gives no URL and previewEntryNote gives the sentence saying why, which is what
+// makes EntryNote's "set exactly when EntryURL was suppressed for this reason"
+// true rather than aspirational. A preview whose ports are not allocated yet is
+// not "down": it has no entry service to be down.
+func previewEntryDown(rec state.Preview) bool {
+	svc, ok := previewEntryService(rec)
+	return ok && !state.PreviewServiceServing(svc.Health)
+}
+
 // previewEntryNote explains a withheld entry URL, and is empty whenever there is
 // nothing to explain — including when the URL is missing simply because ports
 // have not been allocated yet, which is a preview still starting rather than a
 // preview with a problem.
 func previewEntryNote(rec state.Preview) string {
-	svc, ok := previewEntryService(rec)
-	if !ok || state.PreviewServiceServing(svc.Health) {
+	if !previewEntryDown(rec) {
 		return ""
 	}
+	svc, _ := previewEntryService(rec)
 	detail := svc.Error
 	if detail == "" {
 		detail = svc.Health

@@ -76,8 +76,14 @@ type PreviewInfo struct {
 	// tunnel problem rather than as the service being gone.
 	EntryNote string `json:"entry_note,omitempty"`
 	// Port is the entry service's port — the one EntryURL points at — or the
-	// first allocated port when no service is marked as the entry. 0 while
-	// ports are still being allocated.
+	// first allocated port when no service is marked as the entry.
+	//
+	// 0 means there is no port to point at, which covers two cases: ports have
+	// not been allocated yet (a preview still coming up), or the entry service
+	// is not serving — it failed its readiness check, or became healthy and
+	// later exited. EntryNote tells them apart: it is set for the second and
+	// empty for the first, so "0 with no note" is the only reading of Port that
+	// means "wait for it".
 	Port int `json:"port,omitempty"`
 	// IdleRemainingSeconds is how many seconds are left before the idle reaper
 	// tears this preview down, counted from LastActiveAt. It is null when the

@@ -13,6 +13,7 @@ import (
 	"github.com/Robin831/Forge/internal/ipc"
 	"github.com/Robin831/Forge/internal/kiln"
 	"github.com/Robin831/Forge/internal/state"
+	"github.com/Robin831/Forge/internal/termtext"
 	"github.com/spf13/cobra"
 )
 
@@ -292,7 +293,7 @@ func renderPreviewList(w io.Writer, list ipc.PreviewListResponse) {
 			p.Status,
 			previewURLCell(p),
 			formatPreviewIdle(p.IdleRemainingSeconds),
-			orDash(p.ResourceNote),
+			orDash(termtext.Line(p.ResourceNote)),
 		)
 	}
 	tw.Flush()
@@ -305,7 +306,8 @@ func renderPreviewList(w io.Writer, list ipc.PreviewListResponse) {
 	for _, p := range list.Previews {
 		for _, svc := range p.Services {
 			if detail := previewServiceIssue(svc); detail != "" {
-				fmt.Fprintf(w, "  ! %s/%s: %s\n", p.BeadID, svc.Name, detail)
+				fmt.Fprintf(w, "  ! %s/%s: %s\n",
+					p.BeadID, termtext.Line(svc.Name), termtext.Line(detail))
 			}
 		}
 	}
@@ -318,12 +320,18 @@ func renderPreviewList(w io.Writer, list ipc.PreviewListResponse) {
 // dash, because a dash next to a `degraded` status invites the reading "the
 // daemon has not got round to it yet". A preview that is merely still coming up
 // has no note and keeps the dash.
+//
+// The note is assembled by the daemon out of a manifest's service name and a
+// process's failure text — neither of which Forge wrote — so it goes through
+// termtext.Line before it reaches a terminal: an escape sequence in a manifest
+// would otherwise be free to rewrite the row it is printed in, status and URL
+// included.
 func previewURLCell(p ipc.PreviewInfo) string {
 	if p.EntryURL != "" {
 		return p.EntryURL
 	}
-	if p.EntryNote != "" {
-		return "(" + p.EntryNote + ")"
+	if note := termtext.Line(p.EntryNote); note != "" {
+		return "(" + note + ")"
 	}
 	return "-"
 }
@@ -331,12 +339,25 @@ func previewURLCell(p ipc.PreviewInfo) string {
 // previewServiceIssue returns what is wrong with a service, or "" when nothing
 // is. An exited service reports its exit even when the daemon recorded no error
 // text; a healthy or starting one reports nothing.
+//
+// The lifetime goes through state.PreviewService.Lifetime rather than a
+// subtraction of its own: that is the one place the interval becomes a duration,
+// and it carries the guards a renderer keeps forgetting — a record with no spawn
+// time reports no lifetime instead of a span measured from the zero time, which
+// FormatServiceExit would faithfully render as "lived 17700000h".
+//
+// The caller strips the result before printing it (see previewURLCell): it can
+// carry a spawn error quoting a manifest's command line.
 func previewServiceIssue(svc ipc.PreviewServiceInfo) string {
 	if svc.Error != "" {
 		return svc.Error
 	}
 	if svc.Health == state.PreviewServiceExited {
-		return kiln.FormatServiceExit(svc.ExitCode, nil, svc.ExitedAt.Sub(svc.StartedAt))
+		lifetime := state.PreviewService{
+			StartedAt: svc.StartedAt,
+			ExitedAt:  svc.ExitedAt,
+		}.Lifetime(time.Now())
+		return kiln.FormatServiceExit(svc.ExitCode, nil, lifetime)
 	}
 	return ""
 }

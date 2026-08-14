@@ -237,6 +237,81 @@ func TestCancellingTheLifetimeContextKillsTheService(t *testing.T) {
 	}
 }
 
+// TestExitCodeReportsAChosenStatus: a process that exited on its own terms has
+// an exit status, and that status is what every surface prints.
+func TestExitCodeReportsAChosenStatus(t *testing.T) {
+	fakeHome(t)
+
+	proc, err := StartService(context.Background(), ServiceSpec{
+		Service:      Service{Name: "api", Command: "exit 3"},
+		BeadID:       "Forge-code",
+		WorktreePath: t.TempDir(),
+		Env:          os.Environ(),
+	})
+	if err != nil {
+		t.Fatalf("StartService: %v", err)
+	}
+	<-proc.Done()
+
+	code, ok := proc.ExitCode()
+	if !ok || code != 3 {
+		t.Fatalf("ExitCode() = (%d, %v), want (3, true)", code, ok)
+	}
+}
+
+// TestExitCodeRefusesToInventOneForASignalledProcess is the guard's whole
+// reason for existing: exec reports -1 for a process killed by a signal, and
+// -1 is not a status the program chose. Reporting it anyway would put
+// `exited (exit -1, ...)` on every surface — a number that reads as the
+// service's own decision — instead of the signal FormatExitCause names.
+func TestExitCodeRefusesToInventOneForASignalledProcess(t *testing.T) {
+	fakeHome(t)
+
+	proc, err := StartService(context.Background(), ServiceSpec{
+		Service:      Service{Name: "api", Command: "sleep 300"},
+		BeadID:       "Forge-signal",
+		WorktreePath: t.TempDir(),
+		Env:          os.Environ(),
+	})
+	if err != nil {
+		t.Fatalf("StartService: %v", err)
+	}
+
+	// Still running: there is no status to report yet, which is the same
+	// refusal for a different reason.
+	if code, ok := proc.ExitCode(); ok {
+		t.Errorf("ExitCode() = (%d, true) while running, want no code", code)
+	}
+
+	if err := proc.Stop(2 * time.Second); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	<-proc.Done()
+
+	exitErr := proc.ExitErr()
+	if exitErr == nil {
+		t.Fatal("ExitErr = nil after a signalled death, want the signal")
+	}
+	if code, ok := proc.ExitCode(); ok {
+		t.Fatalf("ExitCode() = (%d, true) for a signalled process, want no code", code)
+	}
+
+	// The extraction and the renderer, end to end: nil code means the cause
+	// comes from the wait error rather than an invented status.
+	if got := FormatServiceExit(nil, exitErr, 90*time.Second); !strings.Contains(got, "signal") {
+		t.Errorf("FormatServiceExit = %q, want the signal named", got)
+	}
+}
+
+// TestExitCodeOnANilProcess: the accessor is called from the exit watcher, which
+// runs against services that may never have spawned.
+func TestExitCodeOnANilProcess(t *testing.T) {
+	var proc *ServiceProcess
+	if code, ok := proc.ExitCode(); ok {
+		t.Errorf("ExitCode() = (%d, true) on a nil process, want no code", code)
+	}
+}
+
 func TestServiceLogPath(t *testing.T) {
 	home := fakeHome(t)
 
