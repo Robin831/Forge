@@ -327,8 +327,15 @@ func TestCheckAnvilHealth_NotifiesOnWedgeAndRecovery(t *testing.T) {
 
 	cfg := d.cfg.Load()
 	d.checkAnvilHealth(context.Background(), cfg)
+	// Drain the dispatcher before triggering the next transition: each delivery
+	// is its own goroutine, so without this the wedge POST and the recovery
+	// POST race and the recorded order flips on a slow runner. In production
+	// the two events are separated by whole poll intervals; the back-to-back
+	// calls are a test artifact, so the ordering must be enforced here.
+	disp.Wait()
 	// A second poll while still wedged must not re-notify.
 	d.checkAnvilHealth(context.Background(), cfg)
+	disp.Wait()
 	runner.set(`[]`, nil)
 	d.checkAnvilHealth(context.Background(), cfg)
 	disp.Wait()
