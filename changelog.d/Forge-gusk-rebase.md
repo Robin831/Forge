@@ -1,2 +1,0 @@
-category: Changed
-- **Manual rebase refuses an unresolvable PR** - A `pr_action` rebase whose PR row cannot be resolved — DB error, missing row, or a row id owned by another anvil — is now refused instead of dispatched with an empty base branch, which the rebase worker reads as `main` and force-pushes: wrong, and destructive, for a crucible child PR based on `feature/<parent-id>`. A PR the dashboard knows by number alone now resolves to its real base rather than none. (Forge-gusk)

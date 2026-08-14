@@ -1,2 +1,0 @@
-category: Fixed
-- **Depcheck no longer guts node_modules under a live Kiln preview** - The npm scan syncs `node_modules` with `npm ci`, which deletes the tree first — through the link a preview worktree holds into the main checkout. Depcheck now asks the daemon whether the anvil has a live preview and skips its npm half for that cycle, naming the holding bead in the log; Go and .NET scanning are unaffected. (Forge-kmif)

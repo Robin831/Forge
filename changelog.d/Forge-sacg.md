@@ -1,2 +1,0 @@
-category: Changed
-- **Assay summary edits keep history** - Editing the per-PR summary comment no longer overwrites the previous run's summary: the new summary opens with a stamp naming the reviewed head and explaining that later runs edit the comment in place, and superseded summaries are archived newest-first in a collapsible "Previous Assay summaries" section inside the same comment, with the oldest entries trimmed (and the trim noted) if the comment would exceed GitHub's size limit. Summaries posted before this change archive cleanly on their first edit. (Forge-sacg)

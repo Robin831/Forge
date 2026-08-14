@@ -1,2 +1,0 @@
-category: Fixed
-- **Worktree git commands strip the full ambient git environment** - `worktree.localGitEnv` now reuses `executil.CleanGitEnv`, so every git command the package runs also drops `GIT_INDEX_FILE`, `GIT_COMMON_DIR`, `GIT_OBJECT_DIRECTORY` and the rest of the repo-location set instead of only `GIT_DIR`/`GIT_WORK_TREE`/`GIT_CEILING_DIRECTORIES`. The package's tests build every fixture command through one helper that applies the same strip set, so `go test ./internal/worktree/...` no longer fails when run from inside a Forge worker worktree. (Forge-kqyl)

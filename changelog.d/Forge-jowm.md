@@ -1,2 +1,0 @@
-category: Fixed
-- **Warden recovers its verdict instead of defaulting to approve** - A Warden session that ends without a parseable structured verdict (typically `error_max_turns`: every turn spent on tool calls, no text written) is now resumed for a single JSON-only verdict turn — the model still holds its full review context — before the default-approve fallback is trusted. The turn budget was also raised from 5 to 10. Previously such sessions silently approved the diff, which with auto-merge enabled meant an effectively unreviewed merge. (Forge-jowm)

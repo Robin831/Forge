@@ -1,2 +1,0 @@
-category: Fixed
-- **Assay budget suppression is no longer silent** - When the daily Assay cost cap or the per-PR run cap suppresses a review, Bellows now logs it and writes an `assay_skipped` event once per PR head — naming the spend, the limit, and the head that will count as reviewed for merge readiness. Previously the default $5/day cap was routinely exhausted by the first review of the day and every later PR auto-merged unreviewed with no trace anywhere. (Forge-68sq)

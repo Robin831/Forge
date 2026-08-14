@@ -1,3 +1,0 @@
-category: Added
-- **`preview_proxy_base` setting** - New `settings.preview_proxy_base` DNS suffix, the foundation for addressing Kiln previews by hostname (`<label>.<base>`, `<label>--<service>.<base>`) instead of by port. Empty (the default) leaves preview links on `host:port`; a non-empty value is validated as a bare DNS name at load time. (Forge-gxw7)
-- **Preview host label mapping** - `kiln.PreviewLabel` folds a bead id to a DNS-safe label and `kiln.ParsePreviewHost` resolves a request's Host header back to a preview and optional service. Two bead ids that fold to the same label are now refused when the second preview starts — with the reason naming both ids — rather than silently sharing one address. (Forge-gxw7)

@@ -1,3 +1,0 @@
-category: Changed
-- **bd anonymous metrics are off in the image** - The image now sets `BD_DISABLE_METRICS=1`. bd ships usage metrics enabled by default and posts the name of each command, the bd version and the OS platform to an external endpoint. `bd metrics off` alone does not survive a deploy, because it writes `$HOME/.config/bd/config.yaml`, which the `/home/forge` PVC mount masks; the environment variable outranks saved config and so holds across restarts.
-- **Bundled dolt CLI moved to 2.2.3** - Tracks the `dolt-beads` server, which now runs 2.2.3. Not a flag day: a 1.88.1 client was verified cloning from and pushing to a 2.2.3 server before the server was upgraded, so mixed client/server versions are a supported state and laptops can follow at their own pace.

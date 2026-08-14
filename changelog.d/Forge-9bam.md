@@ -1,2 +1,0 @@
-category: Changed
-- **Finished worker panels are now visually distinct** - A lingering finished panel in the Live workers grid carries an outcome-tinted banner strip across its top ("Finished — done · 2m ago" in sky, partial in amber, failed in red) and its whole card desaturates, so a frozen transcript can no longer be mistaken for a live worker on the dark theme — the previous 80% opacity dimming was imperceptible. (Forge-9bam)

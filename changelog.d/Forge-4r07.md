@@ -1,3 +1,0 @@
-category: Changed
-- **Per-anvil Kiln preview settings hot-reload** - `anvils.<name>.preview_enabled`, `preview_auto` and `preview_quests` now take effect on the next preview start, automatic start or quest run without draining and restarting the daemon. (Forge-4r07)
-- **Config reload reports what it could not apply** - A reload that touches a startup-only setting logs a WARN naming the key (the Kiln globals are named individually), and any edit that changes the file without moving a hot-reloadable setting gets a generic "restart required" line instead of being dropped silently. Opting an anvil into previews on a daemon that started with none also warns, since no preview manager exists to serve it. (Forge-4r07)

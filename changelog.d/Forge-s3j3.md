@@ -1,3 +1,0 @@
-category: Added
-- **Preview proxy documentation** - Documented the exact `preview_proxy_base` label mapping rule (with a worked example table and the collision constraint) and added a security-posture section stating what a preview URL exposes, to whom, and how guessable it is under each `preview_proxy_auth` mode. (Forge-s3j3)
-- **Preview proxy deployment guide** - New `docs/preview-proxy-deployment.md` covering the wildcard DNS record, the wildcard ingress host rule onto the existing Forge Service port, and the wildcard TLS certificate via cert-manager DNS-01, with a worked values snippet and verification steps. (Forge-s3j3)

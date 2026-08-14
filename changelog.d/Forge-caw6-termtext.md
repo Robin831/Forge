@@ -1,3 +1,0 @@
-category: Fixed
-- **One terminal-text stripper for both dashboards** - ANSI/control-sequence stripping moved into `internal/termtext`, shared by Hearth's bead titles and Assay's activity-feed messages. The TUI's own stripper recognised only CSI sequences, so an OSC title write in a bead title left visible residue; the shared one also covers OSC/DCS/PM/APC, the CSI private-parameter bytes (`<`, `=`, `>`), and spaces tabs instead of dropping them. Assay failed-pass names and reasons now go through it too. (Forge-caw6)
-- **crucible_complete colours the same on both surfaces** - Hearth 2.0's event colouring matches `complete` rather than `completed`, so `crucible_complete` reads as a success in the web feed exactly as it does in the TUI. (Forge-caw6)
