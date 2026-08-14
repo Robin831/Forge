@@ -15,6 +15,7 @@ import (
 	"github.com/Robin831/Forge/internal/kiln"
 	"github.com/Robin831/Forge/internal/questgiver"
 	"github.com/Robin831/Forge/internal/state"
+	"github.com/Robin831/Forge/internal/termtext"
 	"github.com/Robin831/Forge/internal/worktree"
 )
 
@@ -346,7 +347,11 @@ func (d *Daemon) buildPreviewManager(ctx context.Context, cfg *config.Config, an
 		BindHost:   bindHost,
 		PublicHost: publicHost,
 		Lifetime:   ctx,
-		Logger:     d.logger,
+		// Kiln owns the state transition; the daemon owns telling anybody about
+		// it. Without this the demotion would be honest and invisible — correct
+		// on a panel nobody has open.
+		OnServiceExit: d.handlePreviewServiceExit,
+		Logger:        d.logger,
 	})
 	if err != nil {
 		return nil, err
@@ -505,6 +510,37 @@ func (d *Daemon) handlePreviewAutoStart(ctx context.Context, event bellows.PREve
 				opts.BeadID, opts.Anvil)
 		}
 	}()
+}
+
+// handlePreviewServiceExit records a preview service that became healthy and
+// then died, as one activity-feed event against the bead.
+//
+// The event exists for the same reason the Assay terminal events do: a limb
+// dying is something the operator should hear about without opening the panel
+// that would have shown it. The message names what an operator needs to decide
+// whether to act — which service, why it died, how long it lived, and what the
+// preview can still serve — because the alternative is inferring all four from
+// a status chip that changed colour.
+func (d *Daemon) handlePreviewServiceExit(exit kiln.ServiceExit) {
+	if d == nil || d.db == nil {
+		return
+	}
+	// The service name comes from a manifest and the detail can carry a
+	// process's own wait-error text, so both are stripped here rather than at
+	// each surface: Hearth renders an event message with nothing but
+	// word-wrapping, so the producer is the last place an escape sequence in
+	// `.forge/preview.yaml` can be stopped before it reaches a terminal.
+	msg := fmt.Sprintf("preview service %q %s — preview is now %s",
+		termtext.Line(exit.Service), termtext.Line(exit.Detail), exit.Status)
+	if exit.Entry {
+		// The entry service is the preview's address, so its death is the
+		// difference between "part of this is broken" and "the link is dead".
+		msg += " (entry service — no preview URL)"
+	}
+	if err := d.db.LogEvent(state.EventPreviewServiceExited, msg, exit.BeadID, exit.Anvil); err != nil {
+		d.logger.Warn("logging a preview service exit failed",
+			"bead", exit.BeadID, "service", exit.Service, "error", err)
+	}
 }
 
 // handlePreviewStart serves the "preview_start" IPC command.
@@ -703,26 +739,31 @@ func (d *Daemon) handlePreviewResolve(p ipc.PreviewResolvePayload) ipc.Response 
 		return okResponse(out)
 	}
 
-	port := 0
+	var target state.PreviewService
 	if service == "" {
-		out.Service = previewEntryServiceName(rec)
-		port = previewEntryPort(rec)
+		target, _ = previewEntryService(rec)
 	} else {
 		svc, ok := previewServiceByLabel(rec, service)
 		if !ok {
 			out.Reason = ipc.PreviewResolveNoService
 			return okResponse(out)
 		}
-		out.Service = svc.Name
-		port = svc.Port
+		target = svc
 	}
-	if port <= 0 {
+	out.Service = target.Name
+	if target.Port <= 0 {
 		out.Reason = ipc.PreviewResolveNoPort
 		return okResponse(out)
 	}
-
+	// Forwarding to the port of a service that failed or has exited produces a
+	// connection error the browser reports as a network fault. Answering
+	// "not serving" instead points at the log, which is where the answer is.
+	if !state.PreviewServiceServing(target.Health) {
+		out.Reason = ipc.PreviewResolveNotServing
+		return okResponse(out)
+	}
 	out.Host = previewDialHost(d.cfg.Load())
-	out.Port = port
+	out.Port = target.Port
 	out.Found = true
 	// Proxied traffic is activity — the whole point of resolving through the
 	// daemon rather than reading the ports out of the previews payload.
@@ -751,22 +792,6 @@ func previewServiceByLabel(rec state.Preview, label string) (state.PreviewServic
 		}
 	}
 	return state.PreviewService{}, false
-}
-
-// previewEntryServiceName names the service previewEntryPort picked, so the
-// resolve response reports which one a service-less host actually landed on.
-func previewEntryServiceName(rec state.Preview) string {
-	for _, svc := range rec.Services {
-		if svc.Entry && svc.Port > 0 {
-			return svc.Name
-		}
-	}
-	for _, svc := range rec.Services {
-		if svc.Port > 0 {
-			return svc.Name
-		}
-	}
-	return ""
 }
 
 // previewDialHost is the address a proxy connects to a preview service on.
@@ -799,17 +824,21 @@ func previewInfo(rec state.Preview, entryURL string, idle time.Duration, now tim
 		CreatedAt:            rec.CreatedAt,
 		LastActiveAt:         rec.LastActiveAt,
 		EntryURL:             entryURL,
+		EntryNote:            previewEntryNote(rec),
 		Port:                 previewEntryPort(rec),
 		IdleRemainingSeconds: previewIdleRemaining(rec, idle, now),
 		ResourceNote:         previewResourceNote(rec),
 	}
 	for _, svc := range rec.Services {
 		info.Services = append(info.Services, ipc.PreviewServiceInfo{
-			Name:   svc.Name,
-			Port:   svc.Port,
-			Health: svc.Health,
-			Entry:  svc.Entry,
-			Error:  svc.Error,
+			Name:      svc.Name,
+			Port:      svc.Port,
+			Health:    svc.Health,
+			Entry:     svc.Entry,
+			Error:     svc.Error,
+			StartedAt: svc.StartedAt,
+			ExitedAt:  svc.ExitedAt,
+			ExitCode:  svc.ExitCode,
 		})
 	}
 	return info
@@ -831,7 +860,18 @@ func previewInfo(rec state.Preview, entryURL string, idle time.Duration, now tim
 // which has the secret and knows whether the caller's session cookie already
 // reaches the preview host; the token-carrying link is built there (see
 // internal/web.previewEntryURL) on top of this same builder.
+//
+// A dead entry service withholds the link in *both* forms. The port form does it
+// by way of previewEntryPort returning 0, but the host-based form is assembled
+// from the bead id alone and ignores the port entirely — so without the check
+// here a proxy deployment would keep printing a preview hostname next to the
+// EntryNote explaining why there is no link, which is the contract on
+// ipc.PreviewInfo.EntryNote broken in exactly the deployment mode the note was
+// built for.
 func previewEntryURL(cfg *config.Config, rec state.Preview) string {
+	if previewEntryDown(rec) {
+		return ""
+	}
 	opts := kiln.EntryURLOptions{BeadID: rec.BeadID, Port: previewEntryPort(rec)}
 	if cfg != nil {
 		opts.ProxyBase = cfg.Settings.ResolvedPreviewProxyBase()
@@ -840,22 +880,72 @@ func previewEntryURL(cfg *config.Config, rec state.Preview) string {
 	return kiln.EntryURL(opts)
 }
 
-// previewEntryPort returns the port the preview's entry link points at: the
-// service flagged as the entry, falling back to the first service that has a
-// port so a single-service preview still reports one. 0 means ports have not
-// been allocated yet.
-func previewEntryPort(rec state.Preview) int {
+// previewEntryService returns the service a preview's link points at: the one
+// flagged as the manifest's entry, falling back to the first service with a port
+// so a single-service preview (which needs no `entry: true`) still has one.
+//
+// It answers regardless of that service's health — the caller decides what a
+// dead entry service means, and every caller needs to be able to name it.
+func previewEntryService(rec state.Preview) (state.PreviewService, bool) {
 	for _, svc := range rec.Services {
 		if svc.Entry && svc.Port > 0 {
-			return svc.Port
+			return svc, true
 		}
 	}
 	for _, svc := range rec.Services {
 		if svc.Port > 0 {
-			return svc.Port
+			return svc, true
 		}
 	}
-	return 0
+	return state.PreviewService{}, false
+}
+
+// previewEntryPort returns the port the preview's entry link points at, or 0
+// when there is no link to give: no ports allocated yet, or an entry service
+// that is not serving.
+//
+// The second case is the point. A preview whose entry service died still holds
+// its port allocation, so the old "first port that exists" rule kept handing out
+// a URL that answered ERR_EMPTY_RESPONSE — which reads as a tunnel or network
+// fault, not as a dead process, and cost an afternoon of misdirected triage. It
+// never falls back to a healthy *sibling's* port either: that would produce a
+// link that works and shows the wrong application.
+func previewEntryPort(rec state.Preview) int {
+	svc, ok := previewEntryService(rec)
+	if !ok || !state.PreviewServiceServing(svc.Health) {
+		return 0
+	}
+	return svc.Port
+}
+
+// previewEntryDown reports that the preview has an entry service and that
+// service is not serving — it failed its readiness check, or became healthy and
+// later exited.
+//
+// It is the one condition behind both halves of a withheld link: previewEntryURL
+// gives no URL and previewEntryNote gives the sentence saying why, which is what
+// makes EntryNote's "set exactly when EntryURL was suppressed for this reason"
+// true rather than aspirational. A preview whose ports are not allocated yet is
+// not "down": it has no entry service to be down.
+func previewEntryDown(rec state.Preview) bool {
+	svc, ok := previewEntryService(rec)
+	return ok && !state.PreviewServiceServing(svc.Health)
+}
+
+// previewEntryNote explains a withheld entry URL, and is empty whenever there is
+// nothing to explain — including when the URL is missing simply because ports
+// have not been allocated yet, which is a preview still starting rather than a
+// preview with a problem.
+func previewEntryNote(rec state.Preview) string {
+	if !previewEntryDown(rec) {
+		return ""
+	}
+	svc, _ := previewEntryService(rec)
+	detail := svc.Error
+	if detail == "" {
+		detail = svc.Health
+	}
+	return fmt.Sprintf("entry service %q is not serving: %s", svc.Name, detail)
 }
 
 // previewIdleRemaining is the countdown to the idle reaper: how long is left of

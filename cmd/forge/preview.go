@@ -11,6 +11,9 @@ import (
 	"time"
 
 	"github.com/Robin831/Forge/internal/ipc"
+	"github.com/Robin831/Forge/internal/kiln"
+	"github.com/Robin831/Forge/internal/state"
+	"github.com/Robin831/Forge/internal/termtext"
 	"github.com/spf13/cobra"
 )
 
@@ -286,27 +289,82 @@ func renderPreviewList(w io.Writer, list ipc.PreviewListResponse) {
 	fmt.Fprintf(tw, "BEAD\tSTATUS\tURL\tIDLE\tRESOURCES\n")
 	for _, p := range list.Previews {
 		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n",
-			p.BeadID,
+			termtext.Line(p.BeadID),
 			p.Status,
-			orDash(p.EntryURL),
+			previewURLCell(p),
 			formatPreviewIdle(p.IdleRemainingSeconds),
-			orDash(p.ResourceNote),
+			orDash(termtext.Line(p.ResourceNote)),
 		)
 	}
 	tw.Flush()
 
-	// A failed service is why a preview reads as degraded or failed, and the
-	// error is the only part of it the operator can act on — so it gets its own
-	// lines rather than being truncated into the table.
+	// A service that failed or has since exited is why a preview reads as
+	// degraded or failed, and its error is the only part of it the operator can
+	// act on — so it gets its own line rather than being truncated into the
+	// table. An exited service always gets one, error text or not: "this was
+	// working and is now dead" is the fact worth printing.
 	for _, p := range list.Previews {
 		for _, svc := range p.Services {
-			if svc.Error != "" {
-				fmt.Fprintf(w, "  ! %s/%s: %s\n", p.BeadID, svc.Name, svc.Error)
+			if detail := previewServiceIssue(svc); detail != "" {
+				// The bead id is stripped alongside the service name and the
+				// detail: a preview id is a registry key, not a bd id — `forge
+				// preview start <anything>` and the dashboard's ad-hoc form both
+				// accept an arbitrary string — so it is text Forge did not write
+				// and is free to carry escape sequences into this line.
+				fmt.Fprintf(w, "  ! %s/%s: %s\n",
+					termtext.Line(p.BeadID), termtext.Line(svc.Name), termtext.Line(detail))
 			}
 		}
 	}
 
 	fmt.Fprintf(w, "\n%d preview(s)\n", len(list.Previews))
+}
+
+// previewURLCell renders the URL column. A preview with no link shows why it
+// has none — an entry service that failed or has exited — rather than a bare
+// dash, because a dash next to a `degraded` status invites the reading "the
+// daemon has not got round to it yet". A preview that is merely still coming up
+// has no note and keeps the dash.
+//
+// The note is assembled by the daemon out of a manifest's service name and a
+// process's failure text — neither of which Forge wrote — so it goes through
+// termtext.Line before it reaches a terminal: an escape sequence in a manifest
+// would otherwise be free to rewrite the row it is printed in, status and URL
+// included.
+func previewURLCell(p ipc.PreviewInfo) string {
+	if p.EntryURL != "" {
+		return p.EntryURL
+	}
+	if note := termtext.Line(p.EntryNote); note != "" {
+		return "(" + note + ")"
+	}
+	return "-"
+}
+
+// previewServiceIssue returns what is wrong with a service, or "" when nothing
+// is. An exited service reports its exit even when the daemon recorded no error
+// text; a healthy or starting one reports nothing.
+//
+// The lifetime goes through state.PreviewService.Lifetime rather than a
+// subtraction of its own: that is the one place the interval becomes a duration,
+// and it carries the guards a renderer keeps forgetting — a record with no spawn
+// time reports no lifetime instead of a span measured from the zero time, which
+// FormatServiceExit would faithfully render as "lived 17700000h".
+//
+// The caller strips the result before printing it (see previewURLCell): it can
+// carry a spawn error quoting a manifest's command line.
+func previewServiceIssue(svc ipc.PreviewServiceInfo) string {
+	if svc.Error != "" {
+		return svc.Error
+	}
+	if svc.Health == state.PreviewServiceExited {
+		lifetime := state.PreviewService{
+			StartedAt: svc.StartedAt,
+			ExitedAt:  svc.ExitedAt,
+		}.Lifetime(time.Now())
+		return kiln.FormatServiceExit(svc.ExitCode, nil, lifetime)
+	}
+	return ""
 }
 
 // formatPreviewIdle renders the countdown to the idle reaper. A nil countdown

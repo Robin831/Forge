@@ -7,7 +7,9 @@ import {
   RotateCcw,
   ScrollText,
   Square,
+  Unplug,
 } from 'lucide-react'
+import { previewServiceIsDown } from '../api/previews'
 import { usePreview, usePreviewsList } from '../hooks/usePreview'
 import { usePreviewQuests } from '../hooks/usePreviewQuests'
 import { useNow } from '../hooks/useNow'
@@ -194,6 +196,20 @@ export default function PreviewPanel({ beadId, anvil, hasBranch = true }: Previe
         </p>
       )}
 
+      {/* The Open button disappears on its own when the daemon withholds the
+          entry URL, and a control that silently vanishes reads as a UI bug. This
+          says what happened instead — the same sentence `forge preview list`
+          prints in its URL column. */}
+      {preview?.entry_note && (
+        <p
+          data-testid="preview-panel-entry-note"
+          className="flex items-center gap-1.5 border-b border-amber-700/40 bg-amber-900/20 px-4 py-2 text-xs text-amber-200"
+        >
+          <Unplug size={13} aria-hidden />
+          No preview URL — {preview.entry_note}
+        </p>
+      )}
+
       {/* Only when there is no record to explain it. Once a preview row exists
           its failures are attributed per service in the table below, and
           repeating the first one here would just read as a second, vaguer
@@ -251,8 +267,23 @@ export default function PreviewPanel({ beadId, anvil, hasBranch = true }: Previe
                     testId={`preview-service-health-${svc.name}`}
                   />
                 </td>
+                {/* An exited service keeps its number: it is how long it lived,
+                    frozen at its death by the daemon, and it is the single most
+                    useful fact about a service that died silently. A failed one
+                    never lived, so it shows nothing. */}
                 <td className="px-4 py-2 text-slate-400">
-                  {svc.health === 'failed' ? '—' : formatDuration(svc.uptime_seconds)}
+                  {svc.health === 'failed' ? (
+                    '—'
+                  ) : svc.health === 'exited' ? (
+                    <span
+                      data-testid={`preview-service-lifetime-${svc.name}`}
+                      title={svc.exited_at ? `exited ${svc.exited_at}` : undefined}
+                    >
+                      lived {formatDuration(svc.uptime_seconds)}
+                    </span>
+                  ) : (
+                    formatDuration(svc.uptime_seconds)
+                  )}
                 </td>
                 <td className="px-4 py-2 text-right">
                   {svc.log_url && (
@@ -275,12 +306,12 @@ export default function PreviewPanel({ beadId, anvil, hasBranch = true }: Previe
         </table>
       )}
 
-      {services.some((svc) => svc.health === 'failed' && svc.error) && (
+      {services.some((svc) => previewServiceIsDown(svc.health) && svc.error) && (
         <ul className="border-t border-slate-800/60 px-4 py-2 text-xs text-red-200">
           {services
-            .filter((svc) => svc.health === 'failed' && svc.error)
+            .filter((svc) => previewServiceIsDown(svc.health) && svc.error)
             .map((svc) => (
-              <li key={svc.name}>
+              <li key={svc.name} data-testid={`preview-service-issue-${svc.name}`}>
                 <span className="font-mono">{svc.name}</span>: {svc.error}
               </li>
             ))}

@@ -9,7 +9,16 @@ import { ApiError, type QueuedBody } from '../api'
 // PreviewServiceHealth mirrors the per-service `health` column
 // (state.PreviewService*). Left open (`| string`) so an unexpected backend
 // value renders instead of failing to type-check.
-export type PreviewServiceHealth = 'starting' | 'healthy' | 'failed' | (string & {})
+//
+// `exited` is deliberately not folded into `failed`: a service that never came
+// up and one that served for seven minutes and then died are different
+// problems, and only the second one has an answer waiting in its log.
+export type PreviewServiceHealth =
+  | 'starting'
+  | 'healthy'
+  | 'failed'
+  | 'exited'
+  | (string & {})
 
 // PreviewRecordStatus mirrors the preview-level `status` column
 // (state.Preview*). It is the *backend* vocabulary; the UI-facing vocabulary is
@@ -28,11 +37,20 @@ export interface PreviewServiceStatus {
   port: number
   health: PreviewServiceHealth
   entry: boolean
+  /**
+   * How long this service's own process has run. It stops at the exit for a
+   * service that has died, so an `exited` row reports the lifetime it had
+   * rather than a clock that keeps counting over a dead process.
+   */
   uptime_seconds: number
   /** GET endpoint tailing this service's log. */
   log_url: string
   /** Explains a failed service (spawn error, health timeout, early exit). */
   error?: string
+  /** When the process was reaped; null while it is still running. */
+  exited_at?: string | null
+  /** Its exit status; null while running and for a process killed by a signal. */
+  exit_code?: number | null
 }
 
 // PreviewSummary mirrors Go's web.PreviewSummary — one live preview.
@@ -42,8 +60,18 @@ export interface PreviewSummary {
   branch?: string
   status: PreviewRecordStatus
   services: PreviewServiceStatus[]
-  /** The link an operator opens; '' when no service has a port yet. */
+  /**
+   * The link an operator opens; '' when there is none — no service has a port
+   * yet, or the entry service is not serving.
+   */
   entry_url: string
+  /**
+   * Why the link was withheld (an entry service that failed or has exited).
+   * Empty when there is nothing to explain, including a preview that is simply
+   * still coming up. Rendered in place of the Open button, so a dead entry
+   * service reads as a dead service rather than a link that vanished.
+   */
+  entry_note?: string
   created_at: string
   last_active_at: string
   /** When the idle reaper tears this down; null when the reaper is disabled. */
@@ -111,13 +139,21 @@ export function mapPreviewStatus(status: PreviewRecordStatus | undefined): Previ
   }
 }
 
-// previewErrorText returns the first failed service's error for a preview, or
-// null when nothing failed. Used to explain a failed chip without making the
-// caller walk the service list.
+// previewServiceIsDown reports whether a service is not serving: it failed its
+// readiness check, or became healthy and has since exited. Everything that asks
+// "is this row a problem?" goes through it, so the two states cannot drift
+// apart on one surface.
+export function previewServiceIsDown(health: PreviewServiceHealth | undefined): boolean {
+  return health === 'failed' || health === 'exited'
+}
+
+// previewErrorText returns the first down service's error for a preview, or
+// null when nothing is down. Used to explain a failed or degraded chip without
+// making the caller walk the service list.
 export function previewErrorText(preview: PreviewSummary | null | undefined): string | null {
   if (!preview) return null
   for (const svc of preview.services ?? []) {
-    if (svc.health === 'failed' && svc.error) return svc.error
+    if (previewServiceIsDown(svc.health) && svc.error) return svc.error
   }
   return null
 }

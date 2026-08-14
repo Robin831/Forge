@@ -2491,6 +2491,19 @@ const (
 	// in the previews list with nothing to explain it.
 	EventPreviewAutoStarted EventType = "preview_auto_started"
 
+	// EventPreviewServiceExited fires when a Kiln preview service that had
+	// become healthy dies on its own. The supervisor always observed the exit —
+	// it writes it into the service log — but nothing read it back, so a dev
+	// server that died minutes after a clean start left every surface reporting
+	// a healthy preview with a growing uptime over a dead process. The event is
+	// the half of the fix that reaches an operator who is not looking at the
+	// panel; the status recomputation is the half that stops the panel lying.
+	//
+	// It never fires for a service killed by teardown or shutdown (that death is
+	// the stop working) nor for one that failed its readiness check (the start
+	// already reported that).
+	EventPreviewServiceExited EventType = "preview_service_exited"
+
 	// EventPRCreateRecovered fires when the manual create-PR-from-existing-branch
 	// recovery opens (or registers) a PR for an already-pushed forge branch
 	// without re-running Smith, clearing the needs_human escalation.

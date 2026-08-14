@@ -226,6 +226,14 @@ func previewMissMessage(label, service string, out ipc.PreviewResolveResponse) s
 		return fmt.Sprintf("preview %s has no service %q", label, service)
 	case ipc.PreviewResolveNoPort:
 		return fmt.Sprintf("preview %s has no port allocated yet", label)
+	case ipc.PreviewResolveNotServing:
+		// The one miss that is not about the preview's existence: it is up, and
+		// the process behind this hostname is gone. Say so, or the reader spends
+		// the next hour on their tunnel.
+		if service != "" {
+			return fmt.Sprintf("preview %s has a service %q that is no longer running — check its log", label, service)
+		}
+		return fmt.Sprintf("preview %s is up but its entry service is no longer running — check its log", label)
 	default:
 		// no_preview, previews_disabled, or an unset reason: from the caller's
 		// side these are one situation — nothing is serving this name.

@@ -42,21 +42,60 @@ type RuntimeConfig struct {
 	// all previews. The daemon passes its run context here so shutdown cannot
 	// leave preview processes behind. nil means context.Background().
 	Lifetime context.Context
+	// OnServiceExit is called when a service that had become healthy dies on its
+	// own. It is how the death leaves this package: the runtime owns the state
+	// transition and the persisted record, while announcing it — the feed event,
+	// the operator-facing message — belongs to the daemon. Optional; a nil hook
+	// still transitions and persists.
+	//
+	// It is never called for a service killed by teardown or shutdown, and never
+	// for one that failed its readiness check (which is not a death after
+	// readiness — Start already reported it). It runs on the supervisor's own
+	// goroutine, so a slow implementation delays nothing but itself.
+	OnServiceExit func(ServiceExit)
 	// Logger receives runtime diagnostics. Optional.
 	Logger *slog.Logger
+}
+
+// ServiceExit describes a preview service that became healthy and then died. It
+// carries everything an operator-facing report needs without a second lookup:
+// which preview, which service, why, how long it lived, and what the preview's
+// status is now that a limb is gone.
+type ServiceExit struct {
+	BeadID  string
+	Anvil   string
+	Service string
+	// Entry marks the service whose URL is *the* preview link — the case where
+	// the death takes the whole preview offline as far as a browser is concerned.
+	Entry bool
+	// ExitCode is the process's exit status, or nil when it was killed by a
+	// signal (Err then names the signal).
+	ExitCode *int
+	// Err is the wait error, nil for a service that exited cleanly.
+	Err error
+	// StartedAt and ExitedAt bound the service's life; Lifetime is their span.
+	StartedAt time.Time
+	ExitedAt  time.Time
+	Lifetime  time.Duration
+	// Status is the preview's overall status recomputed after the death, by the
+	// same fold that decided it at startup.
+	Status string
+	// Detail is the rendered cause, e.g. `exited (exit 1, lived 7m31s)`.
+	Detail string
 }
 
 // Runtime starts, supervises and stops preview environments. It owns the port
 // pool shared by all previews; the registry, concurrency cap, idle reaper and
 // setup/teardown commands live one level up in the Kiln manager.
 type Runtime struct {
-	store       Store
-	ports       *PortAllocator
-	bindHost    string
-	publicHost  string
-	stopTimeout time.Duration
-	lifetime    context.Context
-	logger      *slog.Logger
+	store         Store
+	ports         *PortAllocator
+	bindHost      string
+	publicHost    string
+	stopTimeout   time.Duration
+	lifetime      context.Context
+	onServiceExit func(ServiceExit)
+	logger        *slog.Logger
 }
 
 // NewRuntime returns a Runtime for the given configuration.
@@ -85,13 +124,14 @@ func NewRuntime(cfg RuntimeConfig) (*Runtime, error) {
 		stopTimeout = DefaultStopTimeout
 	}
 	return &Runtime{
-		store:       cfg.Store,
-		ports:       cfg.Ports,
-		bindHost:    bindHost,
-		publicHost:  publicHost,
-		stopTimeout: stopTimeout,
-		lifetime:    lifetime,
-		logger:      logger,
+		store:         cfg.Store,
+		ports:         cfg.Ports,
+		bindHost:      bindHost,
+		publicHost:    publicHost,
+		stopTimeout:   stopTimeout,
+		lifetime:      lifetime,
+		onServiceExit: cfg.OnServiceExit,
+		logger:        logger,
 	}, nil
 }
 
@@ -135,6 +175,10 @@ type Preview struct {
 
 	runtime *Runtime
 	cancel  context.CancelFunc
+	// procCtx is the context every service process runs on. Its cancellation is
+	// how the exit watchers tell a teardown apart from a service dying on its
+	// own: the same process death means opposite things either side of it.
+	procCtx context.Context
 
 	mu       sync.Mutex
 	status   string
@@ -151,6 +195,15 @@ type previewService struct {
 	failure string
 	logPath string
 	proc    *ServiceProcess
+	// startedAt and exitedAt bound the process's life. exitedAt is zero while it
+	// runs, which is what freezes a dead service's uptime — see
+	// state.PreviewService.Lifetime, the one place the interval is turned into a
+	// duration.
+	startedAt time.Time
+	exitedAt  time.Time
+	// exitCode is the process's exit status, nil while it runs and for a
+	// signalled process (which has none).
+	exitCode *int
 }
 
 // Start allocates ports, runs the request's setup callback, spawns every
@@ -271,6 +324,7 @@ func (r *Runtime) Start(ctx context.Context, req StartRequest) (*Preview, error)
 
 	procCtx, cancel := context.WithCancel(r.lifetime)
 	p.cancel = cancel
+	p.procCtx = procCtx
 
 	// Spawn in manifest order — it is the order the author wrote and costs
 	// nothing, since starting a process does not wait for it to be usable.
@@ -308,7 +362,117 @@ func (r *Runtime) Start(ctx context.Context, req StartRequest) (*Preview, error)
 		// this must not fail the start.
 		r.logger.Warn("kiln: persisting preview record failed", "bead", req.BeadID, "error", err)
 	}
+	// Only now, with every readiness check settled: a watcher started earlier
+	// would race the health check for the same service and could demote one that
+	// is about to be marked healthy, or mark exited something the check is about
+	// to call failed. Starting them here means each service's health is already
+	// final, so the watcher only ever sees the one transition it owns.
+	p.watchServiceExits()
 	return p, nil
+}
+
+// watchServiceExits starts one goroutine per running service, each waiting for
+// its process to be reaped and then handing the death to handleServiceExit.
+//
+// A service whose process is already gone is not a special case: its Done
+// channel is closed, so its watcher runs immediately.
+func (p *Preview) watchServiceExits() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for i, svc := range p.services {
+		if svc.proc == nil {
+			continue
+		}
+		go func(i int, proc *ServiceProcess) {
+			<-proc.Done()
+			p.handleServiceExit(i)
+		}(i, svc.proc)
+	}
+}
+
+// handleServiceExit consumes one service's death.
+//
+// The supervisor has always known when a service exits — it writes the fact
+// into the service log — but nothing read it back, so a dev server that died
+// seven minutes after a clean start left every surface reporting `healthy` over
+// a dead process. This is the read-back: the service goes healthy → exited with
+// its code, its uptime freezes at the exit, the preview's status is recomputed
+// by the same fold that decided it at startup, the record is persisted, and the
+// runtime's OnServiceExit hook lets the daemon announce it.
+//
+// A death during teardown or shutdown is recorded but never demoted: the
+// process exiting *is* the teardown working, and reporting a preview as
+// degraded on its way out would be noise on every stop. A service that never
+// became healthy is left alone too — its readiness check already had the final
+// word, and re-reporting the same failure under a second name helps nobody.
+//
+// The demote decision, the status fold and the store write all happen under one
+// hold of p.mu, and that is the ordering against teardown rather than an
+// incidental tidiness: Stop takes p.mu to set `stopped`, so a stop cannot begin
+// between "this preview is still live" and the upsert that assumes it. Deciding
+// under the lock and writing after it let a descheduled watcher re-create, with
+// UpsertPreview, the row Manager.teardown had already deleted — a phantom
+// preview served by `forge preview list` until the next daemon restart
+// reconciled it away.
+func (p *Preview) handleServiceExit(i int) {
+	svc := p.serviceAt(i)
+	if svc == nil || svc.proc == nil {
+		return
+	}
+	exitedAt := time.Now()
+	exitErr := svc.proc.ExitErr()
+	var code *int
+	if c, ok := svc.proc.ExitCode(); ok {
+		code = &c
+	}
+
+	p.mu.Lock()
+	// The exit is a fact either way, so record it even during teardown: it is
+	// what stops a stopped preview's last snapshot claiming a still-growing
+	// uptime.
+	if svc.exitedAt.IsZero() {
+		svc.exitedAt = exitedAt
+		svc.exitCode = code
+	}
+	intentional := p.stopped || (p.procCtx != nil && p.procCtx.Err() != nil)
+	demote := !intentional && svc.health == state.PreviewServiceHealthy
+	lifetime := state.PreviewService{StartedAt: svc.startedAt, ExitedAt: svc.exitedAt}.Lifetime(exitedAt)
+	detail := FormatServiceExit(svc.exitCode, exitErr, lifetime)
+	if !demote {
+		p.mu.Unlock()
+		return
+	}
+	svc.health = state.PreviewServiceExited
+	svc.failure = detail
+	status := p.deriveStatusLocked()
+	p.status = status
+	persistErr := p.runtime.persistRecord(p.recordLocked())
+	name, entry, startedAt := svc.name, svc.entry, svc.startedAt
+	p.mu.Unlock()
+
+	if persistErr != nil {
+		p.runtime.logger.Warn("kiln: persisting a preview service exit failed",
+			"bead", p.BeadID, "service", name, "error", persistErr)
+	}
+	p.runtime.logger.Warn("kiln: preview service exited after becoming healthy",
+		"bead", p.BeadID, "service", name, "entry", entry,
+		"detail", detail, "preview_status", status)
+
+	if hook := p.runtime.onServiceExit; hook != nil {
+		hook(ServiceExit{
+			BeadID:    p.BeadID,
+			Anvil:     p.Anvil,
+			Service:   name,
+			Entry:     entry,
+			ExitCode:  code,
+			Err:       exitErr,
+			StartedAt: startedAt,
+			ExitedAt:  exitedAt,
+			Lifetime:  lifetime,
+			Status:    status,
+			Detail:    detail,
+		})
+	}
 }
 
 // waitHealthy runs every service's readiness check concurrently and records the
@@ -407,7 +571,9 @@ func (p *Preview) Status() string {
 // EntryURL returns the address the entry service actually answers on:
 // `http://<public host>:<port>/`. It is empty when the manifest has no entry
 // service (a manifest with more than one service and no `entry: true` never
-// validates, so this only happens for an empty preview).
+// validates, so this only happens for an empty preview), and when the entry
+// service is not serving — a link to a process that has exited is worse than no
+// link, since the browser error it produces looks like a network problem.
 //
 // This is the *direct* address, which is what something running on this host
 // needs — the preview quest runner drives a headless browser at it, and the
@@ -420,6 +586,9 @@ func (p *Preview) EntryURL() string {
 	defer p.mu.Unlock()
 	for _, svc := range p.services {
 		if svc.entry {
+			if !state.PreviewServiceServing(svc.health) {
+				return ""
+			}
 			return EntryURL(EntryURLOptions{Host: p.runtime.publicHost, Port: svc.port})
 		}
 	}
@@ -430,6 +599,13 @@ func (p *Preview) EntryURL() string {
 func (p *Preview) Record() state.Preview {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	return p.recordLocked()
+}
+
+// recordLocked builds the snapshot with p.mu already held, so a caller that has
+// to write it without releasing the lock (handleServiceExit, which is ordered
+// against teardown by that hold) can.
+func (p *Preview) recordLocked() state.Preview {
 	rec := state.Preview{
 		BeadID:       p.BeadID,
 		Anvil:        p.Anvil,
@@ -449,13 +625,16 @@ func (p *Preview) Record() state.Preview {
 			pid = svc.proc.PID()
 		}
 		rec.Services = append(rec.Services, state.PreviewService{
-			Name:    svc.name,
-			Port:    svc.port,
-			Health:  svc.health,
-			PID:     pid,
-			LogPath: svc.logPath,
-			Entry:   svc.entry,
-			Error:   svc.failure,
+			Name:      svc.name,
+			Port:      svc.port,
+			Health:    svc.health,
+			PID:       pid,
+			LogPath:   svc.logPath,
+			Entry:     svc.entry,
+			Error:     svc.failure,
+			StartedAt: svc.startedAt,
+			ExitedAt:  svc.exitedAt,
+			ExitCode:  svc.exitCode,
 		})
 	}
 	return rec
@@ -477,22 +656,42 @@ func (r *Runtime) persist(p *Preview) error {
 	if r.store == nil {
 		return nil
 	}
-	if err := r.store.UpsertPreview(p.Record()); err != nil {
-		return fmt.Errorf("kiln: persisting preview %s: %w", p.BeadID, err)
+	return r.persistRecord(p.Record())
+}
+
+// persistRecord writes an already-built snapshot. It exists for the one caller
+// that must take its snapshot and write it under a single hold of p.mu
+// (handleServiceExit); everything else goes through persist.
+func (r *Runtime) persistRecord(rec state.Preview) error {
+	if r.store == nil {
+		return nil
+	}
+	if err := r.store.UpsertPreview(rec); err != nil {
+		return fmt.Errorf("kiln: persisting preview %s: %w", rec.BeadID, err)
 	}
 	return nil
 }
 
 // deriveStatus folds the per-service health into the preview's overall status.
+//
+// It is the single rule set, applied both when a start finishes and whenever a
+// service dies afterwards, which is what keeps "one service down" meaning the
+// same thing at minute zero and at minute seven. An exited service counts as
+// failed here: for the fold, all that matters is that it is not serving.
 func (p *Preview) deriveStatus() string {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	return p.deriveStatusLocked()
+}
+
+// deriveStatusLocked is deriveStatus with p.mu already held.
+func (p *Preview) deriveStatusLocked() string {
 	healthy, failed := 0, 0
 	for _, svc := range p.services {
 		switch svc.health {
 		case state.PreviewServiceHealthy:
 			healthy++
-		case state.PreviewServiceFailed:
+		case state.PreviewServiceFailed, state.PreviewServiceExited:
 			failed++
 		}
 	}
@@ -521,6 +720,11 @@ func (p *Preview) setProcess(i int, proc *ServiceProcess) {
 	defer p.mu.Unlock()
 	p.services[i].proc = proc
 	p.services[i].logPath = proc.LogPath
+	// Per-process rather than per-preview: services are spawned in manifest
+	// order and a slow one starts measurably later, so uptime measured from the
+	// preview's creation is already an approximation — and once a service is
+	// restarted or dies, an approximation is the wrong thing to report.
+	p.services[i].startedAt = proc.StartedAt
 }
 
 func (p *Preview) markHealthy(i int) {

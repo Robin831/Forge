@@ -59,6 +59,105 @@ func TestUpsertPreviewRoundTrip(t *testing.T) {
 	}
 }
 
+// Forge-bci1: a service that became healthy and later died. The exit has to
+// survive the services JSON column, since the row is what a restarted daemon
+// and every read path see.
+func TestUpsertPreviewRoundTripsAServiceExit(t *testing.T) {
+	db := openTestDB(t)
+
+	startedAt := time.Now().Add(-10 * time.Minute).UTC().Truncate(time.Second)
+	exitedAt := startedAt.Add(7*time.Minute + 31*time.Second)
+	code := 1
+
+	p := samplePreview()
+	p.Status = PreviewDegraded
+	p.Services[0].Health = PreviewServiceHealthy
+	p.Services[0].StartedAt = startedAt
+	p.Services[1].Health = PreviewServiceExited
+	p.Services[1].Error = "exited (exit 1, lived 7m31s)"
+	p.Services[1].StartedAt = startedAt
+	p.Services[1].ExitedAt = exitedAt
+	p.Services[1].ExitCode = &code
+	if err := db.UpsertPreview(p); err != nil {
+		t.Fatalf("UpsertPreview: %v", err)
+	}
+
+	got, err := db.GetPreview(p.BeadID)
+	if err != nil {
+		t.Fatalf("GetPreview: %v", err)
+	}
+	client, _ := got.Service("client")
+	if client.Health != PreviewServiceExited {
+		t.Errorf("health = %q, want %q", client.Health, PreviewServiceExited)
+	}
+	if client.ExitCode == nil || *client.ExitCode != 1 {
+		t.Errorf("exit_code = %v, want 1", client.ExitCode)
+	}
+	if !client.ExitedAt.Equal(exitedAt) || !client.StartedAt.Equal(startedAt) {
+		t.Errorf("timestamps not round-tripped: started=%v exited=%v", client.StartedAt, client.ExitedAt)
+	}
+
+	// The whole point: uptime stops at the death instead of growing forever.
+	if got := client.Lifetime(time.Now()); got != 7*time.Minute+31*time.Second {
+		t.Errorf("Lifetime = %v, want 7m31s frozen at the exit", got)
+	}
+	api, _ := got.Service("api")
+	if live := api.Lifetime(startedAt.Add(time.Minute)); live != time.Minute {
+		t.Errorf("a running service's Lifetime = %v, want it to keep counting", live)
+	}
+}
+
+func TestPreviewServiceLifetime(t *testing.T) {
+	now := time.Now()
+	tests := []struct {
+		name string
+		svc  PreviewService
+		want time.Duration
+	}{
+		{name: "never started", svc: PreviewService{}},
+		{
+			name: "running counts to now",
+			svc:  PreviewService{StartedAt: now.Add(-30 * time.Second)},
+			want: 30 * time.Second,
+		},
+		{
+			name: "exited counts to the exit",
+			svc:  PreviewService{StartedAt: now.Add(-time.Hour), ExitedAt: now.Add(-30 * time.Minute)},
+			want: 30 * time.Minute,
+		},
+		{
+			// Clock skew between the record and the reader is not a negative
+			// uptime; it is no information.
+			name: "an exit before the start reports nothing",
+			svc:  PreviewService{StartedAt: now, ExitedAt: now.Add(-time.Second)},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.svc.Lifetime(now); got != tt.want {
+				t.Errorf("Lifetime = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestPreviewServiceServing(t *testing.T) {
+	for health, want := range map[string]bool{
+		PreviewServiceStarting: true,
+		PreviewServiceHealthy:  true,
+		PreviewServiceFailed:   false,
+		PreviewServiceExited:   false,
+		// An unset health is what a record written before this state existed
+		// carries, and what several callers construct in flight. Treating it as
+		// serving keeps those paths behaving exactly as they did.
+		"": true,
+	} {
+		if got := PreviewServiceServing(health); got != want {
+			t.Errorf("PreviewServiceServing(%q) = %v, want %v", health, got, want)
+		}
+	}
+}
+
 func TestUpsertPreviewUpdatesServicesAndKeepsCreatedAt(t *testing.T) {
 	db := openTestDB(t)
 

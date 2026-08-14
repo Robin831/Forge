@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -34,6 +35,28 @@ func TestHelperListener(t *testing.T) {
 		os.Exit(1)
 	}
 	defer ln.Close()
+
+	// KILN_HELPER_DIE_AFTER makes the helper serve normally and then exit on its
+	// own — the case this package had no way to exercise before: a service that
+	// passes its readiness check and dies minutes later, which is exactly the
+	// production incident (a vite dev server, exit 1, seven minutes in).
+	if after := os.Getenv("KILN_HELPER_DIE_AFTER"); after != "" {
+		d, err := time.ParseDuration(after)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "helper: bad KILN_HELPER_DIE_AFTER %q: %v\n", after, err)
+			os.Exit(1)
+		}
+		code := 1
+		if c := os.Getenv("KILN_HELPER_EXIT_CODE"); c != "" {
+			if parsed, err := strconv.Atoi(c); err == nil {
+				code = parsed
+			}
+		}
+		go func() {
+			time.Sleep(d)
+			os.Exit(code)
+		}()
+	}
 
 	if os.Getenv("KILN_HELPER_MODE") == "tcp" {
 		// Port-open readiness: accept and drop connections forever.
@@ -275,6 +298,265 @@ services:
 		t.Fatalf("healthy service is not reachable after its sibling failed: %v", err)
 	}
 	conn.Close()
+}
+
+// TestRuntimeDemotesAServiceThatExitsAfterReadiness is the regression for
+// Forge-bci1: Kiln health used to be one-shot readiness, so a service that died
+// after passing its check left the record, the previews payload and both front
+// ends reporting `healthy` with a growing uptime over a dead process.
+func TestRuntimeDemotesAServiceThatExitsAfterReadiness(t *testing.T) {
+	fakeHome(t)
+	worktree := t.TempDir()
+	store := &fakeStore{}
+	rt := newTestRuntime(t, store)
+
+	var (
+		exitMu   sync.Mutex
+		observed []ServiceExit
+	)
+	rt.onServiceExit = func(e ServiceExit) {
+		exitMu.Lock()
+		defer exitMu.Unlock()
+		observed = append(observed, e)
+	}
+
+	manifest := mustParse(t, `
+version: 1
+services:
+  client:
+    command: `+strconv.Quote(helperCommand())+`
+    env:
+      KILN_HELPER_PORT: "{{.Port}}"
+      KILN_HELPER_MODE: "tcp"
+      KILN_HELPER_DIE_AFTER: "1500ms"
+      KILN_HELPER_EXIT_CODE: "3"
+    ready_timeout: 30s
+    entry: true
+  api:
+    command: `+strconv.Quote(helperCommand())+`
+    env:
+      KILN_HELPER_PORT: "{{.Port}}"
+      KILN_HELPER_MODE: "tcp"
+    ready_timeout: 30s
+`)
+
+	preview, err := rt.Start(context.Background(), StartRequest{
+		BeadID:       "Forge-exits",
+		Anvil:        "forge",
+		Branch:       "forge/Forge-exits",
+		WorktreePath: worktree,
+		Manifest:     manifest,
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(func() { _ = preview.Stop() })
+
+	// Readiness semantics are untouched: both services came up healthy.
+	if preview.Status() != state.PreviewRunning {
+		t.Fatalf("status right after start = %q, want %q", preview.Status(), state.PreviewRunning)
+	}
+	entryURL := preview.EntryURL()
+	if entryURL == "" {
+		t.Fatal("a healthy entry service produced no entry URL")
+	}
+
+	// One supervisor observation later, the death is everywhere.
+	waitFor(t, 20*time.Second, "the exited service to be demoted", func() bool {
+		svc, ok := preview.Record().Service("client")
+		return ok && svc.Health == state.PreviewServiceExited
+	})
+
+	rec := preview.Record()
+	client, _ := rec.Service("client")
+	if client.ExitCode == nil || *client.ExitCode != 3 {
+		t.Errorf("client exit code = %v, want 3", client.ExitCode)
+	}
+	if client.ExitedAt.IsZero() || client.StartedAt.IsZero() {
+		t.Errorf("client timestamps not recorded: started=%v exited=%v", client.StartedAt, client.ExitedAt)
+	}
+	if !strings.Contains(client.Error, "exit 3") {
+		t.Errorf("client error = %q, want it to name the exit status", client.Error)
+	}
+
+	// Uptime freezes: the lifetime is the same whether read now or later.
+	frozen := client.Lifetime(time.Now())
+	time.Sleep(250 * time.Millisecond)
+	if again := client.Lifetime(time.Now()); again != frozen {
+		t.Errorf("lifetime moved after the exit: %v then %v", frozen, again)
+	}
+
+	// The surviving sibling keeps the preview alive, by the same fold that ran
+	// at startup: one service down out of two is degraded, not failed.
+	if preview.Status() != state.PreviewDegraded {
+		t.Errorf("status = %q, want %q", preview.Status(), state.PreviewDegraded)
+	}
+	if api, _ := rec.Service("api"); api.Health != state.PreviewServiceHealthy {
+		t.Errorf("api health = %q, want %q — a dying sibling must not take it down",
+			api.Health, state.PreviewServiceHealthy)
+	}
+	if got := preview.EntryURL(); got != "" {
+		t.Errorf("EntryURL = %q, want it withheld once the entry service died", got)
+	}
+	if last := store.last(t); last.Status != state.PreviewDegraded {
+		t.Errorf("persisted status = %q, want %q", last.Status, state.PreviewDegraded)
+	}
+
+	exitMu.Lock()
+	defer exitMu.Unlock()
+	if len(observed) != 1 {
+		t.Fatalf("OnServiceExit fired %d times, want exactly 1: %+v", len(observed), observed)
+	}
+	got := observed[0]
+	if got.Service != "client" || got.BeadID != "Forge-exits" || !got.Entry {
+		t.Errorf("exit reported wrong service: %+v", got)
+	}
+	if got.ExitCode == nil || *got.ExitCode != 3 || got.Status != state.PreviewDegraded {
+		t.Errorf("exit report wrong: %+v", got)
+	}
+	if !strings.Contains(got.Detail, "exit 3") || !strings.Contains(got.Detail, "lived") {
+		t.Errorf("detail = %q, want it to name the code and the lifetime", got.Detail)
+	}
+}
+
+// A service dying because Kiln killed it is the teardown working, not a
+// failure: recording the exit is right, demoting the preview and announcing it
+// is not.
+func TestRuntimeDoesNotDemoteServicesKilledByStop(t *testing.T) {
+	fakeHome(t)
+	worktree := t.TempDir()
+	store := &fakeStore{}
+	rt := newTestRuntime(t, store)
+
+	var exits int32
+	rt.onServiceExit = func(ServiceExit) { atomic.AddInt32(&exits, 1) }
+
+	manifest := mustParse(t, `
+version: 1
+services:
+  api:
+    command: `+strconv.Quote(helperCommand())+`
+    env:
+      KILN_HELPER_PORT: "{{.Port}}"
+      KILN_HELPER_MODE: "tcp"
+    ready_timeout: 30s
+`)
+	preview, err := rt.Start(context.Background(), StartRequest{
+		BeadID:       "Forge-stopped",
+		WorktreePath: worktree,
+		Manifest:     manifest,
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if err := preview.Stop(); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+
+	// The watchers run on their own goroutines, so give a wrong demotion time to
+	// land before concluding it did not.
+	time.Sleep(500 * time.Millisecond)
+	if got := atomic.LoadInt32(&exits); got != 0 {
+		t.Errorf("OnServiceExit fired %d times for a teardown", got)
+	}
+	if preview.Status() != state.PreviewStopped {
+		t.Errorf("status = %q, want %q", preview.Status(), state.PreviewStopped)
+	}
+	if last := store.last(t); last.Status != state.PreviewStopped {
+		t.Errorf("persisted status = %q, want %q", last.Status, state.PreviewStopped)
+	}
+}
+
+// The other half of the same suppression: on daemon shutdown it is the run
+// context's cancellation that kills preview processes, and that can reach the
+// watchers before Stop/StopAll has set `stopped`. A shutdown must be as quiet
+// as a stop — no demotion, no persisted `exited` record, no feed event.
+func TestRuntimeDoesNotDemoteServicesKilledByLifetimeCancel(t *testing.T) {
+	fakeHome(t)
+	worktree := t.TempDir()
+	store := &fakeStore{}
+
+	lo := freePort(t)
+	ports, err := NewPortAllocator("127.0.0.1", lo, lo+50)
+	if err != nil {
+		t.Fatalf("NewPortAllocator: %v", err)
+	}
+	lifetime, shutdown := context.WithCancel(context.Background())
+	defer shutdown()
+
+	var exits int32
+	rt, err := NewRuntime(RuntimeConfig{
+		Store:         store,
+		Ports:         ports,
+		BindHost:      "127.0.0.1",
+		StopTimeout:   2 * time.Second,
+		Lifetime:      lifetime,
+		OnServiceExit: func(ServiceExit) { atomic.AddInt32(&exits, 1) },
+	})
+	if err != nil {
+		t.Fatalf("NewRuntime: %v", err)
+	}
+
+	manifest := mustParse(t, `
+version: 1
+services:
+  api:
+    command: `+strconv.Quote(helperCommand())+`
+    env:
+      KILN_HELPER_PORT: "{{.Port}}"
+      KILN_HELPER_MODE: "tcp"
+    ready_timeout: 30s
+`)
+	preview, err := rt.Start(context.Background(), StartRequest{
+		BeadID:       "Forge-shutdown",
+		Anvil:        "forge",
+		WorktreePath: worktree,
+		Manifest:     manifest,
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(func() { _ = preview.Stop() })
+
+	if preview.Status() != state.PreviewRunning {
+		t.Fatalf("status right after start = %q, want %q", preview.Status(), state.PreviewRunning)
+	}
+	api, ok := preview.Record().Service("api")
+	if !ok {
+		t.Fatal("the manifest's api service is missing from the record")
+	}
+
+	// Daemon shutdown: cancel the lifetime and let the processes die. The port
+	// closing is the proof the service is actually gone, so the assertions below
+	// are about a death that happened rather than one that has yet to.
+	shutdown()
+	waitFor(t, 20*time.Second, "the service process to die", func() bool {
+		conn, err := net.DialTimeout("tcp",
+			net.JoinHostPort("127.0.0.1", strconv.Itoa(api.Port)), 200*time.Millisecond)
+		if err != nil {
+			return true
+		}
+		conn.Close()
+		return false
+	})
+
+	// The watchers run on their own goroutines, so give a wrong demotion time to
+	// land before concluding it did not.
+	time.Sleep(500 * time.Millisecond)
+	if got := atomic.LoadInt32(&exits); got != 0 {
+		t.Errorf("OnServiceExit fired %d times for a shutdown", got)
+	}
+	if got := preview.Status(); got != state.PreviewRunning {
+		t.Errorf("status = %q, want %q — a shutdown must not demote the preview", got, state.PreviewRunning)
+	}
+	if svc, _ := preview.Record().Service("api"); svc.Health != state.PreviewServiceHealthy {
+		t.Errorf("api health = %q, want %q", svc.Health, state.PreviewServiceHealthy)
+	}
+	for _, rec := range store.snapshots() {
+		if rec.Status != state.PreviewRunning && rec.Status != state.PreviewStarting {
+			t.Errorf("persisted status = %q, want the shutdown to have written nothing new", rec.Status)
+		}
+	}
 }
 
 func TestRuntimeMarksEverythingFailedWhenNothingComesUp(t *testing.T) {

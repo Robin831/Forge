@@ -26,18 +26,27 @@ import (
 type PreviewServiceStatus struct {
 	Name string `json:"name"`
 	Port int    `json:"port"`
-	// Health is one of starting / healthy / failed.
+	// Health is one of starting / healthy / failed / exited. `exited` is a
+	// service that passed its readiness check and whose process later died —
+	// distinct from `failed`, which never came up at all.
 	Health string `json:"health"`
 	// Entry marks the service whose URL is *the* preview link.
 	Entry bool `json:"entry"`
-	// UptimeSeconds is how long the service has been up. Services are spawned
-	// together and per-process start times are not tracked, so it is measured
-	// from when the preview started; a failed service reports 0.
+	// UptimeSeconds is how long the service's own process has run: from its
+	// spawn to now, or to its exit. An exited service therefore reports the
+	// lifetime it had — frozen, which is the whole point — and a failed one
+	// reports 0.
 	UptimeSeconds int64 `json:"uptime_seconds"`
 	// LogURL is the GET endpoint tailing this service's log.
 	LogURL string `json:"log_url"`
-	// Error explains a failed service (spawn error, health timeout, early exit).
+	// Error explains a failed service (spawn error, health timeout, early exit)
+	// or an exited one (`exited (exit 1, lived 7m31s)`).
 	Error string `json:"error,omitempty"`
+	// ExitedAt is when the process was reaped; null while it is running.
+	ExitedAt *time.Time `json:"exited_at"`
+	// ExitCode is its exit status, or null while it runs and for a process
+	// killed by a signal — which has none, only the cause in Error.
+	ExitCode *int `json:"exit_code,omitempty"`
 }
 
 // PreviewSummary is one running preview environment.
@@ -48,9 +57,16 @@ type PreviewSummary struct {
 	// Status is one of starting / running / degraded / failed / stopped.
 	Status   string                 `json:"status"`
 	Services []PreviewServiceStatus `json:"services"`
-	// EntryURL is the link an operator opens, or "" when no entry service has a
-	// port yet. See previewEntryURL for how its host is chosen.
-	EntryURL     string    `json:"entry_url"`
+	// EntryURL is the link an operator opens, or "" when there is none to give:
+	// no entry service has a port yet, or the entry service is not serving. See
+	// previewEntryURL for how its host is chosen.
+	EntryURL string `json:"entry_url"`
+	// EntryNote explains a withheld EntryURL — an entry service that failed or
+	// has exited — and is empty when there is nothing to explain (including a
+	// preview that is simply still coming up). The SPA renders it in place of
+	// the Open button, so a dead entry service reads as a dead service rather
+	// than as a link that mysteriously vanished.
+	EntryNote    string    `json:"entry_note,omitempty"`
 	CreatedAt    time.Time `json:"created_at"`
 	LastActiveAt time.Time `json:"last_active_at"`
 	// IdleDeadline is when the reaper will tear this preview down unless it is
@@ -193,6 +209,7 @@ func (s *Server) previewSummary(r *http.Request, p ipc.PreviewInfo, publicHost s
 		Status:               p.Status,
 		Services:             make([]PreviewServiceStatus, 0, len(p.Services)),
 		EntryURL:             s.previewEntryURL(r, p, publicHost),
+		EntryNote:            p.EntryNote,
 		CreatedAt:            p.CreatedAt,
 		LastActiveAt:         p.LastActiveAt,
 		IdleRemainingSeconds: p.IdleRemainingSeconds,
@@ -206,7 +223,7 @@ func (s *Server) previewSummary(r *http.Request, p ipc.PreviewInfo, publicHost s
 		summary.IdleDeadline = &deadline
 	}
 	for _, svc := range p.Services {
-		summary.Services = append(summary.Services, PreviewServiceStatus{
+		status := PreviewServiceStatus{
 			Name:          svc.Name,
 			Port:          svc.Port,
 			Health:        svc.Health,
@@ -214,23 +231,43 @@ func (s *Server) previewSummary(r *http.Request, p ipc.PreviewInfo, publicHost s
 			UptimeSeconds: serviceUptimeSeconds(svc, p.CreatedAt, now),
 			LogURL:        previewLogPath(p.BeadID, svc.Name),
 			Error:         svc.Error,
-		})
+			ExitCode:      svc.ExitCode,
+		}
+		if !svc.ExitedAt.IsZero() {
+			exitedAt := svc.ExitedAt
+			status.ExitedAt = &exitedAt
+		}
+		summary.Services = append(summary.Services, status)
 	}
 	return summary
 }
 
-// serviceUptimeSeconds reports how long a service has been up, measured from
-// the preview's start. A failed service reports 0 rather than a number that
-// would read as "it has been serving for ten minutes".
+// serviceUptimeSeconds reports how long a service's process has run.
+//
+// It measures the process's own interval — spawn to exit, or spawn to now — and
+// falls back to the preview's creation time only for a record written before
+// per-service timestamps existed. That fallback is why an exited service's
+// number freezes: the daemon stops the clock at the exit rather than every
+// renderer having to remember to.
+//
+// A failed service reports 0 rather than a number that would read as "it has
+// been serving for ten minutes".
+//
+// The interval itself comes from state.PreviewService.Lifetime — the one place
+// it is derived, so this renderer and `forge preview list` cannot disagree about
+// how long a dead service lived. All this adds is the two things the persisted
+// record cannot know: which health means "report nothing", and the pre-timestamp
+// fallback.
 func serviceUptimeSeconds(svc ipc.PreviewServiceInfo, createdAt, now time.Time) int64 {
-	if svc.Health == state.PreviewServiceFailed || createdAt.IsZero() {
+	if svc.Health == state.PreviewServiceFailed {
 		return 0
 	}
-	secs := int64(now.Sub(createdAt) / time.Second)
-	if secs < 0 {
-		return 0
+	startedAt := svc.StartedAt
+	if startedAt.IsZero() {
+		startedAt = createdAt
 	}
-	return secs
+	lifetime := state.PreviewService{StartedAt: startedAt, ExitedAt: svc.ExitedAt}.Lifetime(now)
+	return int64(lifetime / time.Second)
 }
 
 // previewLogPath is the tail endpoint for one service's log.
@@ -265,6 +302,14 @@ func previewLogPath(beadID, service string) string {
 // That form's scheme is always http: preview services bind a plain port and are
 // not behind Hearth's TLS.
 func (s *Server) previewEntryURL(r *http.Request, p ipc.PreviewInfo, publicHost string) string {
+	// A dead entry service withholds the link in both forms. The port form does
+	// it through previewEntryPort, but the host-based form is built from the bead
+	// id alone and never looks at a port — so this check is the only thing
+	// stopping a proxy deployment from rendering an Open button (and minting a
+	// token for it) beside the note explaining why there is no link.
+	if previewEntryDown(p.Services) {
+		return ""
+	}
 	opts := kiln.EntryURLOptions{
 		BeadID: p.BeadID,
 		Host:   previewHost(r, publicHost),
@@ -292,18 +337,47 @@ func (s *Server) previewEntryURL(r *http.Request, p ipc.PreviewInfo, publicHost 
 // previewEntryPort picks the port a preview's link points at: the service
 // flagged as the manifest's entry, falling back to the first service that has a
 // port so a single-service manifest (which needs no `entry: true`) still gets a
-// link. 0 means nothing has a port yet.
+// link. 0 means there is no link to build.
+//
+// It mirrors the daemon's rule of the same name, including the part that
+// matters most: a service that failed or has exited yields no port. The web
+// layer builds its own URL (it has a request, so it can add scheme, port and an
+// access token), so this rule has to hold in both places or the browser would
+// be handed the dead link the CLI correctly withholds.
 func previewEntryPort(services []ipc.PreviewServiceInfo) int {
-	port := 0
+	svc, ok := previewEntryService(services)
+	if !ok || !state.PreviewServiceServing(svc.Health) {
+		return 0
+	}
+	return svc.Port
+}
+
+// previewEntryService picks the service the link points at, health aside: the
+// one flagged as the manifest's entry, else the first with a port. It is the
+// daemon's previewEntryService over the IPC payload — deliberately the same
+// order, including the part that reads as an omission: the fallback never skips
+// past a dead service to a healthy sibling, because a link that works and serves
+// the wrong application is worse than no link.
+func previewEntryService(services []ipc.PreviewServiceInfo) (ipc.PreviewServiceInfo, bool) {
 	for _, svc := range services {
 		if svc.Entry && svc.Port > 0 {
-			return svc.Port
-		}
-		if port == 0 && svc.Port > 0 {
-			port = svc.Port
+			return svc, true
 		}
 	}
-	return port
+	for _, svc := range services {
+		if svc.Port > 0 {
+			return svc, true
+		}
+	}
+	return ipc.PreviewServiceInfo{}, false
+}
+
+// previewEntryDown reports that this preview has an entry service and it is not
+// serving — the condition on which the link is withheld and EntryNote explains
+// why, in either addressing form.
+func previewEntryDown(services []ipc.PreviewServiceInfo) bool {
+	svc, ok := previewEntryService(services)
+	return ok && !state.PreviewServiceServing(svc.Health)
 }
 
 // previewHost resolves the hostname preview links point at: the configured
