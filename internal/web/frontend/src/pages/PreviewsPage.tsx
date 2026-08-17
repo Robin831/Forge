@@ -211,7 +211,11 @@ function PreviewRow({ preview, now, fetchedAt, onViewLog }: PreviewRowProps) {
               {svc.name}
               {svc.port > 0 ? `:${svc.port}` : ''}
             </span>
-            <PreviewServiceHealthBadge health={svc.health} error={svc.error} />
+            <PreviewServiceHealthBadge
+              health={svc.health}
+              error={svc.error}
+              restarts={svc.restarts}
+            />
             {/* An exited service's number is frozen at its death by the daemon,
                 so it reads as the life it had rather than a clock still running
                 over a dead process. */}

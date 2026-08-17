@@ -292,6 +292,37 @@ describe('PreviewPanel service rows', () => {
     )
   })
 
+  // Forge-4noz: a service that is only healthy because Kiln relaunched it must
+  // not read like one that never died — that silence is exactly what the
+  // opt-in restart policy would otherwise buy back.
+  it('shows how many times a restarted service has been relaunched', async () => {
+    previews = {
+      ...previews,
+      previews: [
+        preview({
+          status: 'running',
+          services: [
+            {
+              name: 'web',
+              port: 42001,
+              health: 'healthy',
+              entry: true,
+              uptime_seconds: 30,
+              log_url: '/api/preview/Forge-abc1/log/web',
+              restarts: 2,
+            },
+          ],
+        }),
+      ],
+    }
+    await mount()
+
+    const badge = screen.getByTestId('preview-service-health-web')
+    expect(badge).toHaveAttribute('data-health', 'healthy')
+    expect(badge).toHaveAttribute('data-restarts', '2')
+    expect(badge).toHaveAttribute('title', expect.stringContaining('restarted 2×'))
+  })
+
   it('says nothing about the entry URL while a preview is still coming up', async () => {
     previews = {
       ...previews,

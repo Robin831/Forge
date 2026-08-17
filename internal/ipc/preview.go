@@ -41,6 +41,12 @@ type PreviewServiceInfo struct {
 	// process killed by a signal — which has no exit status, only the cause that
 	// Error names.
 	ExitCode *int `json:"exit_code,omitempty"`
+	// Restarts is how many times Kiln has relaunched this service under the
+	// manifest's `restart: on-failure` policy. It rides along with the health
+	// because it is the context the health is missing: `healthy` after three
+	// restarts is a service that flaps, and without this it reads identically
+	// to one that has been up since the start.
+	Restarts int `json:"restarts,omitempty"`
 }
 
 // PreviewInfo is one running preview environment.

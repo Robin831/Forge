@@ -52,10 +52,25 @@ func TestHelperListener(t *testing.T) {
 				code = parsed
 			}
 		}
-		go func() {
-			time.Sleep(d)
-			os.Exit(code)
-		}()
+		// KILN_HELPER_DIE_ONCE names a marker file: the first process to run
+		// dies, every later one serves normally. That "later one" is a relaunch
+		// under `restart: on-failure`, so this is how the flaky-dev-server case
+		// — dies once, comes back fine — is exercised without waiting on real
+		// flakiness.
+		die := true
+		if marker := os.Getenv("KILN_HELPER_DIE_ONCE"); marker != "" {
+			if _, err := os.Stat(marker); err == nil {
+				die = false
+			} else if f, err := os.Create(marker); err == nil {
+				f.Close()
+			}
+		}
+		if die {
+			go func() {
+				time.Sleep(d)
+				os.Exit(code)
+			}()
+		}
 	}
 
 	if os.Getenv("KILN_HELPER_MODE") == "tcp" {

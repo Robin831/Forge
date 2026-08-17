@@ -351,7 +351,10 @@ func (d *Daemon) buildPreviewManager(ctx context.Context, cfg *config.Config, an
 		// it. Without this the demotion would be honest and invisible — correct
 		// on a panel nobody has open.
 		OnServiceExit: d.handlePreviewServiceExit,
-		Logger:        d.logger,
+		// The other half of the same deal for a service on `restart:
+		// on-failure`: Kiln relaunches it, the daemon says so.
+		OnServiceRestart: d.handlePreviewServiceRestart,
+		Logger:           d.logger,
 	})
 	if err != nil {
 		return nil, err
@@ -537,9 +540,62 @@ func (d *Daemon) handlePreviewServiceExit(exit kiln.ServiceExit) {
 		// difference between "part of this is broken" and "the link is dead".
 		msg += " (entry service — no preview URL)"
 	}
+	if note := previewRestartNote(exit); note != "" {
+		msg += ", " + note
+	}
 	if err := d.db.LogEvent(state.EventPreviewServiceExited, msg, exit.BeadID, exit.Anvil); err != nil {
 		d.logger.Warn("logging a preview service exit failed",
 			"bead", exit.BeadID, "service", exit.Service, "error", err)
+	}
+}
+
+// previewRestartNote says what happens next to a service that opted into
+// `restart: on-failure`, and nothing at all for one on the default policy — the
+// overwhelming majority, whose event must not grow a clause about a feature they
+// did not turn on.
+//
+// The two cases it distinguishes are the ones an operator acts on differently:
+// a death Kiln is about to recover from is not something to touch yet, while a
+// death that spent the last of the budget is the end of the automatic story and
+// the beginning of theirs.
+func previewRestartNote(exit kiln.ServiceExit) string {
+	switch {
+	case exit.Restarting:
+		return "restarting (" + kiln.FormatRestartAttempt(exit.Restarts, exit.MaxRestarts) + ")"
+	case exit.MaxRestarts > 0 && exit.Restarts >= exit.MaxRestarts:
+		return fmt.Sprintf("restart attempts exhausted (%d of %d)", exit.Restarts, exit.MaxRestarts)
+	default:
+		return ""
+	}
+}
+
+// handlePreviewServiceRestart records the outcome of one relaunch under
+// `restart: on-failure`, as one activity-feed event against the bead.
+//
+// A restart that nobody is told about is the failure mode of the whole feature:
+// the exited state exists so a service that dies stops reading as healthy, and a
+// silent relaunch would put it straight back to `healthy` with the death erased
+// from every surface an operator looks at. So each attempt gets its own event,
+// whether it worked or not, and the message names the attempt out of the budget
+// so a service flapping through its allowance is visible while it happens rather
+// than only once it has run out.
+func (d *Daemon) handlePreviewServiceRestart(r kiln.ServiceRestart) {
+	if d == nil || d.db == nil {
+		return
+	}
+	// Same stripping as the exit event, and for the same reason: the service
+	// name comes from a manifest and the detail can quote a spawn error naming
+	// a command line, neither of which Forge wrote.
+	msg := fmt.Sprintf("preview service %q %s — preview is now %s",
+		termtext.Line(r.Service), termtext.Line(r.Detail), r.Status)
+	if r.Exhausted {
+		// The relaunch is the last word for this service, whatever the budget
+		// says: without the clause the "of 3" reads as two more tries coming.
+		msg += " (no further restarts)"
+	}
+	if err := d.db.LogEvent(state.EventPreviewServiceRestarted, msg, r.BeadID, r.Anvil); err != nil {
+		d.logger.Warn("logging a preview service restart failed",
+			"bead", r.BeadID, "service", r.Service, "error", err)
 	}
 }
 
@@ -839,6 +895,7 @@ func previewInfo(rec state.Preview, entryURL string, idle time.Duration, now tim
 			StartedAt: svc.StartedAt,
 			ExitedAt:  svc.ExitedAt,
 			ExitCode:  svc.ExitCode,
+			Restarts:  svc.Restarts,
 		})
 	}
 	return info

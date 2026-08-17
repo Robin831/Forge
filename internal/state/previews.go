@@ -85,6 +85,13 @@ type PreviewService struct {
 	// runs, and also for a process killed by a signal — which has no exit code,
 	// only a cause, and that is what Error carries.
 	ExitCode *int `json:"exit_code,omitempty"`
+	// Restarts is how many times Kiln has relaunched this service under the
+	// manifest's `restart: on-failure` policy. It is what stops a service that
+	// quietly flaps from reading like one that has simply been up all along:
+	// the health says `healthy`, and this says it took three deaths to get
+	// there. Zero for the default policy, and for a record written before
+	// restarts existed.
+	Restarts int `json:"restarts,omitempty"`
 }
 
 // Lifetime is how long this service's process ran: from its spawn to its exit,

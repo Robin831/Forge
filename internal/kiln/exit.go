@@ -42,6 +42,34 @@ func FormatServiceExit(exitCode *int, exitErr error, lifetime time.Duration) str
 	return fmt.Sprintf("exited (%s, lived %s)", cause, FormatLifetime(lifetime))
 }
 
+// FormatRestartAttempt renders which relaunch this is out of the budget:
+// `attempt 1 of 3`. Both numbers are there because either alone is unreadable —
+// "attempt 3" does not say whether anything follows, and a bare count does not
+// say which one just happened.
+func FormatRestartAttempt(attempt, max int) string {
+	return fmt.Sprintf("attempt %d of %d", attempt, max)
+}
+
+// FormatServiceRestart renders the outcome of one relaunch under `restart:
+// on-failure`, as the one clause the log line, the feed event and any panel
+// share: `restarted (attempt 1 of 3): healthy`, or
+// `restart failed (attempt 3 of 3): not healthy within 60s: ...`.
+//
+// The failure text is whatever the readiness check or the spawn reported,
+// trimmed but otherwise verbatim — it is the only part of the sentence that
+// says what to fix.
+func FormatServiceRestart(attempt, max int, health string, err error) string {
+	when := FormatRestartAttempt(attempt, max)
+	if err == nil {
+		return fmt.Sprintf("restarted (%s): %s", when, health)
+	}
+	cause := strings.TrimSpace(err.Error())
+	if cause == "" {
+		cause = "did not come back"
+	}
+	return fmt.Sprintf("restart failed (%s): %s", when, cause)
+}
+
 // FormatLifetime renders how long a service ran, at the resolution an operator
 // reading a post-mortem needs: seconds up to a minute, `7m31s` up to an hour,
 // `2h05m` beyond. It rounds to the second, so a preview log timestamp and this

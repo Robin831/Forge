@@ -353,18 +353,39 @@ func previewURLCell(p ipc.PreviewInfo) string {
 //
 // The caller strips the result before printing it (see previewURLCell): it can
 // carry a spawn error quoting a manifest's command line.
+// A service that is up again after one or more restarts also reports, because
+// "healthy" alone would hide the flapping the restart policy exists to absorb —
+// and a policy whose whole effect is invisible is one nobody revisits.
 func previewServiceIssue(svc ipc.PreviewServiceInfo) string {
-	if svc.Error != "" {
-		return svc.Error
-	}
-	if svc.Health == state.PreviewServiceExited {
+	detail := ""
+	switch {
+	case svc.Error != "":
+		detail = svc.Error
+	case svc.Health == state.PreviewServiceExited:
 		lifetime := state.PreviewService{
 			StartedAt: svc.StartedAt,
 			ExitedAt:  svc.ExitedAt,
 		}.Lifetime(time.Now())
-		return kiln.FormatServiceExit(svc.ExitCode, nil, lifetime)
+		detail = kiln.FormatServiceExit(svc.ExitCode, nil, lifetime)
+	case svc.Restarts > 0:
+		detail = svc.Health
 	}
-	return ""
+	if detail == "" {
+		return ""
+	}
+	if svc.Restarts > 0 {
+		detail += fmt.Sprintf(" [%s]", pluralizeRestarts(svc.Restarts))
+	}
+	return detail
+}
+
+// pluralizeRestarts renders the restart count as words rather than a bare
+// number, so the bracket reads as a fact instead of an unlabelled figure.
+func pluralizeRestarts(n int) string {
+	if n == 1 {
+		return "1 restart"
+	}
+	return fmt.Sprintf("%d restarts", n)
 }
 
 // formatPreviewIdle renders the countdown to the idle reaper. A nil countdown

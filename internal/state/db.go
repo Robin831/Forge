@@ -2514,6 +2514,17 @@ const (
 	// already reported that).
 	EventPreviewServiceExited EventType = "preview_service_exited"
 
+	// EventPreviewServiceRestarted fires when a Kiln preview service that opted
+	// into `restart: on-failure` has been relaunched and the attempt has
+	// settled — healthy, or failed again. It is the counterpart to
+	// EventPreviewServiceExited, which announces the death and whether a
+	// restart is coming: without this second event a service that flaps would
+	// be a stream of exits with no explanation of why it kept coming back, and
+	// a service quietly restarted once would show up as healthy with no trace
+	// that anything happened. Both are what stops an opt-in restart policy from
+	// undoing the visibility the `exited` state was added for.
+	EventPreviewServiceRestarted EventType = "preview_service_restarted"
+
 	// EventPRCreateRecovered fires when the manual create-PR-from-existing-branch
 	// recovery opens (or registers) a PR for an already-pushed forge branch
 	// without re-running Smith, clearing the needs_human escalation.
