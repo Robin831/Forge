@@ -1,4 +1,4 @@
-import { CircleCheck, Loader2, PowerOff, XCircle } from 'lucide-react'
+import { CircleCheck, Loader2, PowerOff, RotateCcw, XCircle } from 'lucide-react'
 import type { PreviewServiceHealth } from '../api/previews'
 
 interface HealthStyle {
@@ -39,6 +39,13 @@ export interface PreviewServiceHealthBadgeProps {
   health: PreviewServiceHealth
   /** Failure detail, surfaced as the badge's tooltip. */
   error?: string
+  /**
+   * How many times Kiln has relaunched this service under the manifest's
+   * `restart: on-failure` policy. It rides inside the health badge because it
+   * is the context the health is missing: `healthy` after three restarts is a
+   * service that flaps, and on its own it looks like one that never died.
+   */
+  restarts?: number
   testId?: string
 }
 
@@ -53,18 +60,28 @@ export interface PreviewServiceHealthBadgeProps {
 export default function PreviewServiceHealthBadge({
   health,
   error,
+  restarts = 0,
   testId,
 }: PreviewServiceHealthBadgeProps) {
   const { classes, Icon, spin } = HEALTH[health] ?? UNKNOWN
+  const restartNote = restarts > 0 ? `restarted ${restarts}×` : ''
+  const title = [health, error, restartNote].filter(Boolean).join(' — ')
   return (
     <span
       data-testid={testId}
       data-health={health}
-      title={error ? `${health} — ${error}` : health}
+      data-restarts={restarts > 0 ? restarts : undefined}
+      title={title}
       className={`inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${classes}`}
     >
       <Icon size={11} aria-hidden className={spin ? 'animate-spin' : undefined} />
       {health}
+      {restarts > 0 && (
+        <span className="opacity-80" aria-label={restartNote}>
+          <RotateCcw size={10} aria-hidden className="inline align-[-1px]" />
+          {restarts}
+        </span>
+      )}
     </span>
   )
 }

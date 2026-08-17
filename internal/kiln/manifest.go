@@ -39,6 +39,26 @@ const (
 	// exists to catch `ready_timeout: 120` (bare numbers are nanoseconds in
 	// YAML duration decoding) rather than to express a real lower bound.
 	MinReadyTimeout = time.Second
+
+	// RestartOff is the default restart policy: a service that dies stays dead.
+	// It is the default deliberately — a service dies for a reason, and a
+	// restart loop over a real failure hides it behind a status that keeps
+	// flickering back to healthy.
+	RestartOff = "off"
+	// RestartOnFailure relaunches a service whose process died with a non-zero
+	// status (or was killed by a signal) after it had become healthy, up to
+	// `max_restarts` times. A clean exit is never restarted: a service that
+	// chose to stop did what it was told to.
+	RestartOnFailure = "on-failure"
+
+	// DefaultMaxRestarts is the budget applied to a service that opts into
+	// restarts without naming one.
+	DefaultMaxRestarts = 3
+	// MaxRestartsLimit bounds `max_restarts`. A budget beyond a handful is not
+	// a restart policy but a supervision loop, and the thing it would hide —
+	// a service failing every few seconds forever — is what an operator most
+	// needs to see.
+	MaxRestartsLimit = 10
 )
 
 // ErrNoManifest is returned (wrapped) by Load when the anvil has no
@@ -88,6 +108,35 @@ type Service struct {
 	// Entry marks the service whose URL is *the* preview link. Required when
 	// the manifest declares more than one service; implicit for a lone one.
 	Entry bool `yaml:"entry"`
+	// Restart is the policy for a service that dies *after* it became healthy:
+	// RestartOff (the default) or RestartOnFailure. It says nothing about a
+	// service that never came up — a failed readiness check is the start's
+	// answer, not a death to recover from.
+	Restart string `yaml:"restart"`
+	// MaxRestarts bounds how many times such a service may be relaunched before
+	// it is left in `exited` for good. Zero means DefaultMaxRestarts once
+	// Restart is RestartOnFailure, and is meaningless while it is off.
+	MaxRestarts int `yaml:"max_restarts"`
+}
+
+// RestartsOnFailure reports whether this service opted into being relaunched
+// when its process dies after becoming healthy.
+func (s Service) RestartsOnFailure() bool { return s.Restart == RestartOnFailure }
+
+// RestartBudget is how many relaunches this service is allowed, 0 for a service
+// that did not opt in. It is where the defaulting lives rather than a reader of
+// it — normalize() calls this to *produce* the normalized MaxRestarts — so it is
+// safe on a pre-normalize Service: a manifest that set `restart: on-failure`
+// without a `max_restarts` reports DefaultMaxRestarts either way, rather than
+// the zero the YAML carried.
+func (s Service) RestartBudget() int {
+	if !s.RestartsOnFailure() {
+		return 0
+	}
+	if s.MaxRestarts <= 0 {
+		return DefaultMaxRestarts
+	}
+	return s.MaxRestarts
 }
 
 // Services is the manifest's `services:` mapping, decoded into a slice so
@@ -97,7 +146,7 @@ type Services []Service
 // serviceFields is the accepted key set for a service mapping. Services has a
 // custom unmarshaler, which bypasses the decoder's KnownFields strictness, so
 // unknown keys are rejected here instead.
-var serviceFields = []string{"command", "dir", "entry", "env", "health", "ready_timeout"}
+var serviceFields = []string{"command", "dir", "entry", "env", "health", "max_restarts", "ready_timeout", "restart"}
 
 // serviceNamePattern bounds service names to characters that are safe in an
 // environment variable suffix (FORGE_PREVIEW_PORT_<NAME>), a log file name and
@@ -316,10 +365,36 @@ func (s Service) validate() error {
 	case s.ReadyTimeout > 0 && s.ReadyTimeout < MinReadyTimeout:
 		return fmt.Errorf("service %q: ready_timeout must be at least %s — write it as a duration string such as \"120s\" (a bare number is nanoseconds)", s.Name, MinReadyTimeout)
 	}
+	if err := s.validateRestart(); err != nil {
+		return err
+	}
 	for key := range s.Env {
 		if strings.TrimSpace(key) == "" {
 			return fmt.Errorf("service %q: env has an empty variable name", s.Name)
 		}
+	}
+	return nil
+}
+
+// validateRestart checks the restart policy pair. `max_restarts` under an `off`
+// policy is rejected rather than ignored: it is written by somebody who expects
+// restarts, and accepting it would answer that expectation with silence.
+func (s Service) validateRestart() error {
+	switch s.Restart {
+	case "", RestartOff, RestartOnFailure:
+	default:
+		return fmt.Errorf("service %q: restart must be %q or %q (got %q)",
+			s.Name, RestartOff, RestartOnFailure, s.Restart)
+	}
+	switch {
+	case s.MaxRestarts < 0:
+		return fmt.Errorf("service %q: max_restarts must not be negative", s.Name)
+	case s.MaxRestarts > MaxRestartsLimit:
+		return fmt.Errorf("service %q: max_restarts must be at most %d (got %d) — a larger budget is a supervision loop, not a restart policy",
+			s.Name, MaxRestartsLimit, s.MaxRestarts)
+	case s.MaxRestarts > 0 && !s.RestartsOnFailure():
+		return fmt.Errorf("service %q: max_restarts is set but restart is %q — add restart: %q, or drop max_restarts",
+			s.Name, RestartOff, RestartOnFailure)
 	}
 	return nil
 }
@@ -366,6 +441,14 @@ func (m *Manifest) normalize() {
 		if m.Services[i].ReadyTimeout == 0 {
 			m.Services[i].ReadyTimeout = DefaultReadyTimeout
 		}
+		if m.Services[i].Restart == "" {
+			m.Services[i].Restart = RestartOff
+		}
+		// Fill the budget in rather than leaving every reader to apply the
+		// default: the runtime compares an attempt count against this number,
+		// and a zero that means "three" is the kind of default that eventually
+		// gets read as "none".
+		m.Services[i].MaxRestarts = m.Services[i].RestartBudget()
 	}
 }
 

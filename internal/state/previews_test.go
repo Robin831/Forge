@@ -107,6 +107,36 @@ func TestUpsertPreviewRoundTripsAServiceExit(t *testing.T) {
 	}
 }
 
+// Forge-4noz: a service Kiln relaunched under `restart: on-failure` carries the
+// count in the same JSON column. It has to survive the round trip because it is
+// the only thing separating a service that is healthy from one that is healthy
+// again — and a record written before the field existed must read as zero
+// rather than fail to decode.
+func TestUpsertPreviewRoundTripsServiceRestarts(t *testing.T) {
+	db := openTestDB(t)
+
+	p := samplePreview()
+	p.Services[0].Health = PreviewServiceHealthy
+	p.Services[1].Health = PreviewServiceHealthy
+	p.Services[1].Restarts = 2
+	if err := db.UpsertPreview(p); err != nil {
+		t.Fatalf("UpsertPreview: %v", err)
+	}
+
+	got, err := db.GetPreview(p.BeadID)
+	if err != nil {
+		t.Fatalf("GetPreview: %v", err)
+	}
+	client, _ := got.Service("client")
+	if client.Restarts != 2 {
+		t.Errorf("restarts = %d, want 2", client.Restarts)
+	}
+	api, _ := got.Service("api")
+	if api.Restarts != 0 {
+		t.Errorf("restarts = %d, want 0 for a service that never died", api.Restarts)
+	}
+}
+
 func TestPreviewServiceLifetime(t *testing.T) {
 	now := time.Now()
 	tests := []struct {

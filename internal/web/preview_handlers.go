@@ -47,6 +47,11 @@ type PreviewServiceStatus struct {
 	// ExitCode is its exit status, or null while it runs and for a process
 	// killed by a signal — which has none, only the cause in Error.
 	ExitCode *int `json:"exit_code,omitempty"`
+	// Restarts is how many times Kiln has relaunched this service under the
+	// manifest's `restart: on-failure` policy, 0 for the default policy. The
+	// panel shows it beside the health, because a service that is healthy after
+	// three restarts is a different service from one that never died.
+	Restarts int `json:"restarts,omitempty"`
 }
 
 // PreviewSummary is one running preview environment.
@@ -232,6 +237,7 @@ func (s *Server) previewSummary(r *http.Request, p ipc.PreviewInfo, publicHost s
 			LogURL:        previewLogPath(p.BeadID, svc.Name),
 			Error:         svc.Error,
 			ExitCode:      svc.ExitCode,
+			Restarts:      svc.Restarts,
 		}
 		if !svc.ExitedAt.IsZero() {
 			exitedAt := svc.ExitedAt

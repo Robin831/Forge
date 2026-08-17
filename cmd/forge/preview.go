@@ -353,18 +353,44 @@ func previewURLCell(p ipc.PreviewInfo) string {
 //
 // The caller strips the result before printing it (see previewURLCell): it can
 // carry a spawn error quoting a manifest's command line.
+// A service that is up again after one or more restarts also reports, because
+// "healthy" alone would hide the flapping the restart policy exists to absorb —
+// and a policy whose whole effect is invisible is one nobody revisits.
 func previewServiceIssue(svc ipc.PreviewServiceInfo) string {
-	if svc.Error != "" {
-		return svc.Error
-	}
-	if svc.Health == state.PreviewServiceExited {
+	detail := ""
+	switch {
+	case svc.Error != "":
+		detail = svc.Error
+	case svc.Health == state.PreviewServiceExited:
 		lifetime := state.PreviewService{
 			StartedAt: svc.StartedAt,
 			ExitedAt:  svc.ExitedAt,
 		}.Lifetime(time.Now())
-		return kiln.FormatServiceExit(svc.ExitCode, nil, lifetime)
+		detail = kiln.FormatServiceExit(svc.ExitCode, nil, lifetime)
+	case svc.Restarts > 0:
+		detail = svc.Health
 	}
-	return ""
+	if detail == "" {
+		return ""
+	}
+	if svc.Restarts > 0 {
+		detail += fmt.Sprintf(" [%s]", plural(svc.Restarts, "restart"))
+	}
+	return detail
+}
+
+// plural renders a count with its noun rather than as a bare number, so the
+// bracket reads as a fact instead of an unlabelled figure.
+//
+// It is deliberately the same shape as questgiver's plural(n, noun) rather than
+// a restart-specific helper: the repo already carries three near-identical
+// package-local pluralizers, and a fourth in a shape of its own would make
+// folding them into one shared helper a rewrite instead of a move (Forge-dwpk).
+func plural(n int, noun string) string {
+	if n == 1 {
+		return fmt.Sprintf("1 %s", noun)
+	}
+	return fmt.Sprintf("%d %ss", n, noun)
 }
 
 // formatPreviewIdle renders the countdown to the idle reaper. A nil countdown

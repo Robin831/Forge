@@ -269,6 +269,29 @@ func TestPreviewServiceIssue(t *testing.T) {
 			},
 			want: "exited (exit 2)",
 		},
+		{
+			// A service that is up again only because Kiln relaunched it reads
+			// as plain `healthy` everywhere else. The count is the whole
+			// evidence that it flapped, so the CLI prints a line for it even
+			// though nothing is currently wrong.
+			name: "healthy after a restart still reports",
+			svc: ipc.PreviewServiceInfo{
+				Health:   state.PreviewServiceHealthy,
+				Restarts: 1,
+			},
+			want: "healthy [1 restart]",
+		},
+		{
+			name: "an exit that spent restarts carries the count",
+			svc: ipc.PreviewServiceInfo{
+				Health:    state.PreviewServiceExited,
+				StartedAt: started,
+				ExitedAt:  started.Add(90 * time.Second),
+				ExitCode:  &code,
+				Restarts:  3,
+			},
+			want: "exited (exit 2, lived 1m30s) [3 restarts]",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

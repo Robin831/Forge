@@ -53,6 +53,12 @@ type RuntimeConfig struct {
 	// readiness — Start already reported it). It runs on the supervisor's own
 	// goroutine, so a slow implementation delays nothing but itself.
 	OnServiceExit func(ServiceExit)
+	// OnServiceRestart is called when a relaunch under `restart: on-failure`
+	// has settled, healthy or not. It leaves this package for the same reason
+	// OnServiceExit does: the runtime owns the relaunch, the daemon owns
+	// telling anybody about it — and a restart nobody is told about undoes the
+	// visibility the exited state was added for. Optional.
+	OnServiceRestart func(ServiceRestart)
 	// Logger receives runtime diagnostics. Optional.
 	Logger *slog.Logger
 }
@@ -82,20 +88,69 @@ type ServiceExit struct {
 	Status string
 	// Detail is the rendered cause, e.g. `exited (exit 1, lived 7m31s)`.
 	Detail string
+	// Restarting reports that the service opted into `restart: on-failure` and
+	// Kiln is about to relaunch it. The death is announced either way — a
+	// restart that is not reported is exactly the silent flapping the exited
+	// state exists to expose — but "and it is coming back" is the difference
+	// between a report an operator must act on and one they must not.
+	Restarting bool
+	// Restarts is how many relaunches this service has consumed, including the
+	// one Restarting announces. MaxRestarts is its budget, 0 for a service on
+	// the default `restart: off`.
+	Restarts    int
+	MaxRestarts int
+}
+
+// ServiceRestart describes the outcome of one relaunch under `restart:
+// on-failure`. It is the other half of the restart's visibility: ServiceExit
+// says a service died and is coming back, this says whether it did.
+type ServiceRestart struct {
+	BeadID  string
+	Anvil   string
+	Service string
+	// Entry marks the service whose URL is *the* preview link.
+	Entry bool
+	// Attempt is which relaunch this was, 1-based, of MaxRestarts.
+	Attempt     int
+	MaxRestarts int
+	// Health is where the service settled: healthy, or failed when the relaunch
+	// could not be spawned or never passed its readiness check.
+	Health string
+	// Err is why a relaunch that did not settle healthy did not.
+	Err error
+	// Status is the preview's status recomputed after the attempt.
+	Status string
+	// Detail is the rendered outcome, e.g.
+	// `restarted (attempt 1 of 3): healthy`.
+	Detail string
+	// Exhausted reports that nothing further will be attempted for this service
+	// — always true of a relaunch that did not come back healthy, whether or not
+	// the budget still had attempts in it. A relaunch that spawned and then
+	// failed its readiness check is not the flakiness this policy exists for
+	// (that is a service which *works* between deaths), and repeating it would
+	// only hold the service at `starting` for another ready_timeout before
+	// reaching the same answer. It is false for a successful relaunch, which
+	// leaves whatever budget remains for the next death.
+	Exhausted bool
 }
 
 // Runtime starts, supervises and stops preview environments. It owns the port
 // pool shared by all previews; the registry, concurrency cap, idle reaper and
 // setup/teardown commands live one level up in the Kiln manager.
 type Runtime struct {
-	store         Store
-	ports         *PortAllocator
-	bindHost      string
-	publicHost    string
-	stopTimeout   time.Duration
-	lifetime      context.Context
-	onServiceExit func(ServiceExit)
-	logger        *slog.Logger
+	store            Store
+	ports            *PortAllocator
+	bindHost         string
+	publicHost       string
+	stopTimeout      time.Duration
+	lifetime         context.Context
+	onServiceExit    func(ServiceExit)
+	onServiceRestart func(ServiceRestart)
+	// restartBackoff is how long to wait before the nth relaunch. It is a field
+	// rather than a constant so tests can collapse the wait; production always
+	// uses restartDelay.
+	restartBackoff func(attempt int) time.Duration
+	logger         *slog.Logger
 }
 
 // NewRuntime returns a Runtime for the given configuration.
@@ -124,14 +179,16 @@ func NewRuntime(cfg RuntimeConfig) (*Runtime, error) {
 		stopTimeout = DefaultStopTimeout
 	}
 	return &Runtime{
-		store:         cfg.Store,
-		ports:         cfg.Ports,
-		bindHost:      bindHost,
-		publicHost:    publicHost,
-		stopTimeout:   stopTimeout,
-		lifetime:      lifetime,
-		onServiceExit: cfg.OnServiceExit,
-		logger:        logger,
+		store:            cfg.Store,
+		ports:            cfg.Ports,
+		bindHost:         bindHost,
+		publicHost:       publicHost,
+		stopTimeout:      stopTimeout,
+		lifetime:         lifetime,
+		onServiceExit:    cfg.OnServiceExit,
+		onServiceRestart: cfg.OnServiceRestart,
+		restartBackoff:   restartDelay,
+		logger:           logger,
 	}, nil
 }
 
@@ -204,6 +261,17 @@ type previewService struct {
 	// exitCode is the process's exit status, nil while it runs and for a
 	// signalled process (which has none).
 	exitCode *int
+	// spec is what this service was spawned from — the expanded manifest
+	// service and the environment it was given. It is kept so a restart can
+	// re-spawn the identical command on the identical port: the port is already
+	// baked into the expanded command line and the env, and the allocator has
+	// it reserved for this preview's whole life, so a relaunch must not go
+	// looking for a new one.
+	spec ServiceSpec
+	// restarts counts the relaunches consumed against spec.Service.MaxRestarts.
+	// It is incremented when a restart is *decided*, so the persisted record of
+	// the death that triggered it already carries the attempt.
+	restarts int
 }
 
 // Start allocates ports, runs the request's setup callback, spawns every
@@ -329,13 +397,15 @@ func (r *Runtime) Start(ctx context.Context, req StartRequest) (*Preview, error)
 	// Spawn in manifest order — it is the order the author wrote and costs
 	// nothing, since starting a process does not wait for it to be usable.
 	for i, svc := range expanded.Services {
-		proc, err := StartService(procCtx, ServiceSpec{
+		spec := ServiceSpec{
 			Service:      svc,
 			BeadID:       req.BeadID,
 			WorktreePath: req.WorktreePath,
 			Env:          BuildEnv(req.Env, env, svc.Env),
 			Logger:       r.logger,
-		})
+		}
+		p.setSpec(i, spec)
+		proc, err := StartService(procCtx, spec)
 		if err != nil {
 			// A service that cannot even be spawned is just a failed service;
 			// the rest of the preview is still worth having.
@@ -383,11 +453,19 @@ func (p *Preview) watchServiceExits() {
 		if svc.proc == nil {
 			continue
 		}
-		go func(i int, proc *ServiceProcess) {
-			<-proc.Done()
-			p.handleServiceExit(i)
-		}(i, svc.proc)
+		p.watchService(i, svc.proc)
 	}
+}
+
+// watchService waits for one process to be reaped and hands the death to
+// handleServiceExit. A restarted service gets a fresh watcher over its new
+// process (see restartService), which is what makes the second death of a
+// flapping service as visible as the first.
+func (p *Preview) watchService(i int, proc *ServiceProcess) {
+	go func() {
+		<-proc.Done()
+		p.handleServiceExit(i)
+	}()
 }
 
 // handleServiceExit consumes one service's death.
@@ -444,10 +522,17 @@ func (p *Preview) handleServiceExit(i int) {
 	}
 	svc.health = state.PreviewServiceExited
 	svc.failure = detail
+	// Whether a relaunch follows is decided here, in the hold that just demoted
+	// the service — but the demotion above stands either way. The window
+	// between a death and a working restart is a window in which nothing is
+	// serving, and a status that never moved through it would be a status that
+	// lies for as long as the restart takes.
+	attempt, restarting := svc.claimRestartLocked(code)
 	status := p.deriveStatusLocked()
 	p.status = status
 	persistErr := p.runtime.persistRecord(p.recordLocked())
 	name, entry, startedAt := svc.name, svc.entry, svc.startedAt
+	restarts, maxRestarts := svc.restarts, svc.spec.Service.MaxRestarts
 	p.mu.Unlock()
 
 	if persistErr != nil {
@@ -456,22 +541,34 @@ func (p *Preview) handleServiceExit(i int) {
 	}
 	p.runtime.logger.Warn("kiln: preview service exited after becoming healthy",
 		"bead", p.BeadID, "service", name, "entry", entry,
-		"detail", detail, "preview_status", status)
+		"detail", detail, "preview_status", status,
+		"restarting", restarting, "restarts", restarts, "max_restarts", maxRestarts)
 
 	if hook := p.runtime.onServiceExit; hook != nil {
 		hook(ServiceExit{
-			BeadID:    p.BeadID,
-			Anvil:     p.Anvil,
-			Service:   name,
-			Entry:     entry,
-			ExitCode:  code,
-			Err:       exitErr,
-			StartedAt: startedAt,
-			ExitedAt:  exitedAt,
-			Lifetime:  lifetime,
-			Status:    status,
-			Detail:    detail,
+			BeadID:      p.BeadID,
+			Anvil:       p.Anvil,
+			Service:     name,
+			Entry:       entry,
+			ExitCode:    code,
+			Err:         exitErr,
+			StartedAt:   startedAt,
+			ExitedAt:    exitedAt,
+			Lifetime:    lifetime,
+			Status:      status,
+			Detail:      detail,
+			Restarting:  restarting,
+			Restarts:    restarts,
+			MaxRestarts: maxRestarts,
 		})
+	}
+
+	if restarting {
+		// On this watcher's own goroutine: it exists for exactly this service
+		// and has nothing else to do, and running the relaunch here is what
+		// keeps one service's deaths strictly sequential — no second watcher
+		// can be spawned until this one has finished putting a process back.
+		p.restartService(i, attempt)
 	}
 }
 
@@ -514,29 +611,41 @@ func (p *Preview) waitHealthy(ctx context.Context, expanded *Manifest) {
 // It is bounded by the runtime's stop timeout rather than a context: teardown
 // must finish even when the context that triggered it is already cancelled.
 func (p *Preview) Stop() error {
+	// The processes are read out under the lock rather than the services being
+	// walked outside it: a service on `restart: on-failure` can be swapping its
+	// process in concurrently, and `stopped` — set here, checked there — is what
+	// decides which of the two wins. Taking the snapshot under the same hold
+	// means the loser is always the restart, and Stop can never miss a process
+	// that was adopted after it looked.
+	type stopTarget struct {
+		name string
+		proc *ServiceProcess
+	}
 	p.mu.Lock()
 	if p.stopped {
 		p.mu.Unlock()
 		return nil
 	}
 	p.stopped = true
-	services := append([]*previewService(nil), p.services...)
+	targets := make([]stopTarget, 0, len(p.services))
+	for _, svc := range p.services {
+		if svc.proc != nil {
+			targets = append(targets, stopTarget{name: svc.name, proc: svc.proc})
+		}
+	}
 	p.mu.Unlock()
 
 	timeout := p.runtime.stopTimeout
-	errsCh := make(chan error, len(services))
+	errsCh := make(chan error, len(targets))
 	var wg sync.WaitGroup
-	for _, svc := range services {
-		if svc.proc == nil {
-			continue
-		}
+	for _, target := range targets {
 		wg.Add(1)
-		go func(svc *previewService) {
+		go func(target stopTarget) {
 			defer wg.Done()
-			if err := svc.proc.Stop(timeout); err != nil {
-				errsCh <- fmt.Errorf("stopping %s: %w", svc.name, err)
+			if err := target.proc.Stop(timeout); err != nil {
+				errsCh <- fmt.Errorf("stopping %s: %w", target.name, err)
 			}
-		}(svc)
+		}(target)
 	}
 	wg.Wait()
 	close(errsCh)
@@ -635,6 +744,7 @@ func (p *Preview) recordLocked() state.Preview {
 			StartedAt: svc.startedAt,
 			ExitedAt:  svc.exitedAt,
 			ExitCode:  svc.exitCode,
+			Restarts:  svc.restarts,
 		})
 	}
 	return rec
@@ -713,6 +823,14 @@ func (p *Preview) setStatus(status string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.status = status
+}
+
+// setSpec records what a service is spawned from, before it is spawned: a
+// restart re-runs this verbatim.
+func (p *Preview) setSpec(i int, spec ServiceSpec) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.services[i].spec = spec
 }
 
 func (p *Preview) setProcess(i int, proc *ServiceProcess) {

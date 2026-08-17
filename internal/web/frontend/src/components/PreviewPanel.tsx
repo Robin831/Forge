@@ -264,6 +264,7 @@ export default function PreviewPanel({ beadId, anvil, hasBranch = true }: Previe
                   <PreviewServiceHealthBadge
                     health={svc.health}
                     error={svc.error}
+                    restarts={svc.restarts}
                     testId={`preview-service-health-${svc.name}`}
                   />
                 </td>

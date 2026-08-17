@@ -109,6 +109,62 @@ func TestParseAppliesDefaults(t *testing.T) {
 	if !ok || entry.Name != "app" {
 		t.Errorf("Entry: got %q/%v, want app/true", entry.Name, ok)
 	}
+	// The default is that a dead service stays dead: a restart loop over a real
+	// failure hides it, so opting in has to be an act.
+	if got := m.Services[0].Restart; got != RestartOff {
+		t.Errorf("restart: got %q, want %q", got, RestartOff)
+	}
+	if m.Services[0].RestartsOnFailure() {
+		t.Error("a service that named no policy must not restart")
+	}
+	if got := m.Services[0].MaxRestarts; got != 0 {
+		t.Errorf("max_restarts: got %d, want 0 for restart: off", got)
+	}
+}
+
+// The restart policy is opt-in and bounded, and the bound has a default of its
+// own: `restart: on-failure` with no budget means DefaultMaxRestarts, filled in
+// at parse time so no reader has to know that a zero means three.
+func TestParseRestartPolicy(t *testing.T) {
+	m, err := Parse([]byte(`services:
+  client:
+    command: "npm run dev"
+    restart: on-failure
+    entry: true
+  api:
+    command: "go run ./cmd/api"
+    restart: on-failure
+    max_restarts: 1
+  worker:
+    command: "go run ./cmd/worker"
+    restart: off
+`))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+
+	client, _ := m.Services.Get("client")
+	if !client.RestartsOnFailure() {
+		t.Errorf("client restart = %q, want it to opt in", client.Restart)
+	}
+	if client.MaxRestarts != DefaultMaxRestarts {
+		t.Errorf("client max_restarts = %d, want the default %d", client.MaxRestarts, DefaultMaxRestarts)
+	}
+
+	api, _ := m.Services.Get("api")
+	if api.MaxRestarts != 1 {
+		t.Errorf("api max_restarts = %d, want the manifest's 1", api.MaxRestarts)
+	}
+
+	// `off` is a YAML boolean-ish scalar, so it is worth proving it survives as
+	// the string the policy is compared against.
+	worker, _ := m.Services.Get("worker")
+	if worker.Restart != RestartOff || worker.RestartsOnFailure() {
+		t.Errorf("worker restart = %q, want %q", worker.Restart, RestartOff)
+	}
+	if worker.MaxRestarts != 0 {
+		t.Errorf("worker max_restarts = %d, want 0 while restarts are off", worker.MaxRestarts)
+	}
 }
 
 func TestParseInvalidManifests(t *testing.T) {
@@ -295,6 +351,46 @@ services:
 			name:    "empty manifest",
 			yaml:    "",
 			wantErr: "manifest is empty",
+		},
+		{
+			name: "unknown restart policy",
+			yaml: `services:
+  api:
+    command: "go run ./cmd/api"
+    restart: always
+`,
+			wantErr: `restart must be "off" or "on-failure"`,
+		},
+		{
+			name: "negative max_restarts",
+			yaml: `services:
+  api:
+    command: "go run ./cmd/api"
+    restart: on-failure
+    max_restarts: -1
+`,
+			wantErr: "max_restarts must not be negative",
+		},
+		{
+			name: "max_restarts beyond the cap",
+			yaml: `services:
+  api:
+    command: "go run ./cmd/api"
+    restart: on-failure
+    max_restarts: 99
+`,
+			wantErr: "max_restarts must be at most 10",
+		},
+		{
+			// Written by somebody who expects restarts; accepting it silently
+			// would answer that expectation with nothing at all.
+			name: "max_restarts without a restart policy",
+			yaml: `services:
+  api:
+    command: "go run ./cmd/api"
+    max_restarts: 2
+`,
+			wantErr: "max_restarts is set but restart is",
 		},
 	}
 

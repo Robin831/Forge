@@ -52,6 +52,8 @@ services:
       VITE_API_URL: "http://{{.Host}}:{{.ServicePort \"api\"}}"
     entry: true                     # this service's URL is THE preview link
     ready_timeout: 60s
+    restart: on-failure             # opt-in: relaunch it if it dies after coming up
+    max_restarts: 3                 # default 3; the budget is per preview, not per hour
 ```
 
 ## Top-level fields
@@ -76,6 +78,8 @@ load time instead of silently doing nothing.
 | `health` | string | | HTTP path probed on the service's allocated port (e.g. `/healthz`). Must start with `/`. Omitted means "port is open" counts as ready. |
 | `ready_timeout` | duration | `60s` | How long the readiness check may take before the service is marked failed. Must be a duration **string** (`120s`, `2m`) — a bare number is rejected. |
 | `entry` | bool | `false` | Marks the service whose URL is *the* preview link. Required when the manifest declares more than one service; implicit when it declares exactly one. |
+| `restart` | string | `off` | What happens when the service's process dies *after* it became healthy: `off` leaves it `exited`, `on-failure` relaunches it. Says nothing about a service that never came up — that is a failed readiness check, not a death to recover from. |
+| `max_restarts` | int | `3` | How many relaunches `restart: on-failure` is allowed, for the life of the preview. Capped at 10. Rejected when `restart` is `off`, rather than silently ignored. |
 
 Service names must match `[a-zA-Z0-9][a-zA-Z0-9_-]*` — they become an
 environment variable suffix (`FORGE_PREVIEW_PORT_<NAME>`), a log file name and
@@ -102,8 +106,53 @@ rather than handing out an address nothing answers on: a browser reports that as
 a network error, which reads like a broken tunnel rather than a dead process.
 The panel and `forge preview list` say why instead.
 
-Kiln never restarts a service on its own. A service that dies stays dead until
-the preview is stopped and started again.
+### Restarts (`restart`, `max_restarts`)
+
+By default Kiln never restarts a service: one that dies stays dead until the
+preview is stopped and started again. That is deliberate. A service dies for a
+reason, and a restart loop over a real failure replaces one honest `exited` with
+a status that keeps flickering back to healthy — strictly harder to diagnose
+than the death was.
+
+`restart: on-failure` is the opt-in for the case where the reason is known to be
+noise (the motivating one: a vite dev server exiting 1 once, silently,
+unreproducibly, minutes into a preview nobody was watching):
+
+```yaml
+services:
+  client:
+    command: "npm run dev -- --host {{.BindHost}} --port {{.Port}}"
+    restart: on-failure
+    max_restarts: 3      # optional; 3 is the default, 10 the cap
+```
+
+What it does and does not do:
+
+- **Only after readiness.** A service that never passed its health check is
+  `failed`, and the start already reported that. Restarts are for deaths that
+  come after a clean start.
+- **Only on failure.** A process that exits 0 did what it was told and is left
+  alone; one killed by a signal counts as a failure.
+- **Never during teardown or shutdown.** That death *is* the stop working.
+- **Same port.** The allocator reserved it for the preview's whole life, so a
+  relaunch reuses it — links and sibling services keep pointing somewhere real.
+- **Real readiness, again.** The relaunched process goes back to `starting` and
+  through the same health check, and the preview's status is re-derived by the
+  same fold. So a recovered service takes its preview from `degraded` back to
+  `running` through the path a fresh start uses, and the entry link comes back
+  only once something is actually answering.
+- **Bounded and backed off.** Attempts wait 1s, 2s, 4s (capped at 8s) and stop
+  at `max_restarts`, after which the service is left `exited` exactly as the
+  default policy would have left it. A relaunch that cannot be spawned, or that
+  never passes its readiness check, is terminal — the flapping this exists for
+  is a service that *works* between deaths.
+
+None of it is silent, which is the condition on the whole feature: the death
+gets its usual `preview_service_exited` event saying a restart is coming
+(`restarting (attempt 1 of 3)`) or that the budget is spent, each attempt's
+outcome gets a `preview_service_restarted` event, and the count sticks to the
+service record — the preview panel, the previews payload and `forge preview
+list` all show that a `healthy` service took three restarts to get there.
 
 ## Template variables
 
@@ -219,5 +268,8 @@ Every validation error names the offending service and field. The rules:
 - `dir` must be relative and must not escape the preview worktree
 - `health`, when set, must start with `/`
 - `ready_timeout` must be a non-negative duration string of at least `1s`
+- `restart`, when set, must be `off` or `on-failure`
+- `max_restarts` must be between `0` and `10`, and requires `restart:
+  on-failure` — setting it under the default policy is an error, not a no-op
 - unknown top-level fields and unknown service fields are rejected
 - templates must parse, use known variables, and only reference declared services

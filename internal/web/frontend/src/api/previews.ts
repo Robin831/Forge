@@ -51,6 +51,12 @@ export interface PreviewServiceStatus {
   exited_at?: string | null
   /** Its exit status; null while running and for a process killed by a signal. */
   exit_code?: number | null
+  /**
+   * How many times Kiln has relaunched this service under the manifest's
+   * `restart: on-failure` policy. Absent or 0 for the default policy, where a
+   * service that dies stays dead.
+   */
+  restarts?: number
 }
 
 // PreviewSummary mirrors Go's web.PreviewSummary — one live preview.

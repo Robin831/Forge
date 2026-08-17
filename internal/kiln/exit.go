@@ -12,6 +12,17 @@ import (
 // point of the state is that every surface agrees — a service that reads
 // `exited (exit 1, lived 7m31s)` in the CLI must not read `failed` in the panel.
 
+// CleanExit reports whether a death was the service deciding it was finished
+// rather than something going wrong: status 0, and an actual status — a process
+// killed by a signal has no exit code, and nothing about a preview service asks
+// to be SIGKILLed.
+//
+// It is the restart policy's first refusal (claimRestartLocked) and it is
+// exported because the surfaces that explain a *refusal* need the same test:
+// "restart attempts exhausted" is only true of a death the budget was the
+// reason for, and a clean exit is never restarted however much budget is left.
+func CleanExit(exitCode *int) bool { return exitCode != nil && *exitCode == 0 }
+
 // FormatExitCause renders why a service's process is gone: its exit status when
 // it had one, else the cause from the wait error (a signal, typically), else a
 // bare "exited".
@@ -40,6 +51,34 @@ func FormatServiceExit(exitCode *int, exitErr error, lifetime time.Duration) str
 		return fmt.Sprintf("exited (%s)", cause)
 	}
 	return fmt.Sprintf("exited (%s, lived %s)", cause, FormatLifetime(lifetime))
+}
+
+// FormatRestartAttempt renders which relaunch this is out of the budget:
+// `attempt 1 of 3`. Both numbers are there because either alone is unreadable —
+// "attempt 3" does not say whether anything follows, and a bare count does not
+// say which one just happened.
+func FormatRestartAttempt(attempt, max int) string {
+	return fmt.Sprintf("attempt %d of %d", attempt, max)
+}
+
+// FormatServiceRestart renders the outcome of one relaunch under `restart:
+// on-failure`, as the one clause the log line, the feed event and any panel
+// share: `restarted (attempt 1 of 3): healthy`, or
+// `restart failed (attempt 3 of 3): not healthy within 60s: ...`.
+//
+// The failure text is whatever the readiness check or the spawn reported,
+// trimmed but otherwise verbatim — it is the only part of the sentence that
+// says what to fix.
+func FormatServiceRestart(attempt, max int, health string, err error) string {
+	when := FormatRestartAttempt(attempt, max)
+	if err == nil {
+		return fmt.Sprintf("restarted (%s): %s", when, health)
+	}
+	cause := strings.TrimSpace(err.Error())
+	if cause == "" {
+		cause = "did not come back"
+	}
+	return fmt.Sprintf("restart failed (%s): %s", when, cause)
 }
 
 // FormatLifetime renders how long a service ran, at the resolution an operator
