@@ -12,6 +12,17 @@ import (
 // point of the state is that every surface agrees — a service that reads
 // `exited (exit 1, lived 7m31s)` in the CLI must not read `failed` in the panel.
 
+// CleanExit reports whether a death was the service deciding it was finished
+// rather than something going wrong: status 0, and an actual status — a process
+// killed by a signal has no exit code, and nothing about a preview service asks
+// to be SIGKILLed.
+//
+// It is the restart policy's first refusal (claimRestartLocked) and it is
+// exported because the surfaces that explain a *refusal* need the same test:
+// "restart attempts exhausted" is only true of a death the budget was the
+// reason for, and a clean exit is never restarted however much budget is left.
+func CleanExit(exitCode *int) bool { return exitCode != nil && *exitCode == 0 }
+
 // FormatExitCause renders why a service's process is gone: its exit status when
 // it had one, else the cause from the wait error (a signal, typically), else a
 // bare "exited".

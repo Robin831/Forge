@@ -29,6 +29,25 @@ func TestHelperListener(t *testing.T) {
 	if port == "" {
 		t.Skip("helper process; only runs when spawned by a preview")
 	}
+	// KILN_HELPER_SULK_ONCE is the inverse of KILN_HELPER_DIE_ONCE and names the
+	// same marker file: once the first life has created it, every later life
+	// runs without ever binding the port, so a relaunch spawns fine and then
+	// never passes its readiness check. That is the failed-relaunch case — the
+	// one that must be terminal — and the sulking process stays alive past the
+	// readiness timeout so its eventual death can prove no watcher was re-armed.
+	if marker := os.Getenv("KILN_HELPER_SULK_ONCE"); marker != "" {
+		if _, err := os.Stat(marker); err == nil {
+			d := 3 * time.Second
+			if raw := os.Getenv("KILN_HELPER_SULK_FOR"); raw != "" {
+				if parsed, err := time.ParseDuration(raw); err == nil {
+					d = parsed
+				}
+			}
+			time.Sleep(d)
+			os.Exit(3)
+		}
+	}
+
 	ln, err := net.Listen("tcp", net.JoinHostPort("127.0.0.1", port))
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "helper: listen on %s: %v\n", port, err)

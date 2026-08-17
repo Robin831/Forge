@@ -73,6 +73,30 @@ func TestHandlePreviewServiceExit_AnnouncesAnExhaustedBudget(t *testing.T) {
 	assert.Contains(t, events[0].Message, "restart attempts exhausted (3 of 3)")
 }
 
+// The restart policy refuses a clean exit before it ever looks at the budget, so
+// a service that flapped through its allowance and later exited 0 deliberately
+// was not refused for want of attempts. Naming the budget there would tell the
+// operator a relaunch was wanted and unaffordable, when none was ever due.
+func TestHandlePreviewServiceExit_DoesNotBlameTheBudgetForACleanExit(t *testing.T) {
+	d, db := newPreviewExitDaemon(t)
+	clean := 0
+
+	d.handlePreviewServiceExit(kiln.ServiceExit{
+		BeadID:      "Forge-abc1",
+		Anvil:       "forge",
+		Service:     "client",
+		ExitCode:    &clean,
+		Detail:      "exited (exit 0, lived 41m12s)",
+		Status:      state.PreviewDegraded,
+		Restarts:    3,
+		MaxRestarts: 3,
+	})
+
+	events := previewExitEvents(t, db)
+	require.Len(t, events, 1)
+	assert.NotContains(t, events[0].Message, "exhausted")
+}
+
 // A service on the default policy — the overwhelming majority — must not grow a
 // clause about a feature it did not turn on.
 func TestHandlePreviewServiceExit_SaysNothingAboutRestartsByDefault(t *testing.T) {

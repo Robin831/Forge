@@ -558,10 +558,19 @@ func (d *Daemon) handlePreviewServiceExit(exit kiln.ServiceExit) {
 // a death Kiln is about to recover from is not something to touch yet, while a
 // death that spent the last of the budget is the end of the automatic story and
 // the beginning of theirs.
+//
+// The counters alone cannot tell those apart from a *third* case: the restart
+// policy refuses a clean exit before it ever looks at the budget, so a service
+// that flapped through its three attempts and later exited 0 deliberately was
+// not refused for want of budget. Saying "restart attempts exhausted" there
+// would name a cause that had nothing to do with it, so kiln.CleanExit — the
+// same test claimRestartLocked makes — is applied first.
 func previewRestartNote(exit kiln.ServiceExit) string {
 	switch {
 	case exit.Restarting:
 		return "restarting (" + kiln.FormatRestartAttempt(exit.Restarts, exit.MaxRestarts) + ")"
+	case kiln.CleanExit(exit.ExitCode):
+		return ""
 	case exit.MaxRestarts > 0 && exit.Restarts >= exit.MaxRestarts:
 		return fmt.Sprintf("restart attempts exhausted (%d of %d)", exit.Restarts, exit.MaxRestarts)
 	default:

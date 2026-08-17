@@ -124,9 +124,11 @@ type Service struct {
 func (s Service) RestartsOnFailure() bool { return s.Restart == RestartOnFailure }
 
 // RestartBudget is how many relaunches this service is allowed, 0 for a service
-// that did not opt in. It reads the normalized value, so a manifest that set
-// `restart: on-failure` without a `max_restarts` reports DefaultMaxRestarts
-// rather than the zero the YAML carried.
+// that did not opt in. It is where the defaulting lives rather than a reader of
+// it — normalize() calls this to *produce* the normalized MaxRestarts — so it is
+// safe on a pre-normalize Service: a manifest that set `restart: on-failure`
+// without a `max_restarts` reports DefaultMaxRestarts either way, rather than
+// the zero the YAML carried.
 func (s Service) RestartBudget() int {
 	if !s.RestartsOnFailure() {
 		return 0

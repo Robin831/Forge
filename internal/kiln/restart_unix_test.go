@@ -4,8 +4,10 @@ package kiln
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -117,6 +119,13 @@ services:
 		t.Errorf("status after a successful restart = %q, want %q", preview.Status(), state.PreviewRunning)
 	}
 
+	// A relaunch re-runs the stored spec verbatim, so it lands on the same
+	// deterministic log path the dead process wrote to. The supervisor opens it
+	// O_APPEND for exactly this reason: truncating here would erase the last
+	// output of the process whose death is the thing anyone would open the log
+	// to explain.
+	assertLogKeptBothLives(t, "Forge-flaky", "client")
+
 	rec2 := preview.Record()
 	client, _ := rec2.Service("client")
 	if !client.ExitedAt.IsZero() || client.ExitCode != nil {
@@ -157,6 +166,140 @@ services:
 	if got.Detail != "restarted (attempt 1 of 2): healthy" {
 		t.Errorf("detail = %q, want it to name the attempt and the outcome", got.Detail)
 	}
+}
+
+// assertLogKeptBothLives checks that a restarted service's log still holds the
+// banner StartService writes for every life, i.e. that the relaunch appended to
+// the dead process's log rather than truncating it.
+func assertLogKeptBothLives(t *testing.T, beadID, service string) {
+	t.Helper()
+	path, err := ServiceLogPath(beadID, service)
+	if err != nil {
+		t.Fatalf("ServiceLogPath: %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("reading %s: %v", path, err)
+	}
+	if got := strings.Count(string(data), "service "+strconv.Quote(service)+" started"); got != 2 {
+		t.Errorf("service log holds %d start banners, want 2 — the restart truncated the previous life's output:\n%s",
+			got, data)
+	}
+}
+
+// A relaunch that does not come back is the terminal branch of the policy, and
+// it is terminal for a reason that has nothing to do with the budget: a service
+// which spawns and then fails its readiness check is not the flakiness this
+// exists to absorb, so it settles at `failed`, reports Exhausted with attempts
+// still in hand, and — the property that keeps "terminal" true — is not watched
+// again, so the still-running unready process's own death cannot claim another.
+func TestRuntimeDoesNotRetryARelaunchThatNeverComesBack(t *testing.T) {
+	fakeHome(t)
+	worktree := t.TempDir()
+	marker := filepath.Join(t.TempDir(), "first-life")
+	store := &fakeStore{}
+	rt := newTestRuntime(t, store)
+	rec := wireRestarts(rt)
+
+	// The first life serves and then exits 1; every later one never binds the
+	// port at all, so the relaunch spawns and its readiness check times out.
+	manifest := mustParse(t, `
+version: 1
+services:
+  client:
+    command: `+strconv.Quote(helperCommand())+`
+    env:
+      KILN_HELPER_PORT: "{{.Port}}"
+      KILN_HELPER_MODE: "tcp"
+      KILN_HELPER_DIE_AFTER: "500ms"
+      KILN_HELPER_EXIT_CODE: "1"
+      KILN_HELPER_DIE_ONCE: `+strconv.Quote(marker)+`
+      KILN_HELPER_SULK_ONCE: `+strconv.Quote(marker)+`
+      KILN_HELPER_SULK_FOR: "2s"
+    ready_timeout: 1s
+    restart: on-failure
+    max_restarts: 3
+`)
+
+	preview, err := rt.Start(context.Background(), StartRequest{
+		BeadID:       "Forge-norecover",
+		Anvil:        "forge",
+		Branch:       "forge/Forge-norecover",
+		WorktreePath: worktree,
+		Manifest:     manifest,
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(func() { _ = preview.Stop() })
+
+	waitFor(t, 30*time.Second, "the relaunch to fail its readiness check", func() bool {
+		_, restarts := rec.snapshot()
+		return len(restarts) == 1
+	})
+
+	got := restarts1(t, rec)
+	if got.Err == nil {
+		t.Errorf("a relaunch that never became healthy reported no error: %+v", got)
+	}
+	if got.Health != state.PreviewServiceFailed {
+		t.Errorf("health = %q, want %q — the service did not come up, which is what failed means everywhere else",
+			got.Health, state.PreviewServiceFailed)
+	}
+	// Exhausted is about the outcome, not the budget: two attempts are left and
+	// neither will be taken.
+	if !got.Exhausted {
+		t.Errorf("a relaunch that did not come back was not reported as terminal: %+v", got)
+	}
+	if got.Attempt != 1 || got.MaxRestarts != 3 {
+		t.Errorf("restart report wrong: %+v", got)
+	}
+	if got.Status != state.PreviewFailed {
+		t.Errorf("preview status = %q, want %q with nothing serving", got.Status, state.PreviewFailed)
+	}
+
+	svc, _ := preview.Record().Service("client")
+	if svc.Health != state.PreviewServiceFailed {
+		t.Errorf("record health = %q, want %q — not exited, and not left at starting",
+			svc.Health, state.PreviewServiceFailed)
+	}
+	if svc.Error == "" {
+		t.Error("a failed relaunch left no reason on the record")
+	}
+	if svc.Restarts != 1 {
+		t.Errorf("restarts = %d, want 1", svc.Restarts)
+	}
+	if preview.EntryURL() != "" {
+		t.Error("an entry URL was handed out for a service that never came back")
+	}
+
+	// The unready process is still alive at this point and dies on its own two
+	// seconds in. Nothing may follow it: a re-armed watcher would consume that
+	// death, claim attempt 2 and loop straight past the terminal outcome above.
+	time.Sleep(2500 * time.Millisecond)
+	exits, restarts := rec.snapshot()
+	if len(exits) != 1 {
+		t.Errorf("OnServiceExit fired %d times, want 1 — the failed relaunch's death was watched: %+v",
+			len(exits), exits)
+	}
+	if len(restarts) != 1 {
+		t.Errorf("OnServiceRestart fired %d times, want 1 — a terminal relaunch was retried: %+v",
+			len(restarts), restarts)
+	}
+	if last := store.last(t); last.Status != state.PreviewFailed {
+		t.Errorf("persisted status = %q, want %q", last.Status, state.PreviewFailed)
+	}
+}
+
+// restarts1 returns the single recorded restart, failing the test if there is
+// not exactly one.
+func restarts1(t *testing.T, rec *restartRecorder) ServiceRestart {
+	t.Helper()
+	_, restarts := rec.snapshot()
+	if len(restarts) != 1 {
+		t.Fatalf("OnServiceRestart fired %d times, want 1: %+v", len(restarts), restarts)
+	}
+	return restarts[0]
 }
 
 // The default policy is unchanged, which is the regression guard for Forge-bci1:

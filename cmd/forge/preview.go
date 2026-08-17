@@ -374,18 +374,23 @@ func previewServiceIssue(svc ipc.PreviewServiceInfo) string {
 		return ""
 	}
 	if svc.Restarts > 0 {
-		detail += fmt.Sprintf(" [%s]", pluralizeRestarts(svc.Restarts))
+		detail += fmt.Sprintf(" [%s]", plural(svc.Restarts, "restart"))
 	}
 	return detail
 }
 
-// pluralizeRestarts renders the restart count as words rather than a bare
-// number, so the bracket reads as a fact instead of an unlabelled figure.
-func pluralizeRestarts(n int) string {
+// plural renders a count with its noun rather than as a bare number, so the
+// bracket reads as a fact instead of an unlabelled figure.
+//
+// It is deliberately the same shape as questgiver's plural(n, noun) rather than
+// a restart-specific helper: the repo already carries three near-identical
+// package-local pluralizers, and a fourth in a shape of its own would make
+// folding them into one shared helper a rewrite instead of a move (Forge-dwpk).
+func plural(n int, noun string) string {
 	if n == 1 {
-		return "1 restart"
+		return fmt.Sprintf("1 %s", noun)
 	}
-	return fmt.Sprintf("%d restarts", n)
+	return fmt.Sprintf("%d %ss", n, noun)
 }
 
 // formatPreviewIdle renders the countdown to the idle reaper. A nil countdown

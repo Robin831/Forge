@@ -65,8 +65,11 @@ func (s *previewService) claimRestartLocked(exitCode *int) (attempt int, restart
 		return 0, false
 	}
 	// A clean exit is the service doing what it was told. Restarting it would
-	// argue with a decision the process already made.
-	if exitCode != nil && *exitCode == 0 {
+	// argue with a decision the process already made. This is checked before
+	// the budget, so a clean exit is refused whether or not any attempts are
+	// left — which is why the surfaces that name a refusal apply CleanExit
+	// before reading the counters.
+	if CleanExit(exitCode) {
 		return 0, false
 	}
 	if s.restarts >= s.spec.Service.MaxRestarts {
@@ -114,8 +117,16 @@ func (p *Preview) restartService(i, attempt int) {
 	if !p.adoptRestart(i, proc) {
 		// A teardown began while the process was starting. Stop took its
 		// snapshot before this process existed, so nothing else will reap it —
-		// the context kill would, eventually, but stopping it here means the
-		// group is gone before Stop returns rather than after.
+		// the context kill would, eventually, and stopping it here gets the
+		// group gone sooner than that kill alone would.
+		//
+		// It is explicitly *not* a guarantee that the group is gone before Stop
+		// returns: this runs on the watcher goroutine, which Stop does not join,
+		// so a caller that removes the checkout the moment Stop returns can
+		// overlap this by up to stopTimeout. Bounding that properly would mean
+		// Stop waiting on in-flight restarts, which it cannot do before
+		// cancelling p.procCtx — the backoff is what such a wait would deadlock
+		// against.
 		_ = proc.Stop(p.runtime.stopTimeout)
 		return
 	}
@@ -191,7 +202,7 @@ func (p *Preview) adoptRestart(i int, proc *ServiceProcess) bool {
 	p.mu.Unlock()
 
 	if persistErr != nil {
-		p.runtime.logger.Warn("kiln: persisting a preview service restart failed",
+		p.runtime.logger.Warn("kiln: persisting the start of a preview service restart failed",
 			"bead", p.BeadID, "service", proc.Name, "error", persistErr)
 	}
 	return true
@@ -228,7 +239,7 @@ func (p *Preview) finishRestart(i, attempt, max int, proc *ServiceProcess, waitE
 	p.mu.Unlock()
 
 	if persistErr != nil {
-		p.runtime.logger.Warn("kiln: persisting a preview service restart failed",
+		p.runtime.logger.Warn("kiln: persisting the outcome of a preview service restart failed",
 			"bead", p.BeadID, "service", name, "error", persistErr)
 	}
 
