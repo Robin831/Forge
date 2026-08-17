@@ -96,16 +96,16 @@ type activityNavItem struct {
 type AttentionReason int
 
 const (
-	AttentionUnknown             AttentionReason = iota
-	AttentionDispatchExhausted                   // Circuit breaker tripped after repeated dispatch failures
-	AttentionRecoveryExhausted                   // Recovery failed after repeated attempts
-	AttentionCIFixExhausted                      // CI fix attempts exhausted
-	AttentionReviewFixExhausted                  // Review fix attempts exhausted
-	AttentionRebaseExhausted                     // Rebase attempts exhausted
-	AttentionClarification                       // Bead flagged as needing clarification
-	AttentionStalled                             // Worker stalled (no log activity)
-	AttentionAnvilWedged                         // Anvil's beads database is mid-merge with unresolved conflicts
-	AttentionSelfDeploy                          // Self-deploy deferred, failed, or rolled back — the binary is not the merged code
+	AttentionUnknown            AttentionReason = iota
+	AttentionDispatchExhausted                  // Circuit breaker tripped after repeated dispatch failures
+	AttentionRecoveryExhausted                  // Recovery failed after repeated attempts
+	AttentionCIFixExhausted                     // CI fix attempts exhausted
+	AttentionReviewFixExhausted                 // Review fix attempts exhausted
+	AttentionRebaseExhausted                    // Rebase attempts exhausted
+	AttentionClarification                      // Bead flagged as needing clarification
+	AttentionStalled                            // Worker stalled (no log activity)
+	AttentionAnvilWedged                        // Anvil's beads database is mid-merge with unresolved conflicts
+	AttentionSelfDeploy                         // Self-deploy deferred, failed, or rolled back — the binary is not the merged code
 )
 
 // NeedsAttentionItem represents a bead requiring human attention.
@@ -246,7 +246,7 @@ type CrucibleItem struct {
 type ActionMenuChoice int
 
 const (
-	ActionRetry       ActionMenuChoice = iota
+	ActionRetry ActionMenuChoice = iota
 	ActionDismiss
 	ActionViewLogs
 	ActionWardenRerun
@@ -295,7 +295,7 @@ type CrucibleActionMenuChoice int
 
 const (
 	CrucibleActionResume CrucibleActionMenuChoice = iota // Resume — retry parent to re-enter crucible loop
-	CrucibleActionStop                                    // Stop — close the parent bead
+	CrucibleActionStop                                   // Stop — close the parent bead
 
 	crucibleActionMenuCount = CrucibleActionStop + 1
 )
@@ -410,12 +410,12 @@ type Model struct {
 	OnStopBead func(beadID, anvil string) (string, error)
 
 	// Callbacks for Needs Attention actions (set by the caller)
-	OnRetryBead     func(beadID, anvil string, prID int) (string, error)
-	OnDismissBead   func(beadID, anvil string, prID int) error
-	OnViewLogs      func(beadID string) (logPath string, lines []string)
-	OnWardenRerun   func(beadID, anvil string) error
-	OnApproveAsIs   func(beadID, anvil string) error
-	OnForceSmith    func(beadID, anvil, userNote string) error
+	OnRetryBead   func(beadID, anvil string, prID int) (string, error)
+	OnDismissBead func(beadID, anvil string, prID int) error
+	OnViewLogs    func(beadID string) (logPath string, lines []string)
+	OnWardenRerun func(beadID, anvil string) error
+	OnApproveAsIs func(beadID, anvil string) error
+	OnForceSmith  func(beadID, anvil, userNote string) error
 
 	// Callback for tagging a bead (set by the caller).
 	// Called with (beadID, anvil) when user presses 'l' on an unlabeled bead.
@@ -455,23 +455,23 @@ type Model struct {
 	OnAppendNotes func(beadID, anvil, notes string) (string, error)
 
 	// State
-	focused          Panel
-	queueVP          scrollViewport
-	crucibleVP       scrollViewport
-	needsAttnVP      scrollViewport
-	readyToMergeVP   scrollViewport
-	workerTable      table.Model
+	focused           Panel
+	queueVP           scrollViewport
+	crucibleVP        scrollViewport
+	needsAttnVP       scrollViewport
+	readyToMergeVP    scrollViewport
+	workerTable       table.Model
 	activityVP        scrollViewport
 	activityNavItems  []activityNavItem // flat display items for Live Activity
 	activityLineCount int               // total rendered lines (line-based scrolling)
-	eventScroll      int
-	eventAutoScroll  bool // true = follow new events
-	prevEventCount   int  // track event count for auto-scroll
-	width          int
-	height         int
-	ready          bool
-	refreshing     bool   // true while a FetchAll is in flight; prevents concurrent refreshes
-	focusedBeadID  string // BeadID of the queue item under the cursor; restored after refresh
+	eventScroll       int
+	eventAutoScroll   bool // true = follow new events
+	prevEventCount    int  // track event count for auto-scroll
+	width             int
+	height            int
+	ready             bool
+	refreshing        bool   // true while a FetchAll is in flight; prevents concurrent refreshes
+	focusedBeadID     string // BeadID of the queue item under the cursor; restored after refresh
 
 	// Action menu overlay state (Needs Attention)
 	actionForm   *huh.Form
@@ -603,7 +603,6 @@ type Model struct {
 
 	// Incremental log file reader — avoids re-reading entire log files on each tick.
 	logCache *LogTailerCache
-
 }
 
 // NewModel creates a new Hearth TUI model.
@@ -2744,6 +2743,7 @@ func (m *Model) renderOrphanDialog() string {
 
 	return actionMenuStyle.Render(sb.String())
 }
+
 // executeOrphanAction sends the user's resolution choice to the daemon.
 func (m *Model) executeOrphanAction(choice OrphanDialogChoice) tea.Cmd {
 	if m.orphanTarget == nil {
@@ -2940,6 +2940,7 @@ func (m *Model) closeSelectedQueueItem() tea.Cmd {
 		return QueueActionResultMsg{BeadID: beadID, Action: "close", Err: err, RequestID: reqID}
 	}
 }
+
 // stopSelectedQueueItem stops all processing of the bead stored in queueActionTarget.
 func (m *Model) stopSelectedQueueItem() tea.Cmd {
 	if m.queueActionTarget == nil {
@@ -3211,6 +3212,7 @@ func (m *Model) executePRAction(choice PRActionMenuChoice) tea.Cmd {
 		return PRActionResultMsg{PRNumber: item.PRNumber, Action: action, Err: err, RequestID: reqID}
 	}
 }
+
 // The choice pointer is bound to the form's value so huh updates it on selection.
 func buildQueueActionForm(item *QueueItem, choice *QueueActionMenuChoice) *huh.Form {
 	return huh.NewForm(
@@ -3301,6 +3303,7 @@ func (m *Model) renderForceSmithNoteForm() string {
 	sb.WriteString("\n\n" + dimStyle.Render("enter: submit  esc: cancel"))
 	return actionMenuStyle.Render(sb.String())
 }
+
 // executeMergeAction returns a tea.Cmd that runs the merge IPC call asynchronously,
 // keeping the Bubbletea UI responsive during the (potentially 60s) operation.
 func (m *Model) executeMergeAction(choice MergeMenuChoice) tea.Cmd {
@@ -3472,6 +3475,7 @@ func (m *Model) renderNotesOverlay() string {
 	content := strings.Join(lines, "\n")
 	return logViewerStyle.Width(overlayWidth).Height(overlayHeight).Render(content)
 }
+
 var (
 	sectionHeaderReady      = lipgloss.NewStyle().Bold(true).Foreground(colorSuccess).Render("── Ready ──")
 	sectionHeaderUnlabeled  = lipgloss.NewStyle().Bold(true).Foreground(colorWarning).Render("── Unlabeled ──")
@@ -4100,8 +4104,8 @@ func (m *Model) renderCenterColumn(width, topHeight, bottomHeight int) string {
 		if numRows > 4 {
 			numRows = 4
 		}
-		wicketInnerH := numRows + 1           // header(1) + data rows
-		wicketTotalH := wicketInnerH + 2       // inner + border(2)
+		wicketInnerH := numRows + 1      // header(1) + data rows
+		wicketTotalH := wicketInnerH + 2 // inner + border(2)
 		workerHeight := fullHeight - usagePanelHeight - wicketTotalH
 		if workerHeight < 5 {
 			// Not enough vertical space — fall back to two-panel layout.
