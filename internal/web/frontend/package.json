@@ -12,7 +12,7 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "lucide-react": "^1.29.0",
+    "lucide-react": "^1.31.0",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
     "react-markdown": "^10.1.0",
@@ -20,10 +20,10 @@
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.3.3",
-    "@testing-library/jest-dom": "^7.0.0",
+    "@testing-library/jest-dom": "^7.0.1",
     "@testing-library/react": "^16.1.0",
-    "@testing-library/user-event": "^14.6.3",
-    "@types/node": "^26.1.2",
+    "@testing-library/user-event": "^14.6.4",
+    "@types/node": "^26.2.0",
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.4",
     "@vitejs/plugin-react": "^6.0.5",
