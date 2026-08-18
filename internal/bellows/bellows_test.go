@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -2323,8 +2324,14 @@ type detachCase struct {
 	// seed configures the persisted lifecycle counters/mergeability so the
 	// intended branch is the one that fires.
 	seed func(t *testing.T, db *state.DB, prID int)
-	// want is the event the attached arm must emit.
+	// want is the event the attached arm must emit. Empty for a branch that
+	// dispatches nothing and therefore emits no PREvent — the stuck-CI note,
+	// which surfaces in the needs-attention list and the event log instead.
 	want string
+	// check, when non-nil, asserts the arm's side effects outside the event
+	// stream. Run for both arms, so a suppression is proved against the same
+	// state the attached arm proves the fire against.
+	check func(t *testing.T, db *state.DB, pr *state.PR, detached bool)
 }
 
 func detachCases() []detachCase {
@@ -2392,6 +2399,44 @@ func detachCases() []detachCase {
 			},
 			want: EventReviewChanges,
 		},
+		{
+			// The stuck-CI note is the one suppression in this change written as
+			// a per-emit check rather than covered by the detached return, since
+			// the CI verdict is computed ahead of that return to feed the
+			// snapshot. Without a case here neither arm of that check would be
+			// exercised: an inverted condition, or a placement that regressed
+			// below the return, would leave a muted PR re-raising the note.
+			name: "CI stuck (a check queued past the threshold)",
+			status: &vcs.PRStatus{
+				State:   "OPEN",
+				HeadSHA: headSHA,
+				StatusCheckRollup: []vcs.CheckRun{
+					{Name: "build", Status: "COMPLETED", Conclusion: "SUCCESS", HeadSHA: headSHA},
+					{Name: "changelog-check", Status: "QUEUED", HeadSHA: headSHA, StartedAt: time.Now().Add(-2 * time.Hour)},
+				},
+			},
+			seed: func(t *testing.T, db *state.DB, prID int) {
+				require.NoError(t, db.UpdatePRMergeability(prID, true, false, false, false, false, true))
+			},
+			// A wedged run dispatches nothing, so there is no PREvent either
+			// way; the note itself is what the check below asserts on.
+			want: "",
+			check: func(t *testing.T, db *state.DB, pr *state.PR, detached bool) {
+				r, err := db.GetRetry(pr.BeadID, pr.Anvil)
+				require.NoError(t, err)
+				if detached {
+					if r != nil {
+						assert.False(t, r.NeedsHuman,
+							"a detached PR must not raise the stuck-CI note: %s", r.LastError)
+					}
+					return
+				}
+				require.NotNil(t, r, "an attached PR with a wedged run must surface in Needs Attention")
+				assert.True(t, r.NeedsHuman)
+				assert.True(t, strings.HasPrefix(r.LastError, ciStuckAttentionPrefix),
+					"note must carry the stuck-CI marker: %s", r.LastError)
+			},
+		},
 	}
 }
 
@@ -2452,12 +2497,21 @@ func TestCheckPR_Detached_EmitsNoEvents(t *testing.T) {
 					require.NoError(t, err)
 					assert.Equal(t, state.PROpen, updated.Status,
 						"a detached PR must not be flipped to needs_fix — nothing is going to fix it")
+					if tc.check != nil {
+						tc.check(t, db, pr, true)
+					}
 					return
 				}
 
-				assert.Contains(t, events, tc.want,
-					"the attached arm must still emit, or the detached arm proves nothing")
-				assert.NotEmpty(t, logged)
+				if tc.want != "" {
+					assert.Contains(t, events, tc.want,
+						"the attached arm must still emit, or the detached arm proves nothing")
+				}
+				assert.NotEmpty(t, logged,
+					"the attached arm must still log, or the detached arm proves nothing")
+				if tc.check != nil {
+					tc.check(t, db, pr, false)
+				}
 			})
 		}
 	}
@@ -2536,6 +2590,73 @@ func TestCheckPR_Detached_PersistsTerminalState(t *testing.T) {
 	logged, err := db.EventsByBead(pr.BeadID, pr.Anvil, 100)
 	require.NoError(t, err)
 	assert.Empty(t, logged)
+}
+
+// TestCheckPR_Suppressed_TerminalPRDropsMarker covers the bookkeeping half of
+// the suppression path. The marker maps exist so the poll after a suppression
+// lifts can re-seed the snapshot; a PR that merges or closes while suppressed
+// never has such a poll — it leaves the open-PR set for good — so its marker is
+// dropped rather than held for the daemon's lifetime. Both maps go through the
+// same helper, and both are checked here.
+func TestCheckPR_Suppressed_TerminalPRDropsMarker(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		beadID string
+		// detach configures the suppression under test on the inserted PR.
+		detach func(t *testing.T, db *state.DB, prID int)
+		marker func(m *Monitor) map[string]bool
+	}{
+		{
+			name:   "detached",
+			beadID: "forge-detachgone",
+			detach: func(t *testing.T, db *state.DB, prID int) {
+				require.NoError(t, db.UpdatePRBellowsDetached(prID, true))
+			},
+			marker: func(m *Monitor) map[string]bool { return m.wasDetached },
+		},
+		{
+			// InsertPR gives an ext- PR bellows_managed=0, so it is suppressed
+			// by the unmanaged branch without further setup.
+			name:   "external and unmanaged",
+			beadID: "ext-gone",
+			detach: func(t *testing.T, db *state.DB, prID int) {},
+			marker: func(m *Monitor) map[string]bool { return m.wasUnmanaged },
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			db, cleanup := openTempDB(t)
+			defer cleanup()
+
+			pr := &state.PR{
+				Number:    504,
+				Anvil:     "test-anvil",
+				BeadID:    tc.beadID,
+				Branch:    "forge/" + tc.beadID,
+				Status:    state.PROpen,
+				CreatedAt: time.Now(),
+			}
+			require.NoError(t, db.InsertPR(pr))
+			tc.detach(t, db, pr.ID)
+
+			var events []string
+			fake := &fakeVCSProvider{status: &vcs.PRStatus{State: "OPEN"}}
+			m := newDetachTestMonitor(db, fake, &events)
+
+			m.checkAll(context.Background())
+			require.Len(t, tc.marker(m), 1, "an open suppressed PR must be marked, so a resume can re-seed it")
+
+			// The PR merges while still suppressed.
+			fake.status = &vcs.PRStatus{State: "MERGED"}
+			m.checkAll(context.Background())
+
+			updated, err := db.GetPRByID(pr.ID)
+			require.NoError(t, err)
+			require.Equal(t, state.PRMerged, updated.Status)
+			assert.Empty(t, tc.marker(m),
+				"a PR that reached a terminal state has no later poll to consume its marker")
+			assert.Empty(t, events, "a suppressed PR must stay silent through its merge")
+		})
+	}
 }
 
 // TestCheckPR_DetachedResume_ReemitsStandingProblems covers the resume half:

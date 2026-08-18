@@ -738,6 +738,55 @@ func (m *Monitor) checkAll(ctx context.Context) {
 	}
 }
 
+// suppress records that this PR is being passed over — external-and-unmanaged,
+// or detached — and refreshes the only DB state bellows still owes it:
+// mergeability plus terminal status. A passed-over PR is unwatched, not
+// unknown, so the PR panel keeps telling the truth about it while nothing is
+// emitted and no lifecycle worker is dispatched.
+//
+// The marker in seen is what the matching resumeFromSuppression call reads on
+// the poll after the suppression lifts. A PR that has reached a terminal state
+// drops its marker instead: it leaves OpenPRs() for good, so nothing will ever
+// consume the marker and keeping it would grow the map by one entry per merged
+// PR for the daemon's lifetime.
+//
+// Both maps are only ever touched from checkPR, which runs on the single
+// checkAll goroutine, so they need no lock of their own — unlike lastStatuses,
+// which ResetPRState can reach concurrently.
+func (m *Monitor) suppress(seen map[string]bool, key string, pr *state.PR, snap *prSnapshot, ciInProgress bool) {
+	seen[key] = true
+	_ = m.db.UpdatePRMergeability(pr.ID, snap.CIPassing && !ciInProgress, snap.IsConflicting, snap.HasUnresolvedThreads, snap.HasPendingReviews, snap.HasApproval, snap.AssayUpToDate)
+	switch {
+	case snap.IsMerged:
+		_ = m.db.UpdatePRStatus(pr.ID, state.PRMerged)
+	case snap.IsClosed:
+		_ = m.db.UpdatePRStatus(pr.ID, state.PRClosed)
+	default:
+		return
+	}
+	delete(seen, key)
+}
+
+// resumeFromSuppression reports whether key was suppressed by the given map on
+// an earlier poll and, when it was, clears both the marker and the cached
+// snapshot so the caller can re-enter checkPR and run the nil-snapshot seeding
+// path. Every problem the PR accumulated while suppressed is then re-detected
+// as a fresh transition rather than sitting there as state bellows believes it
+// has already seen.
+//
+// Deleting the marker before the caller recurses is what bounds that recursion
+// to a single re-entry.
+func (m *Monitor) resumeFromSuppression(seen map[string]bool, key string) bool {
+	if !seen[key] {
+		return false
+	}
+	delete(seen, key)
+	m.mu.Lock()
+	delete(m.lastStatuses, key)
+	m.mu.Unlock()
+	return true
+}
+
 // checkPR polls a single PR and emits events for any state changes.
 // dailyAssayCost is the precomputed global Assay cost for the current day,
 // queried once per checkAll cycle to avoid redundant per-PR queries. A nil
@@ -911,11 +960,7 @@ func (m *Monitor) checkPR(ctx context.Context, pr *state.PR, dailyAssayCost *flo
 	// snapshot so the seeding logic runs fresh and detects pre-existing
 	// issues (unresolved threads, CI failures, conflicts) as transitions.
 	if strings.HasPrefix(pr.BeadID, "ext-") && pr.BellowsManaged {
-		if _, wasUnmanaged := m.wasUnmanaged[key]; wasUnmanaged {
-			delete(m.wasUnmanaged, key)
-			m.mu.Lock()
-			delete(m.lastStatuses, key)
-			m.mu.Unlock()
+		if m.resumeFromSuppression(m.wasUnmanaged, key) {
 			// Re-enter checkPR so the nil-snapshot seeding path runs.
 			m.checkPR(ctx, pr, dailyAssayCost)
 			return
@@ -929,11 +974,7 @@ func (m *Monitor) checkPR(ctx context.Context, pr *state.PR, dailyAssayCost *flo
 	// while nobody was listening. Clearing the snapshot re-seeds from the DB, so
 	// the problems that outlived the mute are re-detected as fresh transitions.
 	if !pr.BellowsDetached {
-		if _, wasDetached := m.wasDetached[key]; wasDetached {
-			delete(m.wasDetached, key)
-			m.mu.Lock()
-			delete(m.lastStatuses, key)
-			m.mu.Unlock()
+		if m.resumeFromSuppression(m.wasDetached, key) {
 			// Re-enter checkPR so the nil-snapshot seeding path runs.
 			m.checkPR(ctx, pr, dailyAssayCost)
 			return
@@ -945,13 +986,7 @@ func (m *Monitor) checkPR(ctx context.Context, pr *state.PR, dailyAssayCost *flo
 	// trigger lifecycle workers (quench, burnish, rebase). Persist their
 	// mergeability state and return early.
 	if strings.HasPrefix(pr.BeadID, "ext-") && !pr.BellowsManaged {
-		m.wasUnmanaged[key] = true
-		_ = m.db.UpdatePRMergeability(pr.ID, newSnap.CIPassing && !ciInProgress, newSnap.IsConflicting, newSnap.HasUnresolvedThreads, newSnap.HasPendingReviews, newSnap.HasApproval, newSnap.AssayUpToDate)
-		if newSnap.IsMerged {
-			_ = m.db.UpdatePRStatus(pr.ID, state.PRMerged)
-		} else if newSnap.IsClosed {
-			_ = m.db.UpdatePRStatus(pr.ID, state.PRClosed)
-		}
+		m.suppress(m.wasUnmanaged, key, pr, newSnap, ciInProgress)
 		return
 	}
 
@@ -968,13 +1003,7 @@ func (m *Monitor) checkPR(ctx context.Context, pr *state.PR, dailyAssayCost *flo
 	// per-emit check: those fire on unchanged state, so a detached PR with a
 	// standing problem would otherwise re-announce it on every single poll.
 	if pr.BellowsDetached {
-		m.wasDetached[key] = true
-		_ = m.db.UpdatePRMergeability(pr.ID, newSnap.CIPassing && !ciInProgress, newSnap.IsConflicting, newSnap.HasUnresolvedThreads, newSnap.HasPendingReviews, newSnap.HasApproval, newSnap.AssayUpToDate)
-		if newSnap.IsMerged {
-			_ = m.db.UpdatePRStatus(pr.ID, state.PRMerged)
-		} else if newSnap.IsClosed {
-			_ = m.db.UpdatePRStatus(pr.ID, state.PRClosed)
-		}
+		m.suppress(m.wasDetached, key, pr, newSnap, ciInProgress)
 		return
 	}
 
