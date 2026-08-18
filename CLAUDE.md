@@ -104,7 +104,8 @@ Forge is a **Go orchestrator daemon** that autonomously drives Claude Code agent
 | `internal/termtext` | The one stripper for text Forge did not write but renders into a terminal — `Line` removes escape sequences whole (CSI including the private-parameter bytes `<`/`=`/`>`, OSC/DCS/PM/APC/SOS, the bare two-byte forms), spaces line breaks and tabs, and drops every remaining non-printable rune. It is one package rather than one per surface because it was two: Hearth's bead-title stripper handled only CSI while Assay's feed-message stripper handled the string sequences too, so whichever surface a hostile string reached decided how much of it survived |
 | `internal/hooks` | Pipeline hook execution — shell commands before/after each stage |
 | `internal/bellows` | Monitors open PRs for CI failures, review comments, and merge conflicts; gates Assay review runs. The CI gate that feeds Quench is head-scoped (`ci.go`): check results reported against a superseded commit are discarded, a head whose runs have not finished is `pending` (never `failed`), and a check queued past 30 minutes is `stuck` — surfaced as a Needs Attention note instead of dispatching a fix worker |
-| `internal/crucible` | Orchestrates parent beads with children on feature branches — auto-detects, sequences, merges |
+| `internal/crucible` | Orchestrates parent beads with children on feature branches — sequences and merges them. Candidacy is **opt-in** (`IsCrucibleCandidate` = children AND `epic.IsOrchestrated`): having children is not enough, since parent/child relations are used for plain grouping far more often than for a shared branch |
+| `internal/epic` | The one place the epic opt-in and the epic branch name are decided. `IsOrchestrated(labels)` is true only for the `crucible` label or an explicit `epic-branch:<name>` — a bead's issue type is deliberately not an input, so `issue_type: epic` alone no longer routes its children anywhere; both forms are whitespace-trimmed the same way, so a padded label cannot opt in through one and not the other. `BranchName(id, labels)` is the single source of truth the poller (which stamps children with it) and the Crucible (which creates it) both call: they used to derive `epic/<id>` and `feature/<id>` independently, so a child dispatched outside the Crucible hard-failed on "base branch not found on origin" and burned the dispatch circuit breaker. Centralising it is also the one place a label-supplied name can be screened, which `ValidBranchName` does — the value is stamped onto children as a PR base, handed to `git worktree add` and folded into a worktree path, so a name git would reject or read as a flag (`epic-branch:--force`, `../../x`) never leaves `ExplicitBranch`: the label still counts as an opt-in, the branch falls back to the derived name |
 | `internal/depcheck` | Multi-language dependency update scanner (Go, .NET, Node) — creates beads for outdated deps. The npm half syncs `node_modules` with `npm ci --ignore-scripts` before reading `npm outdated`, so it is gated on a `PreviewLivenessFunc` the daemon injects (`SetPreviewLiveness`, nil = never blocked): an anvil with a live Kiln preview linked into its `node_modules` is skipped for the whole cycle, naming the holding bead in the log, rather than having `npm ci` delete that tree through the link. Go and .NET scanning are never gated |
 | `internal/vulncheck` | Vulnerability scanning via `govulncheck` — creates prioritized beads |
 | `internal/wicket` | GitHub issue triage monitor — polls repos for new issues, AI-classifies them, and creates beads or requests clarification |
@@ -112,7 +113,7 @@ Forge is a **Go orchestrator daemon** that autonomously drives Claude Code agent
 | `internal/quench` | CI failure fix worker — spawns Smith with targeted fix prompt |
 | `internal/burnish` | Review comment fix worker — addresses PR review feedback. Its verification (Temper between Smith's commit and the push) is **advisory**, unlike the pipeline's: every burnish output lands on an open PR that humans, Copilot and Assay review again. So a verification that never completes is re-run (`burnish_verify_retries`, default 1) and then, still timing out, the commit is **pushed marked unverified** (`review_fix_unverified_push` + Needs Attention) rather than discarded — and burnish never loops back to Smith on a timeout, since a timeout says nothing about the diff. A fix commit that reaches neither verification nor the remote sets `FixResult.UnpushedHead`, which is what stops the worktree being torn down over it (`review_fix_work_preserved`). The old path did the opposite of all three: WARN, skip the push, delete the worktree, report success — a finished fix left as an unreferenced object while the loop re-derived it every cycle (Forge-xl50) |
 | `internal/rebase` | Conflict rebase handling for merge conflicts |
-| `internal/poller` | Calls `bd ready` to get available beads from an anvil; detects Crucible candidates |
+| `internal/poller` | Calls `bd ready` to get available beads from an anvil; detects Crucible candidates. `ResolveEpicBranches` stamps a child with its parent's branch **only** when the parent opted in, so by default `EpicBranch` stays empty and the child flows through the normal pipeline to main. It finds the parent through the child's own `Parent` field or a `blocks`/`parent-child` dependency entry (`ParentCandidates`) — never through `Blocks`, which `pollAnvil` has already overwritten with the inverted meaning "my children" — and records **which** candidate resolved on `EpicParent`, since `ParentCandidates` is ordered by edge, not by opt-in: a `bd dep add` sequencing edge is `blocks`-typed and routinely precedes the labeled parent, so re-deriving the answer later names an unrelated bead. `OpenChildren` is the wider question `Blocks` cannot answer — `Blocks` is reconstructed from the current poll batch, so "no children are ready" and "no children exist" are the same empty set there, and only the second means an epic has nothing left to orchestrate |
 | `internal/anvilhealth` | Wedged-anvil detection — one `dolt_conflicts` query per anvil to spot a beads database left mid-merge with unresolved conflicts (every `bd` write against it fails). Detection only; resolution stays with the operator |
 | `internal/worktree` | Creates/removes `git worktree` branches for each bead. `RemoveIfPushed` (`unpushed.go`) is `Remove` plus one invariant — a worktree whose HEAD is not *provably* on the remote (an ancestor of `origin/<branch>`, or contained in some other remote-tracking branch) is never deleted; it returns `*UnpushedHeadError` naming the SHA and the checkout so recovery is a cherry-pick rather than an excavation of `git fsck --lost-found`. Anything the check cannot prove counts as unpushed: a preserved worktree costs one directory, a wrong removal costs the work. The daemon routes the **review-fix** teardown through it (`removeLifecycleWorktree`); quench and rebase still remove unconditionally, since their push semantics are their own decision. Also materializes Kiln's detached preview checkouts under `<anvil>/.previews/<beadID>` (`CreateDetached`/`RemoveDetached`) — separate directory, detached HEAD, never touches the worker worktree lifecycle |
 | `internal/state` | SQLite at `~/.forge/state.db` — workers, prs, events, retries, costs |
@@ -206,10 +207,31 @@ bd ready (poller) → pipeline.Run()
         clearing both once the close lands
   → worktree.Remove
 
-Crucible path (parent beads with children):
-  bd ready (poller) → detect bead.Blocks (children)
+Crucible path (parent beads with children AND the `crucible` opt-in label):
+  bd ready (poller) → detect bead.Blocks (children) + epic.IsOrchestrated(labels)
+    → children of an orchestrating parent are withheld from the dispatch loop
+      (crucibleOwnedChildren) so one poll cycle never runs a child twice —
+      the opt-in label is what makes a parent an owner, not crucible_enabled,
+      so with the Crucible off the children are held back and the PARENT is
+      escalated to Needs Attention rather than each child hard-failing on
+      "base branch not found on origin" and burning its circuit breaker
+    → everything that would dispatch the opted-in PARENT alone escalates it
+      instead, because the label is what routes the children and a standalone
+      dispatch cannot un-route them: the Crucible disabled, open-but-unready
+      children (poller.OpenChildren — only all-closed/no children runs the
+      ordinary pipeline; a bd error defers instead, so a flaky beads database
+      never burns the dispatch circuit breaker), and a schematic crucible check
+      that declines — the last one sanitized through termtext.Line, since the
+      model's own text now reaches a persisted, rendered Needs Attention row
+    → the first two describe a CONDITION, so they carry the `epic on hold: `
+      prefix and clearResolvedEpicHold withdraws them the moment the parent is
+      orchestrable again (Crucible on + a child ready). needs_human is sticky
+      and those conditions are not, so without it a transiently-blocked child
+      deadlocked the whole epic until an operator ran `forge queue clear`. A
+      schematic decline carries no prefix: a label contradicting its own check
+      is resolved by an operator, not by time
     → crucible.Run()
-      → worktree.CreateEpicBranch (feature/<parent-id>)
+      → worktree.CreateEpicBranch (epic.BranchName: feature/<parent-id>, or epic-branch:<name>)
       → fetch children via bd show, topological sort
       → for each child: pipeline.Run() → vcs.CreatePR(base=feature branch) → vcs.MergePR
       → vcs.CreatePR(feature branch → main) — final PR

@@ -249,9 +249,18 @@ func TestOpenPRForExistingBranch_ResolvesEpicBranch(t *testing.T) {
 		createPRResult: &vcs.PR{Number: 55, URL: "https://example.test/pr/55", Title: "Recover child"},
 	}
 	d, db := newCreatePRTestDaemon(t, anvil, anvilPath, mock)
-	// Override the canned fetcher with one returning a child that blocks the epic.
+	// Override the canned fetcher with one returning a child of the epic. The
+	// parent is named by the child's parent field (and mirrored as a
+	// parent-child dependency), never by Blocks — after pollAnvil that field
+	// means "my children".
 	d.beadFetcher = func(_ context.Context, id, _ string) (poller.Bead, error) {
-		return poller.Bead{ID: id, Title: "Recover child", Description: "desc", IssueType: "task", Blocks: []string{epicID}}, nil
+		return poller.Bead{
+			ID: id, Title: "Recover child", Description: "desc", IssueType: "task",
+			Parent: epicID,
+			Dependencies: []poller.BeadDep{
+				{IssueID: id, DependsOnID: epicID, Type: "parent-child"},
+			},
+		}, nil
 	}
 	require.NoError(t, db.MarkNeedsHuman(beadID, anvil, "PR creation failed"))
 

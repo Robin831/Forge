@@ -7,99 +7,67 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-func TestExtractEpicBranch_ExplicitLabel(t *testing.T) {
+func TestExtractParentBranch_ExplicitLabel(t *testing.T) {
 	b := Bead{
 		ID:        "epic-1",
 		IssueType: "epic",
 		Labels:    []string{"epic-branch:feature/depcheck"},
 	}
-	assert.Equal(t, "feature/depcheck", ExtractEpicBranch(b))
+	assert.Equal(t, "feature/depcheck", ExtractParentBranch(b))
 }
 
-func TestExtractEpicBranch_DefaultConvention(t *testing.T) {
-	b := Bead{
-		ID:        "epic-1",
-		IssueType: "epic",
-		Labels:    []string{"some-other-label"},
-	}
-	assert.Equal(t, "epic/epic-1", ExtractEpicBranch(b))
-}
-
-func TestExtractEpicBranch_NoLabels(t *testing.T) {
-	b := Bead{
-		ID:        "epic-1",
-		IssueType: "epic",
-	}
-	assert.Equal(t, "epic/epic-1", ExtractEpicBranch(b))
-}
-
-func TestExtractEpicBranch_NotEpic(t *testing.T) {
-	b := Bead{
-		ID:        "task-1",
-		IssueType: "task",
-		Labels:    []string{"epic-branch:feature/foo"},
-	}
-	// Even with the label, non-epic beads should return the explicit branch
-	// when the label is present.
-	assert.Equal(t, "feature/foo", ExtractEpicBranch(b))
-}
-
-func TestExtractEpicBranch_NotEpicNoLabel(t *testing.T) {
-	b := Bead{
-		ID:        "task-1",
-		IssueType: "task",
-	}
-	// Non-epic, non-feature beads without an epic-branch label should not assume a default branch.
-	assert.Equal(t, "", ExtractEpicBranch(b))
-}
-
-func TestIsEpicBead(t *testing.T) {
-	tests := []struct {
-		issueType string
-		want      bool
-	}{
-		{"epic", true},
-		{"Epic", true},
-		{"EPIC", true},
-		{"feature", false},
-		{"task", false},
-		{"bug", false},
-		{"", false},
-	}
-	for _, tt := range tests {
-		t.Run(tt.issueType, func(t *testing.T) {
-			b := Bead{IssueType: tt.issueType}
-			assert.Equal(t, tt.want, IsEpicBead(b))
+// The derived name is "feature/<id>" for every parent, epic-typed or not —
+// the same name the Crucible builds. The old "epic/<id>" derivation for epic
+// types disagreed with it, so an independently dispatched child hard-failed
+// with "base branch not found on origin".
+func TestExtractParentBranch_DerivedNameMatchesCrucible(t *testing.T) {
+	for _, issueType := range []string{"epic", "feature", "task", ""} {
+		t.Run(issueType, func(t *testing.T) {
+			b := Bead{ID: "epic-1", IssueType: issueType}
+			assert.Equal(t, "feature/epic-1", ExtractParentBranch(b))
 		})
 	}
 }
 
-func TestExtractEpicBranch_FeatureDefault(t *testing.T) {
-	b := Bead{
-		ID:        "feat-42",
-		IssueType: "feature",
-	}
-	// ExtractEpicBranch preserves legacy behavior: non-epic beads without
-	// an explicit label return empty. Use ExtractParentBranch for defaults.
-	assert.Equal(t, "", ExtractEpicBranch(b))
-}
-
-func TestExtractParentBranch_FeatureDefault(t *testing.T) {
-	b := Bead{
-		ID:        "feat-42",
-		IssueType: "feature",
-	}
-	// ExtractParentBranch returns a default feature/ branch for non-epics.
-	assert.Equal(t, "feature/feat-42", ExtractParentBranch(b))
-}
-
-func TestExtractEpicBranch_CaseInsensitiveLabel(t *testing.T) {
+func TestExtractParentBranch_CaseInsensitiveLabel(t *testing.T) {
 	b := Bead{
 		ID:        "epic-1",
 		IssueType: "epic",
 		Labels:    []string{"Epic-Branch:feature/my-epic"},
 	}
-	assert.Equal(t, "feature/my-epic", ExtractEpicBranch(b))
+	assert.Equal(t, "feature/my-epic", ExtractParentBranch(b))
+}
+
+// TestIsOrchestratedParent covers the inverted default: orchestration is opt-in
+// via the "crucible" label (or an explicit "epic-branch:<name>"), and
+// issue_type: epic alone no longer opts in.
+func TestIsOrchestratedParent(t *testing.T) {
+	tests := []struct {
+		name      string
+		issueType string
+		labels    []string
+		want      bool
+	}{
+		// Not opted in — children dispatch independently to main.
+		{"epic type alone no longer opts in", "epic", nil, false},
+		{"epic type with unrelated labels", "epic", []string{"priority:high"}, false},
+		{"task with blockers (Forge-t6y9)", "task", nil, false},
+		{"feature without label", "feature", nil, false},
+		{"label that merely contains crucible", "task", []string{"crucible-ish"}, false},
+		// Opted in.
+		{"crucible label", "task", []string{"crucible"}, true},
+		{"crucible label uppercase", "epic", []string{"Crucible"}, true},
+		{"crucible label among others", "feature", []string{"ui", "crucible"}, true},
+		{"explicit epic-branch label on task", "task", []string{"epic-branch:feature/foo"}, true},
+		{"explicit epic-branch label on feature", "feature", []string{"epic-branch:feature/bar"}, true},
+		{"case-insensitive epic-branch label", "task", []string{"Epic-Branch:feature/baz"}, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			b := Bead{ID: "b-1", IssueType: tt.issueType, Labels: tt.labels}
+			assert.Equal(t, tt.want, IsOrchestratedParent(b))
+		})
+	}
 }
 
 // mockLookup returns a lookup function that resolves parentID to branch via the
@@ -110,171 +78,176 @@ func mockLookup(epicMap map[string]string) func(ctx context.Context, parentID, a
 	}
 }
 
-func TestResolveEpicBranches_BlocksBased(t *testing.T) {
-	orig := epicBranchLookupFunc
-	defer func() { epicBranchLookupFunc = orig }()
-
-	epicBranchLookupFunc = mockLookup(map[string]string{
+func TestResolveEpicBranches_ParentField(t *testing.T) {
+	defer SetEpicBranchLookupForTest(mockLookup(map[string]string{
 		"epic-1": "feature/my-epic",
-	})
+	}))()
 
 	beads := []Bead{
-		{ID: "task-1", Anvil: "repo", Blocks: []string{"epic-1"}},
+		{ID: "task-1", Anvil: "repo", Parent: "epic-1"},
 	}
-	paths := map[string]string{"repo": "/tmp/repo"}
-
-	ResolveEpicBranches(context.Background(), beads, paths)
+	ResolveEpicBranches(context.Background(), beads, map[string]string{"repo": "/tmp/repo"})
 
 	assert.Equal(t, "feature/my-epic", beads[0].EpicBranch)
 }
 
-func TestResolveEpicBranches_BlocksNotEpic(t *testing.T) {
-	orig := epicBranchLookupFunc
-	defer func() { epicBranchLookupFunc = orig }()
-
-	epicBranchLookupFunc = mockLookup(map[string]string{
-		// "other-task" is not an epic, so lookup returns ""
-	})
+// A "blocks"/"parent-child" dependency names the parent from the child's side —
+// the same edge pollAnvil walks to rebuild a parent's children.
+func TestResolveEpicBranches_DependencyEdge(t *testing.T) {
+	defer SetEpicBranchLookupForTest(mockLookup(map[string]string{
+		"epic-1": "feature/my-epic",
+	}))()
 
 	beads := []Bead{
-		{ID: "task-1", Anvil: "repo", Blocks: []string{"other-task"}},
+		{ID: "task-1", Anvil: "repo", Dependencies: []BeadDep{
+			{IssueID: "task-1", DependsOnID: "epic-1", Type: "parent-child"},
+		}},
 	}
-	paths := map[string]string{"repo": "/tmp/repo"}
+	ResolveEpicBranches(context.Background(), beads, map[string]string{"repo": "/tmp/repo"})
 
-	ResolveEpicBranches(context.Background(), beads, paths)
+	assert.Equal(t, "feature/my-epic", beads[0].EpicBranch)
+}
+
+// Regression for the inverted-meaning bug: pollAnvil overwrites Blocks with
+// "my children", so ResolveEpicBranches must not read it as "beads I block".
+// A parent whose child happens to be an orchestrated parent itself must not
+// inherit the child's branch.
+func TestResolveEpicBranches_IgnoresBlocksField(t *testing.T) {
+	defer SetEpicBranchLookupForTest(mockLookup(map[string]string{
+		"child-1": "feature/child-epic",
+	}))()
+
+	beads := []Bead{
+		{ID: "parent-1", Anvil: "repo", Blocks: []string{"child-1"}},
+	}
+	ResolveEpicBranches(context.Background(), beads, map[string]string{"repo": "/tmp/repo"})
+
+	assert.Equal(t, "", beads[0].EpicBranch,
+		"Blocks means 'my children' after pollAnvil — it must never resolve a parent branch")
+}
+
+// A parent that has not opted in resolves to "" — the child flows through the
+// normal pipeline: worktree from main, PR to main.
+func TestResolveEpicBranches_UnlabeledParentLeavesChildIndependent(t *testing.T) {
+	defer SetEpicBranchLookupForTest(mockLookup(map[string]string{
+		// lookupEpicBranch returns "" for a parent without the opt-in label.
+	}))()
+
+	beads := []Bead{
+		{ID: "task-1", Anvil: "repo", Parent: "epic-1"},
+	}
+	ResolveEpicBranches(context.Background(), beads, map[string]string{"repo": "/tmp/repo"})
 
 	assert.Equal(t, "", beads[0].EpicBranch)
 }
 
-// TestIsEpicParentBead is a regression test for Forge-t6y9: the guard logic
-// inside lookupEpicBranch must reject regular tasks/features that merely have
-// dependents, returning false so their PR targets main instead of a feature
-// branch. Before the fix this check did not exist and any bead with blockers
-// could mistakenly be treated as an epic parent.
-func TestIsEpicParentBead(t *testing.T) {
-	tests := []struct {
-		name      string
-		issueType string
-		labels    []string
-		want      bool
-	}{
-		// Forge-t6y9 regression: "gnf7" is a regular task with its own blockers —
-		// it must NOT qualify as an epic parent even though it has dependents.
-		{"task with blockers (Forge-t6y9)", "task", nil, false},
-		{"task with unrelated labels", "task", []string{"priority:high"}, false},
-		{"feature without label", "feature", nil, false},
-		// Legitimate epic parents.
-		{"epic type", "epic", nil, true},
-		{"epic type uppercase", "EPIC", nil, true},
-		{"explicit epic-branch label on task", "task", []string{"epic-branch:feature/foo"}, true},
-		{"explicit epic-branch label on feature", "feature", []string{"epic-branch:feature/bar"}, true},
-		{"case-insensitive label", "task", []string{"Epic-Branch:feature/baz"}, true},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			assert.Equal(t, tt.want, isEpicParentBead(tt.issueType, tt.labels))
-		})
-	}
-}
-
-// TestResolveEpicBranches_RegularDependencyChainNeverUsesFeatureBranch verifies
-// the ResolveEpicBranches routing layer: when lookupEpicBranch (correctly)
-// returns "" for a non-epic bead, no EpicBranch is set on the child.
-func TestResolveEpicBranches_RegularDependencyChainNeverUsesFeatureBranch(t *testing.T) {
-	orig := epicBranchLookupFunc
-	defer func() { epicBranchLookupFunc = orig }()
-
-	epicBranchLookupFunc = mockLookup(map[string]string{
-		// "gnf7" is a regular task that has children but is NOT an epic — ignore its feature branch
-		"gnf7": "",
-	})
-
-	beads := []Bead{
-		{ID: "w3j2", Anvil: "repo", Blocks: []string{"gnf7"}},
-	}
-	paths := map[string]string{"repo": "/tmp/repo"}
-
-	ResolveEpicBranches(context.Background(), beads, paths)
-
-	assert.Equal(t, "", beads[0].EpicBranch, "regular blocked-by dependency must not route PR to a feature branch")
-}
-
-func TestResolveEpicBranches_BlocksCached(t *testing.T) {
-	orig := epicBranchLookupFunc
-	defer func() { epicBranchLookupFunc = orig }()
-
+func TestResolveEpicBranches_Cached(t *testing.T) {
 	callCount := 0
-	epicBranchLookupFunc = func(_ context.Context, parentID, _ string) string {
+	defer SetEpicBranchLookupForTest(func(_ context.Context, parentID, _ string) string {
 		callCount++
 		if parentID == "epic-1" {
-			return "epic/epic-1"
+			return "feature/epic-1"
 		}
 		return ""
-	}
+	})()
 
 	beads := []Bead{
-		{ID: "task-1", Anvil: "repo", Blocks: []string{"epic-1"}},
-		{ID: "task-2", Anvil: "repo", Blocks: []string{"epic-1"}},
+		{ID: "task-1", Anvil: "repo", Parent: "epic-1"},
+		{ID: "task-2", Anvil: "repo", Parent: "epic-1"},
 	}
-	paths := map[string]string{"repo": "/tmp/repo"}
+	ResolveEpicBranches(context.Background(), beads, map[string]string{"repo": "/tmp/repo"})
 
-	ResolveEpicBranches(context.Background(), beads, paths)
-
-	assert.Equal(t, "epic/epic-1", beads[0].EpicBranch)
-	assert.Equal(t, "epic/epic-1", beads[1].EpicBranch)
+	assert.Equal(t, "feature/epic-1", beads[0].EpicBranch)
+	assert.Equal(t, "feature/epic-1", beads[1].EpicBranch)
 	assert.Equal(t, 1, callCount, "lookup should be called once due to caching")
 }
 
 func TestResolveEpicBranches_ParentTakesPrecedence(t *testing.T) {
-	orig := epicBranchLookupFunc
-	defer func() { epicBranchLookupFunc = orig }()
-
-	epicBranchLookupFunc = mockLookup(map[string]string{
+	defer SetEpicBranchLookupForTest(mockLookup(map[string]string{
 		"epic-parent": "feature/parent-epic",
-		"epic-blocks": "feature/blocks-epic",
-	})
+		"epic-dep":    "feature/dep-epic",
+	}))()
 
 	beads := []Bead{
-		{ID: "task-1", Anvil: "repo", Parent: "epic-parent", Blocks: []string{"epic-blocks"}},
+		{ID: "task-1", Anvil: "repo", Parent: "epic-parent", Dependencies: []BeadDep{
+			{IssueID: "task-1", DependsOnID: "epic-dep", Type: "blocks"},
+		}},
 	}
-	paths := map[string]string{"repo": "/tmp/repo"}
+	ResolveEpicBranches(context.Background(), beads, map[string]string{"repo": "/tmp/repo"})
 
-	ResolveEpicBranches(context.Background(), beads, paths)
-
-	assert.Equal(t, "feature/parent-epic", beads[0].EpicBranch, "parent path should take precedence over blocks")
+	assert.Equal(t, "feature/parent-epic", beads[0].EpicBranch,
+		"the parent field should take precedence over a dependency edge")
 }
 
-func TestResolveEpicBranches_MultipleBlocksFirstEpicWins(t *testing.T) {
-	orig := epicBranchLookupFunc
-	defer func() { epicBranchLookupFunc = orig }()
-
-	epicBranchLookupFunc = mockLookup(map[string]string{
+func TestResolveEpicBranches_FirstOrchestratedDepWins(t *testing.T) {
+	defer SetEpicBranchLookupForTest(mockLookup(map[string]string{
 		"not-epic": "",
 		"epic-2":   "feature/second",
-	})
+	}))()
 
 	beads := []Bead{
-		{ID: "task-1", Anvil: "repo", Blocks: []string{"not-epic", "epic-2"}},
+		{ID: "task-1", Anvil: "repo", Dependencies: []BeadDep{
+			{IssueID: "task-1", DependsOnID: "not-epic", Type: "blocks"},
+			{IssueID: "task-1", DependsOnID: "epic-2", Type: "blocks"},
+		}},
 	}
-	paths := map[string]string{"repo": "/tmp/repo"}
-
-	ResolveEpicBranches(context.Background(), beads, paths)
+	ResolveEpicBranches(context.Background(), beads, map[string]string{"repo": "/tmp/repo"})
 
 	assert.Equal(t, "feature/second", beads[0].EpicBranch)
 }
 
-func TestSanitizeBeadID(t *testing.T) {
-	tests := []struct {
-		input string
-		want  string
-	}{
-		{"Forge-n1g", "Forge-n1g"},
-		{"my bead", "my-bead"},
-		{"bead:123", "bead-123"},
+// A plain "depends_on" sequencing dependency is not a parent edge, so sibling
+// ordering never routes a bead onto a feature branch.
+func TestResolveEpicBranches_DependsOnIsNotAParentEdge(t *testing.T) {
+	defer SetEpicBranchLookupForTest(mockLookup(map[string]string{
+		"sibling-a": "feature/sibling-a",
+	}))()
+
+	beads := []Bead{
+		{ID: "sibling-b", Anvil: "repo", DependsOn: []string{"sibling-a"}, Dependencies: []BeadDep{
+			{IssueID: "sibling-b", DependsOnID: "sibling-a", Type: "depends_on"},
+		}},
 	}
-	for _, tt := range tests {
-		t.Run(tt.input, func(t *testing.T) {
-			assert.Equal(t, tt.want, sanitizeBeadID(tt.input))
-		})
+	ResolveEpicBranches(context.Background(), beads, map[string]string{"repo": "/tmp/repo"})
+
+	assert.Equal(t, "", beads[0].EpicBranch)
+}
+
+func TestParentCandidates(t *testing.T) {
+	b := Bead{
+		ID:     "child",
+		Parent: "p1",
+		Blocks: []string{"my-child"},
+		Dependencies: []BeadDep{
+			{DependsOnID: "p1", Type: "parent-child"}, // duplicate of Parent
+			{DependsOnID: "p2", Type: "blocks"},
+			{DependsOnID: "seq", Type: "depends_on"}, // not a parent edge
+			{DependsOnID: "child", Type: "blocks"},   // self-reference
+		},
 	}
+	assert.Equal(t, []string{"p1", "p2"}, ParentCandidates(b))
+}
+
+// The stamp records which candidate produced it. A sequencing `blocks` edge can
+// precede the real parent in ParentCandidates, so re-deriving the answer later
+// from edge order names the wrong bead — the daemon's Crucible guard reads
+// EpicParent instead.
+func TestResolveEpicBranches_RecordsTheResolvedParent(t *testing.T) {
+	defer SetEpicBranchLookupForTest(mockLookup(map[string]string{
+		"epic-1": "feature/checkout-rewrite",
+	}))()
+
+	beads := []Bead{
+		{ID: "task-1", Anvil: "repo", Dependencies: []BeadDep{
+			{DependsOnID: "upstream-task", Type: "blocks"},
+			{DependsOnID: "epic-1", Type: "parent-child"},
+		}},
+		{ID: "task-2", Anvil: "repo", Parent: "not-an-epic"},
+	}
+	ResolveEpicBranches(context.Background(), beads, map[string]string{"repo": "/tmp/repo"})
+
+	assert.Equal(t, "feature/checkout-rewrite", beads[0].EpicBranch)
+	assert.Equal(t, "epic-1", beads[0].EpicParent,
+		"the recorded parent is the one whose labels resolved, not the first edge")
+	assert.Empty(t, beads[1].EpicParent, "an unresolved child records no parent")
 }

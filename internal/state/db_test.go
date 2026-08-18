@@ -4675,3 +4675,82 @@ func TestDB_ActiveDispatchWorkers_CountsPaused(t *testing.T) {
 		t.Errorf("expected w-paused in per-anvil dispatch count, got %s", byAnvil[0].ID)
 	}
 }
+
+// ClearNeedsHumanIfReasonPrefix is what lets the daemon withdraw an escalation
+// it raised for a condition that has since resolved. It must clear only its own
+// entries: a bead re-flagged in the meantime for an unrelated failure — or by an
+// operator — keeps its flag, or the withdrawal becomes a way to lose one.
+func TestDB_ClearNeedsHumanIfReasonPrefix(t *testing.T) {
+	db, err := Open(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	const prefix = "epic on hold: "
+
+	// A matching row clears, flags and counters included.
+	if err := db.MarkNeedsHuman("BD-1", "anvil-1", prefix+"children not ready"); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := db.IncrementDispatchFailures("BD-1", "anvil-1", 5, prefix+"children not ready"); err != nil {
+		t.Fatal(err)
+	}
+	cleared, err := db.ClearNeedsHumanIfReasonPrefix("BD-1", "anvil-1", prefix)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !cleared {
+		t.Fatal("expected the matching row to report cleared=true")
+	}
+	r, err := db.GetRetry("BD-1", "anvil-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.NeedsHuman || r.DispatchFailures != 0 || r.LastError != "" {
+		t.Errorf("expected a cleared row, got needs_human=%v failures=%d error=%q",
+			r.NeedsHuman, r.DispatchFailures, r.LastError)
+	}
+
+	// A row flagged for something else is untouched.
+	if err := db.MarkNeedsHuman("BD-2", "anvil-1", "smith produced no diff"); err != nil {
+		t.Fatal(err)
+	}
+	cleared, err = db.ClearNeedsHumanIfReasonPrefix("BD-2", "anvil-1", prefix)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cleared {
+		t.Error("a reason that does not match the prefix must not be cleared")
+	}
+	if r, err := db.GetRetry("BD-2", "anvil-1"); err != nil {
+		t.Fatal(err)
+	} else if !r.NeedsHuman {
+		t.Error("expected the unrelated flag to survive")
+	}
+
+	// Already clear, and missing entirely, are both no-op successes.
+	if cleared, err := db.ClearNeedsHumanIfReasonPrefix("BD-1", "anvil-1", prefix); err != nil || cleared {
+		t.Errorf("re-clearing should be a no-op success, got cleared=%v err=%v", cleared, err)
+	}
+	if cleared, err := db.ClearNeedsHumanIfReasonPrefix("BD-MISSING", "anvil-1", prefix); err != nil || cleared {
+		t.Errorf("a missing row should be a no-op success, got cleared=%v err=%v", cleared, err)
+	}
+
+	// An empty prefix would match every reason, so it is refused rather than
+	// quietly clearing flags nothing raised.
+	if _, err := db.ClearNeedsHumanIfReasonPrefix("BD-2", "anvil-1", ""); err == nil {
+		t.Error("expected an empty prefix to be refused")
+	}
+
+	// LIKE wildcards in the prefix are literal, not patterns.
+	if err := db.MarkNeedsHuman("BD-3", "anvil-1", "100% done: held"); err != nil {
+		t.Fatal(err)
+	}
+	if cleared, err := db.ClearNeedsHumanIfReasonPrefix("BD-3", "anvil-1", "100%x"); err != nil || cleared {
+		t.Errorf("%% must match literally, got cleared=%v err=%v", cleared, err)
+	}
+	if cleared, err := db.ClearNeedsHumanIfReasonPrefix("BD-3", "anvil-1", "100% done: "); err != nil || !cleared {
+		t.Errorf("the literal prefix should match, got cleared=%v err=%v", cleared, err)
+	}
+}

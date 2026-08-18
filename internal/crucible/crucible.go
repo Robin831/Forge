@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/Robin831/Forge/internal/config"
+	"github.com/Robin831/Forge/internal/epic"
 	"github.com/Robin831/Forge/internal/executil"
 	"github.com/Robin831/Forge/internal/pipeline"
 	"github.com/Robin831/Forge/internal/poller"
@@ -21,9 +22,6 @@ import (
 	"github.com/Robin831/Forge/internal/vcs"
 	"github.com/Robin831/Forge/internal/worktree"
 )
-
-// FeatureBranchPrefix is the branch prefix for Crucible feature branches.
-const FeatureBranchPrefix = "feature/"
 
 // Default poll interval when waiting for child PR merges.
 const defaultMergePollInterval = 30 * time.Second
@@ -132,8 +130,11 @@ func Run(ctx context.Context, p Params) *Result {
 	log := p.Logger.With("crucible_parent", p.ParentBead.ID, "anvil", p.AnvilName)
 	anvilPath := p.AnvilConfig.Path
 
-	// Determine feature branch name.
-	branch := FeatureBranchPrefix + sanitizeID(p.ParentBead.ID)
+	// Determine feature branch name. epic.BranchName is the single source of
+	// truth shared with the poller (which stamps children with the same name),
+	// so an "epic-branch:<name>" label is honoured here too and an
+	// independently dispatched child never bases on a branch that never exists.
+	branch := epic.BranchName(p.ParentBead.ID, p.ParentBead.Labels)
 	log.Info("crucible started", "branch", branch)
 
 	p.emitEvent(state.EventCrucibleStarted,
@@ -665,12 +666,12 @@ func (p *Params) runChildPipeline(ctx context.Context, child poller.Bead, baseBr
 	defer cancel()
 
 	params := pipeline.Params{
-		DB:              p.DB,
-		WorktreeManager: p.WorktreeManager,
-		PromptBuilder:   p.PromptBuilder,
-		AnvilName:       p.AnvilName,
-		AnvilConfig:     p.AnvilConfig,
-		Bead:            child,
+		DB:                p.DB,
+		WorktreeManager:   p.WorktreeManager,
+		PromptBuilder:     p.PromptBuilder,
+		AnvilName:         p.AnvilName,
+		AnvilConfig:       p.AnvilConfig,
+		Bead:              child,
 		ExtraFlags:        p.ExtraFlags,
 		TemperConfig:      p.TemperConfig,
 		GoRaceDetection:   p.GoRaceDetection,
@@ -1061,19 +1062,12 @@ func hasExternalBlockers(child poller.Bead, siblings []poller.Bead, parentID str
 	return false
 }
 
-// sanitizeID converts a bead ID to a safe branch name component.
-func sanitizeID(id string) string {
-	r := strings.NewReplacer(
-		" ", "-",
-		":", "-",
-		"\\", "-",
-		"/", "-",
-	)
-	return r.Replace(id)
-}
-
 // IsCrucibleCandidate returns true if a bead has children (blocks other beads)
-// and is therefore a Crucible candidate.
+// AND has opted into orchestration via the "crucible" label (or an explicit
+// "epic-branch:<name>" label). Having children is not enough: parent/child
+// relations are used for plain grouping far more often than for a feature
+// branch, so an unlabeled parent runs the ordinary pipeline like any other
+// bead and its children dispatch independently to main.
 func IsCrucibleCandidate(b poller.Bead) bool {
-	return len(b.Blocks) > 0
+	return len(b.Blocks) > 0 && epic.IsOrchestrated(b.Labels)
 }
