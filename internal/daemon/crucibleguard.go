@@ -9,6 +9,7 @@ import (
 	"github.com/Robin831/Forge/internal/epic"
 	"github.com/Robin831/Forge/internal/poller"
 	"github.com/Robin831/Forge/internal/state"
+	"github.com/Robin831/Forge/internal/termtext"
 )
 
 // crucibleOwner records why a bead in this poll batch is not the dispatch
@@ -177,11 +178,188 @@ func stampingParent(b poller.Bead) string {
 // the parent refusing to dispatch and each child being withheld — read the same
 // wording from here, so rewording one cannot drift from the other.
 func crucibleDisabledReason(parentID, branch string) string {
-	return fmt.Sprintf("bead %s opts into epic orchestration (%q or epic-branch:<name>) but "+
+	return fmt.Sprintf("%sbead %s opts into epic orchestration (%q or epic-branch:<name>) but "+
 		"settings.crucible_enabled is false — nothing creates %s, so this parent is not dispatched "+
 		"and its children are held back. Enable the Crucible to orchestrate the epic, or remove the "+
-		"label so this parent and its children dispatch independently to main",
-		parentID, epic.CrucibleLabel, branch)
+		"label so this parent and its children dispatch independently to main%s",
+		epicHoldPrefix, parentID, epic.CrucibleLabel, branch, epicHoldFooter)
+}
+
+// epicHoldPrefix marks the escalation reasons this file raises for a *condition*
+// rather than a contradiction: the Crucible switched off, or children that exist
+// but are not ready yet. Both resolve without anyone touching the bead — an
+// operator flips settings.crucible_enabled, or the dependency blocking a child
+// merges — so both are withdrawn automatically by clearResolvedEpicHold, which
+// recognises its own entries by this prefix and leaves every other needs_human
+// reason alone.
+//
+// The schematic-decline escalation deliberately does NOT carry it: a label
+// saying "orchestrate" against a check saying "independent" is a contradiction
+// in the bead's own configuration, and nothing but an operator resolves it.
+const epicHoldPrefix = "epic on hold: "
+
+// epicHoldFooter is the sentence every self-clearing hold ends with. Without it
+// the entry reads as a permanent verdict and the remedy it names ("unblock the
+// children") looks incomplete, since the operator has no way to know the flag
+// lifts on its own.
+const epicHoldFooter = ". This entry clears itself once the epic can run — the Crucible enabled and at " +
+	"least one child ready — so no `forge queue clear` is needed"
+
+// escalationDetailMax bounds a piece of text Forge did not write before it is
+// folded into an operator-facing reason. The reason lands in a Needs Attention
+// row; a model that returns three paragraphs must not own the panel.
+const escalationDetailMax = 300
+
+// sanitizeEscalationDetail reduces text Forge did not write to something safe to
+// persist and render in a Needs Attention row: escape sequences and other
+// non-printables removed, line breaks flattened, length bounded.
+//
+// The one caller today is the schematic crucible check's Reason — free text from
+// an AI session whose inputs include bead content Forge did not author. That
+// string used to reach only slog (which quotes what it prints); routing it into
+// a persisted, lipgloss-rendered attention row is what makes stripping it
+// necessary, for the same reason internal/assay bounds a run failure cause
+// before it reaches the activity feed.
+func sanitizeEscalationDetail(s string) string {
+	s = strings.TrimSpace(termtext.Line(s))
+	runes := []rune(s)
+	if len(runes) > escalationDetailMax {
+		return strings.TrimSpace(string(runes[:escalationDetailMax])) + "…"
+	}
+	return s
+}
+
+// orchestratedParentAction is what dispatchBead does with an opted-in parent
+// that is not (yet) a Crucible candidate.
+type orchestratedParentAction int
+
+const (
+	// parentDefer: it cannot be established whether children remain. Release
+	// the claim and let the next poll ask again — no dispatch failure is
+	// recorded, so a flaky bd never burns the circuit breaker.
+	parentDefer orchestratedParentAction = iota
+
+	// parentRunNormally: nothing left to orchestrate, so the parent is an
+	// ordinary bead and takes the normal pipeline to main.
+	parentRunNormally
+
+	// parentHold: children remain and the label is still routing them, so the
+	// parent must not be dispatched alone. Escalate with the returned reason.
+	parentHold
+)
+
+// decideOrchestratedParent maps the answer to "does this opted-in parent still
+// have children to orchestrate?" onto one of three outcomes, and owns the
+// operator-facing wording of the one that holds the bead.
+//
+// It is a pure function because the choice between the three is the whole
+// behaviour: dispatching a parent whose children are still routed to a branch
+// nobody creates is the bug this file exists for, and deferring on a bd error
+// instead of recording a dispatch failure is what keeps a flaky beads database
+// from circuit-breaking an epic. Both are decisions worth pinning in a test
+// without a live daemon around them.
+func decideOrchestratedParent(bead poller.Bead, openChildren []string, childErr error, crucibleEnabled bool) (orchestratedParentAction, string) {
+	branch := poller.ExtractParentBranch(bead)
+	switch {
+	case childErr != nil:
+		return parentDefer, ""
+	case len(openChildren) == 0:
+		return parentRunNormally, ""
+	case !crucibleEnabled:
+		// The Crucible being off is the more fundamental of the two
+		// misconfigurations and owns the wording when it applies — the other
+		// message would promise a Crucible run that cannot happen.
+		return parentHold, crucibleDisabledReason(bead.ID, branch)
+	default:
+		return parentHold, fmt.Sprintf("%sbead %s opts into epic orchestration (%q or epic-branch:<name>) and still has "+
+			"%d open child bead(s) (%s), but none are ready — they are blocked on something else. Dispatching "+
+			"the parent to main now would close it while its children are still routed to %s, a branch nothing "+
+			"would create. Unblock the children so the Crucible can run, or remove the label so the whole family "+
+			"dispatches independently to main%s",
+			epicHoldPrefix, bead.ID, epic.CrucibleLabel, len(openChildren), summarizeIDs(openChildren, 5),
+			branch, epicHoldFooter)
+	}
+}
+
+// schematicDeclineReason is the escalation text for an opted-in parent whose
+// schematic crucible check reports its children are independent, and returns ""
+// when the check confirms the label instead.
+//
+// The decline escalates rather than dispatching: clearing the parent's own
+// EpicBranch (what this path used to do) strips the routing from exactly one
+// bead of the family, since every child is stamped with the parent's branch by
+// the poller off the parent's label. The parent would then merge to main while
+// its children keep basing on a branch no Crucible creates. Reversing that is
+// the point of the whole change, so the choice lives in a function a test can
+// hold still (Forge-fblf).
+func schematicDeclineReason(bead poller.Bead, needsCrucible bool, checkReason string) string {
+	if needsCrucible {
+		return ""
+	}
+	detail := sanitizeEscalationDetail(checkReason)
+	if detail == "" {
+		detail = "no reason given"
+	}
+	return fmt.Sprintf("bead %s opts into epic orchestration (%q or epic-branch:<name>) but the "+
+		"schematic crucible check reports its children are independent (%s). Dispatching the parent "+
+		"alone would leave its children routed to %s, a branch no Crucible would create. Remove the "+
+		"label so the parent and its children dispatch independently to main (what the check "+
+		"recommends), or keep it and set settings.schematic_enabled to false so the label alone "+
+		"decides",
+		bead.ID, epic.CrucibleLabel, detail, poller.ExtractParentBranch(bead))
+}
+
+// clearResolvedEpicHold withdraws the self-clearing epic holds (epicHoldPrefix)
+// of every parent in this poll batch that can now be orchestrated, and drops it
+// from the cycle's needs-human snapshot so the same cycle dispatches it.
+//
+// Without this the holds are one-way: needs_human is sticky, cleared only by an
+// operator running `forge queue retry`/`clear`, while the conditions that raise
+// it are routinely transient — a child in_progress under a human, deferred to a
+// date, or blocked on a bead Forge itself will merge; the Crucible switched off
+// for an afternoon. The moment the blocker lifts the parent is a Crucible
+// candidate again, but the dispatch loop skips it on the stale flag while
+// crucibleOwnedChildren keeps withholding the now-ready children on its behalf,
+// and the epic deadlocks until somebody notices (Forge-fblf).
+//
+// Being a Crucible candidate is exactly the condition the holds are the negation
+// of: the opt-in label plus at least one child ready in this batch. Pairing it
+// with crucible_enabled covers both hold reasons with one check.
+//
+// Only reasons carrying the prefix are cleared, so a parent re-flagged in the
+// meantime — a schematic decline, an exhausted circuit breaker, an operator's
+// own mark — keeps its flag.
+//
+// One state is deliberately left for an operator: an epic whose children were
+// all closed by hand, without any of them ever surfacing as ready, never becomes
+// a candidate again and keeps its hold until `forge queue clear`. Covering it
+// would mean a `bd show` per held parent per poll to re-derive an answer that
+// has not changed, and the hold names that remedy.
+func (d *Daemon) clearResolvedEpicHold(cfg *config.Config, beads []poller.Bead, needsHuman map[string]struct{}) {
+	if cfg == nil || !cfg.Settings.CrucibleEnabled || len(needsHuman) == 0 {
+		return
+	}
+	for _, b := range beads {
+		// beadID first, anvil second: the dispatch loop's needsHumanSet form.
+		key := b.ID + "\x00" + b.Anvil
+		if _, flagged := needsHuman[key]; !flagged {
+			continue
+		}
+		if !crucible.IsCrucibleCandidate(b) {
+			continue
+		}
+		cleared, err := d.db.ClearNeedsHumanIfReasonPrefix(b.ID, b.Anvil, epicHoldPrefix)
+		if err != nil {
+			d.logger.Error("failed to clear a resolved epic hold", "bead", b.ID, "anvil", b.Anvil, "error", err)
+			continue
+		}
+		if !cleared {
+			continue
+		}
+		delete(needsHuman, key)
+		d.logger.Info("epic can be orchestrated again, clearing the parent's hold",
+			"bead", b.ID, "anvil", b.Anvil, "children", len(b.Blocks))
+	}
 }
 
 // summarizeIDs renders a bounded, comma-separated list of bead IDs for an

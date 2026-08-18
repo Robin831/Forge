@@ -3553,6 +3553,46 @@ func (db *DB) ClearNeedsAttention(beadID, anvil string) error {
 	return err
 }
 
+// ClearNeedsHumanIfReasonPrefix clears the needs-attention flags on a bead only
+// when the recorded reason starts with prefix, reporting whether anything
+// changed.
+//
+// It exists for escalations that describe a *condition* rather than a verdict:
+// the daemon raises them itself and must be able to withdraw them itself once
+// the condition resolves, without touching a flag some other path (or an
+// operator) set for a different reason. The prefix is what tells the two apart
+// — the same discrimination ResetRecoveryFailures makes with its
+// "recovery failed:%" match — so a bead re-flagged in the meantime for an
+// unrelated failure keeps its flag.
+//
+// A missing row, an already-clear row, or a row whose reason does not match is
+// a no-op success (false, nil).
+func (db *DB) ClearNeedsHumanIfReasonPrefix(beadID, anvil, prefix string) (bool, error) {
+	if prefix == "" {
+		return false, fmt.Errorf("empty reason prefix would clear any needs_human flag")
+	}
+	escaped := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(prefix)
+	now := time.Now().Format(dbTimeLayout)
+	res, err := db.conn.Exec(
+		`UPDATE retries
+		 SET needs_human = 0,
+		     dispatch_failures = 0,
+		     last_error = '',
+		     updated_at = ?
+		 WHERE bead_id = ? AND anvil = ? AND needs_human = 1
+		   AND last_error LIKE ? ESCAPE '\'`,
+		now, beadID, anvil, escaped+"%",
+	)
+	if err != nil {
+		return false, err
+	}
+	rows, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return rows > 0, nil
+}
+
 // DismissRetry removes the retry record entirely, clearing the bead from the
 // Needs Attention list without resetting for a retry.
 func (db *DB) DismissRetry(beadID, anvil string) error {

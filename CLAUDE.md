@@ -219,7 +219,17 @@ Crucible path (parent beads with children AND the `crucible` opt-in label):
       instead, because the label is what routes the children and a standalone
       dispatch cannot un-route them: the Crucible disabled, open-but-unready
       children (poller.OpenChildren — only all-closed/no children runs the
-      ordinary pipeline), and a schematic crucible check that declines
+      ordinary pipeline; a bd error defers instead, so a flaky beads database
+      never burns the dispatch circuit breaker), and a schematic crucible check
+      that declines — the last one sanitized through termtext.Line, since the
+      model's own text now reaches a persisted, rendered Needs Attention row
+    → the first two describe a CONDITION, so they carry the `epic on hold: `
+      prefix and clearResolvedEpicHold withdraws them the moment the parent is
+      orchestrable again (Crucible on + a child ready). needs_human is sticky
+      and those conditions are not, so without it a transiently-blocked child
+      deadlocked the whole epic until an operator ran `forge queue clear`. A
+      schematic decline carries no prefix: a label contradicting its own check
+      is resolved by an operator, not by time
     → crucible.Run()
       → worktree.CreateEpicBranch (epic.BranchName: feature/<parent-id>, or epic-branch:<name>)
       → fetch children via bd show, topological sort

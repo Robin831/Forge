@@ -1,10 +1,13 @@
 package daemon
 
 import (
+	"errors"
 	"io"
 	"log/slog"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -13,6 +16,7 @@ import (
 	"github.com/Robin831/Forge/internal/crucible"
 	"github.com/Robin831/Forge/internal/poller"
 	"github.com/Robin831/Forge/internal/state"
+	"github.com/Robin831/Forge/internal/worker"
 )
 
 func guardDaemon() *Daemon {
@@ -330,4 +334,284 @@ func TestSummarizeIDs(t *testing.T) {
 	assert.Equal(t, "a, b", summarizeIDs([]string{"a", "b"}, 5))
 	assert.Equal(t, "a, b, c", summarizeIDs([]string{"a", "b", "c"}, 3))
 	assert.Equal(t, "a, b, c and 2 more", summarizeIDs([]string{"a", "b", "c", "d", "e"}, 3))
+}
+
+// escalationDaemon is withholdDaemon plus a config, which escalation needs:
+// recordDispatchFailure releases the bead's claim. No anvils are configured, so
+// that release logs and returns instead of shelling out to bd — the same
+// hermetic seam emptyDiffDaemon uses.
+func escalationDaemon(t *testing.T) *Daemon {
+	t.Helper()
+	d := withholdDaemon(t)
+	d.cfg.Store(&config.Config{})
+	return d
+}
+
+func pendingWorker(t *testing.T, d *Daemon, workerID, beadID, anvil string) {
+	t.Helper()
+	require.NoError(t, d.db.InsertWorker(&state.Worker{
+		ID:        workerID,
+		BeadID:    beadID,
+		Anvil:     anvil,
+		Branch:    "forge/" + beadID,
+		Status:    state.WorkerPending,
+		StartedAt: time.Now(),
+	}))
+}
+
+// The invariant escalateOrchestratedParent's doc comment is built on: the
+// pending worker row is closed out. It counts toward dispatch capacity until
+// something does, so a leaked row costs a smith slot for the life of the daemon
+// — one per escalated epic misconfiguration.
+func TestEscalateOrchestratedParent_ClosesTheWorkerRow(t *testing.T) {
+	d := escalationDaemon(t)
+	pendingWorker(t, d, "w-1", "parent-1", "repo")
+
+	before, err := worker.DispatchActiveCount(d.db, "repo")
+	require.NoError(t, err)
+	require.Equal(t, 1, before, "the pending claim row occupies a smith slot")
+
+	d.escalateOrchestratedParent(poller.Bead{ID: "parent-1", Anvil: "repo"}, "w-1", "epic on hold: children not ready")
+
+	w, err := d.db.GetWorker("w-1")
+	require.NoError(t, err)
+	assert.Equal(t, state.WorkerFailed, w.Status)
+
+	after, err := worker.DispatchActiveCount(d.db, "repo")
+	require.NoError(t, err)
+	assert.Equal(t, 0, after, "the slot must be released, not leaked")
+}
+
+// The other two writes: the bead is flagged for the operator with the given
+// reason, and the attempt is recorded as a dispatch failure (escalate=true, so
+// the claim is released too).
+func TestEscalateOrchestratedParent_FlagsTheBead(t *testing.T) {
+	d := escalationDaemon(t)
+	pendingWorker(t, d, "w-1", "parent-1", "repo")
+
+	d.escalateOrchestratedParent(poller.Bead{ID: "parent-1", Anvil: "repo"}, "w-1", "epic on hold: children not ready")
+
+	assert.Equal(t, "epic on hold: children not ready", needsHumanKeys(t, d.db)["parent-1\x00repo"])
+
+	r, err := d.db.GetRetry("parent-1", "repo")
+	require.NoError(t, err)
+	assert.True(t, r.NeedsHuman)
+	assert.Equal(t, 1, r.DispatchFailures, "the escalation is recorded as a dispatch failure")
+}
+
+// A worker row that cannot be updated — no claim was taken, or the row is gone —
+// must not cost the escalation: the flag is what the operator sees, and skipping
+// it would leave the parent silently undispatched.
+func TestEscalateOrchestratedParent_WorkerUpdateNeverBlocksTheFlag(t *testing.T) {
+	for _, workerID := range []string{"", "w-missing"} {
+		t.Run("worker="+workerID, func(t *testing.T) {
+			d := escalationDaemon(t)
+
+			d.escalateOrchestratedParent(poller.Bead{ID: "parent-1", Anvil: "repo"}, workerID, "epic on hold: children not ready")
+
+			assert.Contains(t, needsHumanKeys(t, d.db), "parent-1\x00repo")
+		})
+	}
+}
+
+// An empty claim ID means no worker row was inserted; nothing must be invented
+// for it.
+func TestEscalateOrchestratedParent_NoClaimTouchesNoWorker(t *testing.T) {
+	d := escalationDaemon(t)
+	pendingWorker(t, d, "w-1", "other-bead", "repo")
+
+	d.escalateOrchestratedParent(poller.Bead{ID: "parent-1", Anvil: "repo"}, "", "epic on hold: children not ready")
+
+	w, err := d.db.GetWorker("w-1")
+	require.NoError(t, err)
+	assert.Equal(t, state.WorkerPending, w.Status, "an unrelated worker row is untouched")
+}
+
+// The three-way choice dispatchBead makes for an opted-in parent that is not a
+// Crucible candidate. Each outcome is a different failure if it fires wrongly:
+// dispatching orphans the children, escalating on a bd blip freezes the epic,
+// deferring forever hides a real misconfiguration.
+func TestDecideOrchestratedParent(t *testing.T) {
+	parent := poller.Bead{ID: "parent-1", Anvil: "repo", Labels: []string{"crucible"}}
+
+	t.Run("bd error defers, with no reason to record", func(t *testing.T) {
+		action, reason := decideOrchestratedParent(parent, nil, errors.New("dolt is down"), true)
+		assert.Equal(t, parentDefer, action)
+		assert.Empty(t, reason)
+	})
+
+	t.Run("a bd error wins over children it may have returned", func(t *testing.T) {
+		action, _ := decideOrchestratedParent(parent, []string{"child-1"}, errors.New("dolt is down"), true)
+		assert.Equal(t, parentDefer, action, "a partial answer is not an answer")
+	})
+
+	t.Run("no open children runs the ordinary pipeline", func(t *testing.T) {
+		action, reason := decideOrchestratedParent(parent, nil, nil, true)
+		assert.Equal(t, parentRunNormally, action)
+		assert.Empty(t, reason)
+	})
+
+	t.Run("open children hold the parent and name them", func(t *testing.T) {
+		action, reason := decideOrchestratedParent(parent, []string{"child-1", "child-2"}, nil, true)
+		assert.Equal(t, parentHold, action)
+		assert.Contains(t, reason, "child-1")
+		assert.Contains(t, reason, "feature/parent-1", "the reason names the branch the children are routed to")
+		assert.True(t, strings.HasPrefix(reason, epicHoldPrefix), "the hold must be self-clearing")
+	})
+
+	t.Run("the Crucible being off owns the wording", func(t *testing.T) {
+		action, reason := decideOrchestratedParent(parent, []string{"child-1"}, nil, false)
+		assert.Equal(t, parentHold, action)
+		assert.Equal(t, crucibleDisabledReason("parent-1", "feature/parent-1"), reason,
+			"promising a Crucible run that cannot happen is the wrong remedy")
+	})
+
+	t.Run("no children, Crucible off: still an ordinary bead", func(t *testing.T) {
+		action, _ := decideOrchestratedParent(parent, nil, nil, false)
+		assert.Equal(t, parentRunNormally, action,
+			"nothing is routed anywhere, so the setting does not matter")
+	})
+
+	t.Run("an explicit branch label is the branch named", func(t *testing.T) {
+		labeled := poller.Bead{ID: "parent-2", Anvil: "repo", Labels: []string{"epic-branch:checkout-rewrite"}}
+		_, reason := decideOrchestratedParent(labeled, []string{"child-1"}, nil, true)
+		assert.Contains(t, reason, "checkout-rewrite")
+	})
+}
+
+// The reversal this PR exists for: a schematic decline against an explicit
+// opt-in escalates. It used to clear the parent's own EpicBranch and dispatch it
+// standalone — which strips the routing from one bead of a family whose children
+// the poller already stamped, merging the parent to main while they base on a
+// branch no Crucible creates.
+func TestSchematicDeclineReason(t *testing.T) {
+	parent := poller.Bead{ID: "parent-1", Anvil: "repo", Labels: []string{"crucible"}, EpicBranch: "feature/parent-1"}
+
+	t.Run("a confirmed check does not escalate", func(t *testing.T) {
+		assert.Empty(t, schematicDeclineReason(parent, true, "these children share a schema migration"))
+	})
+
+	t.Run("a decline escalates and names both remedies", func(t *testing.T) {
+		reason := schematicDeclineReason(parent, false, "the children touch unrelated packages")
+		require.NotEmpty(t, reason)
+		assert.Contains(t, reason, "the children touch unrelated packages")
+		assert.Contains(t, reason, "feature/parent-1")
+		assert.Contains(t, reason, "schematic_enabled")
+		assert.False(t, strings.HasPrefix(reason, epicHoldPrefix),
+			"a label contradicting its own check is not self-clearing: only an operator resolves it")
+	})
+
+	t.Run("the parent's routing is left alone", func(t *testing.T) {
+		_ = schematicDeclineReason(parent, false, "independent")
+		assert.Equal(t, "feature/parent-1", parent.EpicBranch,
+			"clearing the parent's stamp while its children keep theirs is the bug")
+	})
+
+	t.Run("an empty check reason still reads as a sentence", func(t *testing.T) {
+		assert.Contains(t, schematicDeclineReason(parent, false, "   "), "no reason given")
+	})
+}
+
+// The check's Reason is free text from an AI session whose inputs include bead
+// content Forge did not write, and it now lands in a persisted, terminal-rendered
+// Needs Attention row. Escape sequences must not survive that trip.
+func TestSchematicDeclineReason_SanitizesTheModelsText(t *testing.T) {
+	parent := poller.Bead{ID: "parent-1", Anvil: "repo", Labels: []string{"crucible"}}
+
+	reason := schematicDeclineReason(parent, false, "independent\x1b[2J\x1b[1;31mATTENTION: all clear\nsecond line\r\n")
+
+	assert.NotContains(t, reason, "\x1b")
+	assert.NotContains(t, reason, "\n")
+	assert.NotContains(t, reason, "\r")
+	assert.Contains(t, reason, "independent")
+	assert.Contains(t, reason, "second line", "stripping must not swallow the text itself")
+}
+
+// A model that answers with three paragraphs must not own the Needs Attention
+// panel.
+func TestSanitizeEscalationDetail_Bounded(t *testing.T) {
+	detail := sanitizeEscalationDetail(strings.Repeat("verbose ", 200))
+
+	assert.LessOrEqual(t, len([]rune(detail)), escalationDetailMax+1, "bounded, plus the ellipsis")
+	assert.True(t, strings.HasSuffix(detail, "…"))
+}
+
+// The self-healing half of the hold: the conditions it is raised for (children
+// not ready, the Crucible switched off) resolve on their own, and needs_human
+// does not. Without this the epic deadlocks — the parent is skipped on the stale
+// flag while its now-ready children are still withheld on its behalf.
+func TestClearResolvedEpicHold(t *testing.T) {
+	d := escalationDaemon(t)
+	require.NoError(t, d.db.MarkNeedsHuman("parent-1", "repo", crucibleDisabledReason("parent-1", "feature/parent-1")))
+
+	// The child is ready this cycle, so the parent is a Crucible candidate again.
+	beads := []poller.Bead{
+		{ID: "parent-1", Anvil: "repo", Labels: []string{"crucible"}, Blocks: []string{"child-1"}},
+		{ID: "child-1", Anvil: "repo", Parent: "parent-1"},
+	}
+	needsHuman := map[string]struct{}{"parent-1\x00repo": {}}
+
+	d.clearResolvedEpicHold(crucibleCfg(true), beads, needsHuman)
+
+	assert.NotContains(t, needsHumanKeys(t, d.db), "parent-1\x00repo", "the hold is withdrawn")
+	assert.NotContains(t, needsHuman, "parent-1\x00repo",
+		"and dropped from this cycle's snapshot, so the same poll dispatches the epic")
+}
+
+// The conditions that have not resolved keep their hold.
+func TestClearResolvedEpicHold_LeavesUnresolvedHolds(t *testing.T) {
+	held := crucibleDisabledReason("parent-1", "feature/parent-1")
+
+	t.Run("the Crucible is still off", func(t *testing.T) {
+		d := escalationDaemon(t)
+		require.NoError(t, d.db.MarkNeedsHuman("parent-1", "repo", held))
+		beads := []poller.Bead{
+			{ID: "parent-1", Anvil: "repo", Labels: []string{"crucible"}, Blocks: []string{"child-1"}},
+		}
+		needsHuman := map[string]struct{}{"parent-1\x00repo": {}}
+
+		d.clearResolvedEpicHold(crucibleCfg(false), beads, needsHuman)
+
+		assert.Contains(t, needsHumanKeys(t, d.db), "parent-1\x00repo")
+		assert.Contains(t, needsHuman, "parent-1\x00repo")
+	})
+
+	t.Run("still no child is ready", func(t *testing.T) {
+		d := escalationDaemon(t)
+		require.NoError(t, d.db.MarkNeedsHuman("parent-1", "repo", held))
+		// No Blocks: nothing of this epic is ready in this batch, which is the
+		// state the hold was raised for.
+		beads := []poller.Bead{{ID: "parent-1", Anvil: "repo", Labels: []string{"crucible"}}}
+		needsHuman := map[string]struct{}{"parent-1\x00repo": {}}
+
+		d.clearResolvedEpicHold(crucibleCfg(true), beads, needsHuman)
+
+		assert.Contains(t, needsHumanKeys(t, d.db), "parent-1\x00repo")
+	})
+}
+
+// Only the holds this file raises are withdrawn. A parent flagged for something
+// else — a schematic decline, an exhausted circuit breaker, an operator's own
+// mark — keeps its flag, or "self-clearing" becomes a way to lose one.
+func TestClearResolvedEpicHold_LeavesOtherReasonsAlone(t *testing.T) {
+	d := escalationDaemon(t)
+	parent := poller.Bead{ID: "parent-1", Anvil: "repo", Labels: []string{"crucible"}, Blocks: []string{"child-1"}}
+	require.NoError(t, d.db.MarkNeedsHuman("parent-1", "repo", schematicDeclineReason(parent, false, "independent")))
+
+	needsHuman := map[string]struct{}{"parent-1\x00repo": {}}
+	d.clearResolvedEpicHold(crucibleCfg(true), []poller.Bead{parent}, needsHuman)
+
+	assert.Contains(t, needsHumanKeys(t, d.db), "parent-1\x00repo")
+	assert.Contains(t, needsHuman, "parent-1\x00repo")
+}
+
+// An unflagged bead is not queried at all, and a nil config is not dereferenced.
+func TestClearResolvedEpicHold_NoOps(t *testing.T) {
+	d := escalationDaemon(t)
+	beads := []poller.Bead{{ID: "parent-1", Anvil: "repo", Labels: []string{"crucible"}, Blocks: []string{"child-1"}}}
+
+	d.clearResolvedEpicHold(nil, beads, map[string]struct{}{"parent-1\x00repo": {}})
+	d.clearResolvedEpicHold(crucibleCfg(true), beads, map[string]struct{}{})
+
+	assert.Empty(t, needsHumanKeys(t, d.db))
 }
