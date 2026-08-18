@@ -4860,6 +4860,9 @@ func workerStatusIndicator(status, frame string) string {
 		return frame
 	case "monitoring":
 		return "○"
+	case "detached":
+		// A PR bellows has been muted for: present, deliberately not watched.
+		return "⊘"
 	case "done":
 		return "✓"
 	case "partial":

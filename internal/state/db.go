@@ -750,8 +750,15 @@ const (
 	WorkerRunning    WorkerStatus = "running"
 	WorkerReviewing  WorkerStatus = "reviewing"
 	WorkerMonitoring WorkerStatus = "monitoring"
-	WorkerDone       WorkerStatus = "done"
-	WorkerFailed     WorkerStatus = "failed"
+	// WorkerDetached is the non-terminal status of a bellows PR-monitor row
+	// whose PR carries bellows_detached: the row stays visible (a PR that
+	// silently vanishes from the Workers panel reads as a bug) but must not
+	// claim bellows is watching a PR it has been muted for. It is deliberately
+	// non-terminal — the flag is reversible, and the row moves straight back to
+	// monitoring on resume.
+	WorkerDetached WorkerStatus = "detached"
+	WorkerDone     WorkerStatus = "done"
+	WorkerFailed   WorkerStatus = "failed"
 	// WorkerPartial is a terminal status for work that half-succeeded: an
 	// Assay run where some review passes covered the head and others never
 	// did. It is deliberately neither done nor failed — "done" would sell an
@@ -905,6 +912,28 @@ func (db *DB) InsertWorkerIfMissing(w *Worker) error {
 		w.ID, w.BeadID, w.Anvil, w.Branch, w.PID, string(w.Status), w.Phase, w.Title,
 		w.PRNumber, w.StartedAt.Format(dbTimeLayout), w.LogPath,
 		int64(w.StaleTimeout.Seconds()),
+	)
+	return err
+}
+
+// SetBellowsWorkerDetached moves a bellows monitor row between the monitoring
+// and detached statuses to match the PR's bellows_detached flag. It exists
+// because InsertWorkerIfMissing writes only genuinely new rows, so a PR whose
+// flag moves after its row was created would otherwise keep the status it was
+// born with.
+//
+// The UPDATE matches only the opposite of the wanted status, which does two
+// things: a steady-state poll matches no row and writes nothing (the WAL-churn
+// property InsertWorkerIfMissing is there for), and a row that has since gone
+// terminal — swept, merged, killed — is never resurrected.
+func (db *DB) SetBellowsWorkerDetached(workerID string, detached bool) error {
+	want, from := WorkerDetached, WorkerMonitoring
+	if !detached {
+		want, from = from, want
+	}
+	_, err := db.conn.Exec(
+		`UPDATE workers SET status = ? WHERE id = ? AND phase = 'bellows' AND status = ?`,
+		string(want), workerID, string(from),
 	)
 	return err
 }
@@ -1199,10 +1228,12 @@ func (db *DB) UpdateWorkerSession(id, sessionID, model string) error {
 	return err
 }
 
-// ActiveWorkers returns all workers with non-terminal status (including stalled).
+// ActiveWorkers returns all workers with non-terminal status (including stalled
+// and detached). Detached bellows monitor rows are included so a muted PR still
+// renders in the Workers panel — as "detached" rather than "monitoring".
 func (db *DB) ActiveWorkers() ([]Worker, error) {
 	return db.queryWorkers(`SELECT id, bead_id, anvil, branch, pid, status, phase, title, pr_number, started_at, completed_at, log_path, session_id, model
-		FROM workers WHERE status IN ('pending', 'running', 'reviewing', 'monitoring', 'stalled')
+		FROM workers WHERE status IN ('pending', 'running', 'reviewing', 'monitoring', 'detached', 'stalled')
 		ORDER BY started_at`)
 }
 
@@ -1527,7 +1558,7 @@ func (db *DB) GetWorker(id string) (*Worker, error) {
 // ActiveWorkerByBead returns the non-terminal worker for a given bead ID.
 func (db *DB) ActiveWorkerByBead(beadID string) (*Worker, error) {
 	workers, err := db.queryWorkers(`SELECT id, bead_id, anvil, branch, pid, status, phase, title, pr_number, started_at, completed_at, log_path, session_id, model
-		FROM workers WHERE bead_id = ? AND status IN ('pending', 'running', 'reviewing', 'monitoring', 'stalled')
+		FROM workers WHERE bead_id = ? AND status IN ('pending', 'running', 'reviewing', 'monitoring', 'detached', 'stalled')
 		LIMIT 1`, beadID)
 	if err != nil {
 		return nil, err
@@ -1543,7 +1574,7 @@ func (db *DB) ActiveWorkerByBead(beadID string) (*Worker, error) {
 // iterating per-anvil to avoid false positives when two anvils share bead IDs.
 func (db *DB) ActiveWorkerByBeadAndAnvil(beadID, anvil string) (*Worker, error) {
 	workers, err := db.queryWorkers(`SELECT id, bead_id, anvil, branch, pid, status, phase, title, pr_number, started_at, completed_at, log_path, session_id, model
-		FROM workers WHERE bead_id = ? AND anvil = ? AND status IN ('pending', 'running', 'reviewing', 'monitoring', 'stalled')
+		FROM workers WHERE bead_id = ? AND anvil = ? AND status IN ('pending', 'running', 'reviewing', 'monitoring', 'detached', 'stalled')
 		LIMIT 1`, beadID, anvil)
 	if err != nil {
 		return nil, err
@@ -1632,11 +1663,13 @@ func (db *DB) HasWorkerRecord(beadID, anvil string) (bool, error) {
 	return exists, nil
 }
 
-// CompleteWorkersByBead marks all non-terminal workers for a bead as Done.
+// CompleteWorkersByBead marks all non-terminal workers for a bead as Done,
+// detached bellows monitor rows included — detaching mutes a PR, it does not
+// exempt the row from the bead's terminal cleanup.
 func (db *DB) CompleteWorkersByBead(beadID string) error {
 	_, err := db.conn.Exec(
 		`UPDATE workers SET status = ?, completed_at = ?
-		 WHERE bead_id = ? AND status IN ('pending', 'running', 'reviewing', 'monitoring', 'stalled')`,
+		 WHERE bead_id = ? AND status IN ('pending', 'running', 'reviewing', 'monitoring', 'detached', 'stalled')`,
 		string(WorkerDone), time.Now().Format(dbTimeLayout), beadID,
 	)
 	return err
@@ -1656,9 +1689,11 @@ type OrphanedWorkerInfo struct {
 	PRStatus string
 }
 
-// OrphanedMonitoringBellowsWorkers returns bellows monitoring workers whose
+// OrphanedMonitoringBellowsWorkers returns bellows monitor workers whose
 // underlying PR is missing or already terminal (merged/closed), using a single
-// LEFT JOIN query rather than per-row GetPRByNumber lookups.
+// LEFT JOIN query rather than per-row GetPRByNumber lookups. Detached rows are
+// swept alongside monitoring ones: a muted PR still merges, and its row would
+// otherwise be the one thing left claiming the PR is live.
 func (db *DB) OrphanedMonitoringBellowsWorkers() ([]OrphanedWorkerInfo, error) {
 	rows, err := db.conn.Query(`
 		SELECT w.id, COALESCE(latest.status, '') AS pr_status
@@ -1668,7 +1703,7 @@ func (db *DB) OrphanedMonitoringBellowsWorkers() ([]OrphanedWorkerInfo, error) {
 			FROM prs
 			WHERE id IN (SELECT MAX(id) FROM prs GROUP BY anvil, number)
 		) latest ON latest.anvil = w.anvil AND latest.number = w.pr_number
-		WHERE w.phase = 'bellows' AND w.status = 'monitoring' AND w.pr_number != 0
+		WHERE w.phase = 'bellows' AND w.status IN ('monitoring', 'detached') AND w.pr_number != 0
 		  AND (latest.status IS NULL OR latest.status IN ('merged', 'closed'))
 		ORDER BY w.started_at`)
 	if err != nil {

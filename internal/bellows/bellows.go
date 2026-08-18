@@ -107,6 +107,7 @@ type Monitor struct {
 	learnMu              map[string]*sync.Mutex                               // per-anvil mutex serializing auto-learn
 	learnSem             chan struct{}                                        // caps overall concurrent auto-learn goroutines
 	wasUnmanaged         map[string]bool                                      // keys of ext- PRs seen as unmanaged (for managed transition detection)
+	wasDetached          map[string]bool                                      // keys of PRs seen as bellows-detached (for resume transition detection)
 	autoMergeHandler     func(ctx context.Context, anvil string, pr state.PR) // called when a PR becomes ready-to-merge
 	smelterEnabled       func() bool                                          // when true, route learned rules to pending table instead of PR
 	assayConfig          func(anvil string) AssayGateConfig                   // resolved Assay gate config; nil disables the trigger
@@ -189,6 +190,7 @@ func New(db *state.DB, vcsLookup func(anvil string) vcs.Provider, interval time.
 		learnMu:               make(map[string]*sync.Mutex),
 		learnSem:              make(chan struct{}, 4), // allow up to 4 concurrent auto-learn goroutines
 		wasUnmanaged:          make(map[string]bool),
+		wasDetached:           make(map[string]bool),
 		ciStuckNotified:       make(map[string]string),
 		assaySuppressNotified: make(map[string]string),
 	}
@@ -683,6 +685,14 @@ func (m *Monitor) checkAll(ctx context.Context) {
 		if title == "" {
 			title = fmt.Sprintf("PR #%d", pr.Number)
 		}
+		// A detached PR keeps its row rather than being skipped — a PR that
+		// disappears from the Workers panel reads as a bug, not as a mute —
+		// but carries the detached status, because the row is the one place
+		// the panel asserts bellows is watching, and for this PR it is not.
+		workerStatus := state.WorkerMonitoring
+		if pr.BellowsDetached {
+			workerStatus = state.WorkerDetached
+		}
 		// Remove any stale pipeline worker row repurposed as bellows
 		// (phase='bellows' but lacking a "bellows-" prefix in its ID).
 		// Without this, Hearth shows two workers for the same PR.
@@ -692,13 +702,19 @@ func (m *Monitor) checkAll(ctx context.Context) {
 			BeadID:    pr.BeadID,
 			Anvil:     pr.Anvil,
 			Branch:    pr.Branch,
-			Status:    state.WorkerMonitoring,
+			Status:    workerStatus,
 			Phase:     "bellows",
 			Title:     title,
 			PRNumber:  pr.Number,
 			StartedAt: time.Now(),
 		}); err != nil {
 			log.Printf("[bellows] Failed to upsert worker row for PR #%d (%s): %v", pr.Number, pr.Anvil, err)
+		}
+		// The insert above only writes new rows, so a PR detached (or resumed)
+		// after its row was created is reconciled here. The update is a no-op
+		// unless the row's status actually disagrees with the flag.
+		if err := m.db.SetBellowsWorkerDetached(workerID, pr.BellowsDetached); err != nil {
+			log.Printf("[bellows] Failed to sync detached state on worker row for PR #%d (%s): %v", pr.Number, pr.Anvil, err)
 		}
 	}
 
@@ -801,10 +817,15 @@ func (m *Monitor) checkPR(ctx context.Context, pr *state.PR, dailyAssayCost *flo
 	switch ci.State {
 	case ciStuck:
 		// A wedged run or a platform outage. Surface it once for the operator
-		// instead of feeding a fix loop that cannot reproduce anything.
+		// instead of feeding a fix loop that cannot reproduce anything. This
+		// evaluation runs ahead of the detached guard below (the CI verdict
+		// feeds the snapshot either way), so the note — a needs-attention entry
+		// plus an event — is suppressed here rather than there.
 		log.Printf("[bellows] PR #%d (%s): CI appears stuck/outage — %s; skipping failure evaluation",
 			pr.Number, pr.Anvil, ci.Reason)
-		m.noteCIStuck(pr, ci)
+		if !pr.BellowsDetached {
+			m.noteCIStuck(pr, ci)
+		}
 	case ciPending:
 		log.Printf("[bellows] PR #%d (%s): CI pending — %s; skipping failure evaluation",
 			pr.Number, pr.Anvil, ci.Reason)
@@ -901,12 +922,53 @@ func (m *Monitor) checkPR(ctx context.Context, pr *state.PR, dailyAssayCost *flo
 		}
 	}
 
+	// Same treatment when a detached PR is resumed. The snapshots taken while
+	// detached recorded every standing problem as already-seen, so without this
+	// a PR resumed with failing CI, conflicts or unresolved threads would sit
+	// there as unchanged state and never fire again: the transition happened
+	// while nobody was listening. Clearing the snapshot re-seeds from the DB, so
+	// the problems that outlived the mute are re-detected as fresh transitions.
+	if !pr.BellowsDetached {
+		if _, wasDetached := m.wasDetached[key]; wasDetached {
+			delete(m.wasDetached, key)
+			m.mu.Lock()
+			delete(m.lastStatuses, key)
+			m.mu.Unlock()
+			// Re-enter checkPR so the nil-snapshot seeding path runs.
+			m.checkPR(ctx, pr, dailyAssayCost)
+			return
+		}
+	}
+
 	// External PRs (not created by Forge) are tracked for display in the
 	// Hearth PR panel. Unless explicitly assigned to bellows, they must not
 	// trigger lifecycle workers (quench, burnish, rebase). Persist their
 	// mergeability state and return early.
 	if strings.HasPrefix(pr.BeadID, "ext-") && !pr.BellowsManaged {
 		m.wasUnmanaged[key] = true
+		_ = m.db.UpdatePRMergeability(pr.ID, newSnap.CIPassing && !ciInProgress, newSnap.IsConflicting, newSnap.HasUnresolvedThreads, newSnap.HasPendingReviews, newSnap.HasApproval, newSnap.AssayUpToDate)
+		if newSnap.IsMerged {
+			_ = m.db.UpdatePRStatus(pr.ID, state.PRMerged)
+		} else if newSnap.IsClosed {
+			_ = m.db.UpdatePRStatus(pr.ID, state.PRClosed)
+		}
+		return
+	}
+
+	// A detached PR is muted, not untracked: an operator took it off bellows,
+	// so it emits nothing and drives no lifecycle worker (quench, burnish,
+	// rebase, Assay), but its mergeability and terminal state are still
+	// refreshed so the PR panel keeps showing the truth about it. Independent
+	// of the managed flags above — any PR can be detached, Forge-created or
+	// external, managed or not.
+	//
+	// This one return is what silences every branch below, and the steady-state
+	// re-emit branches ("CI still failing", "still conflicting", "still
+	// unresolved threads") are the reason it has to be a return rather than a
+	// per-emit check: those fire on unchanged state, so a detached PR with a
+	// standing problem would otherwise re-announce it on every single poll.
+	if pr.BellowsDetached {
+		m.wasDetached[key] = true
 		_ = m.db.UpdatePRMergeability(pr.ID, newSnap.CIPassing && !ciInProgress, newSnap.IsConflicting, newSnap.HasUnresolvedThreads, newSnap.HasPendingReviews, newSnap.HasApproval, newSnap.AssayUpToDate)
 		if newSnap.IsMerged {
 			_ = m.db.UpdatePRStatus(pr.ID, state.PRMerged)

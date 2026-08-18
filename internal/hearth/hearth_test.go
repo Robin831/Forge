@@ -2254,6 +2254,7 @@ func TestWorkerStatusStyleStatic(t *testing.T) {
 		wantText string
 	}{
 		{"monitoring", "○"},
+		{"detached", "⊘"},
 		{"done", "✓"},
 		{"failed", "✗"},
 		{"unknown", "○"},

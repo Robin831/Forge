@@ -435,6 +435,86 @@ func TestDB_BellowsDetached(t *testing.T) {
 	}
 }
 
+// TestDB_SetBellowsWorkerDetached exercises the bellows monitor row's
+// monitoring↔detached relabel (Forge-2rrx): it moves the row in both
+// directions, is a no-op when the row already carries the wanted status, and
+// never resurrects a row that has since gone terminal.
+func TestDB_SetBellowsWorkerDetached(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "forge-state-wdetach-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+	db, err := Open(filepath.Join(tmpDir, "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	const id = "bellows-anvil-1-77"
+	if err := db.InsertWorker(&Worker{
+		ID: id, BeadID: "Forge-abc1", Anvil: "anvil-1", Branch: "forge/Forge-abc1",
+		Status: WorkerMonitoring, Phase: "bellows", PRNumber: 77, StartedAt: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	statusOf := func() WorkerStatus {
+		w, err := db.GetWorker(id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return w.Status
+	}
+
+	if err := db.SetBellowsWorkerDetached(id, true); err != nil {
+		t.Fatal(err)
+	}
+	if got := statusOf(); got != WorkerDetached {
+		t.Fatalf("expected status=detached after SetBellowsWorkerDetached(true), got %q", got)
+	}
+	// Idempotent: repeating the call leaves the row where it is.
+	if err := db.SetBellowsWorkerDetached(id, true); err != nil {
+		t.Fatal(err)
+	}
+	if got := statusOf(); got != WorkerDetached {
+		t.Fatalf("expected status to stay detached, got %q", got)
+	}
+
+	// A detached row is non-terminal, so it still renders in the Workers panel.
+	active, err := db.ActiveWorkers()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var found bool
+	for _, w := range active {
+		if w.ID == id {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("a detached worker must still be listed by ActiveWorkers")
+	}
+
+	if err := db.SetBellowsWorkerDetached(id, false); err != nil {
+		t.Fatal(err)
+	}
+	if got := statusOf(); got != WorkerMonitoring {
+		t.Fatalf("expected status=monitoring after SetBellowsWorkerDetached(false), got %q", got)
+	}
+
+	// A row that has gone terminal — swept, merged, killed — stays terminal.
+	if err := db.UpdateWorkerStatus(id, WorkerDone); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.SetBellowsWorkerDetached(id, true); err != nil {
+		t.Fatal(err)
+	}
+	if got := statusOf(); got != WorkerDone {
+		t.Fatalf("SetBellowsWorkerDetached must not resurrect a terminal row, got %q", got)
+	}
+}
+
 func TestDB_QueueCache(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "forge-state-test-*")
 	if err != nil {
