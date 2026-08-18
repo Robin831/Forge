@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Robin831/Forge/internal/config"
 	"github.com/Robin831/Forge/internal/hooks"
@@ -493,4 +494,119 @@ func TestFix_AfterTemper_NonFatal_VerifyRun(t *testing.T) {
 	if result.Error != nil {
 		t.Errorf("Fix should not return an error when after_temper hook fails (non-fatal), got: %v", result.Error)
 	}
+}
+
+// --- PID recording tests ---
+//
+// The worker row's PID is the only handle the detach/kill path has on a fix
+// session: a row without one is merely marked failed while the claude process
+// keeps running — and keeps pushing to the branch that was just taken off the
+// automatic loop. These pin that quench records it at both spawn sites.
+
+// insertQuenchWorker registers a running quench worker row and returns its id.
+func insertQuenchWorker(t *testing.T, db *state.DB) string {
+	t.Helper()
+	id := "test-quench-1"
+	if err := db.InsertWorker(&state.Worker{
+		ID:        id,
+		BeadID:    "test-bead",
+		Anvil:     "test-anvil",
+		Branch:    "forge/test",
+		Status:    state.WorkerRunning,
+		Phase:     "quench",
+		PRNumber:  42,
+		StartedAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("InsertWorker: %v", err)
+	}
+	return id
+}
+
+// spawnStubWithPID returns a smith stub whose process reports the given PID.
+func spawnStubWithPID(pid int) func(context.Context, string, string, string, provider.Provider, []string) (*smith.Process, error) {
+	return func(_ context.Context, _, _, _ string, _ provider.Provider, _ []string) (*smith.Process, error) {
+		proc := smith.NewProcessForTest(&smith.Result{ExitCode: 0, ResultSubtype: "success"})
+		proc.PID = pid
+		return proc, nil
+	}
+}
+
+// assertWorkerPID reads the worker row back and checks the recorded PID.
+func assertWorkerPID(t *testing.T, db *state.DB, workerID string, want int) {
+	t.Helper()
+	w, err := db.GetWorker(workerID)
+	if err != nil {
+		t.Fatalf("GetWorker: %v", err)
+	}
+	if w == nil {
+		t.Fatalf("worker %s not found", workerID)
+	}
+	if w.PID != want {
+		t.Errorf("worker PID = %d, want %d — without it the detach kill is a no-op that marks the row failed while the session keeps running", w.PID, want)
+	}
+}
+
+func TestFix_RecordsSmithPID(t *testing.T) {
+	h := newQuenchTestHarness()
+	defer h.restore()
+
+	db := openTestDB(t)
+	workerID := insertQuenchWorker(t, db)
+
+	// Repro temper fails so Fix proceeds to Smith; the verify run passes so it
+	// returns on the first attempt.
+	callCount := 0
+	temperRunFn = func(_ context.Context, _ string, _ temper.Config, _ *state.DB, _, _ string) *temper.Result {
+		callCount++
+		return &temper.Result{Passed: callCount > 1, FailedStep: "build"}
+	}
+	smithSpawnFn = spawnStubWithPID(4242)
+
+	cfg := temper.Config{}
+	result := Fix(context.Background(), FixParams{
+		PRNumber:     42,
+		Branch:       "forge/test",
+		BeadID:       "test-bead",
+		AnvilName:    "test-anvil",
+		WorktreePath: t.TempDir(),
+		VCS: &fakeVCS{
+			failingChecks: []vcs.CICheck{{Name: "build", Status: "failure"}},
+		},
+		Providers:    []provider.Provider{{Kind: provider.Claude}},
+		TemperConfig: &cfg,
+		DB:           db,
+		WorkerID:     workerID,
+	})
+
+	if !result.Fixed {
+		t.Fatalf("expected Fixed=true; error: %v", result.Error)
+	}
+	assertWorkerPID(t, db, workerID, 4242)
+}
+
+func TestBatchFix_RecordsSmithPID(t *testing.T) {
+	h := newQuenchTestHarness()
+	defer h.restore()
+
+	db := openTestDB(t)
+	workerID := insertQuenchWorker(t, db)
+
+	smithSpawnFn = spawnStubWithPID(4243)
+
+	result := BatchFix(context.Background(), BatchFixParams{
+		PRNumber:      42,
+		Branch:        "forge/test",
+		BeadID:        "test-bead",
+		AnvilName:     "test-anvil",
+		WorktreePath:  t.TempDir(),
+		Providers:     []provider.Provider{{Kind: provider.Claude}},
+		FailingChecks: []vcs.CICheck{{Name: "build", Status: "failure"}},
+		DB:            db,
+		WorkerID:      workerID,
+	})
+
+	if result.Error != nil {
+		t.Fatalf("BatchFix error: %v", result.Error)
+	}
+	assertWorkerPID(t, db, workerID, 4243)
 }

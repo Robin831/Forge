@@ -151,7 +151,7 @@ func BatchFix(ctx context.Context, p BatchFixParams) *FixResult {
 			log.Printf("[quench] PR #%d: Provider %s rate limited, retrying with %s",
 				p.PRNumber, providers[pi-1].Label(), pv.Label())
 		}
-		process, err := smith.SpawnWithOptions(ctx, p.WorktreePath, prompt, logDir, pv, p.ExtraFlags, smith.SpawnOptions{LogPrefix: "quench"})
+		process, err := smithSpawnFn(ctx, p.WorktreePath, prompt, logDir, pv, p.ExtraFlags)
 		if err != nil {
 			result.Error = fmt.Errorf("spawning smith (%s) for batch CI fix: %w", pv.Label(), err)
 			result.Duration = time.Since(start)

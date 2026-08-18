@@ -257,3 +257,106 @@ func TestPRAction_ReattachBellows(t *testing.T) {
 
 // compile-time assurance the spy still satisfies the interface the daemon holds.
 var _ bellowsMonitorIface = (*resetSpy)(nil)
+
+// TestPRAction_DetachBellows_SparesOtherAnvilAndOtherPhases pins the two
+// conditions the PR-number filter alone does not cover. PR numbers are
+// per-repo, so #41 on a second anvil is a routine collision, not a match; and
+// the phases outside detachKillPhases — the synthetic bellows monitor row, an
+// in-flight Assay pass — are spared by design. A wrong kill here destroys a
+// live session in an unrelated repo, so both branches get a pin.
+func TestPRAction_DetachBellows_SparesOtherAnvilAndOtherPhases(t *testing.T) {
+	d, db := newDetachTestDaemon(t)
+	// A second anvil whose PR happens to carry the same number.
+	cfg := d.cfg.Load()
+	cfg.Anvils["hugin"] = config.AnvilConfig{Path: t.TempDir()}
+	d.cfg.Store(cfg)
+
+	prID := insertDetachPR(t, db, 41, "TEST-detach")
+
+	// The target: same anvil, same PR, a killable phase.
+	require.NoError(t, db.InsertWorker(&state.Worker{
+		ID: "w-burnish", BeadID: "TEST-detach", Anvil: "munin", Branch: "forge/TEST-detach",
+		Status: state.WorkerRunning, Phase: "burnish", PRNumber: 41, StartedAt: time.Now(),
+	}))
+	// Same PR number, different anvil — a different repository's fix session.
+	require.NoError(t, db.InsertWorker(&state.Worker{
+		ID: "w-other-anvil", BeadID: "OTHER-41", Anvil: "hugin", Branch: "forge/OTHER-41",
+		Status: state.WorkerRunning, Phase: "quench", PRNumber: 41, StartedAt: time.Now(),
+	}))
+	// Same anvil and PR, but the monitor row rather than a process.
+	require.NoError(t, db.InsertWorker(&state.Worker{
+		ID: "bellows-munin-41", BeadID: "TEST-detach", Anvil: "munin",
+		Status: state.WorkerMonitoring, Phase: "bellows", PRNumber: 41, StartedAt: time.Now(),
+	}))
+	// Same anvil and PR, an Assay pass: it only reads the diff and posts
+	// findings, so killing it buys nothing and loses the run already paid for.
+	require.NoError(t, db.InsertWorker(&state.Worker{
+		ID: "w-assay", BeadID: "TEST-detach", Anvil: "munin", Branch: "forge/TEST-detach",
+		Status: state.WorkerRunning, Phase: "assay", PRNumber: 41, StartedAt: time.Now(),
+	}))
+
+	payload, _ := json.Marshal(ipc.PRActionPayload{
+		Action: "detach_bellows", PRID: prID, PRNumber: 41, Anvil: "munin", BeadID: "TEST-detach",
+	})
+	resp := d.handleIPC(ipc.Command{Type: "pr_action", Payload: payload})
+	require.Equal(t, "ok", resp.Type)
+	d.wg.Wait()
+
+	killed, err := db.GetWorker("w-burnish")
+	require.NoError(t, err)
+	assert.Equal(t, state.WorkerFailed, killed.Status, "the detached PR's fix worker must be stopped")
+
+	for _, tc := range []struct {
+		id     string
+		status state.WorkerStatus
+		why    string
+	}{
+		{"w-other-anvil", state.WorkerRunning, "a same-numbered PR on another anvil is a different PR"},
+		{"bellows-munin-41", state.WorkerMonitoring, "the bellows monitor row is a row, not a process"},
+		{"w-assay", state.WorkerRunning, "an Assay pass is left to finish"},
+	} {
+		spared, err := db.GetWorker(tc.id)
+		require.NoError(t, err)
+		assert.Equal(t, tc.status, spared.Status, tc.why)
+	}
+}
+
+// TestDrainPendingAction_DropsConsecutiveDetachedActions parks two detached
+// actions ahead of a runnable one, so the drop branch recurses through itself
+// before reaching anything dispatchable — the case one parked drop cannot
+// exercise, and the one where the pendingActions Store/Load cycling across
+// recursive frames would show up.
+func TestDrainPendingAction_DropsConsecutiveDetachedActions(t *testing.T) {
+	d, db := newDetachTestDaemon(t)
+	ciID := insertDetachPR(t, db, 71, "TEST-multidrain")
+	reviewID := insertDetachPR(t, db, 72, "TEST-multidrain")
+	require.NoError(t, db.UpdatePRBellowsDetached(ciID, true))
+	require.NoError(t, db.UpdatePRBellowsDetached(reviewID, true))
+	insertDetachPR(t, db, 73, "TEST-multidrain")
+
+	// The cleanup's observable proof that it ran: the bookkeeping row it deletes.
+	_, err := db.RecordReviewFixDispatch("munin", 73, "deadbeef")
+	require.NoError(t, err)
+
+	// Drain order is CI fix → review fix → cleanup, so both detached actions
+	// are popped (and dropped) before the runnable one is reached.
+	d.parkPendingAction("TEST-multidrain", lifecycle.ActionRequest{
+		Action: lifecycle.ActionFixCI, Anvil: "munin", PRNumber: 71, BeadID: "TEST-multidrain",
+	})
+	d.parkPendingAction("TEST-multidrain", lifecycle.ActionRequest{
+		Action: lifecycle.ActionFixReview, Anvil: "munin", PRNumber: 72, BeadID: "TEST-multidrain",
+	})
+	d.parkPendingAction("TEST-multidrain", lifecycle.ActionRequest{
+		Action: lifecycle.ActionCleanup, Anvil: "munin", PRNumber: 73, BeadID: "TEST-multidrain",
+	})
+
+	d.drainPendingAction(context.Background(), "TEST-multidrain")
+	d.wg.Wait()
+
+	_, stillParked := d.pendingActions.Load("TEST-multidrain")
+	assert.False(t, stillParked, "the parked set must be fully drained")
+
+	row, err := db.GetReviewFixDispatch("munin", 73)
+	require.NoError(t, err)
+	assert.Nil(t, row, "the action parked behind two detached ones must still run")
+}

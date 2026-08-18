@@ -1311,3 +1311,110 @@ func assertNeedsHuman(t *testing.T, db *state.DB, beadID, anvil, want string) {
 		t.Errorf("needs-attention message %q does not mention %q", r.LastError, want)
 	}
 }
+
+// --- PID recording tests ---
+//
+// The worker row's PID is the only handle the detach/kill path has on a fix
+// session: a row without one is merely marked failed while the claude process
+// keeps running — and keeps pushing to the branch that was just taken off the
+// automatic loop. These pin that burnish records it at both spawn sites.
+
+// insertBurnishWorker registers a running burnish worker row and returns its id.
+func insertBurnishWorker(t *testing.T, db *state.DB) string {
+	t.Helper()
+	id := "test-burnish-pid"
+	if err := db.InsertWorker(&state.Worker{
+		ID:        id,
+		BeadID:    "test-1",
+		Anvil:     "test-anvil",
+		Branch:    "forge/test",
+		Status:    state.WorkerRunning,
+		Phase:     "burnish",
+		PRNumber:  42,
+		StartedAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("InsertWorker: %v", err)
+	}
+	return id
+}
+
+// spawnStubWithPID returns a smith stub whose process reports the given PID.
+func spawnStubWithPID(pid int) func(context.Context, string, string, string, provider.Provider, []string) (*smith.Process, error) {
+	return func(_ context.Context, _, _, _ string, _ provider.Provider, _ []string) (*smith.Process, error) {
+		proc := smith.NewProcessForTest(&smith.Result{ExitCode: 0, ResultSubtype: "success"})
+		proc.PID = pid
+		return proc, nil
+	}
+}
+
+// assertWorkerPID reads the worker row back and checks the recorded PID.
+func assertWorkerPID(t *testing.T, db *state.DB, workerID string, want int) {
+	t.Helper()
+	w, err := db.GetWorker(workerID)
+	if err != nil {
+		t.Fatalf("GetWorker: %v", err)
+	}
+	if w == nil {
+		t.Fatalf("worker %s not found", workerID)
+	}
+	if w.PID != want {
+		t.Errorf("worker PID = %d, want %d — without it the detach kill is a no-op that marks the row failed while the session keeps running", w.PID, want)
+	}
+}
+
+func TestFix_RecordsSmithPID(t *testing.T) {
+	h := newTestHarness()
+	defer h.restore()
+
+	db := openTestDB(t)
+	workerID := insertBurnishWorker(t, db)
+
+	smithSpawnFn = spawnStubWithPID(4242)
+	temperRunFn = makeTemperStub(true, "")
+	gitPushFn = noPush
+	gitRevParseFn = noRevParse
+
+	v := &fakeVCS{comments: []vcs.ReviewComment{
+		{Author: "copilot", Body: "fix this", State: "CHANGES_REQUESTED"},
+	}}
+	params := defaultFixParams(db, v)
+	params.WorkerID = workerID
+
+	result := Fix(context.Background(), params)
+	if !result.Addressed {
+		t.Fatalf("expected Addressed=true; error: %v", result.Error)
+	}
+	assertWorkerPID(t, db, workerID, 4242)
+}
+
+func TestBatchFix_RecordsSmithPID(t *testing.T) {
+	h := newTestHarness()
+	defer h.restore()
+
+	db := openTestDB(t)
+	workerID := insertBurnishWorker(t, db)
+
+	smithSpawnFn = spawnStubWithPID(4243)
+	temperRunFn = makeTemperStub(true, "")
+	gitPushFn = noPush
+	gitRevParseFn = noRevParse
+
+	result := BatchFix(context.Background(), BatchFixParams{
+		WorktreePath: os.TempDir(),
+		BeadID:       "test-1",
+		AnvilName:    "test-anvil",
+		PRNumber:     42,
+		Branch:       "forge/test",
+		DB:           db,
+		WorkerID:     workerID,
+		Providers:    []provider.Provider{{Kind: provider.Claude, Model: "test"}},
+		Comments: []vcs.ReviewComment{
+			{Author: "copilot", Body: "fix this", State: "CHANGES_REQUESTED"},
+		},
+	})
+
+	if result.Error != nil {
+		t.Fatalf("BatchFix error: %v", result.Error)
+	}
+	assertWorkerPID(t, db, workerID, 4243)
+}
