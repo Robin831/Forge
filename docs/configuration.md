@@ -546,7 +546,7 @@ anvils:
 | `auto_learn_rules` | bool | `false` | | Automatically learn Warden review rules from Copilot comments when a PR is merged. Rules are saved to each anvil's `.forge/warden-rules.yaml`. |
 | `smelter_enabled` | bool | `true` | | Enable/disable the Smelter background process. When `false`, scheduled smelter runs are disabled. |
 | `smelter_interval` | duration | `8h` | `1h` or `0` | How often the Smelter runs its background processing. `0` disables scheduled runs. The Smelter skips the startup run if it already flushed within this interval, so daemon restarts don't produce redundant PRs. For low-volume setups where warden rules accumulate slowly, `48h` or `72h` is a reasonable value. |
-| `crucible_enabled` | bool | `false` | | Enable Crucible auto-orchestration for parent beads with children. When a ready bead blocks other beads, the Crucible creates a feature branch, dispatches children in topological order, merges each child PR, then creates a final PR to main. |
+| `crucible_enabled` | bool | `false` | | Enable Crucible auto-orchestration for **opted-in** parent beads with children (see [Epic Orchestration Is Opt-In](#epic-orchestration-is-opt-in)). When a parent carrying the `crucible` label blocks other beads, the Crucible creates its feature branch, dispatches children in topological order, merges each child PR, then creates a final PR to main. A parent that carries the label while this setting is `false` is not dispatched: it is escalated to Needs Attention, since its children are already routed to a branch nothing would create. |
 | `crucible_poll_interval` | duration | `3m` | `30s` or `0` | Interval for the slow unfiltered poll that rebuilds the Crucible parent-child (Blocks) graph. The fast path polls with a label filter every `poll_interval`; the slow path runs every `crucible_poll_interval` to discover parent-child relationships. `0` disables two-tier polling (all polls are unfiltered). |
 | `auto_merge_crucible_children` | bool | `true` | | Auto-merge child PRs targeting a Crucible feature branch after the pipeline succeeds. Set to `false` to require manual merge of child PRs. |
 | `forge_id` | string | `""` (hostname) | | Per-instance identifier embedded in the forge-managed marker on every PR Forge creates (`<!-- forge-managed: <id> -->`). When multiple Forge instances target the same anvil, this ID ensures each instance only manages the PRs it created. When empty, `os.Hostname()` is used; falls back to `"default"`. Set this explicitly in environments where the hostname is not stable (e.g. ephemeral pods). |
@@ -578,6 +578,51 @@ anvils:
 | `forgechat.turn_retention_cap` | int | `1000` | | Maximum number of Beads-Forge turns retained in the TurnStore. When exceeded, the oldest completed turns are evicted first (in-flight turns are never evicted). A negative value disables the cap. |
 
 Duration values use Go syntax: `30s`, `5m`, `1h30m`, `168h`, etc.
+
+### Epic Orchestration Is Opt-In
+
+Parent/child relations in bd are used for plain grouping far more often than for
+a shared feature branch, so **orchestration is opt-in**: a parent bead must carry
+the `crucible` label for any epic routing to happen.
+
+```bash
+bd label add <parent-id> crucible
+```
+
+An `epic-branch:<name>` label counts as opt-in too — it names the branch on
+purpose — and additionally overrides the derived branch name:
+
+```bash
+bd label add <parent-id> epic-branch:feature/checkout-rewrite
+```
+
+Without one of those labels — **including when the parent is `issue_type: epic`**
+— nothing epic-specific happens:
+
+- children dispatch as ordinary standalone beads: worktree from `main`, PR to
+  `main`, auto-merge to `main`;
+- a dispatched parent runs the ordinary Smith → Temper → Warden pipeline like any
+  other bead; no feature branch is created;
+- the bd parent/child relations are untouched, and sibling ordering through
+  `blocks`-type dependencies still gates via `bd ready` as before.
+
+With the label:
+
+- the shared branch is `feature/<parent-id>`, or the name given by
+  `epic-branch:<name>`. Both the poller (which stamps children with it) and the
+  Crucible (which creates it) derive that name the same way, so a child dispatched
+  outside the Crucible can no longer base on a branch that never exists;
+- children whose parent is orchestrating — in the same poll batch or already
+  mid-run — are withheld from the ordinary dispatch loop, since the Crucible
+  dispatches them itself;
+- `crucible_enabled: false` makes the labeled parent a Needs Attention entry
+  rather than a dispatch, naming the two ways out (enable the setting, or remove
+  the label).
+
+> **Migration:** before this change, any parent with children was a Crucible
+> candidate and any `epic`-typed parent routed its children onto a feature
+> branch. Add the `crucible` label to the parents that should keep being
+> orchestrated; every other parent becomes independent with no config change.
 
 ### Event Bus vs Legacy Polling
 

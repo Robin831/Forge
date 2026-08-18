@@ -14,7 +14,7 @@ The Forge uses a blacksmith metaphor throughout:
 | **Temper**   | Build/lint/test verification (Go, .NET, Node)           |
 | **Bellows**  | PR monitor (CI failures, review comments, merge conflicts) |
 | **Schematic**| Pre-analysis worker (decomposes complex beads)          |
-| **Crucible** | Epic orchestrator (parent-child beads on feature branches) |
+| **Crucible** | Epic orchestrator (opt-in via the `crucible` label on the parent) |
 | **Depcheck** | Multi-language dependency update scanner (Go, .NET, Node) |
 | **Wicket**   | GitHub issue triage monitor — classifies issues and creates beads |
 | **Quench**   | CI failure fix worker — spawns Smith with targeted fix prompt |
@@ -149,7 +149,7 @@ settings:
     reviewfix: [claude/claude-sonnet-4-6]
   schematic_enabled: false     # Pre-analysis for complex beads
   schematic_word_threshold: 100
-  crucible_enabled: false      # Epic orchestration for parent-child beads
+  crucible_enabled: false      # Epic orchestration for parents labeled `crucible`
   depcheck_interval: 168h      # Dependency scan interval (0 to disable)
   vulncheck_enabled: true      # Vulnerability scanning with govulncheck
   vulncheck_interval: 24h     # Vuln scan interval (0 to disable)
@@ -198,15 +198,29 @@ Each step is tracked in SQLite state.db with full event logging and cost trackin
 
 ### Crucible (Epic Orchestration)
 
-When a ready bead has children (blocks other beads), the **Crucible** takes over:
+Epic orchestration is **opt-in**: a parent bead must carry the `crucible` label
+(or an `epic-branch:<name>` label, which also names the branch) before anything
+epic-specific happens. Children of an unlabeled parent — including a parent typed
+`epic` — dispatch as ordinary standalone beads: worktree from `main`, PR to
+`main`, bd relations untouched.
+
+```bash
+bd label add <parent-id> crucible
+```
+
+When a labeled parent has children, the **Crucible** takes over:
 
 ```
-Detect parent bead → Create feature branch (feature/<parent-id>)
+Detect opted-in parent → Create feature branch (feature/<parent-id>, or epic-branch:<name>)
     → Topological sort children → For each child: pipeline → PR → merge to feature branch
     → Final PR (feature branch → main) → Bellows monitors → Close parent on merge
 ```
 
-Enable with `crucible_enabled: true` in `forge.yaml`.
+Children of an orchestrating parent are withheld from the ordinary dispatch loop
+so they are not run twice in one poll cycle.
+
+Enable with `crucible_enabled: true` in `forge.yaml`. See
+[docs/configuration.md](docs/configuration.md) for the full opt-in rules.
 
 ### Dependency Scanning
 
@@ -286,6 +300,7 @@ Forge/
 │   ├── crucible/         # Parent-child bead orchestration (epic branches)
 │   ├── daemon/           # Main background process, poll loop, IPC server
 │   ├── depcheck/         # Multi-language dependency update scanner
+│   ├── epic/             # Opt-in gate + branch name for epic orchestration
 │   ├── executil/         # Platform-specific process execution
 │   ├── forge/            # Core types and constants (version info)
 │   ├── vcs/              # VCS provider interface & GitHub implementation

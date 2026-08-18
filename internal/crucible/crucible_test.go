@@ -563,6 +563,9 @@ func TestRun_SkippedChild_DoesNotShipIncompleteEpic(t *testing.T) {
 	}
 }
 
+// TestIsCrucibleCandidate covers the inverted default (Forge-fblf): children
+// alone are not enough — the parent must opt in with the "crucible" label or an
+// explicit "epic-branch:<name>".
 func TestIsCrucibleCandidate(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -571,7 +574,11 @@ func TestIsCrucibleCandidate(t *testing.T) {
 	}{
 		{"no blocks", poller.Bead{ID: "a"}, false},
 		{"empty blocks", poller.Bead{ID: "a", Blocks: []string{}}, false},
-		{"has blocks", poller.Bead{ID: "a", Blocks: []string{"b"}}, true},
+		{"has blocks, no opt-in label", poller.Bead{ID: "a", Blocks: []string{"b"}}, false},
+		{"epic type, no opt-in label", poller.Bead{ID: "a", IssueType: "epic", Blocks: []string{"b"}}, false},
+		{"opt-in label, no blocks", poller.Bead{ID: "a", Labels: []string{"crucible"}}, false},
+		{"has blocks + crucible label", poller.Bead{ID: "a", Blocks: []string{"b"}, Labels: []string{"crucible"}}, true},
+		{"has blocks + epic-branch label", poller.Bead{ID: "a", Blocks: []string{"b"}, Labels: []string{"epic-branch:foo"}}, true},
 	}
 
 	for _, tt := range tests {
@@ -837,5 +844,62 @@ func TestRun_ChildEmptyBranch_SkipsPRAndContinues(t *testing.T) {
 	}
 	if !found {
 		t.Error("the empty-branch child should be closed")
+	}
+}
+
+// TestRun_BranchNameMatchesPoller is the regression test for the epic/ vs
+// feature/ mismatch (Forge-fblf): the Crucible built "feature/<id>" while the
+// poller stamped children with "epic/<id>", so a child dispatched
+// independently failed with "base branch not found on origin" and burned the
+// dispatch circuit breaker. Both now derive the name from epic.BranchName.
+func TestRun_BranchNameMatchesPoller(t *testing.T) {
+	tests := []struct {
+		name   string
+		bead   poller.Bead
+		expect string
+	}{
+		{
+			name:   "derived name",
+			bead:   poller.Bead{ID: "parent-1", IssueType: "epic", Labels: []string{"crucible"}},
+			expect: "feature/parent-1",
+		},
+		{
+			name:   "explicit epic-branch label wins",
+			bead:   poller.Bead{ID: "parent-1", Labels: []string{"crucible", "epic-branch:foo"}},
+			expect: "foo",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			db := testDB(t)
+			logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+
+			var createdBranch string
+			p := Params{
+				DB:          db,
+				Logger:      logger,
+				ParentBead:  tt.bead,
+				AnvilName:   "test-anvil",
+				AnvilConfig: config.AnvilConfig{Path: t.TempDir()},
+				EpicBranchCreator: func(_ context.Context, _, branch string) error {
+					createdBranch = branch
+					return nil
+				},
+				ChildFetcher: func(_ context.Context, _, _ string) ([]poller.Bead, error) {
+					return nil, nil
+				},
+			}
+
+			if result := Run(context.Background(), p); result.Error != nil {
+				t.Fatalf("unexpected error: %v", result.Error)
+			}
+			if createdBranch != tt.expect {
+				t.Errorf("crucible branch = %q, want %q", createdBranch, tt.expect)
+			}
+			if got := poller.ExtractParentBranch(tt.bead); got != createdBranch {
+				t.Errorf("poller derives %q but the Crucible created %q — children would base on a branch that never exists", got, createdBranch)
+			}
+		})
 	}
 }

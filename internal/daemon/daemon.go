@@ -41,6 +41,7 @@ import (
 	"github.com/Robin831/Forge/internal/crucible"
 	"github.com/Robin831/Forge/internal/depcheck"
 	"github.com/Robin831/Forge/internal/diff"
+	"github.com/Robin831/Forge/internal/epic"
 	"github.com/Robin831/Forge/internal/executil"
 	"github.com/Robin831/Forge/internal/forge"
 	"github.com/Robin831/Forge/internal/hotreload"
@@ -3712,6 +3713,11 @@ func (d *Daemon) pollAndDispatch(ctx context.Context, fullPoll bool) {
 	thisCycleTotal := 0
 	thisCycleAnvil := make(map[string]int)
 
+	// One pre-pass over the whole batch: which beads are a Crucible's to
+	// dispatch, not this loop's. The batch is priority-sorted, so a child can
+	// precede its parent — the set has to be known before the first dispatch.
+	crucibleOwned := d.crucibleOwnedChildren(cfg, beads)
+
 	for _, bead := range beads {
 		// Atomically reserve this bead's slot; skip if another goroutine already
 		// claimed it (e.g. a concurrent manual run_bead dispatch). Using
@@ -3729,6 +3735,16 @@ func (d *Daemon) pollAndDispatch(ctx context.Context, fullPoll bool) {
 
 		// Skip beads that need human attention (needs_human=1)
 		if _, broken := needsHumanSet[bead.ID+"\x00"+bead.Anvil]; broken {
+			d.releaseBeadSlot(bead.ID)
+			continue
+		}
+
+		// Skip children of an orchestrated parent: the Crucible dispatches them
+		// itself, on the feature branch, once it reaches them. Dispatching here
+		// too would run the same bead twice in one cycle.
+		if _, owned := crucibleOwned[bead.Anvil+"\x00"+bead.ID]; owned {
+			d.logger.Info("skipping child of an orchestrated parent, the Crucible dispatches it",
+				"bead", bead.ID, "anvil", bead.Anvil)
 			d.releaseBeadSlot(bead.ID)
 			continue
 		}
@@ -4003,27 +4019,37 @@ func (d *Daemon) dispatchBead(ctx context.Context, bead poller.Bead, anvilCfg co
 		goto normalPipeline
 	}
 
-	// Handle epic beads: when the Crucible is enabled and the bead has children,
-	// fall through to the Crucible path which handles branch creation, child
-	// orchestration, and final PR. The legacy path only applies to epics that
-	// either have no children or when the Crucible is disabled.
-	if poller.IsEpicBead(bead) && !(d.cfg.Load().Settings.CrucibleEnabled && crucible.IsCrucibleCandidate(bead)) {
-		epicBranch := poller.ExtractParentBranch(bead)
-		if epicBranch != "" {
-			d.logger.Info("creating epic branch", "bead", bead.ID, "branch", epicBranch)
-			if err := d.worktreeMgr.CreateEpicBranch(ctx, anvilCfg.Path, epicBranch); err != nil {
-				d.logger.Error("failed to create epic branch", "bead", bead.ID, "branch", epicBranch, "error", err)
-				d.recordDispatchFailure(bead.ID, bead.Anvil, fmt.Sprintf("epic branch creation failed: %v", err), true)
-				return
-			}
-			_ = d.db.LogEvent(state.EventBeadClaimed,
-				fmt.Sprintf("Epic branch %q created for %s", epicBranch, bead.ID),
-				bead.ID, bead.Anvil)
-			d.logger.Info("epic branch created", "bead", bead.ID, "branch", epicBranch)
-			// Epic bead stays in_progress — child beads will work on the branch.
-			// Do not close the epic or run the pipeline.
-			return
+	// An opted-in parent whose children are not in this poll batch (all closed,
+	// or all blocked) has nothing to orchestrate. Run it as an ordinary bead
+	// rather than creating an empty feature branch and stalling.
+	if poller.IsOrchestratedParent(bead) && !crucible.IsCrucibleCandidate(bead) {
+		d.logger.Info("orchestrated parent has no ready children, dispatching as a normal bead",
+			"bead", bead.ID, "anvil", bead.Anvil)
+		goto normalPipeline
+	}
+
+	// A parent that opted into orchestration (the "crucible" label, or an
+	// explicit "epic-branch:<name>") but cannot be orchestrated is a
+	// misconfiguration, not a dispatch: its children are already stamped with
+	// its branch, so running the parent as an ordinary bead would leave them
+	// basing on a branch nobody creates. Escalate instead of the old legacy
+	// path, which created a dangling branch and left the parent in_progress
+	// forever with nothing to close it (Forge-fblf).
+	//
+	// A parent with no opt-in label — including one typed `epic` — never
+	// reaches here: it runs the ordinary pipeline like any other bead.
+	if poller.IsOrchestratedParent(bead) && !d.cfg.Load().Settings.CrucibleEnabled {
+		reason := fmt.Sprintf("bead %s opts into epic orchestration (%q or epic-branch:<name>) but "+
+			"settings.crucible_enabled is false — enable it to orchestrate the epic, or remove the label "+
+			"so this parent and its children dispatch independently to main",
+			bead.ID, epic.CrucibleLabel)
+		d.logger.Warn("orchestrated parent dispatched with the Crucible disabled",
+			"bead", bead.ID, "anvil", bead.Anvil, "branch", poller.ExtractParentBranch(bead))
+		if err := d.db.MarkNeedsHuman(bead.ID, bead.Anvil, reason); err != nil {
+			d.logger.Error("failed to mark bead as needs_human", "bead", bead.ID, "error", err)
 		}
+		d.recordDispatchFailure(bead.ID, bead.Anvil, reason, true)
+		return
 	}
 
 	// Handle Crucible beads: parent beads that block children. The Crucible

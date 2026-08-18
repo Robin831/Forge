@@ -5,20 +5,10 @@ import (
 	"context"
 	"encoding/json"
 	"log"
-	"strings"
 
+	"github.com/Robin831/Forge/internal/epic"
 	"github.com/Robin831/Forge/internal/executil"
 )
-
-// EpicBranchLabelPrefix is the label prefix used to define an epic's feature
-// branch. A label "epic-branch:feature/depcheck" means the epic uses
-// "feature/depcheck" as its shared branch.
-const EpicBranchLabelPrefix = "epic-branch:"
-
-// DefaultEpicBranchPrefix is the branch name prefix used when an epic bead
-// has no explicit epic-branch label. The branch name is derived as
-// "epic/<epic-id>".
-const DefaultEpicBranchPrefix = "epic/"
 
 // epicBranchLookupFunc is the function used to look up epic branch names.
 // It defaults to lookupEpicBranch but can be replaced in tests.
@@ -34,18 +24,27 @@ func SetEpicBranchLookupForTest(fn func(ctx context.Context, parentID, anvilPath
 	return func() { epicBranchLookupFunc = orig }
 }
 
-// ResolveEpicBranches enriches beads that belong to an epic with the epic's
-// branch name. It discovers the epic relationship via two paths:
+// ResolveEpicBranches enriches beads whose parent has opted into epic
+// orchestration with that parent's branch name. It discovers the parent
+// relationship two ways:
 //
-//  1. Parent field: child.Parent is set to an epic bead ID (legacy).
-//  2. Blocks field: child.Blocks contains an epic-type bead ID, meaning the
-//     child blocks the epic in the dependency graph. This is the preferred
-//     approach because beads with a parent set are hidden from `bd ready`.
+//  1. Parent field: child.Parent names the parent bead.
+//  2. Dependencies: a "blocks" or "parent-child" dependency entry whose
+//     depends_on_id names the parent — the same edge pollAnvil uses to
+//     reconstruct a parent's children, read from the child's side.
 //
-// It calls `bd show <id> --json` for each unique candidate, caching results
-// to avoid duplicate calls.
+// The raw "blocks" JSON field is deliberately NOT consulted: pollAnvil clears
+// it and rebuilds it with the inverted meaning ("my children"), so reading it
+// here as "beads I block" walked the graph the wrong way.
+//
+// A parent that has not opted in resolves to "", which leaves the child with an
+// empty EpicBranch — worktree from main, PR to main, like any standalone bead.
+//
+// It calls `bd show <id> --json` for each unique candidate parent, caching
+// results to avoid duplicate calls.
 func ResolveEpicBranches(ctx context.Context, beads []Bead, anvilPaths map[string]string) {
-	// Cache lookups: "anvil:beadID" → resolved branch (empty string = not an epic)
+	// Cache lookups: "anvil:beadID" → resolved branch (empty string = not an
+	// orchestrated parent)
 	cache := make(map[string]string)
 
 	for i := range beads {
@@ -56,41 +55,47 @@ func ResolveEpicBranches(ctx context.Context, beads []Bead, anvilPaths map[strin
 			continue
 		}
 
-		// Path 1: explicit parent field (legacy)
-		if b.Parent != "" {
-			cacheKey := b.Anvil + ":" + b.Parent
-			if branch, cached := cache[cacheKey]; cached {
-				b.EpicBranch = branch
-				continue
-			}
-			branch := epicBranchLookupFunc(ctx, b.Parent, anvilPath)
-			cache[cacheKey] = branch
-			b.EpicBranch = branch
-			continue
-		}
-
-		// Path 2: check if any bead this one blocks is an epic.
-		// A child that blocks an epic should be routed through the epic's
-		// feature branch without needing the parent field set.
-		if len(b.Blocks) > 0 {
-			for _, blockedID := range b.Blocks {
-				cacheKey := b.Anvil + ":" + blockedID
-				if branch, cached := cache[cacheKey]; cached {
-					if branch != "" {
-						b.EpicBranch = branch
-						break
-					}
-					continue
-				}
-				branch := epicBranchLookupFunc(ctx, blockedID, anvilPath)
+		for _, parentID := range ParentCandidates(*b) {
+			cacheKey := b.Anvil + ":" + parentID
+			branch, cached := cache[cacheKey]
+			if !cached {
+				branch = epicBranchLookupFunc(ctx, parentID, anvilPath)
 				cache[cacheKey] = branch
-				if branch != "" {
-					b.EpicBranch = branch
-					break
-				}
+			}
+			if branch != "" {
+				b.EpicBranch = branch
+				break
 			}
 		}
 	}
+}
+
+// ParentCandidates returns the bead IDs that may be this bead's parent, in
+// precedence order: the explicit parent field first, then the depends-on side
+// of any "blocks"/"parent-child" dependency entry — the same edges pollAnvil
+// walks to reconstruct a parent's children, read from the child's side.
+// Self-references and duplicates are dropped.
+//
+// It is exported because the daemon needs the same answer when deciding
+// whether a bead's work belongs to a Crucible that is already running.
+func ParentCandidates(b Bead) []string {
+	var out []string
+	seen := map[string]bool{b.ID: true}
+	add := func(id string) {
+		if id == "" || seen[id] {
+			return
+		}
+		seen[id] = true
+		out = append(out, id)
+	}
+
+	add(b.Parent)
+	for _, dep := range b.Dependencies {
+		if dep.Type == "blocks" || dep.Type == "parent-child" {
+			add(dep.DependsOnID)
+		}
+	}
+	return out
 }
 
 // parentBeadResponse is used to unmarshal the bead fields returned by
@@ -99,11 +104,11 @@ type parentBeadResponse struct {
 	Bead
 }
 
-// lookupEpicBranch fetches a parent bead's details and extracts the feature
-// branch name. It only returns a branch for beads that have an explicit
-// epic-branch label or are of type "epic". Regular dependency relationships
-// (e.g. task blocks task) never generate a feature branch — only intentional
-// epic parents do.
+// lookupEpicBranch fetches a candidate parent bead and returns its shared
+// branch name — but only when the parent has explicitly opted into epic
+// orchestration (see epic.IsOrchestrated). Ordinary parents, including beads
+// with `issue_type: epic`, return "" so their children run as independent
+// beads that PR to main.
 func lookupEpicBranch(ctx context.Context, parentID, anvilPath string) string {
 	cmd, cancel := executil.BdCommand(ctx, "show", parentID, "--json")
 	defer cancel()
@@ -126,100 +131,39 @@ func lookupEpicBranch(ctx context.Context, parentID, anvilPath string) string {
 		return ""
 	}
 
-	// Guard: only return a branch for beads that are explicitly typed as "epic"
-	// or carry an "epic-branch:" label. Regular tasks/features with dependents
-	// are NOT epic parents — that misdetection was the source of Forge-t6y9
-	// where task A blocks task B caused A's PR to incorrectly target
-	// feature/B instead of main.
-	if !isEpicParentBead(resp.IssueType, resp.Labels) {
+	if !isEpicParentBead(resp.Labels) {
 		return ""
 	}
 
 	return ExtractParentBranch(resp.Bead)
 }
 
-// isEpicParentBead reports whether a bead qualifies as an epic parent that
-// should route child PRs through a shared feature branch. Only beads with
-// IssueType "epic" or an explicit "epic-branch:" label qualify. Regular
-// tasks or features that happen to have dependents do NOT qualify — that
-// distinction is what the Forge-t6y9 fix enforces.
-func isEpicParentBead(issueType string, labels []string) bool {
-	for _, label := range labels {
-		if strings.HasPrefix(strings.ToLower(label), strings.ToLower(EpicBranchLabelPrefix)) {
-			return true
-		}
-	}
-	return strings.EqualFold(issueType, "epic")
+// isEpicParentBead reports whether a bead has opted into epic orchestration.
+// Only the "crucible" label or an explicit "epic-branch:" label qualify — a
+// bead's issue type does not, which is what makes children of an ordinary
+// (even epic-typed) parent independent by default.
+func isEpicParentBead(labels []string) bool {
+	return epic.IsOrchestrated(labels)
 }
 
-// DefaultFeatureBranchPrefix is the branch name prefix used for non-epic
-// parent beads (e.g. features) that have no explicit epic-branch label.
-const DefaultFeatureBranchPrefix = "feature/"
-
-// ExtractParentBranch extracts the shared feature branch name from a parent
-// bead's labels. It looks for a label with the "epic-branch:" prefix. If none
-// is found, it returns a default branch: "epic/<bead-id>" for epics, or
-// "feature/<bead-id>" for other types (e.g. features with children).
-func ExtractParentBranch(b Bead) string {
-	for _, label := range b.Labels {
-		if strings.HasPrefix(strings.ToLower(label), strings.ToLower(EpicBranchLabelPrefix)) {
-			branch := strings.TrimPrefix(label, label[:len(EpicBranchLabelPrefix)])
-			branch = strings.TrimSpace(branch)
-			if branch != "" {
-				return branch
-			}
-		}
-	}
-
-	// Default convention based on type.
-	if strings.EqualFold(b.IssueType, "epic") {
-		return DefaultEpicBranchPrefix + sanitizeBeadID(b.ID)
-	}
-	return DefaultFeatureBranchPrefix + sanitizeBeadID(b.ID)
+// IsOrchestratedParent reports whether a bead has opted into epic
+// orchestration via its labels. It is the one gate every epic/Crucible code
+// path shares.
+func IsOrchestratedParent(b Bead) bool {
+	return epic.IsOrchestrated(b.Labels)
 }
 
-// ExtractEpicBranch is a backward-compatible wrapper that preserves the
-// legacy semantics used by older callers. It mirrors the label parsing
-// logic of ExtractParentBranch, but for non-epic beads without an explicit
-// epic-branch label it returns the empty string instead of a default feature
-// branch. New code should prefer ExtractParentBranch.
+// ExtractParentBranch returns the shared branch name for a parent bead: the
+// branch named by an "epic-branch:<name>" label, else the derived
+// "feature/<bead-id>". It delegates to epic.BranchName so the poller and the
+// Crucible cannot derive different names for the same parent.
 //
-// Deprecated: Use ExtractParentBranch instead.
-func ExtractEpicBranch(b Bead) string {
-	for _, label := range b.Labels {
-		if strings.HasPrefix(strings.ToLower(label), strings.ToLower(EpicBranchLabelPrefix)) {
-			branch := strings.TrimPrefix(label, label[:len(EpicBranchLabelPrefix)])
-			branch = strings.TrimSpace(branch)
-			if branch != "" {
-				return branch
-			}
-		}
-	}
-
-	// Legacy default: only epics get an implicit default branch. Non-epic
-	// beads without an explicit label return the empty string.
-	if strings.EqualFold(b.IssueType, "epic") {
-		return DefaultEpicBranchPrefix + sanitizeBeadID(b.ID)
-	}
-	return ""
-}
-
-// IsEpicBead returns true if the bead is an epic type. This is used by the
-// daemon for the legacy epic branch creation path. For Crucible candidacy,
-// use crucible.IsCrucibleCandidate which checks for children (Blocks) instead.
-func IsEpicBead(b Bead) bool {
-	return strings.EqualFold(b.IssueType, "epic")
+// It derives a name for any bead; callers gate on IsOrchestratedParent first.
+func ExtractParentBranch(b Bead) string {
+	return epic.BranchName(b.ID, b.Labels)
 }
 
 // sanitizeBeadID converts a bead ID to a safe branch name component.
-// Slashes are replaced so the result does not create unexpected path segments
-// when used as "epic/<id>" (matching worktree.sanitizePath behaviour).
 func sanitizeBeadID(id string) string {
-	r := strings.NewReplacer(
-		" ", "-",
-		":", "-",
-		"\\", "-",
-		"/", "-",
-	)
-	return r.Replace(id)
+	return epic.SanitizeID(id)
 }
