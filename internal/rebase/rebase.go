@@ -108,6 +108,12 @@ func (p *Params) rebaseWithSmith(ctx context.Context, providers []provider.Provi
 			return fmt.Errorf("spawning Smith (%s): %w", pv.Label(), err)
 		}
 		if p.WorkerID != "" && p.DB != nil {
+			// Record the PID, not just the log path: it is the only handle the
+			// kill path has on this session. A row without one is merely marked
+			// failed while the claude process keeps running — and keeps pushing.
+			if err := p.DB.UpdateWorkerPID(p.WorkerID, process.PID); err != nil {
+				log.Printf("[rebase] warning: failed to update worker PID for worker %s: %v", p.WorkerID, err)
+			}
 			if err := p.DB.UpdateWorkerLogPath(p.WorkerID, process.LogPath); err != nil {
 				log.Printf("[rebase] warning: failed to update worker log path for worker %s: %v", p.WorkerID, err)
 			}
