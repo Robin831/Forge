@@ -1,0 +1,3 @@
+category: Added
+- **Detach a PR from Bellows** - New `detach_bellows` / `reattach_bellows` PR actions mute one PR's automatic lifecycle work. Detaching persists the flag and stops the in-flight quench/burnish/rebase workers for that PR; reattaching clears it and drops Bellows' cached snapshot so problems that outlived the mute are re-detected as fresh transitions. (Forge-5jyq)
+- **Detached PRs no longer dispatch automatic fix workers** - The dispatch guard covers actions parked before the detach and drained after it, while manual verbs (`forge assay run`, `forge queue run`, the dashboard's fix buttons) and the post-merge bookkeeping still run — detach means "stop automatic work", not "brick the PR". (Forge-5jyq)

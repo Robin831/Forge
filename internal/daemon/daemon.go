@@ -2082,6 +2082,18 @@ func (d *Daemon) handleLifecycleAction(ctx context.Context, req lifecycle.Action
 		return
 	}
 
+	// A PR detached from Bellows runs no automatic work. This is a no-op, not a
+	// failure: nothing is retried, no attempt counter moves, and the operator's
+	// own verbs still get through (req.IsManual — see actionBlockedByDetach).
+	// The check lives here rather than only at the emit site because an action
+	// parked while the PR was attached is drained through this same function
+	// after it was detached.
+	if d.actionBlockedByDetach(req) {
+		d.logger.Info("skipping lifecycle action: PR is detached from bellows",
+			"action", req.Action, "pr", req.PRNumber, "bead", req.BeadID, "anvil", req.Anvil)
+		return
+	}
+
 	anvilCfg, ok := d.cfg.Load().Anvils[req.Anvil]
 	if !ok {
 		d.logger.Error("unknown anvil in lifecycle action", "anvil", req.Anvil)
@@ -3109,6 +3121,19 @@ func (d *Daemon) drainPendingAction(ctx context.Context, beadID string) {
 		d.pendingActions.Store(beadID, actions)
 	}
 	d.pendingMu.Unlock()
+
+	// A parked action whose PR was detached in the meantime is dropped here
+	// rather than left to handleLifecycleAction's identical guard: that guard
+	// returns before the goroutine whose deferred drain would pick up the rest,
+	// so one detached PR's parked action would strand every action parked
+	// behind it. Draining on is bounded — the set only ever shrinks.
+	if d.actionBlockedByDetach(req) {
+		d.logger.Info("dropping parked lifecycle action: PR is detached from bellows",
+			"bead", beadID, "action", req.Action, "pr", req.PRNumber, "remaining", remaining)
+		d.drainPendingAction(ctx, beadID)
+		return
+	}
+
 	d.logger.Info("draining parked lifecycle action", "bead", beadID, "action", req.Action, "remaining", remaining)
 	d.handleLifecycleAction(ctx, req)
 }
@@ -7312,6 +7337,64 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 			}
 			_ = d.db.LogEvent("bellows_unassigned", fmt.Sprintf("PR #%d released from bellows lifecycle management", pa.PRNumber), pa.BeadID, pa.Anvil)
 			d.logger.Info("bellows unassigned from PR via pr_action", "pr", pa.PRNumber, "anvil", pa.Anvil)
+
+		case "detach_bellows":
+			// Unlike the assignment verbs, this one refuses a PR it cannot
+			// resolve instead of reporting success against nothing: the whole
+			// point of detaching is that the automatic loop stops, and an
+			// operator told "PR #N: detach_bellows" while the flag was never
+			// written would watch it keep working the PR.
+			pr, err := resolvePRTargetPreferID(d.db, pa.PRID, pa.PRNumber, pa.Anvil)
+			if err != nil {
+				d.logger.Warn("detach refused: could not resolve the PR row",
+					"pr", pa.PRNumber, "pr_id", pa.PRID, "anvil", pa.Anvil, "error", err)
+				return errorResponse(fmt.Sprintf("cannot detach PR #%d: %v", pa.PRNumber, err))
+			}
+			if err := d.db.UpdatePRBellowsDetached(pr.ID, true); err != nil {
+				return errorResponse(fmt.Sprintf("failed to detach bellows: %v", err))
+			}
+			_ = d.db.LogEvent("bellows_detached", fmt.Sprintf("PR #%d detached from bellows: automatic CI/review/rebase work stopped", pr.Number), pa.BeadID, pa.Anvil)
+			d.logger.Info("bellows detached from PR via pr_action", "pr", pr.Number, "anvil", pa.Anvil)
+			// The flag is what mutes the next cycle; the workers already
+			// running are what would otherwise push one more commit to the
+			// branch before the mute was felt. Killing them takes a grace
+			// period per worker, so it runs off the IPC response — the flag is
+			// persisted before the reply either way.
+			killAnvil, killNumber, killBead := pr.Anvil, pr.Number, pa.BeadID
+			d.wg.Add(1)
+			go func() {
+				defer d.wg.Done()
+				if msg := detachKillSummary(killNumber, d.killLifecycleWorkersForPR(killAnvil, killNumber)); msg != "" {
+					_ = d.db.LogEvent("bellows_detached", msg, killBead, killAnvil)
+				}
+			}()
+
+		case "reattach_bellows":
+			pr, err := resolvePRTargetPreferID(d.db, pa.PRID, pa.PRNumber, pa.Anvil)
+			if err != nil {
+				d.logger.Warn("reattach refused: could not resolve the PR row",
+					"pr", pa.PRNumber, "pr_id", pa.PRID, "anvil", pa.Anvil, "error", err)
+				return errorResponse(fmt.Sprintf("cannot reattach PR #%d: %v", pa.PRNumber, err))
+			}
+			if err := d.db.UpdatePRBellowsDetached(pr.ID, false); err != nil {
+				return errorResponse(fmt.Sprintf("failed to reattach bellows: %v", err))
+			}
+			// Drop the snapshot bellows cached while the PR was muted. Every
+			// problem it accumulated was recorded as already-seen, so without
+			// this a PR resumed with failing CI, conflicts or unresolved
+			// threads sits there as unchanged state and never fires again: the
+			// transition happened while nobody was listening. The monitor does
+			// the same thing on its own next cycle (resumeFromSuppression);
+			// doing it here makes the resume take effect from the poll the
+			// operator's click lands in, and repeating it is harmless.
+			//
+			// No worker is restarted — reattaching re-enables future automatic
+			// dispatch, it does not replay what was skipped.
+			if d.bellowsMonitor != nil {
+				d.bellowsMonitor.ResetPRState(pa.Anvil, pr.Number)
+			}
+			_ = d.db.LogEvent("bellows_reattached", fmt.Sprintf("PR #%d reattached to bellows: automatic work resumed", pr.Number), pa.BeadID, pa.Anvil)
+			d.logger.Info("bellows reattached to PR via pr_action", "pr", pr.Number, "anvil", pa.Anvil)
 
 		case "approve":
 			reqID, _ := d.reqTracker.Track()

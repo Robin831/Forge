@@ -414,13 +414,25 @@ type ResolveOrphanPayload struct {
 
 // PRActionPayload is the payload for a "pr_action" command.
 // Triggers an action on an open PR.
+//
+// The bellows verbs come in two pairs that are independent of each other.
+// assign_bellows/unassign_bellows decide whether an external PR is managed at
+// all. detach_bellows/reattach_bellows mute a PR that is managed: bellows emits
+// nothing for it and dispatches no automatic quench/burnish/rebase/Assay work,
+// while its mergeability and terminal state keep being refreshed so the PR
+// panel still tells the truth. Detaching also stops the fix workers already in
+// flight for that PR. It does not brick the PR — a manual verb (`forge assay
+// run`, `forge queue run`, the dashboard's own fix buttons) still runs a single
+// pass by hand — and reattaching clears bellows' cached snapshot so the
+// problems that outlived the mute are re-detected as fresh transitions rather
+// than swallowed as state it has already seen.
 type PRActionPayload struct {
 	PRID     int    `json:"pr_id"`
 	PRNumber int    `json:"pr_number"`
 	Anvil    string `json:"anvil"`
 	BeadID   string `json:"bead_id"`
 	Branch   string `json:"branch"`
-	Action   string `json:"action"` // "open_browser" | "merge" | "quench" | "burnish" | "rebase" | "close" | "approve" | "assign_bellows" | "unassign_bellows"
+	Action   string `json:"action"` // "open_browser" | "merge" | "quench" | "burnish" | "rebase" | "close" | "approve" | "assign_bellows" | "unassign_bellows" | "detach_bellows" | "reattach_bellows"
 }
 
 // WardenRerunPayload is the payload for a "warden_rerun" command.
