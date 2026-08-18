@@ -9,12 +9,12 @@ import (
 	"time"
 
 	"github.com/Robin831/Forge/internal/config"
-	"github.com/Robin831/Forge/internal/vcs"
 	"github.com/Robin831/Forge/internal/pipeline"
 	"github.com/Robin831/Forge/internal/poller"
 	"github.com/Robin831/Forge/internal/provider"
 	"github.com/Robin831/Forge/internal/schematic"
 	"github.com/Robin831/Forge/internal/state"
+	"github.com/Robin831/Forge/internal/vcs"
 	"github.com/Robin831/Forge/internal/warden"
 )
 

@@ -210,7 +210,11 @@ bd ready (poller) → pipeline.Run()
 Crucible path (parent beads with children AND the `crucible` opt-in label):
   bd ready (poller) → detect bead.Blocks (children) + epic.IsOrchestrated(labels)
     → children of an orchestrating parent are withheld from the dispatch loop
-      (crucibleOwnedChildren) so one poll cycle never runs a child twice
+      (crucibleOwnedChildren) so one poll cycle never runs a child twice —
+      the opt-in label is what makes a parent an owner, not crucible_enabled,
+      so with the Crucible off the children are held back and the PARENT is
+      escalated to Needs Attention rather than each child hard-failing on
+      "base branch not found on origin" and burning its circuit breaker
     → crucible.Run()
       → worktree.CreateEpicBranch (epic.BranchName: feature/<parent-id>, or epic-branch:<name>)
       → fetch children via bd show, topological sort

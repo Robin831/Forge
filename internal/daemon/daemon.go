@@ -3741,10 +3741,17 @@ func (d *Daemon) pollAndDispatch(ctx context.Context, fullPoll bool) {
 
 		// Skip children of an orchestrated parent: the Crucible dispatches them
 		// itself, on the feature branch, once it reaches them. Dispatching here
-		// too would run the same bead twice in one cycle.
-		if _, owned := crucibleOwned[bead.Anvil+"\x00"+bead.ID]; owned {
-			d.logger.Info("skipping child of an orchestrated parent, the Crucible dispatches it",
-				"bead", bead.ID, "anvil", bead.Anvil)
+		// too would run the same bead twice in one cycle. With the Crucible
+		// switched off nothing creates that branch at all, so the child is
+		// withheld and its parent escalated instead of the child hard-failing
+		// in worktree.Create every cycle.
+		if owner, owned := crucibleOwned[bead.Anvil+"\x00"+bead.ID]; owned {
+			if owner.Disabled {
+				d.withholdDisabledEpicChild(bead, owner, needsHumanSet)
+			} else {
+				d.logger.Info("skipping child of an orchestrated parent, the Crucible dispatches it",
+					"bead", bead.ID, "anvil", bead.Anvil)
+			}
 			d.releaseBeadSlot(bead.ID)
 			continue
 		}

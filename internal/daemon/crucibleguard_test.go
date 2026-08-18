@@ -22,7 +22,7 @@ func crucibleCfg(enabled bool) *config.Config {
 	return cfg
 }
 
-func ownedIDs(owned map[string]struct{}, anvil string, beads []poller.Bead) []string {
+func ownedIDs(owned map[string]crucibleOwner, anvil string, beads []poller.Bead) []string {
 	var out []string
 	for _, b := range beads {
 		if _, ok := owned[anvil+"\x00"+b.ID]; ok {
@@ -62,11 +62,44 @@ func TestCrucibleOwnedChildren_UnlabeledParentOwnsNothing(t *testing.T) {
 	assert.Empty(t, owned)
 }
 
-// With the Crucible disabled nothing is orchestrated, so nothing is withheld.
-func TestCrucibleOwnedChildren_CrucibleDisabled(t *testing.T) {
+// The opt-in label with the Crucible switched off: nobody creates the epic
+// branch the poller stamped the children with, so they are withheld (and their
+// parent escalated) rather than hard-failing in worktree.Create every cycle.
+func TestCrucibleOwnedChildren_CrucibleDisabledWithholdsChildren(t *testing.T) {
 	d := guardDaemon()
 	beads := []poller.Bead{
 		{ID: "parent-1", Anvil: "repo", Labels: []string{"crucible"}, Blocks: []string{"child-1"}},
+		{ID: "child-1", Anvil: "repo", Parent: "parent-1", EpicBranch: "feature/parent-1"},
+	}
+
+	owned := d.crucibleOwnedChildren(crucibleCfg(false), beads)
+
+	assert.Equal(t, []string{"child-1"}, ownedIDs(owned, "repo", beads))
+	assert.Equal(t, crucibleOwner{ParentID: "parent-1", Disabled: true}, owned["repo\x00child-1"])
+	assert.NotContains(t, owned, "repo\x00parent-1", "the parent still dispatches, and escalates itself")
+}
+
+// The parent is not in the batch (blocked, or already dispatched): the child is
+// still recognisable by the epic branch the poller stamped it with.
+func TestCrucibleOwnedChildren_CrucibleDisabledParentAbsent(t *testing.T) {
+	d := guardDaemon()
+	beads := []poller.Bead{
+		{ID: "child-1", Anvil: "repo", Parent: "parent-1", EpicBranch: "feature/parent-1"},
+		{ID: "loner", Anvil: "repo"},
+	}
+
+	owned := d.crucibleOwnedChildren(crucibleCfg(false), beads)
+
+	assert.Equal(t, []string{"child-1"}, ownedIDs(owned, "repo", beads))
+	assert.Equal(t, crucibleOwner{ParentID: "parent-1", Disabled: true}, owned["repo\x00child-1"])
+}
+
+// An unstamped bead with no orchestrated parent keeps dispatching with the
+// Crucible off — the disabled case must not withhold ordinary work.
+func TestCrucibleOwnedChildren_CrucibleDisabledLeavesPlainBeads(t *testing.T) {
+	d := guardDaemon()
+	beads := []poller.Bead{
+		{ID: "parent-1", Anvil: "repo", IssueType: "epic", Blocks: []string{"child-1"}},
 		{ID: "child-1", Anvil: "repo", Parent: "parent-1"},
 	}
 
@@ -93,6 +126,8 @@ func TestCrucibleOwnedChildren_ActiveCrucible(t *testing.T) {
 	owned := d.crucibleOwnedChildren(crucibleCfg(false), beads)
 
 	assert.Equal(t, []string{"child-1", "child-2"}, ownedIDs(owned, "repo", beads))
+	assert.False(t, owned["repo\x00child-1"].Disabled,
+		"a running Crucible dispatches its own children, disabled setting or not")
 	assert.NotContains(t, owned, "other\x00other-anvil-child",
 		"an active Crucible in one anvil must not withhold a same-named parent's child in another")
 }

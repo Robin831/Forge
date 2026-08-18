@@ -666,12 +666,12 @@ func (p *Params) runChildPipeline(ctx context.Context, child poller.Bead, baseBr
 	defer cancel()
 
 	params := pipeline.Params{
-		DB:              p.DB,
-		WorktreeManager: p.WorktreeManager,
-		PromptBuilder:   p.PromptBuilder,
-		AnvilName:       p.AnvilName,
-		AnvilConfig:     p.AnvilConfig,
-		Bead:            child,
+		DB:                p.DB,
+		WorktreeManager:   p.WorktreeManager,
+		PromptBuilder:     p.PromptBuilder,
+		AnvilName:         p.AnvilName,
+		AnvilConfig:       p.AnvilConfig,
+		Bead:              child,
 		ExtraFlags:        p.ExtraFlags,
 		TemperConfig:      p.TemperConfig,
 		GoRaceDetection:   p.GoRaceDetection,

@@ -546,7 +546,7 @@ anvils:
 | `auto_learn_rules` | bool | `false` | | Automatically learn Warden review rules from Copilot comments when a PR is merged. Rules are saved to each anvil's `.forge/warden-rules.yaml`. |
 | `smelter_enabled` | bool | `true` | | Enable/disable the Smelter background process. When `false`, scheduled smelter runs are disabled. |
 | `smelter_interval` | duration | `8h` | `1h` or `0` | How often the Smelter runs its background processing. `0` disables scheduled runs. The Smelter skips the startup run if it already flushed within this interval, so daemon restarts don't produce redundant PRs. For low-volume setups where warden rules accumulate slowly, `48h` or `72h` is a reasonable value. |
-| `crucible_enabled` | bool | `false` | | Enable Crucible auto-orchestration for **opted-in** parent beads with children (see [Epic Orchestration Is Opt-In](#epic-orchestration-is-opt-in)). When a parent carrying the `crucible` label blocks other beads, the Crucible creates its feature branch, dispatches children in topological order, merges each child PR, then creates a final PR to main. A parent that carries the label while this setting is `false` is not dispatched: it is escalated to Needs Attention, since its children are already routed to a branch nothing would create. |
+| `crucible_enabled` | bool | `false` | | Enable Crucible auto-orchestration for **opted-in** parent beads with children (see [Epic Orchestration Is Opt-In](#epic-orchestration-is-opt-in)). When a parent carrying the `crucible` label blocks other beads, the Crucible creates its feature branch, dispatches children in topological order, merges each child PR, then creates a final PR to main. A parent that carries the label while this setting is `false` is not dispatched: it is escalated to Needs Attention and its children are held back, since they are already routed to a branch nothing would create. |
 | `crucible_poll_interval` | duration | `3m` | `30s` or `0` | Interval for the slow unfiltered poll that rebuilds the Crucible parent-child (Blocks) graph. The fast path polls with a label filter every `poll_interval`; the slow path runs every `crucible_poll_interval` to discover parent-child relationships. `0` disables two-tier polling (all polls are unfiltered). |
 | `auto_merge_crucible_children` | bool | `true` | | Auto-merge child PRs targeting a Crucible feature branch after the pipeline succeeds. Set to `false` to require manual merge of child PRs. |
 | `forge_id` | string | `""` (hostname) | | Per-instance identifier embedded in the forge-managed marker on every PR Forge creates (`<!-- forge-managed: <id> -->`). When multiple Forge instances target the same anvil, this ID ensures each instance only manages the PRs it created. When empty, `os.Hostname()` is used; falls back to `"default"`. Set this explicitly in environments where the hostname is not stable (e.g. ephemeral pods). |
@@ -617,7 +617,12 @@ With the label:
   dispatches them itself;
 - `crucible_enabled: false` makes the labeled parent a Needs Attention entry
   rather than a dispatch, naming the two ways out (enable the setting, or remove
-  the label).
+  the label). Its children are withheld from dispatch for the same reason they
+  are withheld from a running Crucible: they are stamped with a branch nothing
+  is going to create, so dispatching them would hard-fail on "base branch not
+  found on origin" and burn each child's dispatch circuit breaker every cycle.
+  The escalation lands on the parent — the bead carrying the label — so clearing
+  it is one action, not one per child.
 
 > **Migration:** before this change, any parent with children was a Crucible
 > candidate and any `epic`-typed parent routed its children onto a feature
