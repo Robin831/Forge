@@ -596,6 +596,13 @@ purpose — and additionally overrides the derived branch name:
 bd label add <parent-id> epic-branch:feature/checkout-rewrite
 ```
 
+The name is screened before it reaches git (`epic.ValidBranchName`: no leading
+`-`, no `..`, no `@{`, no whitespace or `~^:?*[\`, no `.lock`/trailing-`.`, no
+empty or dot-leading path component, 200 characters max). A label naming a
+branch git would reject — or would read as a flag — still opts the parent in,
+but the branch falls back to the derived `feature/<parent-id>` rather than being
+passed on verbatim.
+
 Without one of those labels — **including when the parent is `issue_type: epic`**
 — nothing epic-specific happens:
 
@@ -623,6 +630,23 @@ With the label:
   found on origin" and burn each child's dispatch circuit breaker every cycle.
   The escalation lands on the parent — the bead carrying the label — so clearing
   it is one action, not one per child.
+
+Two more cases escalate the parent rather than dispatch it, both for the same
+reason: the parent's label is what routes its children, so anything that
+dispatches the parent alone leaves them pointing at a branch nobody creates.
+
+- **Children exist but none are ready.** A parent's children are read from the
+  poll batch, so children blocked on something else look identical to no
+  children at all. Forge asks bd for the wider answer: with open children
+  remaining it escalates (naming them) instead of merging the parent to main and
+  closing it. Only a parent whose children are *all closed* — or that has none —
+  runs the ordinary pipeline.
+- **The schematic crucible check declines.** With `schematic_enabled: true`, an
+  opted-in parent is inspected before the Crucible runs. A decline used to route
+  the parent standalone; since the label is an explicit human opt-in that also
+  routes every child, a decline is now escalated with the check's reason. Remove
+  the label to take the check's recommendation, or set `schematic_enabled: false`
+  so the label alone decides.
 
 > **Migration:** before this change, any parent with children was a Crucible
 > candidate and any `epic`-typed parent routed its children onto a feature

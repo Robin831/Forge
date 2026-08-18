@@ -20,27 +20,27 @@ import (
 // Bead represents an issue returned by 'bd ready --json'.
 // Only the fields Forge needs are extracted.
 type Bead struct {
-	ID           string    `json:"id"`
-	Title        string    `json:"title"`
-	Description  string    `json:"description"`
-	Notes        string    `json:"notes"`
+	ID          string `json:"id"`
+	Title       string `json:"title"`
+	Description string `json:"description"`
+	Notes       string `json:"notes"`
 	// Design and AcceptanceCriteria are emitted by `bd ready --json` but were
 	// previously dropped — Smith implemented and Warden reviewed beads without
 	// ever seeing the design intent or the definition-of-done. SpecForPrompt()
 	// folds them into the text handed to the AI workers.
-	Design             string `json:"design"`
-	AcceptanceCriteria string `json:"acceptance_criteria"`
-	Status       string    `json:"status"`
-	Priority     int       `json:"priority"`
-	IssueType    string    `json:"issue_type"`
-	Assignee     string    `json:"assignee"`
-	Parent       string    `json:"parent"`
-	Labels       []string  `json:"labels"`
-	Blocks         []string  `json:"blocks"`          // Bead IDs that this bead blocks (children)
-	DependsOn      []string  `json:"depends_on"`     // Bead IDs that this bead depends on
-	Dependencies   []BeadDep `json:"dependencies"`   // Detailed dependency info from bd
-	DependentCount int       `json:"dependent_count"` // Number of beads that depend on this bead
-	ExternalRef    string    `json:"external_ref"`    // External tracker reference from bd (for example "gh-42", a full URL, or another non-GitHub ref)
+	Design             string    `json:"design"`
+	AcceptanceCriteria string    `json:"acceptance_criteria"`
+	Status             string    `json:"status"`
+	Priority           int       `json:"priority"`
+	IssueType          string    `json:"issue_type"`
+	Assignee           string    `json:"assignee"`
+	Parent             string    `json:"parent"`
+	Labels             []string  `json:"labels"`
+	Blocks             []string  `json:"blocks"`          // Bead IDs that this bead blocks (children)
+	DependsOn          []string  `json:"depends_on"`      // Bead IDs that this bead depends on
+	Dependencies       []BeadDep `json:"dependencies"`    // Detailed dependency info from bd
+	DependentCount     int       `json:"dependent_count"` // Number of beads that depend on this bead
+	ExternalRef        string    `json:"external_ref"`    // External tracker reference from bd (for example "gh-42", a full URL, or another non-GitHub ref)
 	// CreatedAt and UpdatedAt are ISO timestamps emitted by `bd ready --json`.
 	// They flow through to the queue serialiser so the web UI can surface
 	// bead age without a SQLite schema migration.
@@ -52,6 +52,13 @@ type Bead struct {
 	// Forge-injected: epic branch name resolved from parent epic's labels.
 	// When set, this bead should branch from and PR to this branch instead of main.
 	EpicBranch string `json:"-"`
+	// Forge-injected: the bead ID whose opt-in produced EpicBranch. Set by
+	// ResolveEpicBranches alongside EpicBranch, so a consumer that has to name
+	// the responsible parent (the Crucible guard's escalation) reads the parent
+	// that was actually verified rather than re-guessing from the dependency
+	// edges — where an ordinary `blocks` sequencing edge can precede the real
+	// labeled parent.
+	EpicParent string `json:"-"`
 	// Forge-injected: when true, dispatch as standalone — skip epic and crucible detection.
 	ForceIndependent bool `json:"-"`
 }

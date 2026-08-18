@@ -40,6 +40,11 @@ func SetEpicBranchLookupForTest(fn func(ctx context.Context, parentID, anvilPath
 // A parent that has not opted in resolves to "", which leaves the child with an
 // empty EpicBranch — worktree from main, PR to main, like any standalone bead.
 //
+// The candidate that resolved is recorded on the child as EpicParent: it is the
+// only place the "which of these edges was the opted-in parent" answer exists,
+// and re-deriving it later from ParentCandidates picks the first edge rather
+// than the labeled one.
+//
 // It calls `bd show <id> --json` for each unique candidate parent, caching
 // results to avoid duplicate calls.
 func ResolveEpicBranches(ctx context.Context, beads []Bead, anvilPaths map[string]string) {
@@ -64,6 +69,7 @@ func ResolveEpicBranches(ctx context.Context, beads []Bead, anvilPaths map[strin
 			}
 			if branch != "" {
 				b.EpicBranch = branch
+				b.EpicParent = parentID
 				break
 			}
 		}
@@ -131,19 +137,14 @@ func lookupEpicBranch(ctx context.Context, parentID, anvilPath string) string {
 		return ""
 	}
 
-	if !isEpicParentBead(resp.Labels) {
+	// Only an explicit opt-in routes children: the "crucible" label or an
+	// "epic-branch:<name>". A bead's issue type does not, which is what makes
+	// children of an ordinary (even epic-typed) parent independent by default.
+	if !epic.IsOrchestrated(resp.Labels) {
 		return ""
 	}
 
 	return ExtractParentBranch(resp.Bead)
-}
-
-// isEpicParentBead reports whether a bead has opted into epic orchestration.
-// Only the "crucible" label or an explicit "epic-branch:" label qualify — a
-// bead's issue type does not, which is what makes children of an ordinary
-// (even epic-typed) parent independent by default.
-func isEpicParentBead(labels []string) bool {
-	return epic.IsOrchestrated(labels)
 }
 
 // IsOrchestratedParent reports whether a bead has opted into epic
@@ -161,9 +162,4 @@ func IsOrchestratedParent(b Bead) bool {
 // It derives a name for any bead; callers gate on IsOrchestratedParent first.
 func ExtractParentBranch(b Bead) string {
 	return epic.BranchName(b.ID, b.Labels)
-}
-
-// sanitizeBeadID converts a bead ID to a safe branch name component.
-func sanitizeBeadID(id string) string {
-	return epic.SanitizeID(id)
 }

@@ -4026,13 +4026,56 @@ func (d *Daemon) dispatchBead(ctx context.Context, bead poller.Bead, anvilCfg co
 		goto normalPipeline
 	}
 
-	// An opted-in parent whose children are not in this poll batch (all closed,
-	// or all blocked) has nothing to orchestrate. Run it as an ordinary bead
-	// rather than creating an empty feature branch and stalling.
+	// An opted-in parent with no children left has nothing to orchestrate and
+	// runs as an ordinary bead rather than creating an empty feature branch.
+	//
+	// "No children left" is not what an empty bead.Blocks says, though: pollAnvil
+	// reconstructs Blocks from the beads in *this* poll batch, so a child that
+	// exists but is blocked on an unrelated dependency simply is not there.
+	// Reading that as "nothing to orchestrate" merges the parent to main and
+	// closes it while its opt-in label lives on — and the first child to become
+	// ready is then stamped with a branch nobody will ever create, hard-failing
+	// in worktree.Create every dispatch until its circuit breaker burns. So ask
+	// bd for the wider answer before letting the parent go (Forge-fblf).
 	if poller.IsOrchestratedParent(bead) && !crucible.IsCrucibleCandidate(bead) {
-		d.logger.Info("orchestrated parent has no ready children, dispatching as a normal bead",
-			"bead", bead.ID, "anvil", bead.Anvil)
-		goto normalPipeline
+		openChildren, childErr := poller.OpenChildren(ctx, bead.ID, anvilCfg.Path)
+		switch {
+		case childErr != nil:
+			// Cannot tell whether children remain. Neither answer is safe to
+			// assume, so defer: release the claim and let the next poll retry
+			// rather than record a dispatch failure for a transient bd error.
+			d.logger.Warn("cannot determine whether an orchestrated parent still has children, deferring dispatch",
+				"bead", bead.ID, "anvil", bead.Anvil, "error", childErr)
+			if err := d.db.UpdateWorkerStatus(claimWorkerID, state.WorkerFailed); err != nil {
+				d.logger.Warn("failed to mark pending worker failed after deferring an orchestrated parent",
+					"bead", bead.ID, "worker", claimWorkerID, "error", err)
+			}
+			d.releaseBeadClaim(bead.ID, bead.Anvil, false)
+			return
+		case len(openChildren) == 0:
+			d.logger.Info("orchestrated parent has no open children, dispatching as a normal bead",
+				"bead", bead.ID, "anvil", bead.Anvil)
+			goto normalPipeline
+		default:
+			// Children remain, so the label is still routing them. The Crucible
+			// being off is the more fundamental misconfiguration of the two and
+			// owns the wording when it applies — the other message would promise
+			// a Crucible run that cannot happen.
+			reason := fmt.Sprintf("bead %s opts into epic orchestration (%q or epic-branch:<name>) and still has "+
+				"%d open child bead(s) (%s), but none are ready — they are blocked on something else. Dispatching "+
+				"the parent to main now would close it while its children are still routed to %s, a branch nothing "+
+				"would create. Unblock the children so the Crucible can run, or remove the label so the whole family "+
+				"dispatches independently to main",
+				bead.ID, epic.CrucibleLabel, len(openChildren), summarizeIDs(openChildren, 5),
+				poller.ExtractParentBranch(bead))
+			if !d.cfg.Load().Settings.CrucibleEnabled {
+				reason = crucibleDisabledReason(bead.ID, poller.ExtractParentBranch(bead))
+			}
+			d.logger.Warn("orchestrated parent has open but unready children, escalating instead of dispatching",
+				"bead", bead.ID, "anvil", bead.Anvil, "children", len(openChildren))
+			d.escalateOrchestratedParent(bead, claimWorkerID, reason)
+			return
+		}
 	}
 
 	// A parent that opted into orchestration (the "crucible" label, or an
@@ -4046,16 +4089,10 @@ func (d *Daemon) dispatchBead(ctx context.Context, bead poller.Bead, anvilCfg co
 	// A parent with no opt-in label — including one typed `epic` — never
 	// reaches here: it runs the ordinary pipeline like any other bead.
 	if poller.IsOrchestratedParent(bead) && !d.cfg.Load().Settings.CrucibleEnabled {
-		reason := fmt.Sprintf("bead %s opts into epic orchestration (%q or epic-branch:<name>) but "+
-			"settings.crucible_enabled is false — enable it to orchestrate the epic, or remove the label "+
-			"so this parent and its children dispatch independently to main",
-			bead.ID, epic.CrucibleLabel)
+		reason := crucibleDisabledReason(bead.ID, poller.ExtractParentBranch(bead))
 		d.logger.Warn("orchestrated parent dispatched with the Crucible disabled",
 			"bead", bead.ID, "anvil", bead.Anvil, "branch", poller.ExtractParentBranch(bead))
-		if err := d.db.MarkNeedsHuman(bead.ID, bead.Anvil, reason); err != nil {
-			d.logger.Error("failed to mark bead as needs_human", "bead", bead.ID, "error", err)
-		}
-		d.recordDispatchFailure(bead.ID, bead.Anvil, reason, true)
+		d.escalateOrchestratedParent(bead, claimWorkerID, reason)
 		return
 	}
 
@@ -4141,11 +4178,27 @@ func (d *Daemon) dispatchBead(ctx context.Context, bead poller.Bead, anvilCfg co
 				bead.ID, bead.Anvil)
 
 			if !checkResult.NeedsCrucible {
-				d.logger.Info("schematic says standalone dispatch", "bead", bead.ID, "reason", checkResult.Reason)
-				// Clear epic branch so the normal pipeline creates a worktree
-				// from main instead of a non-existent feature branch.
-				bead.EpicBranch = ""
-				goto normalPipeline
+				// The parent carries an explicit opt-in label, so a decline is a
+				// contradiction rather than a routing hint — and it is one this
+				// path cannot act on alone. Clearing the parent's own EpicBranch
+				// (what this used to do) strips the routing from exactly one bead
+				// of the family: every child is stamped with feature/<parent-id>
+				// by the poller, off the parent's label, which a standalone
+				// dispatch leaves untouched. The parent then merges to main while
+				// its children keep basing on a branch nobody creates. Escalate
+				// the whole misconfiguration instead (Forge-fblf).
+				reason := fmt.Sprintf("bead %s opts into epic orchestration (%q or epic-branch:<name>) but the "+
+					"schematic crucible check reports its children are independent (%s). Dispatching the parent "+
+					"alone would leave its children routed to %s, a branch no Crucible would create. Remove the "+
+					"label so the parent and its children dispatch independently to main (what the check "+
+					"recommends), or keep it and set settings.schematic_enabled to false so the label alone "+
+					"decides",
+					bead.ID, epic.CrucibleLabel, strings.TrimSpace(checkResult.Reason),
+					poller.ExtractParentBranch(bead))
+				d.logger.Warn("schematic declines an explicitly opted-in parent, escalating instead of dispatching",
+					"bead", bead.ID, "anvil", bead.Anvil, "reason", checkResult.Reason)
+				d.escalateOrchestratedParent(bead, claimWorkerID, reason)
+				return
 			}
 			d.logger.Info("schematic confirms crucible needed", "bead", bead.ID, "reason", checkResult.Reason)
 		}

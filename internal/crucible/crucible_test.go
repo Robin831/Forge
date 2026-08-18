@@ -664,29 +664,6 @@ func TestHasExternalBlockers(t *testing.T) {
 	}
 }
 
-func TestSanitizeID(t *testing.T) {
-	tests := []struct {
-		input  string
-		expect string
-	}{
-		{"simple", "simple"},
-		{"with spaces", "with-spaces"},
-		{"with:colons", "with-colons"},
-		{"with\\backslashes", "with-backslashes"},
-		{"Forge-abc", "Forge-abc"},
-		{"project/123", "project-123"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.input, func(t *testing.T) {
-			got := sanitizeID(tt.input)
-			if got != tt.expect {
-				t.Errorf("sanitizeID(%q) = %q, want %q", tt.input, got, tt.expect)
-			}
-		})
-	}
-}
-
 // TestRun_SchematicOnSpawn_UpdatesWorkerPIDAndLogPath verifies that when
 // Crucible's SchematicRunner invokes cfg.OnSpawn, the worker record in
 // state.db is updated with the subprocess PID and log_path. This is the

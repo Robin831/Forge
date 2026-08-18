@@ -66,7 +66,6 @@ func TestIsOrchestratedParent(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			b := Bead{ID: "b-1", IssueType: tt.issueType, Labels: tt.labels}
 			assert.Equal(t, tt.want, IsOrchestratedParent(b))
-			assert.Equal(t, tt.want, isEpicParentBead(tt.labels))
 		})
 	}
 }
@@ -229,18 +228,26 @@ func TestParentCandidates(t *testing.T) {
 	assert.Equal(t, []string{"p1", "p2"}, ParentCandidates(b))
 }
 
-func TestSanitizeBeadID(t *testing.T) {
-	tests := []struct {
-		input string
-		want  string
-	}{
-		{"Forge-n1g", "Forge-n1g"},
-		{"my bead", "my-bead"},
-		{"bead:123", "bead-123"},
+// The stamp records which candidate produced it. A sequencing `blocks` edge can
+// precede the real parent in ParentCandidates, so re-deriving the answer later
+// from edge order names the wrong bead — the daemon's Crucible guard reads
+// EpicParent instead.
+func TestResolveEpicBranches_RecordsTheResolvedParent(t *testing.T) {
+	defer SetEpicBranchLookupForTest(mockLookup(map[string]string{
+		"epic-1": "feature/checkout-rewrite",
+	}))()
+
+	beads := []Bead{
+		{ID: "task-1", Anvil: "repo", Dependencies: []BeadDep{
+			{DependsOnID: "upstream-task", Type: "blocks"},
+			{DependsOnID: "epic-1", Type: "parent-child"},
+		}},
+		{ID: "task-2", Anvil: "repo", Parent: "not-an-epic"},
 	}
-	for _, tt := range tests {
-		t.Run(tt.input, func(t *testing.T) {
-			assert.Equal(t, tt.want, sanitizeBeadID(tt.input))
-		})
-	}
+	ResolveEpicBranches(context.Background(), beads, map[string]string{"repo": "/tmp/repo"})
+
+	assert.Equal(t, "feature/checkout-rewrite", beads[0].EpicBranch)
+	assert.Equal(t, "epic-1", beads[0].EpicParent,
+		"the recorded parent is the one whose labels resolved, not the first edge")
+	assert.Empty(t, beads[1].EpicParent, "an unresolved child records no parent")
 }

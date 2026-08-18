@@ -1,6 +1,9 @@
 package epic
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestIsOrchestrated(t *testing.T) {
 	tests := []struct {
@@ -88,5 +91,101 @@ func TestSanitizeID(t *testing.T) {
 				t.Errorf("SanitizeID(%q) = %q, want %q", tt.in, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestValidBranchName(t *testing.T) {
+	valid := []string{
+		"feature/checkout-rewrite",
+		"feature/Forge-abc1",
+		"epic_1",
+		"a",
+		"release/2026.08",
+	}
+	for _, name := range valid {
+		t.Run("valid/"+name, func(t *testing.T) {
+			if !ValidBranchName(name) {
+				t.Errorf("ValidBranchName(%q) = false, want true", name)
+			}
+		})
+	}
+
+	invalid := map[string]string{
+		"empty":              "",
+		"leading dash":       "--force",
+		"single dash":        "-x",
+		"dot dot":            "feature/../../x",
+		"path traversal":     "../x",
+		"leading slash":      "/feature/x",
+		"trailing slash":     "feature/x/",
+		"double slash":       "feature//x",
+		"trailing dot":       "feature/x.",
+		"lock suffix":        "feature/x.lock",
+		"reflog syntax":      "feature/x@{1}",
+		"space":              "feature/my branch",
+		"tilde":              "feature/x~1",
+		"caret":              "feature/x^",
+		"colon":              "feature/x:y",
+		"question mark":      "feature/x?",
+		"asterisk":           "feature/x*",
+		"open bracket":       "feature/x[y",
+		"backslash":          `feature\x`,
+		"control character":  "feature/x\ty",
+		"component dot lead": "feature/.hidden",
+	}
+	for name, value := range invalid {
+		t.Run("invalid/"+name, func(t *testing.T) {
+			if ValidBranchName(value) {
+				t.Errorf("ValidBranchName(%q) = true, want false", value)
+			}
+		})
+	}
+
+	t.Run("over length", func(t *testing.T) {
+		if ValidBranchName("feature/" + strings.Repeat("x", maxBranchNameLen)) {
+			t.Error("an over-length name must be rejected")
+		}
+	})
+}
+
+// A label naming a branch git would reject (or read as a flag) must never reach
+// git: the label still opts the parent in, but the branch falls back to the
+// derived name rather than being handed on verbatim.
+func TestBranchName_RejectsUnusableExplicitNames(t *testing.T) {
+	tests := []struct {
+		name   string
+		labels []string
+		want   string
+	}{
+		{"flag-shaped", []string{"epic-branch:--force"}, "feature/Forge-abc"},
+		{"path traversal", []string{"epic-branch:../../x"}, "feature/Forge-abc"},
+		{"whitespace only", []string{"epic-branch:   "}, "feature/Forge-abc"},
+		{"usable name still wins", []string{"epic-branch:feature/ok"}, "feature/ok"},
+		{"first usable name wins", []string{"epic-branch:--force", "epic-branch:feature/ok"}, "feature/ok"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := BranchName("Forge-abc", tt.labels); got != tt.want {
+				t.Errorf("BranchName(Forge-abc, %v) = %q, want %q", tt.labels, got, tt.want)
+			}
+			if !IsOrchestrated(tt.labels) {
+				t.Error("carrying the prefix is the opt-in, usable name or not")
+			}
+		})
+	}
+}
+
+// Both opt-in forms are normalised the same way: leading whitespace must not
+// make one of them silently invisible.
+func TestIsOrchestrated_TrimsBothForms(t *testing.T) {
+	for _, label := range []string{" crucible", "crucible ", " epic-branch:feature/x", "epic-branch:feature/x "} {
+		t.Run(label, func(t *testing.T) {
+			if !IsOrchestrated([]string{label}) {
+				t.Errorf("IsOrchestrated([%q]) = false, want true", label)
+			}
+		})
+	}
+	if got := BranchName("Forge-abc", []string{" epic-branch:feature/x "}); got != "feature/x" {
+		t.Errorf("BranchName with a padded label = %q, want feature/x", got)
 	}
 }

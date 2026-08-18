@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
+	"strings"
 	"sync"
 
 	"github.com/Robin831/Forge/internal/executil"
@@ -76,6 +78,47 @@ type bdShowDependent struct {
 // objects rather than a flat "blocks" string array.
 type bdShowResponse struct {
 	Dependents []bdShowDependent `json:"dependents"`
+}
+
+// OpenChildren asks bd directly for the children of a bead that are not yet
+// closed — the "blocks" and "parent-child" dependents `bd show` reports.
+//
+// It exists because a bead's reconstructed Blocks field answers a narrower
+// question: pollAnvil builds it from the beads present in *this poll batch*, so
+// an empty Blocks means "no children are ready", which a child blocked on an
+// unrelated dependency also produces. Deciding an epic has nothing left to
+// orchestrate needs the wider answer, and only bd has it.
+//
+// An error is returned rather than an empty slice when bd cannot be reached:
+// "no children" and "cannot tell" lead to opposite decisions.
+func OpenChildren(ctx context.Context, beadID, anvilPath string) ([]string, error) {
+	cmd, cancel := executil.BdCommand(ctx, "show", beadID, "--json")
+	defer cancel()
+	cmd.Dir = anvilPath
+
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	output, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("bd show %s: %w: %s", beadID, err, strings.TrimSpace(stderr.String()))
+	}
+
+	var resp bdShowResponse
+	if err := json.Unmarshal(unwrapJSONArray(output), &resp); err != nil {
+		return nil, fmt.Errorf("parsing bd show %s: %w", beadID, err)
+	}
+
+	var open []string
+	for _, dep := range resp.Dependents {
+		if dep.DependencyType != "blocks" && dep.DependencyType != "parent-child" {
+			continue
+		}
+		if strings.EqualFold(strings.TrimSpace(dep.Status), "closed") {
+			continue
+		}
+		open = append(open, dep.ID)
+	}
+	return open, nil
 }
 
 // lookupBlocks fetches a bead's details and extracts the IDs of beads it blocks.

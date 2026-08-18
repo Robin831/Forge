@@ -1062,11 +1062,6 @@ func hasExternalBlockers(child poller.Bead, siblings []poller.Bead, parentID str
 	return false
 }
 
-// sanitizeID converts a bead ID to a safe branch name component.
-func sanitizeID(id string) string {
-	return epic.SanitizeID(id)
-}
-
 // IsCrucibleCandidate returns true if a bead has children (blocks other beads)
 // AND has opted into orchestration via the "crucible" label (or an explicit
 // "epic-branch:<name>" label). Having children is not enough: parent/child
