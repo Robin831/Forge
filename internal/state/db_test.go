@@ -385,6 +385,13 @@ func TestDB_BellowsDetached(t *testing.T) {
 	if byNumber == nil || !byNumber.BellowsDetached {
 		t.Fatalf("GetPRByNumber must report the detached flag")
 	}
+	byNumberOnly, err := db.PRByNumber(pr.Number)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if byNumberOnly == nil || !byNumberOnly.BellowsDetached {
+		t.Fatalf("PRByNumber must report the detached flag")
+	}
 	open, err := db.OpenPRs()
 	if err != nil {
 		t.Fatal(err)
