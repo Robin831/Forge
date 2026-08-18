@@ -107,6 +107,7 @@ type Monitor struct {
 	learnMu              map[string]*sync.Mutex                               // per-anvil mutex serializing auto-learn
 	learnSem             chan struct{}                                        // caps overall concurrent auto-learn goroutines
 	wasUnmanaged         map[string]bool                                      // keys of ext- PRs seen as unmanaged (for managed transition detection)
+	wasDetached          map[string]bool                                      // keys of PRs seen as bellows-detached (for resume transition detection)
 	autoMergeHandler     func(ctx context.Context, anvil string, pr state.PR) // called when a PR becomes ready-to-merge
 	smelterEnabled       func() bool                                          // when true, route learned rules to pending table instead of PR
 	assayConfig          func(anvil string) AssayGateConfig                   // resolved Assay gate config; nil disables the trigger
@@ -189,6 +190,7 @@ func New(db *state.DB, vcsLookup func(anvil string) vcs.Provider, interval time.
 		learnMu:               make(map[string]*sync.Mutex),
 		learnSem:              make(chan struct{}, 4), // allow up to 4 concurrent auto-learn goroutines
 		wasUnmanaged:          make(map[string]bool),
+		wasDetached:           make(map[string]bool),
 		ciStuckNotified:       make(map[string]string),
 		assaySuppressNotified: make(map[string]string),
 	}
@@ -627,7 +629,7 @@ func (m *Monitor) reconcileTerminalStates(ctx context.Context) {
 // checkPR; the sweep is a no-op for them because the worker is already
 // "done" before this pass runs.
 func (m *Monitor) sweepOrphanedMonitoringWorkers() {
-	orphans, err := m.db.OrphanedMonitoringBellowsWorkers()
+	orphans, err := m.db.OrphanedBellowsWorkers()
 	if err != nil {
 		log.Printf("[bellows] sweepOrphanedMonitoringWorkers: error listing orphaned workers: %v", err)
 		return
@@ -683,6 +685,14 @@ func (m *Monitor) checkAll(ctx context.Context) {
 		if title == "" {
 			title = fmt.Sprintf("PR #%d", pr.Number)
 		}
+		// A detached PR keeps its row rather than being skipped — a PR that
+		// disappears from the Workers panel reads as a bug, not as a mute —
+		// but carries the detached status, because the row is the one place
+		// the panel asserts bellows is watching, and for this PR it is not.
+		workerStatus := state.WorkerMonitoring
+		if pr.BellowsDetached {
+			workerStatus = state.WorkerDetached
+		}
 		// Remove any stale pipeline worker row repurposed as bellows
 		// (phase='bellows' but lacking a "bellows-" prefix in its ID).
 		// Without this, Hearth shows two workers for the same PR.
@@ -692,13 +702,19 @@ func (m *Monitor) checkAll(ctx context.Context) {
 			BeadID:    pr.BeadID,
 			Anvil:     pr.Anvil,
 			Branch:    pr.Branch,
-			Status:    state.WorkerMonitoring,
+			Status:    workerStatus,
 			Phase:     "bellows",
 			Title:     title,
 			PRNumber:  pr.Number,
 			StartedAt: time.Now(),
 		}); err != nil {
 			log.Printf("[bellows] Failed to upsert worker row for PR #%d (%s): %v", pr.Number, pr.Anvil, err)
+		}
+		// The insert above only writes new rows, so a PR detached (or resumed)
+		// after its row was created is reconciled here. The update is a no-op
+		// unless the row's status actually disagrees with the flag.
+		if err := m.db.SetBellowsWorkerDetached(workerID, pr.BellowsDetached); err != nil {
+			log.Printf("[bellows] Failed to sync detached state on worker row for PR #%d (%s): %v", pr.Number, pr.Anvil, err)
 		}
 	}
 
@@ -720,6 +736,91 @@ func (m *Monitor) checkAll(ctx context.Context) {
 		}
 		m.checkPR(ctx, &prs[i], dailyAssayCost)
 	}
+}
+
+// suppress records that this PR is being passed over — external-and-unmanaged,
+// or detached — and refreshes the only DB state bellows still owes it:
+// mergeability plus terminal status. A passed-over PR is unwatched, not
+// unknown, so the PR panel keeps telling the truth about it while nothing is
+// emitted and no lifecycle worker is dispatched.
+//
+// The marker in seen is what the matching resumeFromSuppression call reads on
+// the poll after the suppression lifts. A PR that has reached a terminal state
+// hands the whole key to forgetPR instead: it leaves OpenPRs() for good, so
+// nothing will ever consume any of the state bellows holds for it.
+//
+// The persistence is best-effort but never silent — a suppressed PR's
+// mergeability and terminal status are the one thing bellows still owes it, so
+// a failed write that leaves a merged PR being polled forever has to say so.
+// A terminal write that fails also keeps the state: the PR is still open as far
+// as the DB is concerned, so the next poll will find it and try again.
+//
+// Both suppression maps are only ever touched from checkPR, which runs on the
+// single checkAll goroutine, so they need no lock of their own — unlike
+// lastStatuses, which ResetPRState can reach concurrently.
+func (m *Monitor) suppress(seen map[string]bool, key string, pr *state.PR, snap *prSnapshot, ciInProgress bool) {
+	seen[key] = true
+	if err := m.db.UpdatePRMergeability(pr.ID, snap.CIPassing && !ciInProgress, snap.IsConflicting, snap.HasUnresolvedThreads, snap.HasPendingReviews, snap.HasApproval, snap.AssayUpToDate); err != nil {
+		log.Printf("[bellows] Failed to persist mergeability for passed-over PR #%d (%s): %v", pr.Number, pr.Anvil, err)
+	}
+	var terminal state.PRStatus
+	switch {
+	case snap.IsMerged:
+		terminal = state.PRMerged
+	case snap.IsClosed:
+		terminal = state.PRClosed
+	default:
+		return
+	}
+	if err := m.db.UpdatePRStatus(pr.ID, terminal); err != nil {
+		log.Printf("[bellows] Failed to persist %s status for passed-over PR #%d (%s): %v", terminal, pr.Number, pr.Anvil, err)
+		return
+	}
+	m.forgetPR(key)
+}
+
+// forgetPR drops every per-PR entry this monitor holds for key: both
+// suppression markers and the cached snapshot. It is called once a PR is known
+// terminal, which is the moment all three become unreadable — the PR leaves
+// OpenPRs() for good, so keeping them would grow each map by one entry per
+// merged or closed PR for the daemon's lifetime.
+//
+// Both markers go, not only the one belonging to the regime that was
+// suppressing this PR. The two are written by different branches of checkPR and
+// an operator can hand a PR from one to the other: unassigning a detached ext-
+// PR from bellows makes every later poll take the ext-unmanaged branch, which
+// precedes the detached one, so the wasDetached marker is never read again.
+//
+// Dropping the snapshot with them is what makes a reopened PR re-seed. A closed
+// PR can be reopened on GitHub and re-enter OpenPRs(); a snapshot left from
+// before it closed recorded failing CI, conflicts and unresolved threads as
+// already-seen, so the standing problems would never fire as transitions again.
+func (m *Monitor) forgetPR(key string) {
+	delete(m.wasUnmanaged, key)
+	delete(m.wasDetached, key)
+	m.mu.Lock()
+	delete(m.lastStatuses, key)
+	m.mu.Unlock()
+}
+
+// resumeFromSuppression reports whether key was suppressed by the given map on
+// an earlier poll and, when it was, clears both the marker and the cached
+// snapshot so the caller can re-enter checkPR and run the nil-snapshot seeding
+// path. Every problem the PR accumulated while suppressed is then re-detected
+// as a fresh transition rather than sitting there as state bellows believes it
+// has already seen.
+//
+// Deleting the marker before the caller recurses is what bounds that recursion
+// to a single re-entry.
+func (m *Monitor) resumeFromSuppression(seen map[string]bool, key string) bool {
+	if !seen[key] {
+		return false
+	}
+	delete(seen, key)
+	m.mu.Lock()
+	delete(m.lastStatuses, key)
+	m.mu.Unlock()
+	return true
 }
 
 // checkPR polls a single PR and emits events for any state changes.
@@ -801,10 +902,15 @@ func (m *Monitor) checkPR(ctx context.Context, pr *state.PR, dailyAssayCost *flo
 	switch ci.State {
 	case ciStuck:
 		// A wedged run or a platform outage. Surface it once for the operator
-		// instead of feeding a fix loop that cannot reproduce anything.
+		// instead of feeding a fix loop that cannot reproduce anything. This
+		// evaluation runs ahead of the detached guard below (the CI verdict
+		// feeds the snapshot either way), so the note — a needs-attention entry
+		// plus an event — is suppressed here rather than there.
 		log.Printf("[bellows] PR #%d (%s): CI appears stuck/outage — %s; skipping failure evaluation",
 			pr.Number, pr.Anvil, ci.Reason)
-		m.noteCIStuck(pr, ci)
+		if !pr.BellowsDetached {
+			m.noteCIStuck(pr, ci)
+		}
 	case ciPending:
 		log.Printf("[bellows] PR #%d (%s): CI pending — %s; skipping failure evaluation",
 			pr.Number, pr.Anvil, ci.Reason)
@@ -890,11 +996,21 @@ func (m *Monitor) checkPR(ctx context.Context, pr *state.PR, dailyAssayCost *flo
 	// snapshot so the seeding logic runs fresh and detects pre-existing
 	// issues (unresolved threads, CI failures, conflicts) as transitions.
 	if strings.HasPrefix(pr.BeadID, "ext-") && pr.BellowsManaged {
-		if _, wasUnmanaged := m.wasUnmanaged[key]; wasUnmanaged {
-			delete(m.wasUnmanaged, key)
-			m.mu.Lock()
-			delete(m.lastStatuses, key)
-			m.mu.Unlock()
+		if m.resumeFromSuppression(m.wasUnmanaged, key) {
+			// Re-enter checkPR so the nil-snapshot seeding path runs.
+			m.checkPR(ctx, pr, dailyAssayCost)
+			return
+		}
+	}
+
+	// Same treatment when a detached PR is resumed. The snapshots taken while
+	// detached recorded every standing problem as already-seen, so without this
+	// a PR resumed with failing CI, conflicts or unresolved threads would sit
+	// there as unchanged state and never fire again: the transition happened
+	// while nobody was listening. Clearing the snapshot re-seeds from the DB, so
+	// the problems that outlived the mute are re-detected as fresh transitions.
+	if !pr.BellowsDetached {
+		if m.resumeFromSuppression(m.wasDetached, key) {
 			// Re-enter checkPR so the nil-snapshot seeding path runs.
 			m.checkPR(ctx, pr, dailyAssayCost)
 			return
@@ -906,13 +1022,24 @@ func (m *Monitor) checkPR(ctx context.Context, pr *state.PR, dailyAssayCost *flo
 	// trigger lifecycle workers (quench, burnish, rebase). Persist their
 	// mergeability state and return early.
 	if strings.HasPrefix(pr.BeadID, "ext-") && !pr.BellowsManaged {
-		m.wasUnmanaged[key] = true
-		_ = m.db.UpdatePRMergeability(pr.ID, newSnap.CIPassing && !ciInProgress, newSnap.IsConflicting, newSnap.HasUnresolvedThreads, newSnap.HasPendingReviews, newSnap.HasApproval, newSnap.AssayUpToDate)
-		if newSnap.IsMerged {
-			_ = m.db.UpdatePRStatus(pr.ID, state.PRMerged)
-		} else if newSnap.IsClosed {
-			_ = m.db.UpdatePRStatus(pr.ID, state.PRClosed)
-		}
+		m.suppress(m.wasUnmanaged, key, pr, newSnap, ciInProgress)
+		return
+	}
+
+	// A detached PR is muted, not untracked: an operator took it off bellows,
+	// so it emits nothing and drives no lifecycle worker (quench, burnish,
+	// rebase, Assay), but its mergeability and terminal state are still
+	// refreshed so the PR panel keeps showing the truth about it. Independent
+	// of the managed flags above — any PR can be detached, Forge-created or
+	// external, managed or not.
+	//
+	// This one return is what silences every branch below, and the steady-state
+	// re-emit branches ("CI still failing", "still conflicting", "still
+	// unresolved threads") are the reason it has to be a return rather than a
+	// per-emit check: those fire on unchanged state, so a detached PR with a
+	// standing problem would otherwise re-announce it on every single poll.
+	if pr.BellowsDetached {
+		m.suppress(m.wasDetached, key, pr, newSnap, ciInProgress)
 		return
 	}
 
@@ -938,6 +1065,9 @@ func (m *Monitor) checkPR(ctx context.Context, pr *state.PR, dailyAssayCost *flo
 		_ = m.db.UpdatePRStatus(pr.ID, state.PRMerged)
 		_ = m.db.LogEvent(state.EventPRMerged, fmt.Sprintf("PR #%d merged", pr.Number), pr.BeadID, pr.Anvil)
 		_ = m.db.CompleteWorkersByBead(pr.BeadID)
+		// Same cleanup the suppressed path does: the PR is terminal, so the
+		// snapshot just written above is the last thing that will ever read it.
+		m.forgetPR(key)
 
 		// Best-effort ingot lifecycle update
 		if err := ingot.UpdateIngotStatus(m.db.Conn(), pr.BeadID, pr.Anvil, ingot.StatusPRMerged); err != nil {
@@ -979,6 +1109,10 @@ func (m *Monitor) checkPR(ctx context.Context, pr *state.PR, dailyAssayCost *flo
 		_ = m.db.UpdatePRStatus(pr.ID, state.PRClosed)
 		_ = m.db.LogEvent(state.EventPRClosed, fmt.Sprintf("PR #%d closed without merge", pr.Number), pr.BeadID, pr.Anvil)
 		_ = m.db.CompleteWorkersByBead(pr.BeadID)
+		// A closed PR can be reopened, so forgetting it is not just hygiene:
+		// it is what makes the reopened PR re-seed instead of coming back with
+		// every standing problem already marked as seen.
+		m.forgetPR(key)
 
 		// Best-effort ingot lifecycle update
 		if err := ingot.UpdateIngotStatus(m.db.Conn(), pr.BeadID, pr.Anvil, ingot.StatusFailed); err != nil {

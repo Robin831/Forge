@@ -435,6 +435,200 @@ func TestDB_BellowsDetached(t *testing.T) {
 	}
 }
 
+// TestDB_SetBellowsWorkerDetached exercises the bellows monitor row's
+// monitoring↔detached relabel (Forge-2rrx): it moves the row in both
+// directions, is a no-op when the row already carries the wanted status, and
+// never resurrects a row that has since gone terminal.
+func TestDB_SetBellowsWorkerDetached(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "forge-state-wdetach-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+	db, err := Open(filepath.Join(tmpDir, "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	const id = "bellows-anvil-1-77"
+	if err := db.InsertWorker(&Worker{
+		ID: id, BeadID: "Forge-abc1", Anvil: "anvil-1", Branch: "forge/Forge-abc1",
+		Status: WorkerMonitoring, Phase: "bellows", PRNumber: 77, StartedAt: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	statusOf := func() WorkerStatus {
+		w, err := db.GetWorker(id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return w.Status
+	}
+
+	if err := db.SetBellowsWorkerDetached(id, true); err != nil {
+		t.Fatal(err)
+	}
+	if got := statusOf(); got != WorkerDetached {
+		t.Fatalf("expected status=detached after SetBellowsWorkerDetached(true), got %q", got)
+	}
+	// Idempotent: repeating the call leaves the row where it is.
+	if err := db.SetBellowsWorkerDetached(id, true); err != nil {
+		t.Fatal(err)
+	}
+	if got := statusOf(); got != WorkerDetached {
+		t.Fatalf("expected status to stay detached, got %q", got)
+	}
+
+	// A detached row is non-terminal, so it still renders in the Workers panel.
+	active, err := db.ActiveWorkers()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var found bool
+	for _, w := range active {
+		if w.ID == id {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("a detached worker must still be listed by ActiveWorkers")
+	}
+
+	if err := db.SetBellowsWorkerDetached(id, false); err != nil {
+		t.Fatal(err)
+	}
+	if got := statusOf(); got != WorkerMonitoring {
+		t.Fatalf("expected status=monitoring after SetBellowsWorkerDetached(false), got %q", got)
+	}
+
+	// A row that has gone terminal — swept, merged, killed — stays terminal, in
+	// either direction. checkAll calls this for every open PR on every poll, so
+	// a predicate that matched any non-target status would quietly revive
+	// finished rows back into the Workers panel.
+	for _, terminal := range []WorkerStatus{WorkerDone, WorkerFailed, WorkerPartial, WorkerTimeout} {
+		for _, detach := range []bool{true, false} {
+			if _, err := db.conn.Exec(`UPDATE workers SET status = ? WHERE id = ?`, string(terminal), id); err != nil {
+				t.Fatal(err)
+			}
+			if err := db.SetBellowsWorkerDetached(id, detach); err != nil {
+				t.Fatal(err)
+			}
+			if got := statusOf(); got != terminal {
+				t.Fatalf("SetBellowsWorkerDetached(%v) must not resurrect a %q row, got %q", detach, terminal, got)
+			}
+		}
+	}
+
+	// A row in some other phase is not this function's business either: the id
+	// alone must not be enough to move it.
+	const pipelineID = "Forge-abc1-smith"
+	if err := db.InsertWorker(&Worker{
+		ID: pipelineID, BeadID: "Forge-abc1", Anvil: "anvil-1", Branch: "forge/Forge-abc1",
+		Status: WorkerRunning, Phase: "smith", StartedAt: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.SetBellowsWorkerDetached(pipelineID, true); err != nil {
+		t.Fatal(err)
+	}
+	w, err := db.GetWorker(pipelineID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if w.Status != WorkerRunning {
+		t.Fatalf("SetBellowsWorkerDetached must only touch bellows rows, got %q", w.Status)
+	}
+}
+
+// TestDB_DetachedWorkerLifecycleQueries pins the query lists the detached
+// status had to be added to (Forge-2rrx). A detached bellows row is muted, not
+// finished: it must still be found as the bead's active worker, still be closed
+// out by the bead's terminal cleanup, and — once its PR merges — still be swept
+// as orphaned. A missed list leaves the row claiming a merged PR is live, which
+// is the lingering-row failure the detach work exists to avoid.
+func TestDB_DetachedWorkerLifecycleQueries(t *testing.T) {
+	db := openTestDB(t)
+
+	// One detached row per PR state: merged (orphaned), open (still live).
+	merged := &PR{Number: 90, Anvil: "anvil-1", BeadID: "Forge-merged", Branch: "forge/Forge-merged", Status: PROpen, CreatedAt: time.Now()}
+	open := &PR{Number: 91, Anvil: "anvil-1", BeadID: "Forge-open", Branch: "forge/Forge-open", Status: PROpen, CreatedAt: time.Now()}
+	for _, pr := range []*PR{merged, open} {
+		if err := db.InsertPR(pr); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := db.UpdatePRStatus(merged.ID, PRMerged); err != nil {
+		t.Fatal(err)
+	}
+
+	insert := func(id, beadID string, prNumber int, status WorkerStatus) {
+		t.Helper()
+		if err := db.InsertWorker(&Worker{
+			ID: id, BeadID: beadID, Anvil: "anvil-1", Branch: "forge/" + beadID,
+			Status: status, Phase: "bellows", PRNumber: prNumber, StartedAt: time.Now(),
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	insert("bellows-anvil-1-90", "Forge-merged", 90, WorkerDetached)
+	insert("bellows-anvil-1-91", "Forge-open", 91, WorkerDetached)
+
+	// The orphan sweep: a muted PR still merges, and its row would otherwise be
+	// the one thing left claiming the PR is live.
+	orphans, err := db.OrphanedBellowsWorkers()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := make(map[string]string, len(orphans))
+	for _, o := range orphans {
+		got[o.WorkerID] = o.PRStatus
+	}
+	if status, ok := got["bellows-anvil-1-90"]; !ok || status != string(PRMerged) {
+		t.Fatalf("a detached row whose PR merged must be swept as orphaned; got %v", got)
+	}
+	if _, ok := got["bellows-anvil-1-91"]; ok {
+		t.Fatalf("a detached row whose PR is still open must not be swept: %v", got)
+	}
+
+	// Bead lookups: detaching mutes a PR, it does not make the row invisible —
+	// a second worker for the same bead must still be recognised as a duplicate.
+	for _, lookup := range []struct {
+		name string
+		fn   func() (*Worker, error)
+	}{
+		{"ActiveWorkerByBead", func() (*Worker, error) { return db.ActiveWorkerByBead("Forge-open") }},
+		{"ActiveWorkerByBeadAndAnvil", func() (*Worker, error) { return db.ActiveWorkerByBeadAndAnvil("Forge-open", "anvil-1") }},
+	} {
+		w, err := lookup.fn()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if w == nil || w.ID != "bellows-anvil-1-91" {
+			t.Fatalf("%s must return the detached row, got %+v", lookup.name, w)
+		}
+	}
+
+	// And the bead's terminal cleanup closes it out rather than leaving it
+	// behind as the bead's last apparently-live worker.
+	if err := db.CompleteWorkersByBead("Forge-open"); err != nil {
+		t.Fatal(err)
+	}
+	w, err := db.GetWorker("bellows-anvil-1-91")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if w.Status != WorkerDone {
+		t.Fatalf("CompleteWorkersByBead must complete a detached row, got %q", w.Status)
+	}
+	if after, err := db.ActiveWorkerByBead("Forge-open"); err != nil {
+		t.Fatal(err)
+	} else if after != nil {
+		t.Fatalf("a completed row must no longer be the bead's active worker, got %+v", after)
+	}
+}
+
 func TestDB_QueueCache(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "forge-state-test-*")
 	if err != nil {

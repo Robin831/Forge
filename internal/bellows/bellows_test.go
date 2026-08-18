@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -2304,4 +2305,577 @@ func TestCheckPR_CIFixExhausted_FlagsNeedsHuman(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, rec, "exhausted CI-fix loop must create a retry row")
 	assert.True(t, rec.NeedsHuman, "exhausted CI-fix loop must flag needs_human")
+}
+
+// --- Bellows detachment (Forge-2rrx) ---------------------------------------
+//
+// A detached PR is one an operator has muted: bellows keeps its mergeability
+// current so the PR panel stays honest, but emits nothing and therefore drives
+// no lifecycle worker. The tests below cover each branch of checkPR that can
+// fire for an open PR, in both arms — detached (silent) and attached (fires) —
+// so a case that silently stops being reachable cannot pass as suppression.
+
+// detachCase describes one problem state a PR can be sitting in, the DB
+// lifecycle seed that makes the corresponding checkPR branch live, and the
+// event that branch emits when bellows is attached.
+type detachCase struct {
+	name   string
+	status *vcs.PRStatus
+	// seed configures the persisted lifecycle counters/mergeability so the
+	// intended branch is the one that fires.
+	seed func(t *testing.T, db *state.DB, prID int)
+	// want is the event the attached arm must emit. Empty for a branch that
+	// dispatches nothing and therefore emits no PREvent — the stuck-CI note,
+	// which surfaces in the needs-attention list and the event log instead.
+	want string
+	// check, when non-nil, asserts the arm's side effects outside the event
+	// stream. Run for both arms, so a suppression is proved against the same
+	// state the attached arm proves the fire against.
+	check func(t *testing.T, db *state.DB, pr *state.PR, detached bool)
+}
+
+func detachCases() []detachCase {
+	failingCI := func() *vcs.PRStatus {
+		return &vcs.PRStatus{
+			State: "OPEN",
+			StatusCheckRollup: []vcs.CheckRun{
+				{Name: "build", Status: "COMPLETED", Conclusion: "FAILURE"},
+			},
+		}
+	}
+	return []detachCase{
+		{
+			name:   "CI failed",
+			status: failingCI(),
+			seed: func(t *testing.T, db *state.DB, prID int) {
+				// ci_passing=true so the first poll sees a true→false transition.
+				require.NoError(t, db.UpdatePRMergeability(prID, true, false, false, false, false, true))
+			},
+			want: EventCIFailed,
+		},
+		{
+			name:   "CI still failing after a quench attempt",
+			status: failingCI(),
+			seed: func(t *testing.T, db *state.DB, prID int) {
+				// ci_fix_count>0 keeps the seeded lastSnap.CIPassing false, so only
+				// the steady-state re-emit branch can fire — the one that repeats
+				// on unchanged state, poll after poll.
+				require.NoError(t, db.UpdatePRLifecycle(prID, 1, 0, 0, false))
+				require.NoError(t, db.UpdatePRMergeability(prID, false, false, false, false, false, true))
+			},
+			want: EventCIFailed,
+		},
+		{
+			name:   "merge conflict",
+			status: &vcs.PRStatus{State: "OPEN", Mergeable: "CONFLICTING"},
+			seed: func(t *testing.T, db *state.DB, prID int) {
+				require.NoError(t, db.UpdatePRMergeability(prID, true, false, false, false, false, true))
+			},
+			want: EventPRConflicting,
+		},
+		{
+			name:   "still conflicting after a rebase attempt",
+			status: &vcs.PRStatus{State: "OPEN", Mergeable: "CONFLICTING"},
+			seed: func(t *testing.T, db *state.DB, prID int) {
+				require.NoError(t, db.UpdatePRLifecycle(prID, 0, 0, 1, true))
+				require.NoError(t, db.UpdatePRMergeability(prID, true, true, false, false, false, true))
+			},
+			want: EventPRConflicting,
+		},
+		{
+			name:   "unresolved review threads",
+			status: &vcs.PRStatus{State: "OPEN", UnresolvedThreads: 2},
+			seed: func(t *testing.T, db *state.DB, prID int) {
+				require.NoError(t, db.UpdatePRMergeability(prID, true, false, false, false, false, true))
+			},
+			want: EventReviewChanges,
+		},
+		{
+			name:   "still unresolved after a burnish attempt",
+			status: &vcs.PRStatus{State: "OPEN", UnresolvedThreads: 2},
+			seed: func(t *testing.T, db *state.DB, prID int) {
+				require.NoError(t, db.UpdatePRLifecycle(prID, 0, 1, 0, true))
+				require.NoError(t, db.UpdatePRMergeability(prID, true, false, true, false, false, true))
+			},
+			want: EventReviewChanges,
+		},
+		{
+			// The stuck-CI note is the one suppression in this change written as
+			// a per-emit check rather than covered by the detached return, since
+			// the CI verdict is computed ahead of that return to feed the
+			// snapshot. Without a case here neither arm of that check would be
+			// exercised: an inverted condition, or a placement that regressed
+			// below the return, would leave a muted PR re-raising the note.
+			name: "CI stuck (a check queued past the threshold)",
+			status: &vcs.PRStatus{
+				State:   "OPEN",
+				HeadSHA: headSHA,
+				StatusCheckRollup: []vcs.CheckRun{
+					{Name: "build", Status: "COMPLETED", Conclusion: "SUCCESS", HeadSHA: headSHA},
+					{Name: "changelog-check", Status: "QUEUED", HeadSHA: headSHA, StartedAt: time.Now().Add(-2 * time.Hour)},
+				},
+			},
+			seed: func(t *testing.T, db *state.DB, prID int) {
+				require.NoError(t, db.UpdatePRMergeability(prID, true, false, false, false, false, true))
+			},
+			// A wedged run dispatches nothing, so there is no PREvent either
+			// way; the note itself is what the check below asserts on.
+			want: "",
+			check: func(t *testing.T, db *state.DB, pr *state.PR, detached bool) {
+				r, err := db.GetRetry(pr.BeadID, pr.Anvil)
+				require.NoError(t, err)
+				if detached {
+					if r != nil {
+						assert.False(t, r.NeedsHuman,
+							"a detached PR must not raise the stuck-CI note: %s", r.LastError)
+					}
+					return
+				}
+				require.NotNil(t, r, "an attached PR with a wedged run must surface in Needs Attention")
+				assert.True(t, r.NeedsHuman)
+				assert.True(t, strings.HasPrefix(r.LastError, ciStuckAttentionPrefix),
+					"note must carry the stuck-CI marker: %s", r.LastError)
+			},
+		},
+	}
+}
+
+// newDetachTestMonitor builds a monitor with generous fix caps so a suppressed
+// event is suppression and never an exhausted retry budget.
+func newDetachTestMonitor(db *state.DB, fake vcs.Provider, events *[]string) *Monitor {
+	m := New(db, func(_ string) vcs.Provider { return fake }, time.Minute,
+		map[string]string{"test-anvil": "/fake"}, nil,
+		func() int { return 5 }, func() int { return 5 }, func() int { return 3 })
+	m.OnEvent(func(_ context.Context, e PREvent) { *events = append(*events, e.EventType) })
+	return m
+}
+
+// TestCheckPR_Detached_EmitsNoEvents is the core suppression test: for every
+// problem state a PR can be parked in, a detached PR emits nothing across
+// repeated polls — neither handler events nor event-log rows — while the same
+// PR attached emits the event that would dispatch a fix worker. Polling three
+// times matters: the "still failing / still conflicting / still unresolved"
+// branches fire on unchanged state, so a single quiet poll proves nothing.
+func TestCheckPR_Detached_EmitsNoEvents(t *testing.T) {
+	for _, tc := range detachCases() {
+		for _, detached := range []bool{true, false} {
+			arm := "attached"
+			if detached {
+				arm = "detached"
+			}
+			t.Run(tc.name+"/"+arm, func(t *testing.T) {
+				db, cleanup := openTempDB(t)
+				defer cleanup()
+
+				pr := &state.PR{
+					Number:    500,
+					Anvil:     "test-anvil",
+					BeadID:    "forge-detach",
+					Branch:    "forge/forge-detach",
+					Status:    state.PROpen,
+					CreatedAt: time.Now(),
+				}
+				require.NoError(t, db.InsertPR(pr))
+				tc.seed(t, db, pr.ID)
+				require.NoError(t, db.UpdatePRBellowsDetached(pr.ID, detached))
+
+				var events []string
+				m := newDetachTestMonitor(db, &fakeVCSProvider{status: tc.status}, &events)
+
+				for i := 0; i < 3; i++ {
+					m.checkAll(context.Background())
+				}
+
+				logged, err := db.EventsByBead(pr.BeadID, pr.Anvil, 100)
+				require.NoError(t, err)
+
+				if detached {
+					assert.Empty(t, events, "a detached PR must emit no events, on any poll")
+					assert.Empty(t, logged, "a detached PR must write no event-log rows either")
+
+					updated, err := db.GetPRByID(pr.ID)
+					require.NoError(t, err)
+					assert.Equal(t, state.PROpen, updated.Status,
+						"a detached PR must not be flipped to needs_fix — nothing is going to fix it")
+					if tc.check != nil {
+						tc.check(t, db, pr, true)
+					}
+					return
+				}
+
+				if tc.want != "" {
+					assert.Contains(t, events, tc.want,
+						"the attached arm must still emit, or the detached arm proves nothing")
+				}
+				assert.NotEmpty(t, logged,
+					"the attached arm must still log, or the detached arm proves nothing")
+				if tc.check != nil {
+					tc.check(t, db, pr, false)
+				}
+			})
+		}
+	}
+}
+
+// TestCheckPR_Detached_StillRefreshesMergeability verifies the other half of
+// the contract: a muted PR is unwatched, not unknown. Its mergeability keeps
+// being persisted so the PR panel shows the real state.
+func TestCheckPR_Detached_StillRefreshesMergeability(t *testing.T) {
+	db, cleanup := openTempDB(t)
+	defer cleanup()
+
+	pr := &state.PR{
+		Number:    501,
+		Anvil:     "test-anvil",
+		BeadID:    "forge-detachmerge",
+		Branch:    "forge/forge-detachmerge",
+		Status:    state.PROpen,
+		CreatedAt: time.Now(),
+	}
+	require.NoError(t, db.InsertPR(pr))
+	// Start from a fully green record so every flag below has to be written.
+	require.NoError(t, db.UpdatePRMergeability(pr.ID, true, false, false, false, false, true))
+	require.NoError(t, db.UpdatePRBellowsDetached(pr.ID, true))
+
+	fake := &fakeVCSProvider{status: &vcs.PRStatus{
+		State:             "OPEN",
+		Mergeable:         "CONFLICTING",
+		UnresolvedThreads: 3,
+		StatusCheckRollup: []vcs.CheckRun{
+			{Name: "build", Status: "COMPLETED", Conclusion: "FAILURE"},
+		},
+	}}
+
+	var events []string
+	m := newDetachTestMonitor(db, fake, &events)
+	m.checkAll(context.Background())
+
+	updated, err := db.GetPRByID(pr.ID)
+	require.NoError(t, err)
+	assert.False(t, updated.CIPassing, "failing CI must still be recorded for a detached PR")
+	assert.True(t, updated.IsConflicting, "the conflict must still be recorded for a detached PR")
+	assert.True(t, updated.HasUnresolvedThreads, "unresolved threads must still be recorded")
+	assert.Empty(t, events, "refreshing state must not emit")
+}
+
+// TestCheckPR_Detached_PersistsTerminalState verifies that a detached PR that
+// merges is still recorded as merged — silently. Leaving the row open would
+// keep it in the open-PR poll set forever; emitting pr_merged would run the
+// whole merge lifecycle (bd close, worktree teardown) for a PR the operator
+// took off bellows.
+func TestCheckPR_Detached_PersistsTerminalState(t *testing.T) {
+	db, cleanup := openTempDB(t)
+	defer cleanup()
+
+	pr := &state.PR{
+		Number:    502,
+		Anvil:     "test-anvil",
+		BeadID:    "forge-detachmerged",
+		Branch:    "forge/forge-detachmerged",
+		Status:    state.PROpen,
+		CreatedAt: time.Now(),
+	}
+	require.NoError(t, db.InsertPR(pr))
+	require.NoError(t, db.UpdatePRBellowsDetached(pr.ID, true))
+
+	var events []string
+	m := newDetachTestMonitor(db, &fakeVCSProvider{status: &vcs.PRStatus{State: "MERGED"}}, &events)
+	m.checkAll(context.Background())
+
+	updated, err := db.GetPRByID(pr.ID)
+	require.NoError(t, err)
+	assert.Equal(t, state.PRMerged, updated.Status, "a detached PR that merged must still be recorded as merged")
+	assert.Empty(t, events, "a detached PR must not emit pr_merged")
+
+	logged, err := db.EventsByBead(pr.BeadID, pr.Anvil, 100)
+	require.NoError(t, err)
+	assert.Empty(t, logged)
+}
+
+// TestCheckPR_Suppressed_TerminalPRDropsMarker covers the bookkeeping half of
+// the suppression path. The marker maps exist so the poll after a suppression
+// lifts can re-seed the snapshot; a PR that merges or closes while suppressed
+// never has such a poll — it leaves the open-PR set for good — so everything
+// held for it is dropped rather than kept for the daemon's lifetime. Both maps
+// go through the same helper, and both are checked here, along with the cached
+// snapshot.
+func TestCheckPR_Suppressed_TerminalPRDropsMarker(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		beadID string
+		// detach configures the suppression under test on the inserted PR.
+		detach func(t *testing.T, db *state.DB, prID int)
+		marker func(m *Monitor) map[string]bool
+	}{
+		{
+			name:   "detached",
+			beadID: "forge-detachgone",
+			detach: func(t *testing.T, db *state.DB, prID int) {
+				require.NoError(t, db.UpdatePRBellowsDetached(prID, true))
+			},
+			marker: func(m *Monitor) map[string]bool { return m.wasDetached },
+		},
+		{
+			// InsertPR gives an ext- PR bellows_managed=0, so it is suppressed
+			// by the unmanaged branch without further setup.
+			name:   "external and unmanaged",
+			beadID: "ext-gone",
+			detach: func(t *testing.T, db *state.DB, prID int) {},
+			marker: func(m *Monitor) map[string]bool { return m.wasUnmanaged },
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			db, cleanup := openTempDB(t)
+			defer cleanup()
+
+			pr := &state.PR{
+				Number:    504,
+				Anvil:     "test-anvil",
+				BeadID:    tc.beadID,
+				Branch:    "forge/" + tc.beadID,
+				Status:    state.PROpen,
+				CreatedAt: time.Now(),
+			}
+			require.NoError(t, db.InsertPR(pr))
+			tc.detach(t, db, pr.ID)
+
+			var events []string
+			fake := &fakeVCSProvider{status: &vcs.PRStatus{State: "OPEN"}}
+			m := newDetachTestMonitor(db, fake, &events)
+
+			m.checkAll(context.Background())
+			require.Len(t, tc.marker(m), 1, "an open suppressed PR must be marked, so a resume can re-seed it")
+
+			// The PR merges while still suppressed.
+			fake.status = &vcs.PRStatus{State: "MERGED"}
+			m.checkAll(context.Background())
+
+			updated, err := db.GetPRByID(pr.ID)
+			require.NoError(t, err)
+			require.Equal(t, state.PRMerged, updated.Status)
+			assert.Empty(t, tc.marker(m),
+				"a PR that reached a terminal state has no later poll to consume its marker")
+			assert.Empty(t, m.wasUnmanaged, "both markers go: the two maps can drift apart across a regime handoff")
+			assert.Empty(t, m.wasDetached, "both markers go: the two maps can drift apart across a regime handoff")
+			assert.Empty(t, m.lastStatuses, "the snapshot is unreadable once the PR leaves the open-PR set")
+			assert.Empty(t, events, "a suppressed PR must stay silent through its merge")
+		})
+	}
+}
+
+// TestCheckPR_Suppressed_HandoffLeavesNoStaleMarker covers the case that makes
+// the terminal cleanup drop BOTH markers rather than only the one the
+// suppressing branch wrote. An ext- PR that is managed and detached is marked
+// in wasDetached; unassigning it from bellows while it is still detached moves
+// every later poll onto the ext-unmanaged branch, which precedes the detached
+// one — so the wasDetached entry is never read again and its owner never gets
+// to clean it up. The merge is the one moment both are certainly dead.
+func TestCheckPR_Suppressed_HandoffLeavesNoStaleMarker(t *testing.T) {
+	db, cleanup := openTempDB(t)
+	defer cleanup()
+
+	pr := &state.PR{
+		Number:         505,
+		Anvil:          "test-anvil",
+		BeadID:         "ext-handoff",
+		Branch:         "feature/ext-handoff",
+		Status:         state.PROpen,
+		BellowsManaged: true,
+		CreatedAt:      time.Now(),
+	}
+	require.NoError(t, db.InsertPR(pr))
+	require.NoError(t, db.UpdatePRBellowsDetached(pr.ID, true))
+
+	var events []string
+	fake := &fakeVCSProvider{status: &vcs.PRStatus{State: "OPEN"}}
+	m := newDetachTestMonitor(db, fake, &events)
+
+	// Managed + detached: the detached branch suppresses it.
+	m.checkAll(context.Background())
+	require.Len(t, m.wasDetached, 1)
+	require.Empty(t, m.wasUnmanaged)
+
+	// The operator unassigns it from bellows while it is still detached. Every
+	// later poll now takes the ext-unmanaged branch instead.
+	require.NoError(t, db.UpdatePRBellowsManaged(pr.ID, false))
+	m.checkAll(context.Background())
+	require.Len(t, m.wasUnmanaged, 1)
+	require.Len(t, m.wasDetached, 1, "the detached-era marker is now stranded — nothing reads it again")
+
+	fake.status = &vcs.PRStatus{State: "MERGED"}
+	m.checkAll(context.Background())
+
+	updated, err := db.GetPRByID(pr.ID)
+	require.NoError(t, err)
+	require.Equal(t, state.PRMerged, updated.Status)
+	assert.Empty(t, m.wasUnmanaged)
+	assert.Empty(t, m.wasDetached, "the stranded marker must go with the PR, not outlive it")
+	assert.Empty(t, m.lastStatuses)
+	assert.Empty(t, events, "a suppressed PR must stay silent through its merge")
+}
+
+// TestCheckPR_ReopenedPR_ReseedsStandingProblems is the reason the terminal
+// cleanup drops the cached snapshot too. A closed PR can be reopened on GitHub
+// and re-enter the open-PR set; the snapshot taken on the poll that saw it
+// closed recorded its failing CI as already-seen, so keeping it would leave the
+// standing problem sitting there as unchanged state, never fired again.
+func TestCheckPR_ReopenedPR_ReseedsStandingProblems(t *testing.T) {
+	db, cleanup := openTempDB(t)
+	defer cleanup()
+
+	pr := &state.PR{
+		Number:    506,
+		Anvil:     "test-anvil",
+		BeadID:    "forge-reopen",
+		Branch:    "forge/forge-reopen",
+		Status:    state.PROpen,
+		CreatedAt: time.Now(),
+	}
+	require.NoError(t, db.InsertPR(pr))
+	require.NoError(t, db.UpdatePRMergeability(pr.ID, true, false, false, false, false, true))
+
+	failing := []vcs.CheckRun{{Name: "build", Status: "COMPLETED", Conclusion: "FAILURE"}}
+	fake := &fakeVCSProvider{status: &vcs.PRStatus{State: "OPEN", StatusCheckRollup: failing}}
+
+	var events []string
+	m := newDetachTestMonitor(db, fake, &events)
+
+	m.checkAll(context.Background())
+	require.Equal(t, []string{EventCIFailed}, events, "the first poll detects the CI failure")
+
+	// The PR is closed with the failure still standing.
+	fake.status = &vcs.PRStatus{State: "CLOSED", StatusCheckRollup: failing}
+	m.checkAll(context.Background())
+	require.Contains(t, events, EventPRClosed)
+	require.Empty(t, m.lastStatuses, "a terminal PR keeps no snapshot")
+
+	// Reopened on GitHub: reconcileOpenPRs puts it back in the open-PR set.
+	require.NoError(t, db.UpdatePRStatus(pr.ID, state.PROpen))
+	require.NoError(t, db.UpdatePRMergeability(pr.ID, true, false, false, false, false, true))
+	fake.status = &vcs.PRStatus{State: "OPEN", StatusCheckRollup: failing}
+
+	events = nil
+	m.checkAll(context.Background())
+	assert.Contains(t, events, EventCIFailed,
+		"a reopened PR re-seeds, so its standing CI failure fires as a fresh transition")
+}
+
+// TestCheckPR_DetachedResume_ReemitsStandingProblems covers the resume half:
+// the snapshots taken while detached recorded every standing problem as
+// already-seen, so without clearing the cache on resume a PR handed back to
+// bellows with failing CI, a conflict and unresolved threads would sit there as
+// unchanged state and never fire. All three transitions must be re-detected as
+// fresh.
+func TestCheckPR_DetachedResume_ReemitsStandingProblems(t *testing.T) {
+	db, cleanup := openTempDB(t)
+	defer cleanup()
+
+	pr := &state.PR{
+		Number:    503,
+		Anvil:     "test-anvil",
+		BeadID:    "forge-detachresume",
+		Branch:    "forge/forge-detachresume",
+		Status:    state.PROpen,
+		CreatedAt: time.Now(),
+	}
+	require.NoError(t, db.InsertPR(pr))
+	require.NoError(t, db.UpdatePRMergeability(pr.ID, true, false, false, false, false, true))
+	require.NoError(t, db.UpdatePRBellowsDetached(pr.ID, true))
+
+	fake := &fakeVCSProvider{status: &vcs.PRStatus{
+		State:             "OPEN",
+		Mergeable:         "CONFLICTING",
+		UnresolvedThreads: 2,
+		StatusCheckRollup: []vcs.CheckRun{
+			{Name: "build", Status: "COMPLETED", Conclusion: "FAILURE"},
+		},
+	}}
+
+	var events []string
+	m := newDetachTestMonitor(db, fake, &events)
+
+	// Two detached polls: enough for the cache to hold "CI failing, conflicting,
+	// threads unresolved" as the last known state.
+	m.checkAll(context.Background())
+	m.checkAll(context.Background())
+	require.Empty(t, events, "the detached polls must be silent")
+
+	require.NoError(t, db.UpdatePRBellowsDetached(pr.ID, false))
+	m.checkAll(context.Background())
+
+	assert.Contains(t, events, EventCIFailed, "failing CI must be re-detected on resume")
+	assert.Contains(t, events, EventPRConflicting, "the conflict must be re-detected on resume")
+	assert.Contains(t, events, EventReviewChanges, "unresolved threads must be re-detected on resume")
+
+	// And the resume fires once, not on every poll thereafter: the re-entered
+	// check stored a fresh snapshot, so the next poll sees unchanged state.
+	before := len(events)
+	m.checkAll(context.Background())
+	assert.Len(t, events, before, "the resume transition must fire once, not on every later poll")
+}
+
+// TestCheckAll_DetachedPRWorkerRowLabelled verifies the Workers-panel half: a
+// detached PR keeps its bellows row (vanishing would read as a bug) but the row
+// says detached, and the label tracks the flag in both directions for a row
+// that already exists.
+func TestCheckAll_DetachedPRWorkerRowLabelled(t *testing.T) {
+	db, cleanup := openTempDB(t)
+	defer cleanup()
+
+	watched := &state.PR{
+		Number:    601,
+		Anvil:     "my-anvil",
+		BeadID:    "forge-watched",
+		Branch:    "forge/forge-watched",
+		Status:    state.PROpen,
+		CreatedAt: time.Now(),
+	}
+	require.NoError(t, db.InsertPR(watched))
+
+	muted := &state.PR{
+		Number:    602,
+		Anvil:     "my-anvil",
+		BeadID:    "forge-muted",
+		Branch:    "forge/forge-muted",
+		Status:    state.PROpen,
+		CreatedAt: time.Now(),
+	}
+	require.NoError(t, db.InsertPR(muted))
+	require.NoError(t, db.UpdatePRBellowsDetached(muted.ID, true))
+
+	// No VCS provider: checkPR bails immediately, leaving only the worker-row
+	// bookkeeping under test.
+	m := New(db, nil, time.Minute, map[string]string{"my-anvil": "/fake"}, nil, nil, nil, nil)
+	m.checkAll(context.Background())
+
+	statusOf := func(t *testing.T, id string) state.WorkerStatus {
+		t.Helper()
+		w, err := db.GetWorker(id)
+		require.NoError(t, err)
+		return w.Status
+	}
+
+	assert.Equal(t, state.WorkerMonitoring, statusOf(t, "bellows-my-anvil-601"))
+	assert.Equal(t, state.WorkerDetached, statusOf(t, "bellows-my-anvil-602"),
+		"a detached PR's row must not claim bellows is monitoring it")
+
+	// Both rows stay visible in the Workers panel.
+	active, err := db.ActiveWorkers()
+	require.NoError(t, err)
+	ids := make(map[string]bool, len(active))
+	for _, w := range active {
+		ids[w.ID] = true
+	}
+	assert.True(t, ids["bellows-my-anvil-601"])
+	assert.True(t, ids["bellows-my-anvil-602"], "a detached row must still render, not disappear")
+
+	// Detaching a PR whose row already exists relabels it, and resuming puts it
+	// back — InsertWorkerIfMissing writes only new rows, so this is the path
+	// that carries the flag onto an existing one.
+	require.NoError(t, db.UpdatePRBellowsDetached(watched.ID, true))
+	require.NoError(t, db.UpdatePRBellowsDetached(muted.ID, false))
+	m.checkAll(context.Background())
+
+	assert.Equal(t, state.WorkerDetached, statusOf(t, "bellows-my-anvil-601"))
+	assert.Equal(t, state.WorkerMonitoring, statusOf(t, "bellows-my-anvil-602"))
 }

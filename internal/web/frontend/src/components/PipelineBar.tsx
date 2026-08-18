@@ -117,16 +117,37 @@ export function isBellowsMonitor(w: WorkerInfo): boolean {
 
 // prSubLabel collapses any active bellows sub-state into a short caption
 // shown under the PR pill. The order mirrors how a user would perceive
-// importance: rebase > ci-fix > review-fix > monitoring.
+// importance: rebase > ci-fix > review-fix > detached > monitoring.
 function prSubLabel(prWorkers: WorkerInfo[]): string | null {
   if (prWorkers.length === 0) return null
   const hasPhase = (p: string) => prWorkers.some((w) => w.phase === p)
   if (hasPhase('rebase')) return 'rebase'
   if (hasPhase('quench') || hasPhase('cifix')) return 'ci-fix'
   if (hasPhase('burnish') || hasPhase('reviewfix')) return 'review-fix'
+  // A detached PR is muted: bellows keeps its row and keeps refreshing its
+  // mergeability, but emits nothing and drives no lifecycle worker. Saying
+  // "monitoring" for it would claim exactly the thing the operator turned off,
+  // so it gets its own caption — and only when every monitor row here is
+  // detached, since a fix worker still in flight is the more useful sub-state.
+  const monitors = prWorkers.filter((w) => w.phase === 'bellows' || w.phase === 'ready_to_merge')
+  if (monitors.length > 0 && monitors.every((w) => w.status === 'detached')) return 'detached'
   if (hasPhase('bellows')) return 'monitoring'
   return null
 }
+
+// ACTIVE_STATUSES are the worker statuses the pipeline bar renders. "detached"
+// is here because a bellows monitor row for a muted PR is deliberately kept
+// alive by the daemon (state.WorkerDetached is non-terminal): WorkersPane
+// filters bellows monitors out on the grounds that their state is surfaced
+// here, so dropping the status at this filter would make detaching a PR erase
+// its monitor from the whole dashboard — which reads as a bug, not as a mute.
+const ACTIVE_STATUSES: ReadonlySet<string> = new Set([
+  'pending',
+  'running',
+  'monitoring',
+  'reviewing',
+  'detached',
+])
 
 interface StageInfo {
   key: StageKey
@@ -139,13 +160,7 @@ function bucket(workers: WorkerInfo[]): Map<StageKey, WorkerInfo[]> {
   const m = new Map<StageKey, WorkerInfo[]>()
   for (const s of STAGES) m.set(s, [])
   for (const w of workers) {
-    if (
-      w.status !== 'pending' &&
-      w.status !== 'running' &&
-      w.status !== 'monitoring' &&
-      w.status !== 'reviewing'
-    )
-      continue
+    if (!ACTIVE_STATUSES.has(w.status)) continue
     const stage = phaseToStage(w.phase)
     if (!stage) continue
     m.get(stage)!.push(w)
@@ -183,13 +198,7 @@ export default function PipelineBar({ workers }: PipelineBarProps) {
   const beadRows = useMemo(() => {
     const seen = new Map<string, { worker: WorkerInfo; stage: StageKey }>()
     for (const w of workers) {
-      if (
-        w.status !== 'pending' &&
-        w.status !== 'running' &&
-        w.status !== 'monitoring' &&
-        w.status !== 'reviewing'
-      )
-        continue
+      if (!ACTIVE_STATUSES.has(w.status)) continue
       const stage = phaseToStage(w.phase)
       if (!stage) continue
       const key = `${w.anvil}:${w.bead_id}`
@@ -345,6 +354,19 @@ function BeadRow({ worker, stage }: BeadRowProps) {
           </span>
         )
       ) : null}
+      {/* A detached bead row is the mute made visible. Without it the row is
+          indistinguishable from a monitored one, and the stage caption is an
+          aggregate over every bead in the PR stage — it says "monitoring" as
+          soon as one other PR is still watched. */}
+      {worker.status === 'detached' && (
+        <span
+          data-testid="pipeline-bead-detached"
+          title="Detached from Bellows: state is still refreshed, but no events are emitted and no fix workers run"
+          className="shrink-0 rounded-md border border-slate-500/40 bg-slate-500/10 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-slate-300"
+        >
+          muted
+        </span>
+      )}
       {/* Start / status-spinner / Open / Stop for the bead's Kiln preview,
           right on the row — the button hides itself when Kiln is off or the
           anvil declares no preview manifest, so rows only gain controls where
