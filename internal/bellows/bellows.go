@@ -629,7 +629,7 @@ func (m *Monitor) reconcileTerminalStates(ctx context.Context) {
 // checkPR; the sweep is a no-op for them because the worker is already
 // "done" before this pass runs.
 func (m *Monitor) sweepOrphanedMonitoringWorkers() {
-	orphans, err := m.db.OrphanedMonitoringBellowsWorkers()
+	orphans, err := m.db.OrphanedBellowsWorkers()
 	if err != nil {
 		log.Printf("[bellows] sweepOrphanedMonitoringWorkers: error listing orphaned workers: %v", err)
 		return
@@ -746,25 +746,61 @@ func (m *Monitor) checkAll(ctx context.Context) {
 //
 // The marker in seen is what the matching resumeFromSuppression call reads on
 // the poll after the suppression lifts. A PR that has reached a terminal state
-// drops its marker instead: it leaves OpenPRs() for good, so nothing will ever
-// consume the marker and keeping it would grow the map by one entry per merged
-// PR for the daemon's lifetime.
+// hands the whole key to forgetPR instead: it leaves OpenPRs() for good, so
+// nothing will ever consume any of the state bellows holds for it.
 //
-// Both maps are only ever touched from checkPR, which runs on the single
-// checkAll goroutine, so they need no lock of their own — unlike lastStatuses,
-// which ResetPRState can reach concurrently.
+// The persistence is best-effort but never silent — a suppressed PR's
+// mergeability and terminal status are the one thing bellows still owes it, so
+// a failed write that leaves a merged PR being polled forever has to say so.
+// A terminal write that fails also keeps the state: the PR is still open as far
+// as the DB is concerned, so the next poll will find it and try again.
+//
+// Both suppression maps are only ever touched from checkPR, which runs on the
+// single checkAll goroutine, so they need no lock of their own — unlike
+// lastStatuses, which ResetPRState can reach concurrently.
 func (m *Monitor) suppress(seen map[string]bool, key string, pr *state.PR, snap *prSnapshot, ciInProgress bool) {
 	seen[key] = true
-	_ = m.db.UpdatePRMergeability(pr.ID, snap.CIPassing && !ciInProgress, snap.IsConflicting, snap.HasUnresolvedThreads, snap.HasPendingReviews, snap.HasApproval, snap.AssayUpToDate)
+	if err := m.db.UpdatePRMergeability(pr.ID, snap.CIPassing && !ciInProgress, snap.IsConflicting, snap.HasUnresolvedThreads, snap.HasPendingReviews, snap.HasApproval, snap.AssayUpToDate); err != nil {
+		log.Printf("[bellows] Failed to persist mergeability for passed-over PR #%d (%s): %v", pr.Number, pr.Anvil, err)
+	}
+	var terminal state.PRStatus
 	switch {
 	case snap.IsMerged:
-		_ = m.db.UpdatePRStatus(pr.ID, state.PRMerged)
+		terminal = state.PRMerged
 	case snap.IsClosed:
-		_ = m.db.UpdatePRStatus(pr.ID, state.PRClosed)
+		terminal = state.PRClosed
 	default:
 		return
 	}
-	delete(seen, key)
+	if err := m.db.UpdatePRStatus(pr.ID, terminal); err != nil {
+		log.Printf("[bellows] Failed to persist %s status for passed-over PR #%d (%s): %v", terminal, pr.Number, pr.Anvil, err)
+		return
+	}
+	m.forgetPR(key)
+}
+
+// forgetPR drops every per-PR entry this monitor holds for key: both
+// suppression markers and the cached snapshot. It is called once a PR is known
+// terminal, which is the moment all three become unreadable — the PR leaves
+// OpenPRs() for good, so keeping them would grow each map by one entry per
+// merged or closed PR for the daemon's lifetime.
+//
+// Both markers go, not only the one belonging to the regime that was
+// suppressing this PR. The two are written by different branches of checkPR and
+// an operator can hand a PR from one to the other: unassigning a detached ext-
+// PR from bellows makes every later poll take the ext-unmanaged branch, which
+// precedes the detached one, so the wasDetached marker is never read again.
+//
+// Dropping the snapshot with them is what makes a reopened PR re-seed. A closed
+// PR can be reopened on GitHub and re-enter OpenPRs(); a snapshot left from
+// before it closed recorded failing CI, conflicts and unresolved threads as
+// already-seen, so the standing problems would never fire as transitions again.
+func (m *Monitor) forgetPR(key string) {
+	delete(m.wasUnmanaged, key)
+	delete(m.wasDetached, key)
+	m.mu.Lock()
+	delete(m.lastStatuses, key)
+	m.mu.Unlock()
 }
 
 // resumeFromSuppression reports whether key was suppressed by the given map on
@@ -1029,6 +1065,9 @@ func (m *Monitor) checkPR(ctx context.Context, pr *state.PR, dailyAssayCost *flo
 		_ = m.db.UpdatePRStatus(pr.ID, state.PRMerged)
 		_ = m.db.LogEvent(state.EventPRMerged, fmt.Sprintf("PR #%d merged", pr.Number), pr.BeadID, pr.Anvil)
 		_ = m.db.CompleteWorkersByBead(pr.BeadID)
+		// Same cleanup the suppressed path does: the PR is terminal, so the
+		// snapshot just written above is the last thing that will ever read it.
+		m.forgetPR(key)
 
 		// Best-effort ingot lifecycle update
 		if err := ingot.UpdateIngotStatus(m.db.Conn(), pr.BeadID, pr.Anvil, ingot.StatusPRMerged); err != nil {
@@ -1070,6 +1109,10 @@ func (m *Monitor) checkPR(ctx context.Context, pr *state.PR, dailyAssayCost *flo
 		_ = m.db.UpdatePRStatus(pr.ID, state.PRClosed)
 		_ = m.db.LogEvent(state.EventPRClosed, fmt.Sprintf("PR #%d closed without merge", pr.Number), pr.BeadID, pr.Anvil)
 		_ = m.db.CompleteWorkersByBead(pr.BeadID)
+		// A closed PR can be reopened, so forgetting it is not just hygiene:
+		// it is what makes the reopened PR re-seed instead of coming back with
+		// every standing problem already marked as seen.
+		m.forgetPR(key)
 
 		// Best-effort ingot lifecycle update
 		if err := ingot.UpdateIngotStatus(m.db.Conn(), pr.BeadID, pr.Anvil, ingot.StatusFailed); err != nil {

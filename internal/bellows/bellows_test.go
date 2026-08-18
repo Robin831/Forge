@@ -2595,9 +2595,10 @@ func TestCheckPR_Detached_PersistsTerminalState(t *testing.T) {
 // TestCheckPR_Suppressed_TerminalPRDropsMarker covers the bookkeeping half of
 // the suppression path. The marker maps exist so the poll after a suppression
 // lifts can re-seed the snapshot; a PR that merges or closes while suppressed
-// never has such a poll — it leaves the open-PR set for good — so its marker is
-// dropped rather than held for the daemon's lifetime. Both maps go through the
-// same helper, and both are checked here.
+// never has such a poll — it leaves the open-PR set for good — so everything
+// held for it is dropped rather than kept for the daemon's lifetime. Both maps
+// go through the same helper, and both are checked here, along with the cached
+// snapshot.
 func TestCheckPR_Suppressed_TerminalPRDropsMarker(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
@@ -2654,9 +2655,109 @@ func TestCheckPR_Suppressed_TerminalPRDropsMarker(t *testing.T) {
 			require.Equal(t, state.PRMerged, updated.Status)
 			assert.Empty(t, tc.marker(m),
 				"a PR that reached a terminal state has no later poll to consume its marker")
+			assert.Empty(t, m.wasUnmanaged, "both markers go: the two maps can drift apart across a regime handoff")
+			assert.Empty(t, m.wasDetached, "both markers go: the two maps can drift apart across a regime handoff")
+			assert.Empty(t, m.lastStatuses, "the snapshot is unreadable once the PR leaves the open-PR set")
 			assert.Empty(t, events, "a suppressed PR must stay silent through its merge")
 		})
 	}
+}
+
+// TestCheckPR_Suppressed_HandoffLeavesNoStaleMarker covers the case that makes
+// the terminal cleanup drop BOTH markers rather than only the one the
+// suppressing branch wrote. An ext- PR that is managed and detached is marked
+// in wasDetached; unassigning it from bellows while it is still detached moves
+// every later poll onto the ext-unmanaged branch, which precedes the detached
+// one — so the wasDetached entry is never read again and its owner never gets
+// to clean it up. The merge is the one moment both are certainly dead.
+func TestCheckPR_Suppressed_HandoffLeavesNoStaleMarker(t *testing.T) {
+	db, cleanup := openTempDB(t)
+	defer cleanup()
+
+	pr := &state.PR{
+		Number:         505,
+		Anvil:          "test-anvil",
+		BeadID:         "ext-handoff",
+		Branch:         "feature/ext-handoff",
+		Status:         state.PROpen,
+		BellowsManaged: true,
+		CreatedAt:      time.Now(),
+	}
+	require.NoError(t, db.InsertPR(pr))
+	require.NoError(t, db.UpdatePRBellowsDetached(pr.ID, true))
+
+	var events []string
+	fake := &fakeVCSProvider{status: &vcs.PRStatus{State: "OPEN"}}
+	m := newDetachTestMonitor(db, fake, &events)
+
+	// Managed + detached: the detached branch suppresses it.
+	m.checkAll(context.Background())
+	require.Len(t, m.wasDetached, 1)
+	require.Empty(t, m.wasUnmanaged)
+
+	// The operator unassigns it from bellows while it is still detached. Every
+	// later poll now takes the ext-unmanaged branch instead.
+	require.NoError(t, db.UpdatePRBellowsManaged(pr.ID, false))
+	m.checkAll(context.Background())
+	require.Len(t, m.wasUnmanaged, 1)
+	require.Len(t, m.wasDetached, 1, "the detached-era marker is now stranded — nothing reads it again")
+
+	fake.status = &vcs.PRStatus{State: "MERGED"}
+	m.checkAll(context.Background())
+
+	updated, err := db.GetPRByID(pr.ID)
+	require.NoError(t, err)
+	require.Equal(t, state.PRMerged, updated.Status)
+	assert.Empty(t, m.wasUnmanaged)
+	assert.Empty(t, m.wasDetached, "the stranded marker must go with the PR, not outlive it")
+	assert.Empty(t, m.lastStatuses)
+	assert.Empty(t, events, "a suppressed PR must stay silent through its merge")
+}
+
+// TestCheckPR_ReopenedPR_ReseedsStandingProblems is the reason the terminal
+// cleanup drops the cached snapshot too. A closed PR can be reopened on GitHub
+// and re-enter the open-PR set; the snapshot taken on the poll that saw it
+// closed recorded its failing CI as already-seen, so keeping it would leave the
+// standing problem sitting there as unchanged state, never fired again.
+func TestCheckPR_ReopenedPR_ReseedsStandingProblems(t *testing.T) {
+	db, cleanup := openTempDB(t)
+	defer cleanup()
+
+	pr := &state.PR{
+		Number:    506,
+		Anvil:     "test-anvil",
+		BeadID:    "forge-reopen",
+		Branch:    "forge/forge-reopen",
+		Status:    state.PROpen,
+		CreatedAt: time.Now(),
+	}
+	require.NoError(t, db.InsertPR(pr))
+	require.NoError(t, db.UpdatePRMergeability(pr.ID, true, false, false, false, false, true))
+
+	failing := []vcs.CheckRun{{Name: "build", Status: "COMPLETED", Conclusion: "FAILURE"}}
+	fake := &fakeVCSProvider{status: &vcs.PRStatus{State: "OPEN", StatusCheckRollup: failing}}
+
+	var events []string
+	m := newDetachTestMonitor(db, fake, &events)
+
+	m.checkAll(context.Background())
+	require.Equal(t, []string{EventCIFailed}, events, "the first poll detects the CI failure")
+
+	// The PR is closed with the failure still standing.
+	fake.status = &vcs.PRStatus{State: "CLOSED", StatusCheckRollup: failing}
+	m.checkAll(context.Background())
+	require.Contains(t, events, EventPRClosed)
+	require.Empty(t, m.lastStatuses, "a terminal PR keeps no snapshot")
+
+	// Reopened on GitHub: reconcileOpenPRs puts it back in the open-PR set.
+	require.NoError(t, db.UpdatePRStatus(pr.ID, state.PROpen))
+	require.NoError(t, db.UpdatePRMergeability(pr.ID, true, false, false, false, false, true))
+	fake.status = &vcs.PRStatus{State: "OPEN", StatusCheckRollup: failing}
+
+	events = nil
+	m.checkAll(context.Background())
+	assert.Contains(t, events, EventCIFailed,
+		"a reopened PR re-seeds, so its standing CI failure fires as a fresh transition")
 }
 
 // TestCheckPR_DetachedResume_ReemitsStandingProblems covers the resume half:

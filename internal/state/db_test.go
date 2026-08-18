@@ -577,7 +577,7 @@ func TestDB_DetachedWorkerLifecycleQueries(t *testing.T) {
 
 	// The orphan sweep: a muted PR still merges, and its row would otherwise be
 	// the one thing left claiming the PR is live.
-	orphans, err := db.OrphanedMonitoringBellowsWorkers()
+	orphans, err := db.OrphanedBellowsWorkers()
 	if err != nil {
 		t.Fatal(err)
 	}

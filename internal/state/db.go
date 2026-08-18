@@ -1682,19 +1682,20 @@ func (db *DB) WorkersByAnvil(anvil string) ([]Worker, error) {
 		ORDER BY started_at DESC`, anvil)
 }
 
-// OrphanedWorkerInfo identifies a bellows monitoring worker whose underlying PR
-// is missing or in a terminal state. PRStatus is empty when no PR row exists.
+// OrphanedWorkerInfo identifies a bellows PR-monitor worker row — monitoring or
+// detached — whose underlying PR is missing or in a terminal state. PRStatus is
+// empty when no PR row exists.
 type OrphanedWorkerInfo struct {
 	WorkerID string
 	PRStatus string
 }
 
-// OrphanedMonitoringBellowsWorkers returns bellows monitor workers whose
+// OrphanedBellowsWorkers returns bellows PR-monitor workers whose
 // underlying PR is missing or already terminal (merged/closed), using a single
 // LEFT JOIN query rather than per-row GetPRByNumber lookups. Detached rows are
 // swept alongside monitoring ones: a muted PR still merges, and its row would
 // otherwise be the one thing left claiming the PR is live.
-func (db *DB) OrphanedMonitoringBellowsWorkers() ([]OrphanedWorkerInfo, error) {
+func (db *DB) OrphanedBellowsWorkers() ([]OrphanedWorkerInfo, error) {
 	rows, err := db.conn.Query(`
 		SELECT w.id, COALESCE(latest.status, '') AS pr_status
 		FROM workers w
@@ -5076,7 +5077,7 @@ func (db *DB) InsertFinding(f Finding) error {
 // actually reviewed the head for the given anvil and PR number — failed runs
 // are excluded, so a head whose only run died (diff fetch failed, every pass
 // errored) is still eligible for a retry rather than silently marked reviewed.
-// Rows written before coverage tracking have status = '' and count as reviewed
+// Rows written before coverage tracking have an empty status and count as reviewed
 // (they were, under the old semantics). Returns "" (no error) when no run
 // exists.
 func (db *DB) LastReviewedSHA(anvil string, prNumber int) (string, error) {

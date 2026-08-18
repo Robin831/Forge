@@ -114,6 +114,52 @@ describe('PipelineBar', () => {
     expect(screen.getByTestId('pipeline-count-ready_to_merge')).toHaveTextContent('0')
   })
 
+  it('keeps a detached bellows monitor on the bar and captions it as muted', () => {
+    // WorkersPane hides bellows monitor rows because their state is surfaced
+    // here, so a detached row dropped by this filter would vanish from the
+    // whole dashboard.
+    const workers: WorkerInfo[] = [
+      worker({
+        id: 'bellows-forge-77',
+        bead_id: 'Forge-dddd',
+        phase: 'bellows',
+        status: 'detached',
+        pr_number: 77,
+      }),
+    ]
+
+    render(<PipelineBar workers={workers} />)
+
+    expect(screen.getByTestId('pipeline-count-pr')).toHaveTextContent('1')
+    expect(screen.getByTestId('pipeline-pr-sublabel')).toHaveTextContent('detached')
+    expect(screen.getByTestId('pipeline-pr-sublabel')).not.toHaveTextContent('monitoring')
+    const row = screen.getByTestId('pipeline-bead-row')
+    expect(within(row).getByTestId('pipeline-bead-detached')).toBeInTheDocument()
+  })
+
+  it('prefers an in-flight fix sub-state over the detached caption', () => {
+    const workers: WorkerInfo[] = [
+      worker({
+        id: 'bellows-forge-78',
+        bead_id: 'Forge-dddd',
+        phase: 'bellows',
+        status: 'detached',
+        pr_number: 78,
+      }),
+      worker({
+        id: 'quench-forge-79',
+        bead_id: 'Forge-eeee',
+        phase: 'quench',
+        status: 'running',
+        pr_number: 79,
+      }),
+    ]
+
+    render(<PipelineBar workers={workers} />)
+
+    expect(screen.getByTestId('pipeline-pr-sublabel')).toHaveTextContent('ci-fix')
+  })
+
   it('renders the Assay pill between the PR and Ready to merge pills', () => {
     render(<PipelineBar workers={[]} />)
 
