@@ -332,6 +332,102 @@ func TestDB_BellowsAssignment(t *testing.T) {
 	}
 }
 
+// TestDB_BellowsDetached exercises the bellows_detached flag (Forge-u8ny). It is
+// a separate axis from bellows_managed / bellows_manually_assigned: a detached PR
+// is "managed but muted", so a reconcile-style rewrite of the managed flags must
+// leave it exactly where the operator put it.
+func TestDB_BellowsDetached(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "forge-state-detach-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+	db, err := Open(filepath.Join(tmpDir, "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	pr := &PR{
+		Number: 77, Anvil: "anvil-1", BeadID: "Forge-abc1",
+		Branch: "forge/Forge-abc1", Status: PROpen, CreatedAt: time.Now(),
+	}
+	if err := db.InsertPR(pr); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := db.GetPRByID(pr.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.BellowsDetached {
+		t.Fatalf("fresh PR should not be detached")
+	}
+	if !got.BellowsManaged {
+		t.Fatalf("fresh forge-authored PR should be bellows-managed")
+	}
+
+	// Detach round-trips through every read path.
+	if err := db.UpdatePRBellowsDetached(pr.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	got, err = db.GetPRByID(pr.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.BellowsDetached {
+		t.Fatalf("expected bellows_detached=true after UpdatePRBellowsDetached(true)")
+	}
+	byNumber, err := db.GetPRByNumber(pr.Anvil, pr.Number)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if byNumber == nil || !byNumber.BellowsDetached {
+		t.Fatalf("GetPRByNumber must report the detached flag")
+	}
+	open, err := db.OpenPRs()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(open) != 1 || !open[0].BellowsDetached {
+		t.Fatalf("OpenPRs must report the detached flag, got %+v", open)
+	}
+
+	// Reconcile rewrites the managed flags on every cycle; the detach must survive.
+	if err := db.UpdatePRBellowsManaged(pr.ID, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.UpdatePRBellowsManaged(pr.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.UpdatePRBellowsAssignment(pr.ID, true, true); err != nil {
+		t.Fatal(err)
+	}
+	got, err = db.GetPRByID(pr.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.BellowsDetached {
+		t.Fatalf("managed-flag rewrites must not clear bellows_detached")
+	}
+
+	// Reattach, and confirm it leaves the managed flags alone.
+	if err := db.UpdatePRBellowsDetached(pr.ID, false); err != nil {
+		t.Fatal(err)
+	}
+	got, err = db.GetPRByID(pr.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.BellowsDetached {
+		t.Fatalf("expected bellows_detached=false after UpdatePRBellowsDetached(false)")
+	}
+	if !got.BellowsManaged || !got.BellowsManuallyAssigned {
+		t.Fatalf("UpdatePRBellowsDetached must not touch the managed flags, got managed=%v manual=%v",
+			got.BellowsManaged, got.BellowsManuallyAssigned)
+	}
+}
+
 func TestDB_QueueCache(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "forge-state-test-*")
 	if err != nil {
