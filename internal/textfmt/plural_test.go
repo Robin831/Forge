@@ -21,15 +21,6 @@ func TestCount(t *testing.T) {
 	}
 }
 
-func TestNoun(t *testing.T) {
-	if got := Noun(1, "worker"); got != "worker" {
-		t.Errorf("Noun(1) = %q, want %q", got, "worker")
-	}
-	if got := Noun(2, "worker"); got != "workers" {
-		t.Errorf("Noun(2) = %q, want %q", got, "workers")
-	}
-}
-
 // Suffix carries the counts the callers actually reach it with: zero is plural
 // ("0 beads"), which is the case a naive `n > 1` would get wrong.
 func TestSuffix(t *testing.T) {

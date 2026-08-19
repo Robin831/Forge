@@ -18,13 +18,7 @@ import "strconv"
 // workers, beads), so an irregular one is a caller writing the two forms out,
 // not a table living here.
 func Count(n int, noun string) string {
-	return strconv.Itoa(n) + " " + Noun(n, noun)
-}
-
-// Noun renders just the noun in the number Count would use, for the callers
-// that already format the count themselves.
-func Noun(n int, noun string) string {
-	return noun + Suffix(n)
+	return strconv.Itoa(n) + " " + noun + Suffix(n)
 }
 
 // Suffix is the plural marker alone — "" or "s" — for format strings that
