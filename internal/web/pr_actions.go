@@ -96,6 +96,30 @@ func (s *Server) handlePRBellows(w http.ResponseWriter, r *http.Request) {
 	s.dispatchPRAction(w, r, "assign_bellows")
 }
 
+// handlePRBellowsDetach handles POST /api/prs/{id}/bellows/detach — mutes
+// Bellows for this PR (the dashboard's half of `forge bellows stop`). The PR
+// stays managed and stays visible; what stops is the automatic work — CI/review
+// /rebase/Assay dispatch — and the fix workers already running for it are
+// killed by the daemon so none of them pushes one more commit to a branch that
+// was just taken off the loop.
+//
+// Unlike assign_bellows this is durable for ext-* rows too: the daemon persists
+// prs.bellows_detached, which reconcile never rewrites, and it refuses outright
+// any PR it cannot resolve rather than reporting a mute it never wrote.
+func (s *Server) handlePRBellowsDetach(w http.ResponseWriter, r *http.Request) {
+	s.dispatchPRAction(w, r, ipc.PRActionDetachBellows)
+}
+
+// handlePRBellowsResume handles POST /api/prs/{id}/bellows/resume — lifts the
+// mute. The daemon clears the flag and drops bellows' cached snapshot, so a
+// problem that outlived the mute is re-detected as a fresh transition instead
+// of being swallowed as state bellows has already seen. Nothing is restarted:
+// resuming re-enables future automatic dispatch, it does not replay what was
+// skipped while the PR was muted.
+func (s *Server) handlePRBellowsResume(w http.ResponseWriter, r *http.Request) {
+	s.dispatchPRAction(w, r, ipc.PRActionReattachBellows)
+}
+
 // handlePRFixCI handles POST /api/prs/{id}/fix-ci — kicks off a quench
 // (CI failure fix) worker against the PR's branch.
 func (s *Server) handlePRFixCI(w http.ResponseWriter, r *http.Request) {

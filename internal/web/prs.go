@@ -32,6 +32,7 @@ type prItemJSON struct {
 	CIPassing       bool   `json:"ci_passing,omitempty"`
 	ReviewsApproved bool   `json:"reviews_approved,omitempty"`
 	BellowsAssigned bool   `json:"bellows_assigned,omitempty"`
+	BellowsDetached bool   `json:"bellows_detached,omitempty"`
 	CIFixCount      int    `json:"ci_fix_count,omitempty"`
 	ReviewFixCount  int    `json:"review_fix_count,omitempty"`
 	RebaseCount     int    `json:"rebase_count,omitempty"`
@@ -121,6 +122,7 @@ func mapPRToJSON(pr state.PR) prItemJSON {
 		CIPassing:       pr.CIPassing,
 		ReviewsApproved: pr.HasApproval,
 		BellowsAssigned: pr.BellowsManaged,
+		BellowsDetached: pr.BellowsDetached,
 		CIFixCount:      pr.CIFixCount,
 		ReviewFixCount:  pr.ReviewFixCount,
 		RebaseCount:     pr.RebaseCount,
@@ -154,7 +156,8 @@ func (s *Server) recentlyMergedPRs(window time.Duration) ([]prItemJSON, error) {
 	cutoff := time.Now().Add(-window).Format("2006-01-02T15:04:05.000000000Z07:00")
 	rows, err := conn.Query(`SELECT id, number, anvil, bead_id, branch, COALESCE(base_branch,''),
 		status, created_at, last_checked, ci_fix_count, review_fix_count, rebase_count,
-		ci_passing, is_conflicting, has_approval, COALESCE(title,''), bellows_managed
+		ci_passing, is_conflicting, has_approval, COALESCE(title,''), bellows_managed,
+		bellows_detached
 		FROM prs
 		WHERE status = 'merged' AND last_checked IS NOT NULL AND last_checked >= ?
 		ORDER BY last_checked DESC, id DESC
@@ -173,10 +176,11 @@ func (s *Server) recentlyMergedPRs(window time.Duration) ([]prItemJSON, error) {
 			lastChecked                                      sql.NullString
 			ciFix, reviewFix, rebase                         int
 			ciPassing, conflicting, approved, bellowsManaged int
+			bellowsDetached                                  int
 		)
 		if err := rows.Scan(&id, &number, &anvil, &beadID, &branch, &base, &status, &createdAt,
 			&lastChecked, &ciFix, &reviewFix, &rebase, &ciPassing, &conflicting,
-			&approved, &title, &bellowsManaged); err != nil {
+			&approved, &title, &bellowsManaged, &bellowsDetached); err != nil {
 			s.logger.Warn("recently merged PR row scan failed", "error", err)
 			continue
 		}
@@ -194,6 +198,7 @@ func (s *Server) recentlyMergedPRs(window time.Duration) ([]prItemJSON, error) {
 			CIPassing:       ciPassing != 0,
 			ReviewsApproved: approved != 0,
 			BellowsAssigned: bellowsManaged != 0,
+			BellowsDetached: bellowsDetached != 0,
 			CIFixCount:      ciFix,
 			ReviewFixCount:  reviewFix,
 			RebaseCount:     rebase,
