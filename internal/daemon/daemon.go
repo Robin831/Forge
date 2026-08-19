@@ -65,6 +65,7 @@ import (
 	"github.com/Robin831/Forge/internal/smith"
 	"github.com/Robin831/Forge/internal/state"
 	"github.com/Robin831/Forge/internal/temper"
+	"github.com/Robin831/Forge/internal/textfmt"
 	"github.com/Robin831/Forge/internal/vcs"
 	"github.com/Robin831/Forge/internal/vcs/github"
 	"github.com/Robin831/Forge/internal/vulncheck"
@@ -5890,7 +5891,7 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 				d.logger.Debug("status: drain worker lookup failed", "error", err)
 			}
 			if n := len(draining); n > 0 {
-				waiting := fmt.Sprintf("waiting on %d worker%s", n, pluralS(n))
+				waiting := fmt.Sprintf("waiting on %d worker%s", n, textfmt.Suffix(n))
 				if pause.Detail != "" {
 					waiting += ", " + pause.Detail
 				}

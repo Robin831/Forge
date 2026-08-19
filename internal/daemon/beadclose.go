@@ -9,6 +9,7 @@ import (
 
 	"github.com/Robin831/Forge/internal/executil"
 	"github.com/Robin831/Forge/internal/state"
+	"github.com/Robin831/Forge/internal/textfmt"
 )
 
 // beadCloseAttentionPrefix marks the retries.last_error of a needs-attention
@@ -266,11 +267,7 @@ func (d *Daemon) beadCloseAttentionMessage(beadID string, prNumber, dependents i
 	if !dependentsKnown {
 		return fmt.Sprintf("merged but unclosed bead %s (PR #%d)", beadID, prNumber)
 	}
-	plural := "dependents"
-	if dependents == 1 {
-		plural = "dependent"
-	}
-	return fmt.Sprintf("merged but unclosed bead %s (PR #%d) blocking %d %s", beadID, prNumber, dependents, plural)
+	return fmt.Sprintf("merged but unclosed bead %s (PR #%d) blocking %s", beadID, prNumber, textfmt.Count(dependents, "dependent"))
 }
 
 // finishPendingBeadClose drops the pending row and clears the needs-attention

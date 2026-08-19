@@ -9,6 +9,7 @@ import (
 
 	"github.com/Robin831/Forge/internal/forgechat"
 	"github.com/Robin831/Forge/internal/state"
+	"github.com/Robin831/Forge/internal/textfmt"
 )
 
 // Beads-Forge bead-emission handlers.
@@ -244,7 +245,7 @@ func (s *Server) persistEmissionSuccess(
 		return nil, fmt.Errorf("append beads_created message: %w", err)
 	}
 
-	statusContent := fmt.Sprintf("Created %d bead%s from this session.", len(mres.Created), plural(len(mres.Created)))
+	statusContent := fmt.Sprintf("Created %d bead%s from this session.", len(mres.Created), textfmt.Suffix(len(mres.Created)))
 	statusMsg, err := s.db.AppendForgeSessionMessage(state.ForgeSessionMessage{
 		SessionID: sessionID,
 		Role:      state.ForgeMessageRoleSystem,
@@ -267,7 +268,7 @@ func buildEmissionSuccessMessage(summary string, mres forgechat.MaterializeResul
 		b.WriteString(s)
 		b.WriteString("\n\n")
 	}
-	b.WriteString(fmt.Sprintf("Created %d bead%s:\n", len(mres.Created), plural(len(mres.Created))))
+	b.WriteString(fmt.Sprintf("Created %d bead%s:\n", len(mres.Created), textfmt.Suffix(len(mres.Created))))
 	for _, mb := range mres.Created {
 		fmt.Fprintf(&b, "- %s (%s) — %s\n", mb.BeadID, mb.Anvil, mb.Title)
 	}
@@ -287,7 +288,7 @@ func buildEmissionFailureStatus(mres forgechat.MaterializeResult) string {
 		if len(mres.Created) == 0 {
 			b.WriteString("\n\nNothing was created — no rollback needed.")
 		} else {
-			fmt.Fprintf(&b, "\n\nRolled back %d previously-created bead%s.", len(mres.Created), plural(len(mres.Created)))
+			fmt.Fprintf(&b, "\n\nRolled back %d previously-created bead%s.", len(mres.Created), textfmt.Suffix(len(mres.Created)))
 			if mres.RollbackError != nil {
 				fmt.Fprintf(&b, " Rollback was incomplete: %s", mres.RollbackError.Error())
 			}
@@ -305,11 +306,4 @@ func toHints(anvils map[string]string) map[string]string {
 		out[name] = path
 	}
 	return out
-}
-
-func plural(n int) string {
-	if n == 1 {
-		return ""
-	}
-	return "s"
 }

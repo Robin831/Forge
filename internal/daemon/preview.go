@@ -16,6 +16,7 @@ import (
 	"github.com/Robin831/Forge/internal/questgiver"
 	"github.com/Robin831/Forge/internal/state"
 	"github.com/Robin831/Forge/internal/termtext"
+	"github.com/Robin831/Forge/internal/textfmt"
 	"github.com/Robin831/Forge/internal/worktree"
 )
 
@@ -1045,10 +1046,7 @@ func previewResourceNote(rec state.Preview) string {
 			ports = append(ports, strconv.Itoa(svc.Port))
 		}
 	}
-	note := fmt.Sprintf("%d service", len(rec.Services))
-	if len(rec.Services) != 1 {
-		note += "s"
-	}
+	note := textfmt.Count(len(rec.Services), "service")
 	if len(ports) == 0 {
 		return note + ", no ports allocated"
 	}

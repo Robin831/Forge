@@ -9,12 +9,12 @@ import (
 	"log"
 	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
 
 	"github.com/Robin831/Forge/internal/executil"
+	"github.com/Robin831/Forge/internal/textfmt"
 )
 
 // previewQuestMarkerPrefix opens the hidden HTML comment that identifies the
@@ -347,9 +347,9 @@ func questHeadline(passed, failed int) string {
 	case passed+failed == 0:
 		return "Preview E2E quests — no quests ran"
 	case failed == 0:
-		return fmt.Sprintf("Preview E2E quests — %s passed", plural(passed, "quest"))
+		return fmt.Sprintf("Preview E2E quests — %s passed", textfmt.Count(passed, "quest"))
 	case passed == 0:
-		return fmt.Sprintf("Preview E2E quests — %s failed", plural(failed, "quest"))
+		return fmt.Sprintf("Preview E2E quests — %s failed", textfmt.Count(failed, "quest"))
 	default:
 		return fmt.Sprintf("Preview E2E quests — %d passed, %d failed", passed, failed)
 	}
@@ -506,14 +506,6 @@ func shortSHA(sha string) string {
 		return sha[:7]
 	}
 	return sha
-}
-
-// plural renders "1 quest" / "3 quests".
-func plural(n int, noun string) string {
-	if n == 1 {
-		return strconv.Itoa(n) + " " + noun
-	}
-	return strconv.Itoa(n) + " " + noun + "s"
 }
 
 // defaultGhCommentExec is the production ghCommentExec: it shells out to gh in

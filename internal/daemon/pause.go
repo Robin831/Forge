@@ -92,12 +92,3 @@ func (d *Daemon) pauseForSelfDeploy(maxDrainWait time.Duration) func(restartRequ
 		}
 	}
 }
-
-// pluralS returns the plural suffix for a count, for status strings like
-// "waiting on 2 workers".
-func pluralS(n int) string {
-	if n == 1 {
-		return ""
-	}
-	return "s"
-}
