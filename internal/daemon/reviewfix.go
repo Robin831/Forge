@@ -110,6 +110,10 @@ func (d *Daemon) recordReviewFixOutcome(req lifecycle.ActionRequest, res *burnis
 	}
 	var outcome string
 	switch {
+	case res.RateLimited:
+		// The dispatch never ran a fix; the attempt itself is taken back by
+		// UndoReviewFixDispatch, this tag just records why the row moved.
+		outcome = state.ReviewFixResultRateLimited
 	case res.UnpushedHead != "":
 		outcome = state.ReviewFixResultPreserved
 	case res.Unverified:

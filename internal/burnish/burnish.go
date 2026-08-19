@@ -143,6 +143,11 @@ type FixResult struct {
 	// commit exists only in the worktree, so the caller must preserve that
 	// worktree and surface the SHA rather than tearing it down.
 	UnpushedHead string
+	// RateLimited is true when every configured provider rejected the session
+	// as rate limited, so no fix work even started. Error is set as well, but
+	// callers must treat this dispatch as "never happened" — it says nothing
+	// about the PR and must not consume any attempt budget.
+	RateLimited bool
 }
 
 // BatchFixParams holds the inputs for a batched review fix attempt.
@@ -269,6 +274,7 @@ func BatchFix(ctx context.Context, p BatchFixParams) *FixResult {
 	}
 
 	if smithResult.RateLimited {
+		result.RateLimited = true
 		result.Error = fmt.Errorf("all providers (%d) are rate limited", len(providers))
 		if p.DB != nil {
 			_ = p.DB.LogEvent(state.EventBurnishFailed,
@@ -613,6 +619,7 @@ func Fix(ctx context.Context, p FixParams) *FixResult {
 			_ = p.DB.LogEvent(state.EventBurnishSmithError,
 				fmt.Sprintf("PR #%d attempt %d: rate_limited (all %d providers exhausted)", p.PRNumber, attempt, len(providers)),
 				p.BeadID, p.AnvilName)
+			result.RateLimited = true
 			result.Error = fmt.Errorf("all providers (%d) are rate limited", len(providers))
 			result.Duration = time.Since(start)
 			return result

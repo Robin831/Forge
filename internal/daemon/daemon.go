@@ -188,6 +188,15 @@ type Daemon struct {
 	// max_total_smiths dispatch cap (see state.ActiveDispatchWorkers), so they
 	// need this independent ceiling.
 	lifecycleActive atomic.Int64
+
+	// providerHoldUntil is the UnixNano deadline of the global rate-limit
+	// hold: while set and in the future, all automatic AI dispatch (new bead
+	// pipelines, CI/review fixes, Assay reviews) is deferred. It is armed by
+	// any worker observing that EVERY configured provider is rate limited —
+	// a session-wide condition, so per-PR retries elsewhere would only burn
+	// their attempt budgets against the same wall. Zero means no hold.
+	// Manual (IsManual) actions bypass it.
+	providerHoldUntil atomic.Int64
 	lifecycleCond   *sync.Cond
 
 	// PR Monitoring (Bellows)
@@ -2072,8 +2081,75 @@ func (d *Daemon) dispatchLifecycleAction(req lifecycle.ActionRequest) {
 }
 
 // handleLifecycleAction handles PR-triggered fixes from Bellows.
+// setProviderHold arms (or extends) the global rate-limit hold for the
+// configured rate_limit_backoff. Returns the hold deadline. The hold only
+// ever moves forward: concurrent workers reporting the same limit extend it
+// rather than shortening it.
+func (d *Daemon) setProviderHold(source, beadID, anvil string) time.Time {
+	backoff := d.cfg.Load().Settings.RateLimitBackoff
+	if backoff <= 0 {
+		backoff = 5 * time.Minute
+	}
+	until := time.Now().Add(backoff)
+	for {
+		cur := d.providerHoldUntil.Load()
+		if cur >= until.UnixNano() {
+			return time.Unix(0, cur)
+		}
+		if d.providerHoldUntil.CompareAndSwap(cur, until.UnixNano()) {
+			break
+		}
+	}
+	d.logger.Warn("all providers rate limited — holding AI dispatch",
+		"source", source, "backoff", backoff, "until", until.Format("15:04:05"))
+	_ = d.db.LogEvent(state.EventRateLimited,
+		fmt.Sprintf("all providers rate limited (%s) — holding AI dispatch until %s",
+			source, until.Format("2006-01-02 15:04:05 MST")),
+		beadID, anvil)
+	return until
+}
+
+// providerHold reports whether the global rate-limit hold is active and, if
+// so, when it expires.
+func (d *Daemon) providerHold() (time.Time, bool) {
+	ns := d.providerHoldUntil.Load()
+	if ns == 0 || time.Now().UnixNano() >= ns {
+		return time.Time{}, false
+	}
+	return time.Unix(0, ns), true
+}
+
 func (d *Daemon) handleLifecycleAction(ctx context.Context, req lifecycle.ActionRequest) {
 	d.logger.Info("lifecycle action requested", "action", req.Action, "pr", req.PRNumber, "bead", req.BeadID)
+
+	// While the global rate-limit hold is active, every provider is rejecting
+	// sessions, so a fix/review worker would fail instantly without doing any
+	// work. Defer instead: take back the attempt HandleEvent just counted,
+	// clear the in-flight flags, and reset the bellows snapshot so the same
+	// event re-emits on the first poll after the hold expires. Manual actions
+	// bypass the hold — an operator override outranks the backoff.
+	if !req.IsManual {
+		switch req.Action {
+		case lifecycle.ActionFixCI, lifecycle.ActionFixReview, lifecycle.ActionAssayReview:
+			if until, held := d.providerHold(); held {
+				d.logger.Info("provider rate-limit hold active, deferring lifecycle action",
+					"action", req.Action, "pr", req.PRNumber, "bead", req.BeadID,
+					"until", until.Format("15:04:05"))
+				switch req.Action {
+				case lifecycle.ActionFixCI:
+					d.lifecycleMgr.UncountCIFix(req.Anvil, req.PRNumber)
+					d.lifecycleMgr.NotifyCIFixCompleted(req.Anvil, req.PRNumber)
+				case lifecycle.ActionFixReview:
+					d.lifecycleMgr.UncountReviewFix(req.Anvil, req.PRNumber)
+					d.lifecycleMgr.NotifyReviewFixCompleted(req.Anvil, req.PRNumber)
+				}
+				if d.bellowsMonitor != nil {
+					d.bellowsMonitor.ResetPRState(req.Anvil, req.PRNumber)
+				}
+				return
+			}
+		}
+	}
 
 	// If there's no bead ID, fall back to the PR number as the worktree/lock
 	// key (e.g. warden-learn PRs). Both Bellows-triggered and manual actions
@@ -2337,6 +2413,12 @@ func (d *Daemon) handleLifecycleAction(ctx context.Context, req lifecycle.Action
 				status = state.WorkerFailed
 			}
 			_ = d.db.UpdateWorkerStatus(workerID, status)
+			if res != nil && res.RateLimited {
+				// No fix ran; give the attempt back and hold further AI
+				// dispatch instead of retrying into the same wall.
+				d.setProviderHold("ci fix", req.BeadID, req.Anvil)
+				d.lifecycleMgr.UncountCIFix(req.Anvil, req.PRNumber)
+			}
 			// Always notify lifecycle that the CI fix cycle has completed so it
 			// can reset any suppression state and allow future CI-failure
 			// detection to trigger additional attempts as needed.
@@ -2451,6 +2533,17 @@ func (d *Daemon) handleLifecycleAction(ctx context.Context, req lifecycle.Action
 				status = state.WorkerFailed
 			}
 			_ = d.db.UpdateWorkerStatus(workerID, status)
+			if res != nil && res.RateLimited {
+				// No fix ran; give both counters back (the lifecycle budget
+				// and the same-head breaker attempt) and hold further AI
+				// dispatch instead of retrying into the same wall.
+				d.setProviderHold("review fix", req.BeadID, req.Anvil)
+				d.lifecycleMgr.UncountReviewFix(req.Anvil, req.PRNumber)
+				if err := d.db.UndoReviewFixDispatch(req.Anvil, req.PRNumber); err != nil {
+					d.logger.Warn("failed to undo review fix dispatch bookkeeping",
+						"pr", req.PRNumber, "anvil", req.Anvil, "error", err)
+				}
+			}
 			d.recordReviewFixOutcome(req, res)
 			// Always notify lifecycle the review-fix cycle has finished and
 			// clear the bellows snapshot, regardless of outcome. The earlier
@@ -3630,6 +3723,16 @@ func (d *Daemon) pollAndDispatch(ctx context.Context, fullPoll bool) {
 		return
 	}
 
+	// Global rate-limit hold: every provider is rejecting sessions, so a new
+	// Smith would fail on its first turn and burn a dispatch attempt. Skip the
+	// whole cycle; the hold expires on its own and the next poll dispatches
+	// normally. Manual `forge queue run` is unaffected (run_bead path).
+	if until, held := d.providerHold(); held {
+		d.logger.Info("provider rate-limit hold active, skipping dispatch",
+			"until", until.Format("15:04:05"))
+		return
+	}
+
 	// Check daily cost limit before dispatching new work. The gate projects
 	// in-flight (not-yet-recorded) spend on top of the recorded daily total —
 	// the sum of active workers' reservations plus one per-worker estimate for
@@ -4435,6 +4538,9 @@ normalPipeline:
 				backoff = 5 * time.Minute
 			}
 			retryAt := time.Now().Add(backoff)
+			// Arm the global hold too: the limit is session-wide, so fix
+			// workers and further Smith dispatches would hit the same wall.
+			d.setProviderHold("bead pipeline", bead.ID, bead.Anvil)
 			d.logger.Warn("all providers rate limited; bead released to open, backing off",
 				"bead", bead.ID, "backoff", backoff)
 			_ = d.db.LogEvent(state.EventRateLimited,
