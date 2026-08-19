@@ -616,11 +616,17 @@ off the loop.
 **What detaching does not stop.** The PR's mergeability and terminal state are
 still refreshed every poll: a muted PR is unwatched, not unknown, so the PR
 panel keeps telling the truth and a detached PR that merges is recorded as
-merged instead of being polled forever. The post-merge bookkeeping (closing the
-bead, cleanup) still runs — a merged bead left open blocks its dependents.
-Manual verbs are also unaffected: `forge assay run`, `forge queue run` and the
-dashboard's own fix buttons still run a single pass by hand on a muted PR.
-Detach means "stop automatic work", not "brick the PR".
+merged instead of being polled forever. What is *not* re-emitted while detached
+is the post-merge bookkeeping: Bellows returns before the branch that dispatches
+the bead close and worktree cleanup, so a PR that merges under a mute has the
+merge recorded but leaves its bead open — and an open bead blocks its
+dependents. Those two actions are the ones the detach gate deliberately still
+*permits*, so a close already queued before the detach, a manual `forge queue`
+close, or simply re-attaching gets the bookkeeping done; a long mute over a
+merged PR wants one of the three. Manual verbs in general are unaffected:
+`forge assay run`, `forge queue run` and the dashboard's own fix buttons still
+run a single pass by hand on a muted PR. Detach means "stop automatic work", not
+"brick the PR".
 
 **Resuming.** Re-attaching clears the flag and drops Bellows' cached snapshot
 for the PR, so failing CI, conflicts and unresolved threads that outlived the
@@ -632,8 +638,9 @@ While a PR is detached its `bellows-<anvil>-<n>` monitor row stays in the
 Workers panel carrying the `detached` status (Hearth marks it `⊘`) rather than
 disappearing, so a mute is visible instead of looking like a lost monitor.
 
-**Surfaces.** The assignment pair is reachable from the dashboard's PR rows
-today. The detach pair currently exists as the `detach_bellows` /
+**Surfaces.** Of the assignment pair, only `assign_bellows` has a surface: it is
+reachable from the dashboard's PR rows and from Hearth's PR menu. Un-assigning
+is an IPC verb only. The detach pair likewise exists as the `detach_bellows` /
 `reattach_bellows` `pr_action` verbs on the IPC socket only; the `forge bellows
 stop` / `forge bellows resume` CLI commands, the Hearth PR-menu items and the
 web route that wrap them are not implemented yet, and this section will name
