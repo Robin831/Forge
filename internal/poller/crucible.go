@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/Robin831/Forge/internal/epic"
 	"github.com/Robin831/Forge/internal/executil"
 )
 
@@ -65,8 +66,18 @@ func ResolveBlocks(ctx context.Context, beads []Bead, anvilPaths map[string]stri
 }
 
 // bdShowDependent represents a single entry in the "dependents" array
-// returned by `bd show --json`. Only entries with dependency_type "blocks"
-// indicate children of the bead.
+// returned by `bd show --json`. Only entries whose dependency_type
+// isChildDependency accepts ("blocks" or "parent-child") indicate children of
+// the bead.
+//
+// It deliberately carries no Labels field. A dependents entry is an edge
+// summary, not a bead record: `bd show --json` (verified against bd 1.1.2)
+// reports id, title, status, priority, issue_type, timestamps and
+// dependency_type there, and nothing else — labels appear only on a bead's own
+// top-level record. Reading dep.Labels would therefore have been permanently
+// nil, making the "independent" opt-out silently inert on exactly the two paths
+// that decide whether a parent still has an epic to orchestrate. The labels are
+// resolved by a second lookup instead (resolveIndependent).
 type bdShowDependent struct {
 	ID             string `json:"id"`
 	DependencyType string `json:"dependency_type"`
@@ -89,6 +100,10 @@ type bdShowResponse struct {
 // unrelated dependency also produces. Deciding an epic has nothing left to
 // orchestrate needs the wider answer, and only bd has it.
 //
+// Children that opted out of the epic ("independent") are not counted: their
+// work never lands on the parent's feature branch, so an open one says nothing
+// about whether the epic still has something to orchestrate.
+//
 // An error is returned rather than an empty slice when bd cannot be reached:
 // "no children" and "cannot tell" lead to opposite decisions.
 func OpenChildren(ctx context.Context, beadID, anvilPath string) ([]string, error) {
@@ -103,15 +118,17 @@ func OpenChildren(ctx context.Context, beadID, anvilPath string) ([]string, erro
 		return nil, fmt.Errorf("bd show %s: %w: %s", beadID, err, strings.TrimSpace(stderr.String()))
 	}
 
-	open, err := parseOpenChildren(output)
+	candidates, err := parseOpenChildren(output)
 	if err != nil {
 		return nil, fmt.Errorf("parsing bd show %s: %w", beadID, err)
 	}
-	return open, nil
+	return dropIndependent(ctx, candidates, anvilPath), nil
 }
 
 // parseOpenChildren is OpenChildren minus the subprocess: the filtering of one
-// `bd show --json` payload down to the not-yet-closed children.
+// `bd show --json` payload down to the not-yet-closed children. The per-child
+// opt-out is NOT applied here — it needs labels this payload does not carry, so
+// OpenChildren applies it afterwards via dropIndependent.
 //
 // It is separate because both filters encode an assumption about bd's output
 // that only a test can hold still. The dependency-type filter is what keeps a
@@ -121,7 +138,10 @@ func OpenChildren(ctx context.Context, beadID, anvilPath string) ([]string, erro
 // in Forge (beadclose.go, the merge reconciler). If bd ever reports a finished
 // child as something else, an epic whose work is done would be held on every
 // poll instead of dispatching, so the vocabulary is pinned in a test rather
-// than assumed.
+// than assumed. Both halves of it — isChildDependency and isClosedStatus — are
+// shared with lookupBlocks, so neither the set of edges that makes a dependent
+// a child nor the status that makes it finished can be read one way by one
+// reader of this payload and another way by the other.
 //
 // Malformed output is an error, never an empty slice: the caller reads "no
 // children" as permission to merge the parent to main.
@@ -133,10 +153,10 @@ func parseOpenChildren(output []byte) ([]string, error) {
 
 	var open []string
 	for _, dep := range resp.Dependents {
-		if dep.DependencyType != "blocks" && dep.DependencyType != "parent-child" {
+		if !isChildDependency(dep.DependencyType) {
 			continue
 		}
-		if strings.EqualFold(strings.TrimSpace(dep.Status), "closed") {
+		if isClosedStatus(dep.Status) {
 			continue
 		}
 		open = append(open, dep.ID)
@@ -144,7 +164,41 @@ func parseOpenChildren(output []byte) ([]string, error) {
 	return open, nil
 }
 
+// isClosedStatus reads bd's one terminal status, trimmed and case-insensitively.
+// Both readers of a dependents payload call it: lookupBlocks used to compare
+// `!= "closed"` verbatim while parseOpenChildren folded and trimmed, so a
+// dependent reported as "Closed" was a child to one gate and not to the other —
+// the same per-path divergence the label normalisation exists to prevent.
+func isClosedStatus(status string) bool {
+	return strings.EqualFold(strings.TrimSpace(status), "closed")
+}
+
+// isChildDependency reads the dependency types that make a dependents entry a
+// child. It is the other half of the shared vocabulary, and for the same
+// reason: lookupBlocks used to count only "blocks" while parseOpenChildren
+// counted "blocks" and "parent-child", so a family linked purely by
+// parent-child edges was held open by OpenChildren (the parent escalates rather
+// than dispatching) while its Blocks stayed empty — IsCrucibleCandidate never
+// fired, and the epic could not orchestrate its way out of the hold. The wider
+// pair is the correct one at both sites: it is what pollAnvil reconstructs
+// Blocks from when child and parent are in the same poll batch, so the fallback
+// lookup now answers the way the batch path already did.
+//
+// "depends_on" is deliberately excluded at every site: it is a sequencing
+// constraint, and reading it as a child edge would have the Crucible adopt
+// downstream beads.
+func isChildDependency(depType string) bool {
+	return depType == "blocks" || depType == "parent-child"
+}
+
 // lookupBlocks fetches a bead's details and extracts the IDs of beads it blocks.
+//
+// Children that opted out of the epic ("independent") are excluded: Blocks is
+// what every orchestration gate reads as "children to orchestrate"
+// (IsCrucibleCandidate, crucibleOwnedChildren, the Crucible's own child count),
+// and an opted-out child is none of those — the same exclusion pollAnvil applies
+// when it rebuilds Blocks from a poll batch. The labels come from a second
+// lookup rather than from the dependents payload, which does not carry them.
 func lookupBlocks(ctx context.Context, beadID, anvilPath string) []string {
 	cmd, cancel := executil.BdCommand(ctx, "show", beadID, "--json")
 	defer cancel()
@@ -169,11 +223,132 @@ func lookupBlocks(ctx context.Context, beadID, anvilPath string) []string {
 
 	var blocks []string
 	for _, dep := range resp.Dependents {
-		if dep.DependencyType == "blocks" && dep.Status != "closed" {
+		if isChildDependency(dep.DependencyType) && !isClosedStatus(dep.Status) {
 			blocks = append(blocks, dep.ID)
 		}
 	}
-	return blocks
+	return dropIndependent(ctx, blocks, anvilPath)
+}
+
+// dropIndependent removes the children that carry the "independent" label from
+// a list of child IDs read out of a `bd show` dependents array.
+//
+// It exists because that array is an edge summary: bd reports a dependent's id,
+// title, status, priority, issue_type and dependency_type — never its labels,
+// which live only on a bead's own record. Both readers of the array
+// (parseOpenChildren via OpenChildren, and lookupBlocks) therefore have to ask
+// bd a second time, and they ask through this one function so the two cannot
+// answer the question differently. crucible.FetchChildren needs no equivalent:
+// it already fetches each child's own record and reads the labels off it.
+//
+// The lookup is one subprocess for the whole list — `bd show a b c --json`
+// returns an array of full records — so a parent with children costs one extra
+// bd call per poll and a bead with none costs nothing.
+//
+// A child whose labels cannot be read is kept, which is the conservative
+// direction at both call sites and is why the two can share this function: for
+// OpenChildren keeping it holds the parent for an operator rather than closing
+// an epic whose children are still open, and for lookupBlocks keeping it leaves
+// the parent a Crucible candidate rather than dropping a child that was never
+// opted out. Neither error path can invent an opt-out that was not there.
+func dropIndependent(ctx context.Context, childIDs []string, anvilPath string) []string {
+	if len(childIDs) == 0 {
+		return childIDs
+	}
+
+	independent, err := resolveIndependent(ctx, childIDs, anvilPath)
+	if err != nil {
+		log.Printf("dropIndependent: cannot read labels for %v: %v (treating them as ordinary children)", childIDs, err)
+		return childIDs
+	}
+
+	kept := make([]string, 0, len(childIDs))
+	for _, id := range childIDs {
+		if independent[id] {
+			continue
+		}
+		kept = append(kept, id)
+	}
+	if len(kept) == 0 {
+		return nil
+	}
+	return kept
+}
+
+// resolveIndependent reads the labels of each named bead from its own record and
+// reports which of them carry the "independent" opt-out.
+//
+// `bd show` takes several ids and answers with an array of records, so this is
+// one subprocess however many children there are. A bead missing from the answer
+// is absent from the map and so counts as an ordinary child — the same
+// conservative direction dropIndependent takes for an outright failure.
+//
+// The ids are passed positionally and are values Forge did not write (they come
+// out of a dolt database that syncs through the git remote), so an id that would
+// be read as a flag is dropped from the query rather than handed to bd. Dropping
+// it lands in the same conservative direction: it is simply not reported as
+// independent. bd's own ids cannot take that shape.
+func resolveIndependent(ctx context.Context, beadIDs []string, anvilPath string) (map[string]bool, error) {
+	args := make([]string, 0, len(beadIDs)+2)
+	args = append(args, "show")
+	for _, id := range beadIDs {
+		if id == "" || strings.HasPrefix(id, "-") {
+			continue
+		}
+		args = append(args, id)
+	}
+	if len(args) == 1 {
+		return map[string]bool{}, nil
+	}
+	args = append(args, "--json")
+
+	cmd, cancel := executil.BdCommand(ctx, args...)
+	defer cancel()
+	cmd.Dir = anvilPath
+
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	output, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("bd show %s: %w: %s", strings.Join(beadIDs, " "), err, strings.TrimSpace(stderr.String()))
+	}
+	return parseIndependent(output)
+}
+
+// parseIndependent is resolveIndependent minus the subprocess: the reading of a
+// `bd show <ids...> --json` payload down to "which of these opted out".
+//
+// bd answers a multi-id show with a JSON array, and a single-id show with an
+// array of one — unwrapJSONArray is no help here (it collapses to the first
+// element), so the array form is decoded as an array and a bare object is
+// accepted as the one-element case.
+func parseIndependent(output []byte) (map[string]bool, error) {
+	type record struct {
+		ID     string   `json:"id"`
+		Labels []string `json:"labels"`
+	}
+
+	trimmed := bytes.TrimSpace(output)
+	var records []record
+	if len(trimmed) > 0 && trimmed[0] == '[' {
+		if err := json.Unmarshal(trimmed, &records); err != nil {
+			return nil, err
+		}
+	} else {
+		var one record
+		if err := json.Unmarshal(trimmed, &one); err != nil {
+			return nil, err
+		}
+		records = []record{one}
+	}
+
+	out := make(map[string]bool, len(records))
+	for _, r := range records {
+		if r.ID != "" && epic.IsIndependent(r.Labels) {
+			out[r.ID] = true
+		}
+	}
+	return out, nil
 }
 
 // unwrapJSONArray strips a wrapping JSON array if the output is `[{...}]`,

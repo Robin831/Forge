@@ -12,6 +12,14 @@
 //
 // Children of a parent that has not opted in dispatch as ordinary standalone
 // beads — worktree from main, PR to main — with their bd relations untouched.
+//
+// The opt-out is per child: a child carrying the "independent" label is left
+// out of its parent's epic even when the parent did opt in, so one bead of a
+// family can go straight to main while its siblings share the feature branch.
+// Carrying both an opt-in and the opt-out on one bead is a contradiction rather
+// than a composition, and it resolves toward "independent" — see IsOrchestrated
+// for why, and for the mid-flight hazard of adding the opt-out to a parent whose
+// Crucible has already started.
 package epic
 
 import "strings"
@@ -21,6 +29,21 @@ const (
 	// children to be routed through a shared branch and for the Crucible to
 	// orchestrate it.
 	CrucibleLabel = "crucible"
+
+	// IndependentLabel carves a single child out of an orchestrated epic. A
+	// child carrying it is not claimed by its parent's Crucible, is not stamped
+	// with the epic branch, and is not counted as part of the epic's
+	// feature-branch deliverable: its work lands on main through its own PR,
+	// like any standalone bead.
+	//
+	// It is the mirror image of CrucibleLabel — the parent opts the family in,
+	// a child opts itself back out — and it is inert on a bead that neither
+	// opts in itself nor has an opted-in parent, since such a bead is already
+	// independent. On a bead that carries an opt-in of its own it is very much
+	// active: IsOrchestrated resolves the contradiction toward "independent",
+	// demoting an orchestrating parent to an ordinary bead. See the hazard note
+	// on IsOrchestrated before adding it to a parent.
+	IndependentLabel = "independent"
 
 	// BranchLabelPrefix names an epic's shared branch explicitly. A label
 	// "epic-branch:feature/depcheck" means the epic uses "feature/depcheck".
@@ -43,12 +66,72 @@ const (
 // IsOrchestrated reports whether a bead's labels opt it into epic
 // orchestration. Only the "crucible" label or an "epic-branch:<name>" label
 // qualify; issue type is not consulted.
+//
+// The "independent" label wins over both when one bead carries the two: an
+// opt-in and an opt-out on the same bead is a contradiction, and resolving it
+// toward "independent" is the only reading that leaves the family consistent.
+// A parent read as orchestrating while its own dispatch path treats it as
+// independent would run to main as an ordinary bead while its children were
+// still stamped with a feature branch nothing then creates — the exact failure
+// the opt-in change exists to prevent.
+//
+// The two labels describe different relationships — "crucible" points down at a
+// bead's children, "independent" points up at its parent — so they can be meant
+// together: a sub-epic sequencing its own children while being carved out of the
+// epic above it. That composition is deliberately NOT supported, because nothing
+// below this package is scoped per edge: a bead is orchestrated or it is not, and
+// the two answers have to be the same one at every gate. Carrying both is
+// therefore read as a mistake and reported as one — HasConflictingLabels is what
+// the poller uses to WARN about it by name, so an operator learns the opt-in went
+// inert here rather than from children merging to main out of order.
+//
+// HAZARD, adding "independent" to a parent mid-flight: the demotion takes effect
+// immediately and does not unwind anything. A parent whose Crucible has already
+// merged child PRs onto feature/<parent-id> will, from the next poll, dispatch an
+// ordinary pipeline to main — and that feature branch, with merged child work on
+// it, is orphaned: no final PR is ever created for it. The opt-out on a parent is
+// only safe before orchestration starts. On a child it is safe at any time.
 func IsOrchestrated(labels []string) bool {
+	if IsIndependent(labels) {
+		return false
+	}
 	for _, label := range labels {
 		if strings.EqualFold(strings.TrimSpace(label), CrucibleLabel) {
 			return true
 		}
 		if hasBranchLabel(label) {
+			return true
+		}
+	}
+	return false
+}
+
+// IsIndependent reports whether a bead's labels carve it out of its parent's
+// epic. Like IsOrchestrated it trims and compares case-insensitively, so a
+// padded or capitalised label opts out through every code path or none.
+func IsIndependent(labels []string) bool {
+	for _, label := range labels {
+		if strings.EqualFold(strings.TrimSpace(label), IndependentLabel) {
+			return true
+		}
+	}
+	return false
+}
+
+// HasConflictingLabels reports whether one bead carries both an orchestration
+// opt-in ("crucible" or "epic-branch:<name>") and the "independent" opt-out.
+//
+// IsOrchestrated already resolves the contradiction — "independent" wins — but it
+// resolves it silently, and the losing label is the one an operator deliberately
+// added. This is the predicate that lets a caller say so out loud. It reads the
+// raw labels rather than IsOrchestrated, which by construction is already false
+// for every bead this returns true for.
+func HasConflictingLabels(labels []string) bool {
+	if !IsIndependent(labels) {
+		return false
+	}
+	for _, label := range labels {
+		if strings.EqualFold(strings.TrimSpace(label), CrucibleLabel) || hasBranchLabel(label) {
 			return true
 		}
 	}

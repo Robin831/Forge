@@ -39,6 +39,9 @@ func SetEpicBranchLookupForTest(fn func(ctx context.Context, parentID, anvilPath
 //
 // A parent that has not opted in resolves to "", which leaves the child with an
 // empty EpicBranch — worktree from main, PR to main, like any standalone bead.
+// A child that opted *itself* out (the "independent" label) is skipped without
+// a lookup for the same result: the stamp is what routes a bead onto the epic
+// branch, so not stamping it is the whole of the opt-out on this side.
 //
 // The candidate that resolved is recorded on the child as EpicParent: it is the
 // only place the "which of these edges was the opted-in parent" answer exists,
@@ -57,6 +60,9 @@ func ResolveEpicBranches(ctx context.Context, beads []Bead, anvilPaths map[strin
 
 		anvilPath, ok := anvilPaths[b.Anvil]
 		if !ok {
+			continue
+		}
+		if IsIndependentBead(*b) {
 			continue
 		}
 
@@ -152,6 +158,19 @@ func lookupEpicBranch(ctx context.Context, parentID, anvilPath string) string {
 // path shares.
 func IsOrchestratedParent(b Bead) bool {
 	return epic.IsOrchestrated(b.Labels)
+}
+
+// IsIndependentBead reports whether a bead must be kept out of any epic its
+// parent runs: it carries the "independent" label, or it was dispatched with
+// ForceIndependent set (the manual "run independently" path).
+//
+// Both are consulted because they reach a bead by different routes and neither
+// implies the other. ForceIndependent is json:"-", so a bead that has been
+// through the queue cache or any bd re-fetch arrives carrying only its labels;
+// a force-run bead, conversely, has no label at all. Every epic gate reads this
+// rather than either field, so the two forms cannot diverge.
+func IsIndependentBead(b Bead) bool {
+	return b.ForceIndependent || epic.IsIndependent(b.Labels)
 }
 
 // ExtractParentBranch returns the shared branch name for a parent bead: the

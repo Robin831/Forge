@@ -4148,18 +4148,11 @@ func (d *Daemon) dispatchBead(ctx context.Context, bead poller.Bead, anvilCfg co
 		return
 	}
 
-	// Force-independent beads skip all epic/crucible logic and go straight
-	// to the normal pipeline (e.g. running a child bead standalone).
-	if bead.ForceIndependent {
-		d.logger.Info("force-independent dispatch, skipping epic/crucible", "bead", bead.ID)
-		goto normalPipeline
-	}
-
-	// Restart-resume dispatches always take the normal pipeline: a paused bead is
-	// mid-flow in a normal Smith→Temper→Warden loop, never an epic/crucible parent,
-	// and its worktree already exists.
-	if resume != nil {
-		d.logger.Info("restart-resume dispatch, skipping epic/crucible", "bead", bead.ID)
+	// Two dispatches bypass every epic/crucible gate below. Both answers, and
+	// the reason for each, come from skipsEpicRouting so the seam is one
+	// testable function rather than a pair of gotos inside a 400-line method.
+	if reason, skip := skipsEpicRouting(bead, resume != nil); skip {
+		d.logger.Info("skipping epic/crucible", "bead", bead.ID, "reason", reason)
 		goto normalPipeline
 	}
 

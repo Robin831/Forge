@@ -19,6 +19,7 @@ import (
 	"github.com/Robin831/Forge/internal/schematic"
 	"github.com/Robin831/Forge/internal/state"
 	"github.com/Robin831/Forge/internal/temper"
+	"github.com/Robin831/Forge/internal/termtext"
 	"github.com/Robin831/Forge/internal/vcs"
 	"github.com/Robin831/Forge/internal/worktree"
 )
@@ -275,6 +276,25 @@ func Run(ctx context.Context, p Params) *Result {
 	if err != nil {
 		return &Result{Error: fmt.Errorf("fetching children: %w", err)}
 	}
+
+	// 2b. Drop the children that opted out of the epic. This is the single
+	// point where an "independent" child leaves the run, which is what makes
+	// the exclusion consistent across everything downstream: it never reaches
+	// the topological sort, so it is not dispatched, not counted in
+	// TotalChildren, and — the decision this bead had to make — not part of the
+	// completeness set that pauses an epic rather than shipping it incomplete.
+	// An open independent child is *not* missing work: its changes land on main
+	// through its own PR, never on this feature branch, so waiting for it would
+	// hold the final PR for something the final PR could not contain.
+	//
+	// FetchChildren applies the same filter at the source; this covers an
+	// injected ChildFetcher and keeps the predicate in one place either way.
+	children, independent := excludeIndependent(children)
+	if len(independent) > 0 {
+		log.Info("children excluded from the epic as independent",
+			"excluded", independent, "remaining", len(children))
+	}
+
 	if len(children) == 0 && !parentHasWork {
 		log.Info("no children found and no parent work, nothing to do")
 		return &Result{Success: true, ChildrenDone: 0, ChildrenTotal: 0}
@@ -290,8 +310,12 @@ func Run(ctx context.Context, p Params) *Result {
 	}
 
 	log.Info("crucible children resolved", "count", len(sorted))
+	// The exclusion note rides on the queued count rather than an event of its
+	// own: the shrunken number is what an operator sees, so the reason it
+	// shrank belongs in the same line.
 	p.emitEvent(state.EventCrucibleChildDispatched,
-		fmt.Sprintf("Crucible %s: %d children queued on branch %s", p.ParentBead.ID, len(sorted), branch),
+		fmt.Sprintf("Crucible %s: %d children queued on branch %s%s",
+			p.ParentBead.ID, len(sorted), branch, independentNote(independent)),
 		p.ParentBead.ID)
 
 	p.updateStatus(Status{
@@ -741,6 +765,15 @@ func FetchChildren(ctx context.Context, parentID, dir string) ([]poller.Bead, er
 			continue
 		}
 
+		// A descendant that opted out of the epic ("independent") is not the
+		// Crucible's to claim, and neither is its own subtree: carving a bead
+		// out carves out the work hanging off it, which reaches main through
+		// that bead's PR rather than through this feature branch.
+		if epic.IsIndependent(child.Labels) {
+			slog.Info("skipping independent descendant", "parent_id", parentID, "child_id", childID)
+			continue
+		}
+
 		// Only include open descendants.
 		if strings.EqualFold(child.Status, "open") {
 			all = append(all, child)
@@ -755,6 +788,46 @@ func FetchChildren(ctx context.Context, parentID, dir string) ([]poller.Bead, er
 	}
 
 	return all, nil
+}
+
+// excludeIndependent partitions children into the ones this epic orchestrates
+// and the IDs of the ones that opted out via the "independent" label.
+//
+// The exclusion is total: an independent child is neither dispatched onto the
+// feature branch nor counted toward the epic's completeness. It is not a
+// *skipped* child (which pauses the run, since skipped work never reached the
+// branch it was supposed to reach) — its work was never this branch's to carry.
+func excludeIndependent(children []poller.Bead) (kept []poller.Bead, excluded []string) {
+	for _, child := range children {
+		if epic.IsIndependent(child.Labels) {
+			excluded = append(excluded, child.ID)
+			continue
+		}
+		kept = append(kept, child)
+	}
+	return kept, excluded
+}
+
+// independentNote renders the operator-facing clause explaining a child count
+// that is smaller than the family, or "" when nothing was excluded.
+//
+// The IDs are text Forge did not write — they come out of `bd show --json`, i.e.
+// a dolt database that syncs through the git remote — and this string is
+// persisted in state.db and then rendered into a terminal by Hearth and into the
+// web activity feed. So each one goes through termtext.Line, the same treatment
+// the schematic-decline reason gets, rather than being interpolated raw. bd
+// normally generates well-formed IDs, so this is defence in depth; the cost of
+// it not being there is an escape sequence replayed on every render.
+func independentNote(excluded []string) string {
+	if len(excluded) == 0 {
+		return ""
+	}
+	safe := make([]string, 0, len(excluded))
+	for _, id := range excluded {
+		safe = append(safe, termtext.Line(id))
+	}
+	return fmt.Sprintf(" (%d independent child bead(s) excluded: %s — they reach main through their own PRs)",
+		len(excluded), strings.Join(safe, ", "))
 }
 
 // bdShowBead extends the Bead with the raw dependents array that bd returns

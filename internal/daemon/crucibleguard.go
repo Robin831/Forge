@@ -50,10 +50,23 @@ type crucibleOwner struct {
 //
 // A parent that has not opted in (no "crucible"/"epic-branch:" label) is never
 // an owner: its children are independent beads and dispatching them is the
-// whole point.
+// whole point. Neither is a child that opted *itself* out with the
+// "independent" label: no Crucible will claim it, so withholding it would leave
+// it queued forever with nothing to dispatch it.
 func (d *Daemon) crucibleOwnedChildren(cfg *config.Config, beads []poller.Bead) map[string]crucibleOwner {
 	owned := make(map[string]crucibleOwner)
 	enabled := cfg != nil && cfg.Settings.CrucibleEnabled
+
+	// The per-child opt-out, resolved once for the whole batch. It is consulted
+	// at every point a bead could be withheld — including the parent's own
+	// Blocks list, where only the child ID is at hand — so an opted-out child
+	// cannot be caught by one route while being released by another.
+	independent := make(map[string]bool, len(beads))
+	for _, b := range beads {
+		if poller.IsIndependentBead(b) {
+			independent[b.Anvil+"\x00"+b.ID] = true
+		}
+	}
 
 	// owner of a parent key: the parent's own id, plus whether a Crucible is
 	// actually running for it (in which case the children are dispatched by
@@ -89,7 +102,11 @@ func (d *Daemon) crucibleOwnedChildren(cfg *config.Config, beads []poller.Bead) 
 		orchestrating[key] = parentOwner{id: b.ID}
 		// The parent's reconstructed Blocks name its children directly.
 		for _, childID := range b.Blocks {
-			owned[b.Anvil+"\x00"+childID] = crucibleOwner{ParentID: b.ID, Disabled: !enabled}
+			childKey := b.Anvil + "\x00" + childID
+			if independent[childKey] {
+				continue
+			}
+			owned[childKey] = crucibleOwner{ParentID: b.ID, Disabled: !enabled}
 		}
 	}
 
@@ -99,6 +116,9 @@ func (d *Daemon) crucibleOwnedChildren(cfg *config.Config, beads []poller.Bead) 
 	// absent from the batch.
 	for _, b := range beads {
 		key := b.Anvil + "\x00" + b.ID
+		if independent[key] {
+			continue
+		}
 		if _, self := orchestrating[key]; self {
 			continue
 		}
@@ -126,6 +146,9 @@ func (d *Daemon) crucibleOwnedChildren(cfg *config.Config, beads []poller.Bead) 
 	// the answer is stampingParent's, not ParentCandidates'[0] — see there.
 	for _, b := range beads {
 		key := b.Anvil + "\x00" + b.ID
+		if independent[key] {
+			continue
+		}
 		if b.EpicBranch == "" {
 			continue
 		}
