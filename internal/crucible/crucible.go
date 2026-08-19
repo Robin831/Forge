@@ -19,6 +19,7 @@ import (
 	"github.com/Robin831/Forge/internal/schematic"
 	"github.com/Robin831/Forge/internal/state"
 	"github.com/Robin831/Forge/internal/temper"
+	"github.com/Robin831/Forge/internal/termtext"
 	"github.com/Robin831/Forge/internal/vcs"
 	"github.com/Robin831/Forge/internal/worktree"
 )
@@ -809,12 +810,24 @@ func excludeIndependent(children []poller.Bead) (kept []poller.Bead, excluded []
 
 // independentNote renders the operator-facing clause explaining a child count
 // that is smaller than the family, or "" when nothing was excluded.
+//
+// The IDs are text Forge did not write — they come out of `bd show --json`, i.e.
+// a dolt database that syncs through the git remote — and this string is
+// persisted in state.db and then rendered into a terminal by Hearth and into the
+// web activity feed. So each one goes through termtext.Line, the same treatment
+// the schematic-decline reason gets, rather than being interpolated raw. bd
+// normally generates well-formed IDs, so this is defence in depth; the cost of
+// it not being there is an escape sequence replayed on every render.
 func independentNote(excluded []string) string {
 	if len(excluded) == 0 {
 		return ""
 	}
+	safe := make([]string, 0, len(excluded))
+	for _, id := range excluded {
+		safe = append(safe, termtext.Line(id))
+	}
 	return fmt.Sprintf(" (%d independent child bead(s) excluded: %s — they reach main through their own PRs)",
-		len(excluded), strings.Join(excluded, ", "))
+		len(excluded), strings.Join(safe, ", "))
 }
 
 // bdShowBead extends the Bead with the raw dependents array that bd returns

@@ -690,9 +690,19 @@ has no parent — is already independent, so the label changes nothing. On a bea
 carrying both an opt-in (`crucible`/`epic-branch:<name>`) and `independent`, the
 opt-out wins: that parent orchestrates nobody and its children dispatch to main,
 rather than the parent running to main while its children are stamped with a
-branch nothing then creates. Matching follows the same rules as the opt-in
-labels — trimmed and case-insensitive, so ` Independent ` counts, while
-`independent-ish` does not.
+branch nothing then creates. The daemon WARNs once per bead when it sees the
+combination, naming the bead and the effect, so the opt-in going inert is not
+something you discover from children merging out of order. Matching follows the
+same rules as the opt-in labels — trimmed and case-insensitive, so
+` Independent ` counts, while `independent-ish` does not.
+
+> **Do not add `independent` to a parent mid-flight.** The demotion takes effect
+> on the next poll and unwinds nothing. If that parent's Crucible has already
+> merged child PRs onto `feature/<parent-id>`, the parent will from then on
+> dispatch an ordinary pipeline to `main` and the feature branch — carrying
+> merged child work — is orphaned: no final PR is ever created for it. The
+> opt-out is only safe on a parent *before* its orchestration starts. On a child
+> it is safe at any time.
 
 ### Event Bus vs Legacy Polling
 

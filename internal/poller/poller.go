@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"sort"
 	"strconv"
 	"strings"
@@ -167,6 +168,41 @@ type BeadPoller struct {
 	// the 'bd ready' command using each anvil's AutoDispatchTag. Anvils
 	// without a tag configured are polled unfiltered.
 	UseLabelFilter bool
+
+	// warnedConflict records the "anvil\x00beadID" keys already reported by
+	// warnConflictingEpicLabels. Anvils poll concurrently, so it is guarded.
+	warnedConflictMu sync.Mutex
+	warnedConflict   map[string]bool
+}
+
+// warnConflictingEpicLabels reports, once per bead per daemon lifetime, a bead
+// that carries both an orchestration opt-in and the "independent" opt-out.
+//
+// epic.IsOrchestrated resolves the pair toward "independent", so the opt-in the
+// operator deliberately added goes inert — on a parent that means its children
+// are no longer sequenced onto a shared branch and reach main individually.
+// Nothing else in the system says so, and the label combination is static, so
+// the WARN is emitted the first time this poller sees the bead and not again.
+func (p *BeadPoller) warnConflictingEpicLabels(anvil string, b Bead) {
+	if !epic.HasConflictingLabels(b.Labels) {
+		return
+	}
+
+	key := anvil + "\x00" + b.ID
+	p.warnedConflictMu.Lock()
+	if p.warnedConflict == nil {
+		p.warnedConflict = make(map[string]bool)
+	}
+	seen := p.warnedConflict[key]
+	p.warnedConflict[key] = true
+	p.warnedConflictMu.Unlock()
+	if seen {
+		return
+	}
+
+	slog.Warn("bead carries both an epic opt-in and the \"independent\" opt-out; the opt-in is ignored",
+		"bead", b.ID, "anvil", anvil, "labels", b.Labels,
+		"effect", "children are not routed onto a shared branch and this bead dispatches to main")
 }
 
 // New creates a BeadPoller for the given anvil configurations.
@@ -330,7 +366,12 @@ func (p *BeadPoller) pollAnvil(ctx context.Context, name string, anvil config.An
 		// here rather than at each reader is what keeps a parent whose only
 		// ready child is independent from starting a Crucible with nothing to
 		// put on the feature branch.
-		if epic.IsIndependent(b.Labels) {
+		//
+		// Read through IsIndependentBead, not epic.IsIndependent, so this gate
+		// cannot drift from the others if ForceIndependent ever arrives set
+		// this early: "every epic gate reads this rather than either field" is
+		// only true while it includes this one.
+		if IsIndependentBead(b) {
 			continue
 		}
 		// Parent field directly links child to parent
@@ -393,6 +434,14 @@ func (p *BeadPoller) pollAnvil(ctx context.Context, name string, anvil config.An
 		// round-trip through the bead's JSON form. The label is the durable
 		// record; this field is the transport the dispatch path already reads.
 		b.ForceIndependent = epic.IsIndependent(b.Labels)
+		// One bead carrying both an opt-in and the opt-out resolves toward
+		// "independent" (epic.IsOrchestrated), which silently switches off the
+		// orchestration the operator asked for. Say so by name: the poll loop is
+		// the one place that sees every bead's labels once per cycle, and the
+		// alternative is learning about it from children merging to main out of
+		// order. Warned once per bead per daemon lifetime — the condition is
+		// static, so repeating it every poll would bury the rest of the log.
+		p.warnConflictingEpicLabels(name, b)
 		eligible = append(eligible, b)
 	}
 

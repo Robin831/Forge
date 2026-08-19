@@ -226,9 +226,51 @@ func TestIsOrchestrated_IndependentWins(t *testing.T) {
 		{"crucible", "independent"},
 		{"independent", "crucible"},
 		{"epic-branch:feature/x", "independent"},
+		{"epic-branch:", "independent"},
+		// Normalisation applies to the precedence too: a padded or capitalised
+		// opt-out must not lose to a tidy opt-in.
+		{" Crucible ", " Independent "},
+		{"Epic-Branch:feature/x", "INDEPENDENT"},
 	} {
 		if IsOrchestrated(labels) {
 			t.Errorf("IsOrchestrated(%v) = true, want false", labels)
 		}
+	}
+}
+
+// Carrying both labels is silently resolved by IsOrchestrated, which is exactly
+// why it needs a predicate of its own: the label that loses is one an operator
+// deliberately added, and the only way they learn it went inert is a caller
+// naming the bead. Both opt-in forms count, and the same trimming/case rules
+// apply — a conflict must not be visible through one spelling and not another.
+func TestHasConflictingLabels(t *testing.T) {
+	tests := []struct {
+		name   string
+		labels []string
+		want   bool
+	}{
+		{"no labels", nil, false},
+		{"opt-in alone", []string{"crucible"}, false},
+		{"opt-out alone", []string{"independent"}, false},
+		{"branch label alone", []string{"epic-branch:feature/x"}, false},
+		{"crucible plus independent", []string{"crucible", "independent"}, true},
+		{"independent plus crucible", []string{"independent", "crucible"}, true},
+		{"branch label plus independent", []string{"epic-branch:feature/x", "independent"}, true},
+		{"unusable branch name still conflicts", []string{"epic-branch:--force", "independent"}, true},
+		{"padded and mixed case", []string{" Crucible ", " INDEPENDENT "}, true},
+		{"near misses are not labels", []string{"crucible-ish", "not-independent"}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := HasConflictingLabels(tt.labels); got != tt.want {
+				t.Errorf("HasConflictingLabels(%v) = %v, want %v", tt.labels, got, tt.want)
+			}
+			// Whatever the answer, the bead is never orchestrated when it
+			// carries the opt-out: the predicate reports the conflict, it does
+			// not change how it resolves.
+			if tt.want && IsOrchestrated(tt.labels) {
+				t.Errorf("IsOrchestrated(%v) = true; independent must win", tt.labels)
+			}
+		})
 	}
 }
