@@ -636,4 +636,3 @@ func autoTitleFromMessage(msg string) string {
 	}
 	return strings.TrimRight(msg, ".,;: ")
 }
-

@@ -3226,7 +3226,7 @@ func TestNotesOverlayView(t *testing.T) {
 	m.width = 80
 	m.height = 24
 	m.openNotesOverlay("Forge-1", "test", "My Bead Title")
-	
+
 	view := m.renderNotesOverlay()
 	if !strings.Contains(view, "Add Notes: Forge-1") {
 		t.Errorf("view missing title line:\n%s", view)
@@ -3573,7 +3573,7 @@ func TestRenderIngotCountsLineFailureHighlighted(t *testing.T) {
 func TestUpdateIngotCountsMsg(t *testing.T) {
 	m := NewModel(nil)
 	counts := map[ingot.Status]int{
-		ingot.StatusSmith: 2,
+		ingot.StatusSmith:  2,
 		ingot.StatusPROpen: 1,
 	}
 	mUpdated, _ := m.Update(UpdateIngotCountsMsg{Counts: counts, Total: 3})

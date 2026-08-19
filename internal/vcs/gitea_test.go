@@ -601,8 +601,8 @@ func TestGiteaMergePRRequestJSON(t *testing.T) {
 // use errors.Is for detection instead of fragile string matching.
 func TestGiteaCreatePR_AlreadyExistsError(t *testing.T) {
 	tests := []struct {
-		name    string
-		errMsg  string
+		name         string
+		errMsg       string
 		wantSentinel bool
 	}{
 		{"already exists message", "pull request already exists for this branch", true},

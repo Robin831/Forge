@@ -206,4 +206,3 @@ func sortedAnvilNames(anvils map[string]config.AnvilConfig) []string {
 	sort.Strings(names)
 	return names
 }
-

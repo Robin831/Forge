@@ -158,15 +158,15 @@ func (s *Server) handleForgeResolve(w http.ResponseWriter, r *http.Request) {
 // and an entry in Errors rather than a 5xx, so the SPA can still render
 // the message itself.
 type escalationResponse struct {
-	BeadID            string           `json:"bead_id"`
-	Anvil             string           `json:"anvil"`
-	Branch            string           `json:"branch,omitempty"`
-	WorktreePath      string           `json:"worktree_path,omitempty"`
-	WorktreeExists    bool             `json:"worktree_exists"`
-	EscalationMessage string           `json:"escalation_message"`
-	Retry             *retryDetail     `json:"retry,omitempty"`
-	Context           *escalationGit   `json:"context,omitempty"`
-	Errors            []string         `json:"errors,omitempty"`
+	BeadID            string         `json:"bead_id"`
+	Anvil             string         `json:"anvil"`
+	Branch            string         `json:"branch,omitempty"`
+	WorktreePath      string         `json:"worktree_path,omitempty"`
+	WorktreeExists    bool           `json:"worktree_exists"`
+	EscalationMessage string         `json:"escalation_message"`
+	Retry             *retryDetail   `json:"retry,omitempty"`
+	Context           *escalationGit `json:"context,omitempty"`
+	Errors            []string       `json:"errors,omitempty"`
 }
 
 // retryDetail is a slim projection of the retry row used by the escalation
@@ -393,4 +393,3 @@ func splitNonEmptyLines(s string) []string {
 	}
 	return out
 }
-

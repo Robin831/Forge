@@ -674,7 +674,7 @@ func TestIsIgnoredUser_BotList(t *testing.T) {
 func TestIsIgnoredUser_CustomList(t *testing.T) {
 	custom := []string{"spambot", "BadActor"}
 	assert.True(t, isIgnoredUser("spambot", custom))
-	assert.True(t, isIgnoredUser("BADACTOR", custom))   // case-insensitive
+	assert.True(t, isIgnoredUser("BADACTOR", custom)) // case-insensitive
 	assert.False(t, isIgnoredUser("gooduser", custom))
 }
 
@@ -683,7 +683,7 @@ func TestIsIgnoredUser_CustomList(t *testing.T) {
 func TestHasLabel(t *testing.T) {
 	issue := Issue{Labels: []string{"bug", "enhancement", "Help Wanted"}}
 	assert.True(t, hasLabel(issue, "bug"))
-	assert.True(t, hasLabel(issue, "BUG"))       // case-insensitive
+	assert.True(t, hasLabel(issue, "BUG"))         // case-insensitive
 	assert.True(t, hasLabel(issue, "help wanted")) // case-insensitive
 	assert.False(t, hasLabel(issue, "wontfix"))
 }

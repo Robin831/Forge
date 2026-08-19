@@ -79,11 +79,11 @@ func TestClaudeRunner_Turn_TimeoutReturnsSentinel(t *testing.T) {
 	// runner parsed a partial claude response instead of returning the
 	// sentinel template verbatim.
 	for _, leak := range []string{
-		"{",            // any JSON envelope
-		`"type":`,      // stream-json event field
-		"assistant",    // claude role marker
-		"stream-json",  // CLI flag echo
-		"tool_use",     // tool invocation event
+		"{",           // any JSON envelope
+		`"type":`,     // stream-json event field
+		"assistant",   // claude role marker
+		"stream-json", // CLI flag echo
+		"tool_use",    // tool invocation event
 	} {
 		if strings.Contains(msg.Content, leak) {
 			t.Errorf("sentinel body leaked claude output (found %q):\n  body: %q", leak, msg.Content)

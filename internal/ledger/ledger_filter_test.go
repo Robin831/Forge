@@ -65,7 +65,6 @@ func TestFilteredBeadsClosedShown(t *testing.T) {
 	assert.Len(t, got, 2)
 }
 
-
 func TestFilterHintNoFilters(t *testing.T) {
 	m := &Model{showClosed: true}
 	assert.Equal(t, "", m.filterHint())
@@ -74,7 +73,7 @@ func TestFilterHintNoFilters(t *testing.T) {
 func TestFilterHintAnvilOnly(t *testing.T) {
 	m := &Model{
 		selectedAnvil: "forge",
-		showClosed:  true,
+		showClosed:    true,
 	}
 	hint := m.filterHint()
 	assert.Contains(t, hint, "[forge]")
@@ -96,7 +95,7 @@ func TestFilterHintClosedCount(t *testing.T) {
 func TestFilterHintBothFilters(t *testing.T) {
 	m := &Model{
 		selectedAnvil: "forge",
-		showClosed:  false,
+		showClosed:    false,
 		beads: []Bead{
 			{ID: "a", Anvil: "forge", Status: "open"},
 			{ID: "b", Anvil: "forge", Status: "closed"},

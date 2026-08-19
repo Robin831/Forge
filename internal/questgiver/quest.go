@@ -21,7 +21,7 @@ type Quest struct {
 
 // Step represents a single action in a quest sequence.
 type Step struct {
-	Action   string        `yaml:"action"`   // navigate, fill, click, wait, assert, screenshot
+	Action   string        `yaml:"action"` // navigate, fill, click, wait, assert, screenshot
 	URL      string        `yaml:"url,omitempty"`
 	Selector string        `yaml:"selector,omitempty"`
 	Value    string        `yaml:"value,omitempty"`

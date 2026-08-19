@@ -202,8 +202,8 @@ func TestPreviewValidation(t *testing.T) {
 			expected: "settings.preview_idle_timeout must be >= 1m0s when enabled (or 0 to disable)",
 		},
 		{
-			name:     "malformed port range",
-			mutate:   func(c *Config) { c.Settings.PreviewPortRange = "42000" },
+			name:   "malformed port range",
+			mutate: func(c *Config) { c.Settings.PreviewPortRange = "42000" },
 			expected: fmt.Sprintf(`settings.preview_port_range: port range "42000" must be in the form "min-max" (e.g. %q)`,
 				DefaultPreviewPortRange),
 		},

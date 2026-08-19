@@ -276,7 +276,7 @@ func TestRunTriage_CrossAnvilDuplicateBySourceURL(t *testing.T) {
 			runnerCalled = true
 			return `{"action": "create_bead", "reason": "ok", "bead_title": "T", "bead_description": "D"}`, nil
 		},
-		beadLister: noopBeadLister,
+		beadLister:    noopBeadLister,
 		AllAnvilPaths: []string{"/anvil-a", "/anvil-b"},
 		crossAnvilLister: func(_ context.Context, anvilPath string) []BeadSummary {
 			if anvilPath == "/anvil-b" {
@@ -309,7 +309,7 @@ func TestRunTriage_CrossAnvilNoMatch_ProceedsToAI(t *testing.T) {
 			runnerCalled = true
 			return `{"action": "create_bead", "reason": "ok", "bead_title": "T", "bead_description": "D"}`, nil
 		},
-		beadLister: noopBeadLister,
+		beadLister:    noopBeadLister,
 		AllAnvilPaths: []string{"/anvil-a"},
 		crossAnvilLister: func(_ context.Context, _ string) []BeadSummary {
 			return nil // no existing beads
@@ -613,9 +613,9 @@ func TestRunTriage_ExternalRepoIncludesAnvilContext(t *testing.T) {
 			capturedPrompt = prompt
 			return `{"action": "create_bead", "reason": "clear task", "bead_title": "Fix X", "bead_description": "Fix issue X"}`, nil
 		},
-		beadLister:  noopBeadLister,
-		AnvilRepo:   "org/myapp",                                          // anvil's own repo
-		AnvilPath:   "/fake/anvil",                                        // path used by loader
+		beadLister: noopBeadLister,
+		AnvilRepo:  "org/myapp",   // anvil's own repo
+		AnvilPath:  "/fake/anvil", // path used by loader
 		anvilContextLoader: func(anvilPath string) (readme, agentsMD string) {
 			// Stub filesystem reads so no real disk access is needed.
 			if anvilPath == "/fake/anvil" {

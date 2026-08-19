@@ -12,10 +12,10 @@ import (
 
 func TestExtractPRNumber(t *testing.T) {
 	cases := []struct {
-		name    string
-		source  string
-		wantN   int
-		wantOK  bool
+		name   string
+		source string
+		wantN  int
+		wantOK bool
 	}{
 		{"plain copilot ref", "copilot:PR#130", 130, true},
 		{"larger number", "copilot:PR#1024", 1024, true},

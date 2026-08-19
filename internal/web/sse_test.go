@@ -695,7 +695,6 @@ func writeWorkerLog(t *testing.T, db *state.DB, workerID string, lines []string)
 	return logPath
 }
 
-
 // busServer returns a default test server with the in-process event Bus wired
 // into its DB, selecting the replay-then-live SSE path.
 func busServer(t *testing.T) *Server {

@@ -92,7 +92,6 @@ type FixResult struct {
 	Error error
 }
 
-
 // BatchFixParams holds the inputs for a batched CI fix attempt.
 type BatchFixParams struct {
 	// WorktreePath is the git worktree for this PR's branch.
@@ -652,7 +651,6 @@ Look at existing files in changelog.d/ for examples of the expected format.
 
 	return b.String()
 }
-
 
 // truncateOutput returns the last maxLen characters of output, prepending
 // a truncation marker if it was shortened.

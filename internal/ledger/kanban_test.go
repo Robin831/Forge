@@ -203,7 +203,7 @@ func TestKanbanVKeySwitchesToHierarchy(t *testing.T) {
 func TestRefreshKanbanLanes(t *testing.T) {
 	now := time.Now()
 	m := &Model{
-		beads:      []Bead{
+		beads: []Bead{
 			{ID: "a", Status: "open"},
 			{ID: "b", Status: "in_progress"},
 			{ID: "c", Status: "closed", ClosedAt: &now},

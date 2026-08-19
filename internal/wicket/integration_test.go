@@ -293,9 +293,9 @@ func TestIntegration_OutOfScope_WithCustomPrompt(t *testing.T) {
 	customPrompt := "This project handles backend API services only. Frontend and UI concerns are out of scope."
 	settings := defaultSettings()
 	anvilCfg := config.AnvilConfig{
-		WicketTrustedUsers:  []string{"charlie"},
-		WicketRepos:         []string{"org/repo"},
-		WicketTriagePrompt:  customPrompt,
+		WicketTrustedUsers: []string{"charlie"},
+		WicketRepos:        []string{"org/repo"},
+		WicketTriagePrompt: customPrompt,
 	}
 
 	issue := Issue{

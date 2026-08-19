@@ -355,7 +355,7 @@ func Defaults() []Provider {
 // is populated with these variables instead.
 var knownBackends = map[string]map[string]string{
 	"ollama": {
-		"ANTHROPIC_BASE_URL":                      "http://localhost:11434",
+		"ANTHROPIC_BASE_URL":                       "http://localhost:11434",
 		"ANTHROPIC_AUTH_TOKEN":                     "ollama",
 		"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
 	},

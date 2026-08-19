@@ -19,7 +19,7 @@ const (
 type EventLevel int
 
 const (
-	EventInfo  EventLevel = iota
+	EventInfo EventLevel = iota
 	EventWarn
 	EventError
 )
@@ -67,13 +67,13 @@ func (m *Model) addEvent(level EventLevel, msg string) {
 // separator line, a title bar, and eventPanelContentH content rows showing
 // the most recent log entries (newest at the bottom).
 func (m *Model) renderEventPanel() string {
-	sepStyle   := lipgloss.NewStyle().Foreground(colorMuted)
+	sepStyle := lipgloss.NewStyle().Foreground(colorMuted)
 	titleStyle := lipgloss.NewStyle().Bold(true).Foreground(colorAccent)
-	dimStyle   := lipgloss.NewStyle().Foreground(colorMuted)
-	tsStyle    := lipgloss.NewStyle().Foreground(colorMuted)
-	infoStyle  := lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Dark: "252", Light: "240"})
-	warnStyle  := lipgloss.NewStyle().Foreground(colorWarning)
-	errStyle   := lipgloss.NewStyle().Foreground(colorDanger)
+	dimStyle := lipgloss.NewStyle().Foreground(colorMuted)
+	tsStyle := lipgloss.NewStyle().Foreground(colorMuted)
+	infoStyle := lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Dark: "252", Light: "240"})
+	warnStyle := lipgloss.NewStyle().Foreground(colorWarning)
+	errStyle := lipgloss.NewStyle().Foreground(colorDanger)
 
 	sepW := max(m.mainPanelWidth()-2, 1)
 	sep := sepStyle.Render(strings.Repeat("─", sepW))

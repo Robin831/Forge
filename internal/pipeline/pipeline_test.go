@@ -2008,7 +2008,7 @@ func TestCombinedMode_SelfReviewApprove_SkipsRealWarden(t *testing.T) {
 	params.SmithRunner = immediateSmith(&smith.Result{
 		ExitCode:     0,
 		ProviderUsed: provider.Copilot,
-		FullOutput: "Implemented the change.\n\n```json\n{\"self_review\": {\"verdict\": \"approve\", \"concerns\": []}}\n```\n",
+		FullOutput:   "Implemented the change.\n\n```json\n{\"self_review\": {\"verdict\": \"approve\", \"concerns\": []}}\n```\n",
 	})
 
 	wardenCalled := false
@@ -2038,7 +2038,7 @@ func TestCombinedMode_SelfReviewRequestChanges_RunsRealWarden(t *testing.T) {
 	params.SmithRunner = immediateSmith(&smith.Result{
 		ExitCode:     0,
 		ProviderUsed: provider.Copilot,
-		FullOutput: "Implemented but found issues.\n\n```json\n{\"self_review\": {\"verdict\": \"request_changes\", \"concerns\": [\"missing error handling\"]}}\n```\n",
+		FullOutput:   "Implemented but found issues.\n\n```json\n{\"self_review\": {\"verdict\": \"request_changes\", \"concerns\": [\"missing error handling\"]}}\n```\n",
 	})
 
 	wardenCalled := false
@@ -2070,7 +2070,7 @@ func TestCombinedMode_HighPriority_AlwaysRunsRealWarden(t *testing.T) {
 			params.SmithRunner = immediateSmith(&smith.Result{
 				ExitCode:     0,
 				ProviderUsed: provider.Copilot,
-				FullOutput: "Done.\n\n```json\n{\"self_review\": {\"verdict\": \"approve\", \"concerns\": []}}\n```\n",
+				FullOutput:   "Done.\n\n```json\n{\"self_review\": {\"verdict\": \"approve\", \"concerns\": []}}\n```\n",
 			})
 
 			wardenCalled := false
@@ -2172,8 +2172,6 @@ func TestCombinedMode_Disabled_RunsNormalWarden(t *testing.T) {
 	assert.True(t, wardenCalled, "real Warden must run when combined mode is disabled")
 }
 
-
-
 // TestCombinedMode_FallbackProvider_RunsNormalWarden verifies that when Smith
 // starts with Copilot (combinedMode=true) but actually ran under a different
 // provider due to rate-limiting fallback, a real Warden is forced.
@@ -2189,7 +2187,7 @@ func TestCombinedMode_FallbackProvider_RunsNormalWarden(t *testing.T) {
 	// Smith fell back to Claude (e.g. due to Copilot rate limit).
 	params.SmithRunner = immediateSmith(&smith.Result{
 		ExitCode:     0,
-			FullOutput:   "Done.\n\n```json\n{\"self_review\": {\"verdict\": \"approve\", \"concerns\": []}}\n```\n",
+		FullOutput:   "Done.\n\n```json\n{\"self_review\": {\"verdict\": \"approve\", \"concerns\": []}}\n```\n",
 		ProviderUsed: provider.Claude,
 	})
 
