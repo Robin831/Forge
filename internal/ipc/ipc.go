@@ -435,6 +435,23 @@ type PRActionPayload struct {
 	Action   string `json:"action"` // "open_browser" | "merge" | "quench" | "burnish" | "rebase" | "close" | "approve" | "assign_bellows" | "unassign_bellows" | "detach_bellows" | "reattach_bellows"
 }
 
+// The two mute verbs are named once, here, because more than one front end
+// sends them: `forge bellows stop|resume` today, the dashboard's own control
+// next. A second spelling of either string is a PR that reports success while
+// the daemon answers `unknown pr_action`, so callers import these rather than
+// writing the literal — including the daemon's own handler, so the switch and
+// its callers cannot drift apart.
+const (
+	// PRActionDetachBellows mutes a managed PR: no events, no automatic
+	// quench/burnish/rebase/Assay dispatch, and the fix workers already in
+	// flight for it are stopped.
+	PRActionDetachBellows = "detach_bellows"
+	// PRActionReattachBellows lifts the mute and drops bellows' cached
+	// snapshot, so problems that outlived it are re-detected as fresh
+	// transitions. It restarts nothing.
+	PRActionReattachBellows = "reattach_bellows"
+)
+
 // WardenRerunPayload is the payload for a "warden_rerun" command.
 // Re-runs warden on the existing worktree branch. If warden approves,
 // proceeds to PR creation normally.

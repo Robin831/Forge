@@ -266,6 +266,56 @@ forge queue clear BD-42 --anvil my-api
 |------|-------------|
 | `-a, --anvil` | Anvil name (required) |
 
+## PR Monitoring (Bellows)
+
+Bellows watches every open PR Forge manages and dispatches the automatic
+follow-up work — CI fixes (Quench), review fixes (Burnish), conflict rebases and
+Assay review runs. These two verbs mute and unmute it for **one** PR.
+
+A muted ("detached") PR is still watched: its mergeability and terminal state
+keep being refreshed, so the PR panel goes on telling the truth, and a detached
+PR that merges is still recorded as merged and its bead closed. What stops is
+the automatic work — no events, no fix workers, no Assay runs — and its worker
+row stays in place marked detached rather than vanishing.
+
+Both verbs address the PR by its **GitHub PR number**, scoped by `--anvil`,
+since PR numbers are per-repository. Externally-opened (`ext-*`) PRs are
+addressed exactly the same way. A PR that cannot be resolved is refused, never
+reported as muted.
+
+### `forge bellows stop <pr-number>`
+
+Detach a PR from Bellows. Also kills the CI-fix, review-fix and rebase workers
+already running for it, so nothing pushes one more commit to the branch after
+the mute.
+
+```bash
+forge bellows stop 431 --anvil heimdall
+```
+
+| Flag | Description |
+|------|-------------|
+| `-a, --anvil` | Anvil the PR belongs to (required) |
+
+The mute never bricks the PR: manual verbs (`forge assay run`, `forge queue
+run`, the dashboard's fix buttons) still run a single pass by hand.
+
+### `forge bellows resume <pr-number>`
+
+Reattach a PR to Bellows. Resuming drops the snapshot Bellows cached while the
+PR was muted, so problems that outlived the mute — failing CI, a conflict,
+unresolved threads — are re-detected as fresh transitions instead of being
+swallowed as state it has already seen. Nothing that was skipped is replayed:
+automatic work resumes from the next cycle onwards.
+
+```bash
+forge bellows resume 431 --anvil heimdall
+```
+
+| Flag | Description |
+|------|-------------|
+| `-a, --anvil` | Anvil the PR belongs to (required) |
+
 ## Preview Environments (Kiln)
 
 Preview environments require `settings.preview_enabled` and a

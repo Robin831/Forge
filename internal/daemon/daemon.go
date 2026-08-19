@@ -198,7 +198,7 @@ type Daemon struct {
 	// their attempt budgets against the same wall. Zero means no hold.
 	// Manual (IsManual) actions bypass it.
 	providerHoldUntil atomic.Int64
-	lifecycleCond   *sync.Cond
+	lifecycleCond     *sync.Cond
 
 	// PR Monitoring (Bellows)
 	bellowsMonitor  bellowsMonitorIface
@@ -7465,7 +7465,7 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 			_ = d.db.LogEvent("bellows_unassigned", fmt.Sprintf("PR #%d released from bellows lifecycle management", pa.PRNumber), pa.BeadID, pa.Anvil)
 			d.logger.Info("bellows unassigned from PR via pr_action", "pr", pa.PRNumber, "anvil", pa.Anvil)
 
-		case "detach_bellows":
+		case ipc.PRActionDetachBellows:
 			// Unlike the assignment verbs, this one refuses a PR it cannot
 			// resolve instead of reporting success against nothing: the whole
 			// point of detaching is that the automatic loop stops, and an
@@ -7496,7 +7496,7 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 				}
 			}()
 
-		case "reattach_bellows":
+		case ipc.PRActionReattachBellows:
 			pr, err := resolvePRTargetPreferID(d.db, pa.PRID, pa.PRNumber, pa.Anvil)
 			if err != nil {
 				d.logger.Warn("reattach refused: could not resolve the PR row",
