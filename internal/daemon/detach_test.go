@@ -1,0 +1,362 @@
+package daemon
+
+import (
+	"context"
+	"encoding/json"
+	"io"
+	"log/slog"
+	"path/filepath"
+	"strconv"
+	"testing"
+	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"github.com/Robin831/Forge/internal/config"
+	"github.com/Robin831/Forge/internal/ipc"
+	"github.com/Robin831/Forge/internal/lifecycle"
+	"github.com/Robin831/Forge/internal/state"
+)
+
+// resetSpy is a bellowsMonitorIface double that records only the calls this
+// file cares about: the snapshot clear a reattach must trigger.
+type resetSpy struct {
+	bellowsMonitorIface
+	resets []string
+}
+
+func (s *resetSpy) ResetPRState(anvil string, prNumber int) {
+	s.resets = append(s.resets, anvil+"/"+strconv.Itoa(prNumber))
+}
+
+// newDetachTestDaemon builds a Daemon over a temp state.db with one anvil.
+func newDetachTestDaemon(t *testing.T) (*Daemon, *state.DB) {
+	t.Helper()
+	dir := t.TempDir()
+	db, err := state.Open(filepath.Join(dir, "state.db"))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = db.Close() })
+
+	d := &Daemon{
+		db:         db,
+		logger:     slog.New(slog.NewTextHandler(io.Discard, nil)),
+		runCtx:     context.Background(),
+		reqTracker: *ipc.NewRequestTracker("test-"),
+	}
+	d.cfg.Store(&config.Config{
+		Anvils: map[string]config.AnvilConfig{"munin": {Path: dir}},
+	})
+	return d, db
+}
+
+// insertDetachPR records an open PR and returns its row id.
+func insertDetachPR(t *testing.T, db *state.DB, number int, beadID string) int {
+	t.Helper()
+	pr := &state.PR{
+		Number:    number,
+		Anvil:     "munin",
+		BeadID:    beadID,
+		Branch:    "forge/" + beadID,
+		Status:    state.PROpen,
+		CreatedAt: time.Now(),
+	}
+	require.NoError(t, db.InsertPR(pr))
+	require.NotZero(t, pr.ID)
+	return pr.ID
+}
+
+// TestActionBlockedByDetach is the dispatch guard's truth table. A detached PR
+// refuses the worker-spawning actions and nothing else: manual verbs still run
+// (detach means "stop automatic work", not "brick the PR"), and the post-merge
+// bookkeeping still runs (a muted PR still merges, and a merged bead left open
+// blocks its dependents).
+func TestActionBlockedByDetach(t *testing.T) {
+	d, db := newDetachTestDaemon(t)
+	detachedID := insertDetachPR(t, db, 11, "TEST-detached")
+	insertDetachPR(t, db, 12, "TEST-attached")
+	require.NoError(t, db.UpdatePRBellowsDetached(detachedID, true))
+
+	cases := []struct {
+		name string
+		req  lifecycle.ActionRequest
+		want bool
+	}{
+		{"detached + automatic CI fix", lifecycle.ActionRequest{Action: lifecycle.ActionFixCI, Anvil: "munin", PRNumber: 11}, true},
+		{"detached + automatic review fix", lifecycle.ActionRequest{Action: lifecycle.ActionFixReview, Anvil: "munin", PRNumber: 11}, true},
+		{"detached + automatic rebase", lifecycle.ActionRequest{Action: lifecycle.ActionRebase, Anvil: "munin", PRNumber: 11}, true},
+		{"detached + automatic assay", lifecycle.ActionRequest{Action: lifecycle.ActionAssayReview, Anvil: "munin", PRNumber: 11}, true},
+		{"detached + manual assay run", lifecycle.ActionRequest{Action: lifecycle.ActionAssayReview, Anvil: "munin", PRNumber: 11, IsManual: true}, false},
+		{"detached + manual CI fix", lifecycle.ActionRequest{Action: lifecycle.ActionFixCI, Anvil: "munin", PRNumber: 11, IsManual: true}, false},
+		{"detached + close bead", lifecycle.ActionRequest{Action: lifecycle.ActionCloseBead, Anvil: "munin", PRNumber: 11}, false},
+		{"detached + cleanup", lifecycle.ActionRequest{Action: lifecycle.ActionCleanup, Anvil: "munin", PRNumber: 11}, false},
+		{"attached + automatic CI fix", lifecycle.ActionRequest{Action: lifecycle.ActionFixCI, Anvil: "munin", PRNumber: 12}, false},
+		{"unknown PR fails open", lifecycle.ActionRequest{Action: lifecycle.ActionFixCI, Anvil: "munin", PRNumber: 99}, false},
+		{"no PR number fails open", lifecycle.ActionRequest{Action: lifecycle.ActionFixCI, Anvil: "munin"}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, d.actionBlockedByDetach(tc.req))
+		})
+	}
+}
+
+// TestHandleLifecycleAction_DetachedPRIsNoOp pins that the guard fires before
+// any work is scheduled: the bead is never registered in flight, so a detached
+// PR leaves no residue behind for the next cycle to trip over.
+func TestHandleLifecycleAction_DetachedPRIsNoOp(t *testing.T) {
+	d, db := newDetachTestDaemon(t)
+	id := insertDetachPR(t, db, 21, "TEST-noop")
+	require.NoError(t, db.UpdatePRBellowsDetached(id, true))
+
+	d.handleLifecycleAction(context.Background(), lifecycle.ActionRequest{
+		Action:   lifecycle.ActionFixReview,
+		Anvil:    "munin",
+		PRNumber: 21,
+		BeadID:   "TEST-noop",
+		Branch:   "forge/TEST-noop",
+	})
+
+	_, inFlight := d.activeBeads.Load("TEST-noop")
+	assert.False(t, inFlight, "detached PR must not claim the bead slot")
+}
+
+// TestDrainPendingAction_DropsDetachedAndKeepsDraining is the parked-action
+// half. An action parked while the PR was attached must not slip through by
+// being drained after the detach — and dropping it must not strand the actions
+// parked behind it, which is why the drain path carries its own guard rather
+// than relying on handleLifecycleAction's (that one returns before the
+// goroutine whose deferred drain would continue the chain).
+func TestDrainPendingAction_DropsDetachedAndKeepsDraining(t *testing.T) {
+	d, db := newDetachTestDaemon(t)
+	detachedID := insertDetachPR(t, db, 31, "TEST-drain")
+	require.NoError(t, db.UpdatePRBellowsDetached(detachedID, true))
+	insertDetachPR(t, db, 32, "TEST-drain")
+
+	// The second action is a cleanup on the still-attached PR: it needs no
+	// worktree and no claude session, and the review-fix bookkeeping row it
+	// deletes is the observable proof that it actually ran.
+	_, err := db.RecordReviewFixDispatch("munin", 32, "deadbeef")
+	require.NoError(t, err)
+
+	// Both are parked under one bead: a CI fix on the detached PR (drained
+	// first by priority) and a cleanup on the PR that is still attached.
+	d.parkPendingAction("TEST-drain", lifecycle.ActionRequest{
+		Action: lifecycle.ActionFixCI, Anvil: "munin", PRNumber: 31, BeadID: "TEST-drain",
+	})
+	d.parkPendingAction("TEST-drain", lifecycle.ActionRequest{
+		Action: lifecycle.ActionCleanup, Anvil: "munin", PRNumber: 32, BeadID: "TEST-drain",
+	})
+
+	d.drainPendingAction(context.Background(), "TEST-drain")
+	d.wg.Wait()
+
+	_, stillParked := d.pendingActions.Load("TEST-drain")
+	assert.False(t, stillParked, "the parked set must be fully drained")
+
+	row, err := db.GetReviewFixDispatch("munin", 32)
+	require.NoError(t, err)
+	assert.Nil(t, row, "the action parked behind the detached one must still run")
+}
+
+// TestPRAction_DetachBellows covers the verb end to end: the flag is persisted,
+// the in-flight fix worker for that PR is stopped, and a worker on another PR
+// is left alone.
+func TestPRAction_DetachBellows(t *testing.T) {
+	d, db := newDetachTestDaemon(t)
+	prID := insertDetachPR(t, db, 41, "TEST-detach")
+	insertDetachPR(t, db, 42, "TEST-other")
+
+	// PID 0: killWorkerProcess has no process to signal and marks the row
+	// failed, which is the observable outcome the verb owes the operator.
+	require.NoError(t, db.InsertWorker(&state.Worker{
+		ID: "w-burnish", BeadID: "TEST-detach", Anvil: "munin", Branch: "forge/TEST-detach",
+		Status: state.WorkerRunning, Phase: "burnish", PRNumber: 41, StartedAt: time.Now(),
+	}))
+	require.NoError(t, db.InsertWorker(&state.Worker{
+		ID: "w-other", BeadID: "TEST-other", Anvil: "munin", Branch: "forge/TEST-other",
+		Status: state.WorkerRunning, Phase: "quench", PRNumber: 42, StartedAt: time.Now(),
+	}))
+
+	payload, _ := json.Marshal(ipc.PRActionPayload{
+		Action: "detach_bellows", PRID: prID, PRNumber: 41, Anvil: "munin", BeadID: "TEST-detach",
+	})
+	resp := d.handleIPC(ipc.Command{Type: "pr_action", Payload: payload})
+	require.Equal(t, "ok", resp.Type)
+
+	pr, err := db.GetPRByID(prID)
+	require.NoError(t, err)
+	assert.True(t, pr.BellowsDetached, "detach must persist prs.bellows_detached")
+
+	d.wg.Wait()
+
+	killed, err := db.GetWorker("w-burnish")
+	require.NoError(t, err)
+	assert.Equal(t, state.WorkerFailed, killed.Status, "the PR's in-flight fix worker must be stopped")
+	spared, err := db.GetWorker("w-other")
+	require.NoError(t, err)
+	assert.Equal(t, state.WorkerRunning, spared.Status, "another PR's worker must be left alone")
+}
+
+// TestPRAction_DetachBellows_NoWorkerIsSuccess — "nothing running" is what the
+// operator asked for, not an error.
+func TestPRAction_DetachBellows_NoWorkerIsSuccess(t *testing.T) {
+	d, db := newDetachTestDaemon(t)
+	prID := insertDetachPR(t, db, 51, "TEST-quiet")
+
+	payload, _ := json.Marshal(ipc.PRActionPayload{
+		Action: "detach_bellows", PRID: prID, PRNumber: 51, Anvil: "munin", BeadID: "TEST-quiet",
+	})
+	resp := d.handleIPC(ipc.Command{Type: "pr_action", Payload: payload})
+	require.Equal(t, "ok", resp.Type)
+	d.wg.Wait()
+
+	pr, err := db.GetPRByID(prID)
+	require.NoError(t, err)
+	assert.True(t, pr.BellowsDetached)
+}
+
+// TestPRAction_DetachBellows_UnresolvablePRRefused — reporting success without
+// writing the flag would leave the operator watching Forge keep working the PR.
+func TestPRAction_DetachBellows_UnresolvablePRRefused(t *testing.T) {
+	d, _ := newDetachTestDaemon(t)
+
+	payload, _ := json.Marshal(ipc.PRActionPayload{
+		Action: "detach_bellows", PRNumber: 404, Anvil: "munin",
+	})
+	resp := d.handleIPC(ipc.Command{Type: "pr_action", Payload: payload})
+	require.Equal(t, "error", resp.Type)
+}
+
+// TestPRAction_ReattachBellows clears the flag and drops bellows' cached
+// snapshot, so the problems that outlived the mute are re-detected as fresh
+// transitions rather than swallowed as state it has already seen.
+func TestPRAction_ReattachBellows(t *testing.T) {
+	d, db := newDetachTestDaemon(t)
+	prID := insertDetachPR(t, db, 61, "TEST-reattach")
+	require.NoError(t, db.UpdatePRBellowsDetached(prID, true))
+	spy := &resetSpy{}
+	d.bellowsMonitor = spy
+
+	payload, _ := json.Marshal(ipc.PRActionPayload{
+		Action: "reattach_bellows", PRID: prID, PRNumber: 61, Anvil: "munin", BeadID: "TEST-reattach",
+	})
+	resp := d.handleIPC(ipc.Command{Type: "pr_action", Payload: payload})
+	require.Equal(t, "ok", resp.Type)
+
+	pr, err := db.GetPRByID(prID)
+	require.NoError(t, err)
+	assert.False(t, pr.BellowsDetached, "reattach must clear prs.bellows_detached")
+	assert.Equal(t, []string{"munin/61"}, spy.resets, "reattach must clear the cached snapshot")
+
+	// The automatic loop is open again.
+	assert.False(t, d.actionBlockedByDetach(lifecycle.ActionRequest{
+		Action: lifecycle.ActionFixCI, Anvil: "munin", PRNumber: 61,
+	}))
+}
+
+// compile-time assurance the spy still satisfies the interface the daemon holds.
+var _ bellowsMonitorIface = (*resetSpy)(nil)
+
+// TestPRAction_DetachBellows_SparesOtherAnvilAndOtherPhases pins the two
+// conditions the PR-number filter alone does not cover. PR numbers are
+// per-repo, so #41 on a second anvil is a routine collision, not a match; and
+// the phases outside detachKillPhases — the synthetic bellows monitor row, an
+// in-flight Assay pass — are spared by design. A wrong kill here destroys a
+// live session in an unrelated repo, so both branches get a pin.
+func TestPRAction_DetachBellows_SparesOtherAnvilAndOtherPhases(t *testing.T) {
+	d, db := newDetachTestDaemon(t)
+	// A second anvil whose PR happens to carry the same number.
+	cfg := d.cfg.Load()
+	cfg.Anvils["hugin"] = config.AnvilConfig{Path: t.TempDir()}
+	d.cfg.Store(cfg)
+
+	prID := insertDetachPR(t, db, 41, "TEST-detach")
+
+	// The target: same anvil, same PR, a killable phase.
+	require.NoError(t, db.InsertWorker(&state.Worker{
+		ID: "w-burnish", BeadID: "TEST-detach", Anvil: "munin", Branch: "forge/TEST-detach",
+		Status: state.WorkerRunning, Phase: "burnish", PRNumber: 41, StartedAt: time.Now(),
+	}))
+	// Same PR number, different anvil — a different repository's fix session.
+	require.NoError(t, db.InsertWorker(&state.Worker{
+		ID: "w-other-anvil", BeadID: "OTHER-41", Anvil: "hugin", Branch: "forge/OTHER-41",
+		Status: state.WorkerRunning, Phase: "quench", PRNumber: 41, StartedAt: time.Now(),
+	}))
+	// Same anvil and PR, but the monitor row rather than a process.
+	require.NoError(t, db.InsertWorker(&state.Worker{
+		ID: "bellows-munin-41", BeadID: "TEST-detach", Anvil: "munin",
+		Status: state.WorkerMonitoring, Phase: "bellows", PRNumber: 41, StartedAt: time.Now(),
+	}))
+	// Same anvil and PR, an Assay pass: it only reads the diff and posts
+	// findings, so killing it buys nothing and loses the run already paid for.
+	require.NoError(t, db.InsertWorker(&state.Worker{
+		ID: "w-assay", BeadID: "TEST-detach", Anvil: "munin", Branch: "forge/TEST-detach",
+		Status: state.WorkerRunning, Phase: "assay", PRNumber: 41, StartedAt: time.Now(),
+	}))
+
+	payload, _ := json.Marshal(ipc.PRActionPayload{
+		Action: "detach_bellows", PRID: prID, PRNumber: 41, Anvil: "munin", BeadID: "TEST-detach",
+	})
+	resp := d.handleIPC(ipc.Command{Type: "pr_action", Payload: payload})
+	require.Equal(t, "ok", resp.Type)
+	d.wg.Wait()
+
+	killed, err := db.GetWorker("w-burnish")
+	require.NoError(t, err)
+	assert.Equal(t, state.WorkerFailed, killed.Status, "the detached PR's fix worker must be stopped")
+
+	for _, tc := range []struct {
+		id     string
+		status state.WorkerStatus
+		why    string
+	}{
+		{"w-other-anvil", state.WorkerRunning, "a same-numbered PR on another anvil is a different PR"},
+		{"bellows-munin-41", state.WorkerMonitoring, "the bellows monitor row is a row, not a process"},
+		{"w-assay", state.WorkerRunning, "an Assay pass is left to finish"},
+	} {
+		spared, err := db.GetWorker(tc.id)
+		require.NoError(t, err)
+		assert.Equal(t, tc.status, spared.Status, tc.why)
+	}
+}
+
+// TestDrainPendingAction_DropsConsecutiveDetachedActions parks two detached
+// actions ahead of a runnable one, so the drop branch recurses through itself
+// before reaching anything dispatchable — the case one parked drop cannot
+// exercise, and the one where the pendingActions Store/Load cycling across
+// recursive frames would show up.
+func TestDrainPendingAction_DropsConsecutiveDetachedActions(t *testing.T) {
+	d, db := newDetachTestDaemon(t)
+	ciID := insertDetachPR(t, db, 71, "TEST-multidrain")
+	reviewID := insertDetachPR(t, db, 72, "TEST-multidrain")
+	require.NoError(t, db.UpdatePRBellowsDetached(ciID, true))
+	require.NoError(t, db.UpdatePRBellowsDetached(reviewID, true))
+	insertDetachPR(t, db, 73, "TEST-multidrain")
+
+	// The cleanup's observable proof that it ran: the bookkeeping row it deletes.
+	_, err := db.RecordReviewFixDispatch("munin", 73, "deadbeef")
+	require.NoError(t, err)
+
+	// Drain order is CI fix → review fix → cleanup, so both detached actions
+	// are popped (and dropped) before the runnable one is reached.
+	d.parkPendingAction("TEST-multidrain", lifecycle.ActionRequest{
+		Action: lifecycle.ActionFixCI, Anvil: "munin", PRNumber: 71, BeadID: "TEST-multidrain",
+	})
+	d.parkPendingAction("TEST-multidrain", lifecycle.ActionRequest{
+		Action: lifecycle.ActionFixReview, Anvil: "munin", PRNumber: 72, BeadID: "TEST-multidrain",
+	})
+	d.parkPendingAction("TEST-multidrain", lifecycle.ActionRequest{
+		Action: lifecycle.ActionCleanup, Anvil: "munin", PRNumber: 73, BeadID: "TEST-multidrain",
+	})
+
+	d.drainPendingAction(context.Background(), "TEST-multidrain")
+	d.wg.Wait()
+
+	_, stillParked := d.pendingActions.Load("TEST-multidrain")
+	assert.False(t, stillParked, "the parked set must be fully drained")
+
+	row, err := db.GetReviewFixDispatch("munin", 73)
+	require.NoError(t, err)
+	assert.Nil(t, row, "the action parked behind two detached ones must still run")
+}

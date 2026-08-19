@@ -52,6 +52,12 @@ type Result struct {
 	Error   error
 }
 
+// smithSpawnFn is the function used to spawn Smith. Package-level variable for
+// test stubbing (mirrors quench and burnish).
+var smithSpawnFn = func(ctx context.Context, worktreePath, prompt, logDir string, pv provider.Provider, extraFlags []string) (*smith.Process, error) {
+	return smith.SpawnWithOptions(ctx, worktreePath, prompt, logDir, pv, extraFlags, smith.SpawnOptions{LogPrefix: "rebase"})
+}
+
 // Rebase fetches origin and rebases the branch onto BaseBranch, then force-pushes.
 // If git cannot auto-resolve conflicts it invokes Smith (Claude/Gemini) to fix them.
 func Rebase(ctx context.Context, p Params) Result {
@@ -103,11 +109,17 @@ func (p *Params) rebaseWithSmith(ctx context.Context, providers []provider.Provi
 			log.Printf("[rebase] PR #%d: provider %s rate-limited, trying %s",
 				p.PRNumber, providers[pi-1].Label(), pv.Label())
 		}
-		process, err := smith.SpawnWithOptions(ctx, p.WorktreePath, prompt, logDir, pv, p.ExtraFlags, smith.SpawnOptions{LogPrefix: "rebase"})
+		process, err := smithSpawnFn(ctx, p.WorktreePath, prompt, logDir, pv, p.ExtraFlags)
 		if err != nil {
 			return fmt.Errorf("spawning Smith (%s): %w", pv.Label(), err)
 		}
 		if p.WorkerID != "" && p.DB != nil {
+			// Record the PID, not just the log path: it is the only handle the
+			// kill path has on this session. A row without one is merely marked
+			// failed while the claude process keeps running — and keeps pushing.
+			if err := p.DB.UpdateWorkerPID(p.WorkerID, process.PID); err != nil {
+				log.Printf("[rebase] warning: failed to update worker PID for worker %s: %v", p.WorkerID, err)
+			}
 			if err := p.DB.UpdateWorkerLogPath(p.WorkerID, process.LogPath); err != nil {
 				log.Printf("[rebase] warning: failed to update worker log path for worker %s: %v", p.WorkerID, err)
 			}

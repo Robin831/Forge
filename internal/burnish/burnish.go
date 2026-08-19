@@ -236,6 +236,12 @@ func BatchFix(ctx context.Context, p BatchFixParams) *FixResult {
 			return result
 		}
 		if p.WorkerID != "" && p.DB != nil {
+			// Record the PID, not just the log path: it is the only handle the
+			// kill path has on this session. A row without one is merely marked
+			// failed while the claude process keeps running — and keeps pushing.
+			if err := p.DB.UpdateWorkerPID(p.WorkerID, process.PID); err != nil {
+				log.Printf("[burnish] PR #%d: failed to update worker PID: %v", p.PRNumber, err)
+			}
 			if err := p.DB.UpdateWorkerLogPath(p.WorkerID, process.LogPath); err != nil {
 				log.Printf("[burnish] PR #%d: failed to update worker log path: %v", p.PRNumber, err)
 			}
@@ -573,6 +579,13 @@ func Fix(ctx context.Context, p FixParams) *FixResult {
 				return result
 			}
 			if p.WorkerID != "" && p.DB != nil {
+				// Record the PID, not just the log path: it is the only handle
+				// the kill path has on this session. A row without one is
+				// merely marked failed while the claude process keeps running.
+				if err := p.DB.UpdateWorkerPID(p.WorkerID, process.PID); err != nil {
+					log.Printf("[burnish] PR #%d: failed to update worker PID for worker %s: %v",
+						p.PRNumber, p.WorkerID, err)
+				}
 				if err := p.DB.UpdateWorkerLogPath(p.WorkerID, process.LogPath); err != nil {
 					log.Printf("[burnish] PR #%d: failed to update worker log path for worker %s to %q: %v",
 						p.PRNumber, p.WorkerID, process.LogPath, err)
