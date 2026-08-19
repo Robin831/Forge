@@ -14,6 +14,7 @@ import (
 	"github.com/Robin831/Forge/internal/kiln"
 	"github.com/Robin831/Forge/internal/state"
 	"github.com/Robin831/Forge/internal/termtext"
+	"github.com/Robin831/Forge/internal/textfmt"
 	"github.com/spf13/cobra"
 )
 
@@ -374,23 +375,9 @@ func previewServiceIssue(svc ipc.PreviewServiceInfo) string {
 		return ""
 	}
 	if svc.Restarts > 0 {
-		detail += fmt.Sprintf(" [%s]", plural(svc.Restarts, "restart"))
+		detail += fmt.Sprintf(" [%s]", textfmt.Count(svc.Restarts, "restart"))
 	}
 	return detail
-}
-
-// plural renders a count with its noun rather than as a bare number, so the
-// bracket reads as a fact instead of an unlabelled figure.
-//
-// It is deliberately the same shape as questgiver's plural(n, noun) rather than
-// a restart-specific helper: the repo already carries three near-identical
-// package-local pluralizers, and a fourth in a shape of its own would make
-// folding them into one shared helper a rewrite instead of a move (Forge-dwpk).
-func plural(n int, noun string) string {
-	if n == 1 {
-		return fmt.Sprintf("1 %s", noun)
-	}
-	return fmt.Sprintf("%d %ss", n, noun)
 }
 
 // formatPreviewIdle renders the countdown to the idle reaper. A nil countdown
