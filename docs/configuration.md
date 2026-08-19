@@ -653,6 +653,47 @@ dispatches the parent alone leaves them pointing at a branch nobody creates.
 > branch. Add the `crucible` label to the parents that should keep being
 > orchestrated; every other parent becomes independent with no config change.
 
+#### Carving One Child Out: the `independent` Label
+
+The parent opts the family in; a single child can opt itself back out with the
+`independent` label:
+
+```bash
+bd label add <child-id> independent
+```
+
+That child is treated as an ordinary standalone bead even though its parent is
+orchestrating:
+
+- it is **never claimed** by the Crucible — not dispatched onto the feature
+  branch, not counted in the run's child total, and not fetched at all (nor is
+  the subtree hanging off it: carving a bead out carves out its own children,
+  which reach main through its PR);
+- it is **not stamped** with the epic branch, so it builds its worktree from
+  `main` and PRs to `main`. Tagging it `forgeReady` dispatches it like any other
+  bead, in parallel with the epic if it is ready;
+- it is **not withheld** from the ordinary dispatch loop the way an orchestrated
+  sibling is — nothing else would ever run it.
+
+**It is excluded from the epic's completeness set entirely.** The Crucible
+pauses rather than shipping an epic whose children did not all land on the
+feature branch, but an `independent` child's work *could not* land there: it
+goes to main through its own PR. Waiting for it would hold the final PR for
+something the final PR cannot contain, so an open independent child neither
+pauses the run nor blocks the final PR — and, for the same reason, an opted-in
+parent whose only remaining open children are independent has nothing left to
+orchestrate and runs the ordinary pipeline to main. The queued-children event
+names the beads it excluded, so the smaller child count is never unexplained.
+
+The label is inert everywhere else: a bead whose parent never opted in — or that
+has no parent — is already independent, so the label changes nothing. On a bead
+carrying both an opt-in (`crucible`/`epic-branch:<name>`) and `independent`, the
+opt-out wins: that parent orchestrates nobody and its children dispatch to main,
+rather than the parent running to main while its children are stamped with a
+branch nothing then creates. Matching follows the same rules as the opt-in
+labels — trimmed and case-insensitive, so ` Independent ` counts, while
+`independent-ish` does not.
+
 ### Event Bus vs Legacy Polling
 
 Real-time consumers — the web UI's activity and PR-findings SSE streams and the

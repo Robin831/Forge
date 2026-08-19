@@ -14,7 +14,7 @@ The Forge uses a blacksmith metaphor throughout:
 | **Temper**   | Build/lint/test verification (Go, .NET, Node)           |
 | **Bellows**  | PR monitor (CI failures, review comments, merge conflicts) |
 | **Schematic**| Pre-analysis worker (decomposes complex beads)          |
-| **Crucible** | Epic orchestrator (opt-in via the `crucible` label on the parent) |
+| **Crucible** | Epic orchestrator (opt-in via the `crucible` label on the parent; a child opts out with `independent`) |
 | **Depcheck** | Multi-language dependency update scanner (Go, .NET, Node) |
 | **Wicket**   | GitHub issue triage monitor — classifies issues and creates beads |
 | **Quench**   | CI failure fix worker — spawns Smith with targeted fix prompt |
@@ -218,6 +218,17 @@ Detect opted-in parent → Create feature branch (feature/<parent-id>, or epic-b
 
 Children of an orchestrating parent are withheld from the ordinary dispatch loop
 so they are not run twice in one poll cycle.
+
+A single child can opt back out with the `independent` label:
+
+```bash
+bd label add <child-id> independent
+```
+
+The Crucible never claims that child (nor its own subtree), it builds from
+`main` and PRs to `main` like any standalone bead, and it is excluded from the
+epic's completeness set — its work could never land on the feature branch, so an
+open independent child does not hold up the epic's final PR.
 
 Enable with `crucible_enabled: true` in `forge.yaml`. See
 [docs/configuration.md](docs/configuration.md) for the full opt-in rules.

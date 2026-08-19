@@ -189,3 +189,46 @@ func TestIsOrchestrated_TrimsBothForms(t *testing.T) {
 		t.Errorf("BranchName with a padded label = %q, want feature/x", got)
 	}
 }
+
+func TestIsIndependent(t *testing.T) {
+	tests := []struct {
+		name   string
+		labels []string
+		want   bool
+	}{
+		{"no labels", nil, false},
+		{"unrelated labels", []string{"forgeReady", "ui"}, false},
+		{"independent", []string{"independent"}, true},
+		{"mixed case", []string{"Independent"}, true},
+		{"padded", []string{" independent "}, true},
+		{"among others", []string{"forgeReady", "independent"}, true},
+		// The same near-miss rules the opt-in labels follow: containing the
+		// word is not carrying the label.
+		{"label merely containing independent", []string{"independent-ish"}, false},
+		{"label prefixed", []string{"not-independent"}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := IsIndependent(tt.labels); got != tt.want {
+				t.Errorf("IsIndependent(%v) = %v, want %v", tt.labels, got, tt.want)
+			}
+		})
+	}
+}
+
+// One bead carrying both an opt-in and the opt-out is a contradiction, and it
+// resolves toward "independent". The alternative leaves the family
+// inconsistent: the bead's own dispatch path treats it as independent and runs
+// it to main, while every child is still stamped with a feature branch nothing
+// would then create.
+func TestIsOrchestrated_IndependentWins(t *testing.T) {
+	for _, labels := range [][]string{
+		{"crucible", "independent"},
+		{"independent", "crucible"},
+		{"epic-branch:feature/x", "independent"},
+	} {
+		if IsOrchestrated(labels) {
+			t.Errorf("IsOrchestrated(%v) = true, want false", labels)
+		}
+	}
+}

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/Robin831/Forge/internal/epic"
 	"github.com/Robin831/Forge/internal/executil"
 )
 
@@ -68,9 +69,10 @@ func ResolveBlocks(ctx context.Context, beads []Bead, anvilPaths map[string]stri
 // returned by `bd show --json`. Only entries with dependency_type "blocks"
 // indicate children of the bead.
 type bdShowDependent struct {
-	ID             string `json:"id"`
-	DependencyType string `json:"dependency_type"`
-	Status         string `json:"status"`
+	ID             string   `json:"id"`
+	DependencyType string   `json:"dependency_type"`
+	Status         string   `json:"status"`
+	Labels         []string `json:"labels"`
 }
 
 // bdShowResponse is the subset of `bd show --json` output we need to extract
@@ -88,6 +90,10 @@ type bdShowResponse struct {
 // an empty Blocks means "no children are ready", which a child blocked on an
 // unrelated dependency also produces. Deciding an epic has nothing left to
 // orchestrate needs the wider answer, and only bd has it.
+//
+// Children that opted out of the epic ("independent") are not counted: their
+// work never lands on the parent's feature branch, so an open one says nothing
+// about whether the epic still has something to orchestrate.
 //
 // An error is returned rather than an empty slice when bd cannot be reached:
 // "no children" and "cannot tell" lead to opposite decisions.
@@ -123,6 +129,13 @@ func OpenChildren(ctx context.Context, beadID, anvilPath string) ([]string, erro
 // poll instead of dispatching, so the vocabulary is pinned in a test rather
 // than assumed.
 //
+// The third filter is the per-child opt-out: an "independent" child is left out
+// entirely, because the caller's question is "has this epic anything left to put
+// on its feature branch", and an opted-out child's work goes to main by itself.
+// A dependent entry that carries no labels at all is treated as an ordinary
+// child — the conservative reading, since it holds the parent for an operator
+// rather than closing an epic whose children are still open.
+//
 // Malformed output is an error, never an empty slice: the caller reads "no
 // children" as permission to merge the parent to main.
 func parseOpenChildren(output []byte) ([]string, error) {
@@ -137,6 +150,9 @@ func parseOpenChildren(output []byte) ([]string, error) {
 			continue
 		}
 		if strings.EqualFold(strings.TrimSpace(dep.Status), "closed") {
+			continue
+		}
+		if epic.IsIndependent(dep.Labels) {
 			continue
 		}
 		open = append(open, dep.ID)
@@ -169,6 +185,13 @@ func lookupBlocks(ctx context.Context, beadID, anvilPath string) []string {
 
 	var blocks []string
 	for _, dep := range resp.Dependents {
+		// An "independent" child is not part of its parent's epic, and Blocks
+		// is what every orchestration gate reads as "children to orchestrate" —
+		// the same exclusion pollAnvil applies when it rebuilds Blocks from a
+		// poll batch.
+		if epic.IsIndependent(dep.Labels) {
+			continue
+		}
 		if dep.DependencyType == "blocks" && dep.Status != "closed" {
 			blocks = append(blocks, dep.ID)
 		}

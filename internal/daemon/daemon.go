@@ -4019,10 +4019,13 @@ func (d *Daemon) dispatchBead(ctx context.Context, bead poller.Bead, anvilCfg co
 		return
 	}
 
-	// Force-independent beads skip all epic/crucible logic and go straight
-	// to the normal pipeline (e.g. running a child bead standalone).
-	if bead.ForceIndependent {
-		d.logger.Info("force-independent dispatch, skipping epic/crucible", "bead", bead.ID)
+	// Independent beads skip all epic/crucible logic and go straight to the
+	// normal pipeline: either an operator ran this child standalone
+	// (ForceIndependent), or the bead carries the "independent" label, which
+	// carves it out of its parent's epic permanently. Both mean the same thing
+	// here — worktree from main, PR to main — so both read the same predicate.
+	if poller.IsIndependentBead(bead) {
+		d.logger.Info("independent dispatch, skipping epic/crucible", "bead", bead.ID)
 		goto normalPipeline
 	}
 

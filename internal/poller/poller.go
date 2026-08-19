@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/Robin831/Forge/internal/config"
+	"github.com/Robin831/Forge/internal/epic"
 	"github.com/Robin831/Forge/internal/executil"
 )
 
@@ -321,6 +322,17 @@ func (p *BeadPoller) pollAnvil(ctx context.Context, name string, anvil config.An
 		blocksSet[parentID][childID] = true
 	}
 	for _, b := range beads {
+		// A child that opted out of its parent's epic ("independent") is not
+		// registered as anyone's child. Blocks is the "has children to
+		// orchestrate" signal — IsCrucibleCandidate, crucibleOwnedChildren and
+		// the Crucible's own child count all read it — and an opted-out child
+		// is none of those: its work goes to main through its own PR. Filtering
+		// here rather than at each reader is what keeps a parent whose only
+		// ready child is independent from starting a Crucible with nothing to
+		// put on the feature branch.
+		if epic.IsIndependent(b.Labels) {
+			continue
+		}
 		// Parent field directly links child to parent
 		if b.Parent != "" {
 			addBlock(b.Parent, b.ID)
@@ -376,6 +388,11 @@ func (p *BeadPoller) pollAnvil(ctx context.Context, name string, anvil config.An
 		if hasClarificationTag(b.Labels) {
 			continue
 		}
+		// Re-derived on every poll, never restored: ForceIndependent is
+		// json:"-" and so survives neither the queue cache nor any other
+		// round-trip through the bead's JSON form. The label is the durable
+		// record; this field is the transport the dispatch path already reads.
+		b.ForceIndependent = epic.IsIndependent(b.Labels)
 		eligible = append(eligible, b)
 	}
 

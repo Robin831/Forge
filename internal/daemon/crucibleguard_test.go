@@ -615,3 +615,65 @@ func TestClearResolvedEpicHold_NoOps(t *testing.T) {
 
 	assert.Empty(t, needsHumanKeys(t, d.db))
 }
+
+// The per-child opt-out, from the withholding side: no Crucible will claim an
+// "independent" child, so withholding it would leave it queued forever with
+// nothing to dispatch it. Its siblings are still the Crucible's.
+func TestCrucibleOwnedChildren_IndependentChildIsNotWithheld(t *testing.T) {
+	d := guardDaemon()
+	beads := []poller.Bead{
+		{ID: "parent-1", Anvil: "repo", Labels: []string{"crucible"}, Blocks: []string{"child-1", "child-2"}},
+		{ID: "child-1", Anvil: "repo", Parent: "parent-1", Labels: []string{"independent"}},
+		{ID: "child-2", Anvil: "repo", Parent: "parent-1"},
+	}
+
+	owned := d.crucibleOwnedChildren(crucibleCfg(true), beads)
+
+	assert.Equal(t, []string{"child-2"}, ownedIDs(owned, "repo", beads))
+}
+
+// The same answer through the other route: a child of a parent that is already
+// mid-Crucible (and so absent from the batch) is matched by its own parent
+// reference — but not when it opted out.
+func TestCrucibleOwnedChildren_IndependentChildOfActiveCrucible(t *testing.T) {
+	d := guardDaemon()
+	d.crucibleStatuses.Store("repo/parent-1", crucible.Status{ParentID: "parent-1"})
+	beads := []poller.Bead{
+		{ID: "child-1", Anvil: "repo", Parent: "parent-1", Labels: []string{"independent"}},
+		{ID: "child-2", Anvil: "repo", Parent: "parent-1"},
+	}
+
+	owned := d.crucibleOwnedChildren(crucibleCfg(true), beads)
+
+	assert.Equal(t, []string{"child-2"}, ownedIDs(owned, "repo", beads))
+}
+
+// With the Crucible switched off, children are withheld on the strength of the
+// EpicBranch stamp alone. An opted-out child is never stamped, but a stale
+// stamp (from a cache, or from before the label was added) must not withhold it
+// either: nothing is going to run it.
+func TestCrucibleOwnedChildren_IndependentChildIgnoresAStaleStamp(t *testing.T) {
+	d := guardDaemon()
+	beads := []poller.Bead{
+		{ID: "child-1", Anvil: "repo", Labels: []string{"independent"}, EpicBranch: "feature/parent-1"},
+		{ID: "child-2", Anvil: "repo", EpicBranch: "feature/parent-1"},
+	}
+
+	owned := d.crucibleOwnedChildren(crucibleCfg(false), beads)
+
+	assert.Equal(t, []string{"child-2"}, ownedIDs(owned, "repo", beads))
+}
+
+// The manual "run independently" path reaches dispatch with ForceIndependent
+// set and no label at all; it must be released for exactly the same reason.
+func TestCrucibleOwnedChildren_ForceIndependentChildIsNotWithheld(t *testing.T) {
+	d := guardDaemon()
+	beads := []poller.Bead{
+		{ID: "parent-1", Anvil: "repo", Labels: []string{"crucible"}, Blocks: []string{"child-1"}},
+		{ID: "child-1", Anvil: "repo", Parent: "parent-1", ForceIndependent: true},
+	}
+
+	owned := d.crucibleOwnedChildren(crucibleCfg(true), beads)
+
+	assert.Empty(t, owned)
+}
