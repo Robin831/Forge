@@ -1378,13 +1378,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 	// when no worker is actually running for the bead — keyed off the same
 	// activeBeads lock the dispatcher uses — instead of the old
 	// `pr.Status != needs_fix` proxy that wedged PRs parked in needs_fix.
-	d.bellowsMonitor.SetInFlightChecker(func(beadID string) bool {
-		if beadID == "" {
-			return false
-		}
-		_, inFlight := d.activeBeads.Load(beadID)
-		return inFlight
-	})
+	d.bellowsMonitor.SetInFlightChecker(d.beadInFlight)
 	// Re-attempt any close-after-merge that a previous cycle (or a previous
 	// daemon lifetime) could not complete. Registered as a cycle hook rather
 	// than an event handler because the triggering PR is already merged and
@@ -2959,10 +2953,27 @@ func (d *Daemon) runSelfDeploy(sd config.SelfDeployConfig) {
 }
 
 // activeWorkerIDs identifies the workers that would be disrupted by a restart:
-// all non-terminal dispatch/lifecycle workers plus operator-paused workers
-// (which still hold a worktree and would resume into a running Smith). Workers
-// are named by bead where known, since that is what an operator recognises when
-// a deploy reports what is holding it up.
+// the dispatch/lifecycle workers that own a live process or pipeline goroutine
+// (smith and the quench/burnish/rebase/assay fix workers) plus operator-paused
+// workers (which still hold a worktree and would resume into a running Smith).
+// Workers are named by bead where known, since that is what an operator
+// recognises when a deploy reports what is holding it up.
+//
+// A monitor-only row (state.WorkerStatus.IsMonitorOnly) whose bead is NOT in
+// flight is skipped: that is bellows' per-PR monitor, which is non-terminal —
+// so ActiveWorkers reports it — but carries no PID and nothing to interrupt,
+// and lives for as long as its PR stays open. Waiting on one meant a single PR
+// parked in the fix loop deferred every self-deploy for the full
+// max_drain_wait, forever (Forge-ti4e).
+//
+// The in-flight test is what makes that skip safe, because the status alone
+// does not mean "nobody is working": the pipeline moves its OWN row to
+// monitoring right after warden approval (internal/pipeline), before the push
+// and before finalizePipeline creates the PR, notifies and removes the
+// worktree. Its bead holds an activeBeads reservation for that whole window, so
+// it keeps holding the drain, while a bellows monitor row — which never appears
+// in activeBeads — does not. It is the same map the bellows in-flight checker
+// reads (beadInFlight), so "busy" means one thing across the daemon.
 func (d *Daemon) activeWorkerIDs() ([]string, error) {
 	active, err := d.db.ActiveWorkers()
 	if err != nil {
@@ -2975,6 +2986,9 @@ func (d *Daemon) activeWorkerIDs() ([]string, error) {
 	ids := make([]string, 0, len(active)+len(paused))
 	for _, group := range [][]state.Worker{active, paused} {
 		for _, w := range group {
+			if w.Status.IsMonitorOnly() && !d.beadInFlight(w.BeadID) {
+				continue
+			}
 			if w.BeadID != "" {
 				ids = append(ids, w.BeadID)
 				continue

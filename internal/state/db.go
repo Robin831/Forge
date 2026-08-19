@@ -771,6 +771,31 @@ const (
 	WorkerKilled  WorkerStatus = "killed"
 )
 
+// IsMonitorOnly reports whether this status is the one bellows' per-PR monitor
+// rows carry — a bookkeeping row that holds no PID, no pipeline goroutine and
+// no worktree, and lives for as long as its PR stays open. Both statuses are
+// the same row in two states, a monitored PR and a muted one, so they answer
+// identically.
+//
+// The distinction matters wherever "is the forge busy" means "would restarting
+// this process destroy something": the self-deploy drain waits on the active
+// set, and a bellows monitor row is not something to wait for — nothing is
+// running, and the row outlives any number of restarts. Counting them made
+// every deploy wait out the full max_drain_wait whenever a single PR sat in the
+// fix loop (Forge-ti4e).
+//
+// The status is NOT on its own a licence to treat a row as idle. A pipeline
+// moves its own row to WorkerMonitoring as soon as warden approves — before the
+// branch is pushed, before daemon.finalizePipeline creates the PR (with retries)
+// and notifies, and before the worktree is removed — so during that window a
+// monitoring row belongs to a live pipeline goroutine. A caller that means "no
+// work would be lost" must pair this with an independent liveness test for the
+// bead; the drain uses the daemon's activeBeads reservation, which a pipeline
+// holds until finalize completes and a bellows row never takes.
+func (s WorkerStatus) IsMonitorOnly() bool {
+	return s == WorkerMonitoring || s == WorkerDetached
+}
+
 // pausedTransitions is the authoritative state-machine table for transitions
 // into and out of the paused status. It is the single source of truth shared by
 // sibling concerns (IPC handlers, the pipeline goroutine) so they never encode

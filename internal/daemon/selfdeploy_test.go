@@ -191,6 +191,70 @@ func TestActiveWorkerIDs_ReportsActiveAndPaused(t *testing.T) {
 	assert.ElementsMatch(t, []string{"b1", "b2"}, ids, "running + paused reported by bead; done excluded")
 }
 
+// TestActiveWorkerIDs_ExcludesBellowsMonitorRows pins the drain guard to work
+// that owns a process: bellows' per-PR monitor rows are non-terminal (so
+// ActiveWorkers returns them) but hold no PID, no worktree and no pipeline
+// goroutine, and they survive for as long as their PR is open. Counting them
+// made a PR parked in the fix loop defer every self-deploy for the full
+// max_drain_wait (Forge-ti4e).
+func TestActiveWorkerIDs_ExcludesBellowsMonitorRows(t *testing.T) {
+	d, db := newSelfDeployDaemon(t, config.SelfDeployConfig{}, nil)
+
+	require.NoError(t, db.InsertWorker(&state.Worker{
+		ID: "bellows-forge-832", BeadID: "b-mon", Anvil: "forge", Status: state.WorkerMonitoring,
+		Phase: "bellows", PRNumber: 832, StartedAt: time.Now(),
+	}))
+	require.NoError(t, db.InsertWorker(&state.Worker{
+		ID: "bellows-forge-901", BeadID: "b-det", Anvil: "forge", Status: state.WorkerDetached,
+		Phase: "bellows", PRNumber: 901, StartedAt: time.Now(),
+	}))
+
+	ids, err := d.activeWorkerIDs()
+	require.NoError(t, err)
+	assert.Empty(t, ids, "monitor rows alone must let the deploy through")
+
+	// A real fix worker on the same PR still holds the deploy: it owns a Smith
+	// process a restart would kill mid-run.
+	require.NoError(t, db.InsertWorker(&state.Worker{
+		ID: "quench-forge-832", BeadID: "b-fix", Anvil: "forge", Status: state.WorkerRunning,
+		Phase: "quench", PID: 4242, PRNumber: 832, StartedAt: time.Now(),
+	}))
+
+	ids, err = d.activeWorkerIDs()
+	require.NoError(t, err)
+	assert.ElementsMatch(t, []string{"b-fix"}, ids, "lifecycle fix workers still drain")
+}
+
+// TestActiveWorkerIDs_HoldsPipelineOwnedMonitoringRow pins the other half of the
+// monitor-only skip: WorkerMonitoring is not exclusively bellows bookkeeping.
+// The pipeline flips its own row to monitoring the moment warden approves —
+// before the branch is pushed and before finalizePipeline creates the PR,
+// notifies and removes the worktree — and it holds the bead's activeBeads
+// reservation across that window. A restart there would abort PR creation for a
+// branch that was just built, so that row must keep holding the drain even
+// though its status matches a bellows monitor's (Forge-ti4e).
+func TestActiveWorkerIDs_HoldsPipelineOwnedMonitoringRow(t *testing.T) {
+	d, db := newSelfDeployDaemon(t, config.SelfDeployConfig{}, nil)
+
+	require.NoError(t, db.InsertWorker(&state.Worker{
+		ID: "smith-forge-1", BeadID: "b-finalize", Anvil: "forge", Status: state.WorkerMonitoring,
+		Phase: "bellows", StartedAt: time.Now(),
+	}))
+
+	// Without the reservation the row is indistinguishable from a bellows
+	// monitor and is skipped.
+	ids, err := d.activeWorkerIDs()
+	require.NoError(t, err)
+	assert.Empty(t, ids, "a monitoring row with no in-flight bead is bellows bookkeeping")
+
+	// In flight = a live pipeline goroutine owns the bead through finalize.
+	d.activeBeads.Store("b-finalize", true)
+	ids, err = d.activeWorkerIDs()
+	require.NoError(t, err)
+	assert.ElementsMatch(t, []string{"b-finalize"}, ids,
+		"pipeline-owned monitoring row must hold the deploy until finalize completes")
+}
+
 // TestRunSelfDeploy_DrainTimeoutDefersAndRestoresPause verifies the pause/drain
 // path: when workers do not drain, runSelfDeploy logs a skipped event and undoes
 // the pause it introduced (without ever touching git/go/systemctl).

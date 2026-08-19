@@ -219,3 +219,16 @@ func (d *Daemon) pushSteer(beadID, msg string) bool {
 	}
 	return h.pushSteer(msg)
 }
+
+// beadInFlight reports whether a bead currently holds an activeBeads
+// reservation, i.e. some goroutine in this daemon owns its dispatch. It is the
+// single reader of that map for "is somebody working on this bead right now",
+// shared by bellows' in-flight checker and the self-deploy drain so the two
+// cannot disagree about what counts as busy.
+func (d *Daemon) beadInFlight(beadID string) bool {
+	if beadID == "" {
+		return false
+	}
+	_, inFlight := d.activeBeads.Load(beadID)
+	return inFlight
+}
