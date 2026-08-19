@@ -716,13 +716,22 @@ func New(cfg *config.Config, configPath string) (*Daemon, error) {
 	d.beadShower = func(anvilPath, beadID string) ([]byte, string, error) {
 		// Use context.Background() so the bd show call succeeds even during
 		// graceful shutdown (d.runCtx may already be cancelled at that point).
-		cmd, cancel := executil.BdCommand(context.Background(), "show", beadID, "--json")
+		//
+		// The dependents array is requested for every consumer of this shower,
+		// not just maybeCloseDecomposedParent, so there is one bd invocation
+		// shape here rather than a flagged and an unflagged one to pick between.
+		// Without it bd omits the array (see executil.BdIncludeDependentsFlag)
+		// and maybeCloseDecomposedParent reads "no dependents" for every parent
+		// — the branch that auto-closes a bead its children are still blocked
+		// on. The two field lookups (status, external_ref) are unaffected by the
+		// extra data beyond its cost.
+		cmd, cancel := executil.BdShowDependents(context.Background(), beadID)
 		defer cancel()
 		cmd.Dir = anvilPath
 		var stderrBuf bytes.Buffer
 		cmd.Stderr = &stderrBuf
 		out, err := cmd.Output()
-		return out, stderrBuf.String(), err
+		return out, stderrBuf.String(), executil.ClassifyBdShowError(err, stderrBuf.String())
 	}
 	d.beadFetcher = crucible.FetchBead
 	d.parentCloser = func(anvilPath, beadID, reason string) error {

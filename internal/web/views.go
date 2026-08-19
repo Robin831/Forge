@@ -1,6 +1,7 @@
 package web
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -420,17 +421,25 @@ func isBlockingDep(e bdShowEntry) bool {
 }
 
 // bdShowJSON is the command runner used by the dep helpers to invoke
-// `bd show <id> --json`. The variable is package-level so tests can swap it
-// for a fake without spawning real subprocesses. The dir parameter is the
-// anvil's on-disk path; passing a non-empty value sets cmd.Dir so bd can
-// locate the Dolt database.
+// `bd show <id> --json --include-dependents`. The variable is package-level so
+// tests can swap it for a fake without spawning real subprocesses. The dir
+// parameter is the anvil's on-disk path; passing a non-empty value sets cmd.Dir
+// so bd can locate the Dolt database.
+//
+// The flag is not optional here: the bead detail view's "blocks" list is read
+// straight out of the dependents array, which bd omits unless asked for (see
+// executil.BdIncludeDependentsFlag), so without it every bead renders as
+// blocking nothing.
 var bdShowJSON = func(ctx context.Context, dir, beadID string) ([]byte, error) {
-	cmd, cancel := executil.BdCommand(ctx, "show", beadID, "--json")
+	cmd, cancel := executil.BdShowDependents(ctx, beadID)
 	defer cancel()
 	if dir != "" {
 		cmd.Dir = dir
 	}
-	return cmd.Output()
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+	return out, executil.ClassifyBdShowError(err, stderr.String())
 }
 
 // maxDepDepth caps the recursion depth on /api/bead/{id}/deps. The modal's

@@ -735,7 +735,11 @@ func createSubBeads(ctx context.Context, parent poller.Bead, tasks []subTaskVerd
 		// Re-fetch parent to get accurate dependency data from bd.
 		var upstreamIDs, downstreamIDs []string
 		showCtx, showCancel := context.WithTimeout(ctx, executil.BdTimeout())
-		showOut, showErr := run(showCtx, anvilPath, "show", parent.ID, "--json")
+		// --include-dependents: bd omits the dependents array without it, which
+		// would leave downstreamIDs empty and silently drop the parent's
+		// downstream blocks instead of transferring them to the last sub-bead.
+		showOut, showErr := run(showCtx, anvilPath,
+			executil.BdShowDependentsArgs(parent.ID)...)
 		showCancel()
 		if showErr == nil {
 			upstreamIDs, downstreamIDs = parseDepsFromShow(string(showOut))

@@ -208,7 +208,7 @@ func TestOpenChildren_MissingLabelsAreAnOrdinaryChild(t *testing.T) {
 // epic that still has work.
 func TestOpenChildren_UnreadableLabelsAreOrdinaryChildren(t *testing.T) {
 	withFakeBd(t, `case "$*" in
-  "show parent-1 --json") echo '[{"id":"parent-1","dependents":[`+
+  "show parent-1 --json --include-dependents") echo '[{"id":"parent-1","dependents":[`+
 		`{"id":"child-1","dependency_type":"blocks","status":"open"},`+
 		`{"id":"child-2","dependency_type":"blocks","status":"open"}]}]' ;;
   *) echo "bd exploded" >&2; exit 3 ;;
@@ -274,7 +274,7 @@ func TestLookupBlocks_MissingLabelsAreAnOrdinaryChild(t *testing.T) {
 // And the same when the label lookup itself fails.
 func TestLookupBlocks_UnreadableLabelsAreOrdinaryChildren(t *testing.T) {
 	withFakeBd(t, `case "$*" in
-  "show parent-1 --json") echo '[{"id":"parent-1","dependents":[{"id":"child-1","dependency_type":"blocks","status":"open"}]}]' ;;
+  "show parent-1 --json --include-dependents") echo '[{"id":"parent-1","dependents":[{"id":"child-1","dependency_type":"blocks","status":"open"}]}]' ;;
   *) echo "bd exploded" >&2; exit 3 ;;
 esac`)
 
