@@ -50,6 +50,9 @@ const (
 	ReviewFixResultPreserved = "preserved"
 	// ReviewFixResultFailed — the attempt produced nothing to push.
 	ReviewFixResultFailed = "failed"
+	// ReviewFixResultRateLimited — every provider was rate limited, so no fix
+	// was even attempted. The dispatch is uncounted via UndoReviewFixDispatch.
+	ReviewFixResultRateLimited = "rate_limited"
 )
 
 // RecordReviewFixDispatch registers a review-fix dispatch against headSHA and
@@ -121,6 +124,24 @@ func (db *DB) SetReviewFixDispatchResult(anvil string, prNumber int, result stri
 		result, time.Now().Format(dbTimeLayout), anvil, prNumber)
 	if err != nil {
 		return fmt.Errorf("recording review fix dispatch result for %s/%d: %w", anvil, prNumber, err)
+	}
+	return nil
+}
+
+// UndoReviewFixDispatch takes back the attempt RecordReviewFixDispatch counted
+// for a dispatch that never ran a fix because every provider was rate limited.
+// A rate-limited spawn says nothing about whether the head is converging, so
+// letting it consume the same-head budget trips the breaker on provider
+// weather instead of on rebuilt work (PRs #834–836, 2026-08-19). No-op when no
+// row exists.
+func (db *DB) UndoReviewFixDispatch(anvil string, prNumber int) error {
+	_, err := db.conn.Exec(
+		`UPDATE review_fix_dispatches
+		 SET attempts = MAX(attempts - 1, 0), last_result = ?, updated_at = ?
+		 WHERE anvil = ? AND pr_number = ?`,
+		ReviewFixResultRateLimited, time.Now().Format(dbTimeLayout), anvil, prNumber)
+	if err != nil {
+		return fmt.Errorf("undoing review fix dispatch for %s/%d: %w", anvil, prNumber, err)
 	}
 	return nil
 }

@@ -374,6 +374,53 @@ func (m *Manager) HandleEvent(ctx context.Context, event bellows.PREvent) {
 	}
 }
 
+// UncountCIFix undoes the attempt HandleEvent counted for a CI-fix dispatch
+// that did no work because every provider was rate limited. Without this, a
+// session-wide limit exhausts maxCI in minutes of 2-minute Bellows polls —
+// the counter exists to bound real fix work, not provider availability
+// (PRs #834–836, 2026-08-19).
+func (m *Manager) UncountCIFix(anvil string, prNumber int) {
+	m.uncountFix(anvil, prNumber, "ci")
+}
+
+// UncountReviewFix is UncountCIFix for the review-fix counter.
+func (m *Manager) UncountReviewFix(anvil string, prNumber int) {
+	m.uncountFix(anvil, prNumber, "review")
+}
+
+func (m *Manager) uncountFix(anvil string, prNumber int, kind string) {
+	m.mu.Lock()
+	st, ok := m.states[m.key(anvil, prNumber)]
+	if !ok {
+		m.mu.Unlock()
+		return
+	}
+	switch kind {
+	case "ci":
+		if st.CIFixCount > 0 {
+			st.CIFixCount--
+		}
+	case "review":
+		if st.ReviewFixCnt > 0 {
+			st.ReviewFixCnt--
+		}
+	}
+	dbID := st.ID
+	ciFixCount := st.CIFixCount
+	reviewFixCnt := st.ReviewFixCnt
+	rebaseCount := st.RebaseCount
+	ciPassing := st.CIPassing
+	m.mu.Unlock()
+
+	m.logger.Info("uncounted rate-limited fix dispatch", "pr", prNumber, "anvil", anvil, "kind", kind)
+
+	if dbID > 0 {
+		if err := m.db.UpdatePRLifecycle(dbID, ciFixCount, reviewFixCnt, rebaseCount, ciPassing); err != nil {
+			m.logger.Error("failed to persist uncounted fix dispatch", "pr", prNumber, "anvil", anvil, "error", err)
+		}
+	}
+}
+
 // GetState returns the current lifecycle state for a PR.
 func (m *Manager) GetState(anvil string, prNumber int) *PRState {
 	m.mu.Lock()

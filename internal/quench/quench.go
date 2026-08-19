@@ -90,6 +90,11 @@ type FixResult struct {
 	Duration time.Duration
 	// Error if the fix process itself failed.
 	Error error
+	// RateLimited is true when every configured provider rejected the session
+	// as rate limited, so no fix work even started. Error is set as well, but
+	// callers must treat this dispatch as "never happened" — it says nothing
+	// about the PR and must not consume any attempt budget.
+	RateLimited bool
 }
 
 // BatchFixParams holds the inputs for a batched CI fix attempt.
@@ -195,6 +200,7 @@ func BatchFix(ctx context.Context, p BatchFixParams) *FixResult {
 	}
 
 	if smithResult.RateLimited {
+		result.RateLimited = true
 		result.Error = fmt.Errorf("all providers (%d) are rate limited", len(providers))
 		if p.DB != nil {
 			_ = p.DB.LogEvent(state.EventQuenchFailed,
@@ -435,6 +441,7 @@ func Fix(ctx context.Context, p FixParams) *FixResult {
 			_ = p.DB.LogEvent(state.EventQuenchFailed,
 				fmt.Sprintf("PR #%d attempt %d: all providers rate limited", p.PRNumber, attempt),
 				p.BeadID, p.AnvilName)
+			result.RateLimited = true
 			result.Error = fmt.Errorf("all providers (%d) are rate limited", len(providers))
 			result.Duration = time.Since(start)
 			return result

@@ -565,7 +565,10 @@ type SettingsConfig struct {
 	// RateLimitBackoff is how long dispatchBead waits after releasing a bead
 	// back to open when all providers are rate limited. During this window the
 	// bead slot stays reserved (activeBeads) so the poller does not
-	// immediately re-claim it. Defaults to 5 minutes.
+	// immediately re-claim it. It is also the duration of the daemon's global
+	// rate-limit hold: any worker observing every provider rate limited defers
+	// ALL automatic AI dispatch (new beads, CI/review fixes, Assay) for this
+	// long, without consuming attempt budgets. Defaults to 5 minutes.
 	RateLimitBackoff time.Duration `mapstructure:"rate_limit_backoff" yaml:"rate_limit_backoff"`
 	// SmithProviders is the ordered list of AI providers used specifically for
 	// dispatch pipeline (Smith + Warden + Schematic). When empty, Providers is

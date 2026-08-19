@@ -138,3 +138,58 @@ func TestReviewFixDispatch_IsolatedPerPR(t *testing.T) {
 		t.Errorf("second PR started at attempts=%d, want 1", got)
 	}
 }
+
+// TestUndoReviewFixDispatch_GivesBackRateLimitedAttempt covers the fix for the
+// 2026-08-19 incident: a dispatch that never ran (every provider rate limited)
+// must not consume the same-head budget, so undoing it restores the previous
+// count, floors at zero, tags the row rate_limited, and tolerates a missing row.
+func TestUndoReviewFixDispatch_GivesBackRateLimitedAttempt(t *testing.T) {
+	db := openReviewFixDB(t)
+
+	for i := 0; i < 2; i++ {
+		if _, err := db.RecordReviewFixDispatch("munin", 4801, "abc123"); err != nil {
+			t.Fatalf("RecordReviewFixDispatch: %v", err)
+		}
+	}
+	if err := db.UndoReviewFixDispatch("munin", 4801); err != nil {
+		t.Fatalf("UndoReviewFixDispatch: %v", err)
+	}
+	rec, err := db.GetReviewFixDispatch("munin", 4801)
+	if err != nil {
+		t.Fatalf("GetReviewFixDispatch: %v", err)
+	}
+	if rec.Attempts != 1 {
+		t.Fatalf("attempts after undo = %d, want 1", rec.Attempts)
+	}
+	if rec.LastResult != ReviewFixResultRateLimited {
+		t.Fatalf("last_result after undo = %q, want %q", rec.LastResult, ReviewFixResultRateLimited)
+	}
+
+	// Undoing past zero must floor, not go negative.
+	for i := 0; i < 3; i++ {
+		if err := db.UndoReviewFixDispatch("munin", 4801); err != nil {
+			t.Fatalf("UndoReviewFixDispatch: %v", err)
+		}
+	}
+	rec, err = db.GetReviewFixDispatch("munin", 4801)
+	if err != nil {
+		t.Fatalf("GetReviewFixDispatch: %v", err)
+	}
+	if rec.Attempts != 0 {
+		t.Fatalf("attempts after repeated undo = %d, want 0", rec.Attempts)
+	}
+
+	// The next real dispatch counts up from the floored value.
+	got, err := db.RecordReviewFixDispatch("munin", 4801, "abc123")
+	if err != nil {
+		t.Fatalf("RecordReviewFixDispatch: %v", err)
+	}
+	if got != 1 {
+		t.Fatalf("attempts after re-record = %d, want 1", got)
+	}
+
+	// No row at all: a no-op, not an error.
+	if err := db.UndoReviewFixDispatch("munin", 9999); err != nil {
+		t.Fatalf("UndoReviewFixDispatch on missing row: %v", err)
+	}
+}
