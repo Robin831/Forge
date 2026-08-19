@@ -307,6 +307,35 @@ func TestLookupBlocks_ClosedStatusIsNormalisedLikeParseOpenChildren(t *testing.T
 	assert.Equal(t, blocks, open, "the two readers must agree on what closed means")
 }
 
+// The other half of the shared payload vocabulary. lookupBlocks used to count
+// only "blocks" edges while parseOpenChildren counted "blocks" and
+// "parent-child", so a family linked purely by parent-child edges was held open
+// by OpenChildren — the parent escalates instead of dispatching — while its
+// Blocks stayed empty, IsCrucibleCandidate never fired, and the epic had no way
+// to orchestrate its way out of the hold. The wider pair is what pollAnvil
+// already reconstructs Blocks from when parent and child share a poll batch, so
+// the fallback lookup now agrees with both the batch path and the other reader.
+// "depends_on" stays excluded at every site: it is sequencing, not parenthood.
+func TestLookupBlocks_CountsParentChildEdgesLikeParseOpenChildren(t *testing.T) {
+	dependents := `{"id":"parent-1","dependents":[
+		{"id":"child-1","dependency_type":"blocks","status":"open"},
+		{"id":"child-2","dependency_type":"parent-child","status":"open"},
+		{"id":"other-1","dependency_type":"depends_on","status":"open"}]}`
+	withFakeBdShow(t, map[string]string{
+		"parent-1": dependents,
+		"child-1":  `{"id":"child-1","status":"open"}`,
+		"child-2":  `{"id":"child-2","status":"open"}`,
+	})
+
+	blocks := lookupBlocks(context.Background(), "parent-1", t.TempDir())
+	assert.Equal(t, []string{"child-1", "child-2"}, blocks,
+		"a parent-child edge is a child here too, and a sequencing edge is not")
+
+	open, err := parseOpenChildren([]byte(dependents))
+	require.NoError(t, err)
+	assert.Equal(t, blocks, open, "the two readers must agree on what a child is")
+}
+
 // The label lookup answers a multi-id `bd show`, which returns an array; a
 // single-id show returns an array of one, and a bare object is accepted for the
 // same case. A bead absent from the answer is not in the map, which is what
@@ -356,12 +385,25 @@ func TestParseIndependent(t *testing.T) {
 // the record registered for each requested id, in the JSON array bd actually
 // emits. Ids with no record are omitted from the answer, which is how "bd does
 // not report this bead" is expressed.
+//
+// A record is written to the script through json.Compact and single-quote
+// escaping, never through a blanket whitespace flatten: the fixtures are
+// multi-line for readability, but the shell form below needs one line, and
+// collapsing every whitespace run cannot tell an indentation newline from a
+// space inside a string value. It used to do exactly that, which silently
+// rewrote a `" Independent "` label fixture into `"Independent"` — turning an
+// end-to-end assertion about trimming into one about case-folding alone, with
+// the test still green. json.Compact only removes whitespace *between* JSON
+// tokens, so what the fixture says is what the code under test reads (and an
+// invalid fixture now fails loudly rather than being reshaped).
 func withFakeBdShow(t *testing.T, records map[string]string) {
 	t.Helper()
 
 	var cases strings.Builder
 	for id, record := range records {
-		fmt.Fprintf(&cases, "    %s) rec='%s' ;;\n", id, strings.Join(strings.Fields(record), ""))
+		var compact bytes.Buffer
+		require.NoError(t, json.Compact(&compact, []byte(record)), "fixture for %s is not valid JSON", id)
+		fmt.Fprintf(&cases, "    %s) rec='%s' ;;\n", id, shellSingleQuoted(compact.String()))
 	}
 
 	withFakeBd(t, `ids=""
@@ -377,6 +419,14 @@ for id in $ids; do
   if [ -z "$out" ]; then out="$rec"; else out="$out,$rec"; fi
 done
 printf '[%s]\n' "$out"`)
+}
+
+// shellSingleQuoted escapes a value for embedding inside a single-quoted /bin/sh
+// string, where the single quote is the only character with meaning: close the
+// quote, emit an escaped one, reopen. Everything else — including whitespace
+// inside a JSON string value — passes through byte for byte.
+func shellSingleQuoted(s string) string {
+	return strings.ReplaceAll(s, "'", `'\''`)
 }
 
 // The opt-in that loses to "independent" is one an operator deliberately added,

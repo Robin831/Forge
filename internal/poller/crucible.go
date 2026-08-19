@@ -66,8 +66,9 @@ func ResolveBlocks(ctx context.Context, beads []Bead, anvilPaths map[string]stri
 }
 
 // bdShowDependent represents a single entry in the "dependents" array
-// returned by `bd show --json`. Only entries with dependency_type "blocks"
-// indicate children of the bead.
+// returned by `bd show --json`. Only entries whose dependency_type
+// isChildDependency accepts ("blocks" or "parent-child") indicate children of
+// the bead.
 //
 // It deliberately carries no Labels field. A dependents entry is an edge
 // summary, not a bead record: `bd show --json` (verified against bd 1.1.2)
@@ -137,9 +138,10 @@ func OpenChildren(ctx context.Context, beadID, anvilPath string) ([]string, erro
 // in Forge (beadclose.go, the merge reconciler). If bd ever reports a finished
 // child as something else, an epic whose work is done would be held on every
 // poll instead of dispatching, so the vocabulary is pinned in a test rather
-// than assumed. isClosedStatus is shared with lookupBlocks so the vocabulary
-// cannot be read one way by one reader of this payload and another way by the
-// other.
+// than assumed. Both halves of it — isChildDependency and isClosedStatus — are
+// shared with lookupBlocks, so neither the set of edges that makes a dependent
+// a child nor the status that makes it finished can be read one way by one
+// reader of this payload and another way by the other.
 //
 // Malformed output is an error, never an empty slice: the caller reads "no
 // children" as permission to merge the parent to main.
@@ -151,7 +153,7 @@ func parseOpenChildren(output []byte) ([]string, error) {
 
 	var open []string
 	for _, dep := range resp.Dependents {
-		if dep.DependencyType != "blocks" && dep.DependencyType != "parent-child" {
+		if !isChildDependency(dep.DependencyType) {
 			continue
 		}
 		if isClosedStatus(dep.Status) {
@@ -169,6 +171,24 @@ func parseOpenChildren(output []byte) ([]string, error) {
 // the same per-path divergence the label normalisation exists to prevent.
 func isClosedStatus(status string) bool {
 	return strings.EqualFold(strings.TrimSpace(status), "closed")
+}
+
+// isChildDependency reads the dependency types that make a dependents entry a
+// child. It is the other half of the shared vocabulary, and for the same
+// reason: lookupBlocks used to count only "blocks" while parseOpenChildren
+// counted "blocks" and "parent-child", so a family linked purely by
+// parent-child edges was held open by OpenChildren (the parent escalates rather
+// than dispatching) while its Blocks stayed empty — IsCrucibleCandidate never
+// fired, and the epic could not orchestrate its way out of the hold. The wider
+// pair is the correct one at both sites: it is what pollAnvil reconstructs
+// Blocks from when child and parent are in the same poll batch, so the fallback
+// lookup now answers the way the batch path already did.
+//
+// "depends_on" is deliberately excluded at every site: it is a sequencing
+// constraint, and reading it as a child edge would have the Crucible adopt
+// downstream beads.
+func isChildDependency(depType string) bool {
+	return depType == "blocks" || depType == "parent-child"
 }
 
 // lookupBlocks fetches a bead's details and extracts the IDs of beads it blocks.
@@ -203,7 +223,7 @@ func lookupBlocks(ctx context.Context, beadID, anvilPath string) []string {
 
 	var blocks []string
 	for _, dep := range resp.Dependents {
-		if dep.DependencyType == "blocks" && !isClosedStatus(dep.Status) {
+		if isChildDependency(dep.DependencyType) && !isClosedStatus(dep.Status) {
 			blocks = append(blocks, dep.ID)
 		}
 	}
