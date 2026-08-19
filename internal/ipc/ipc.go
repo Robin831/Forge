@@ -553,8 +553,10 @@ type QueueItem struct {
 	// the queue UI can tell one operator's beads from a teammate's (and from
 	// the ones Forge itself raised) without opening each row. Empty until the
 	// first poll fills the daemon's side-map, the same way the timestamps
-	// above degrade.
-	CreatedBy string `json:"created_by,omitempty"`
+	// above degrade — and tagged like them rather than like Assignee, with no
+	// omitempty, so a bead the map has no entry for serialises as an empty
+	// string instead of dropping the key.
+	CreatedBy string `json:"created_by"`
 	// AutoDispatchTag is the anvil's configured dispatch label (forge.yaml
 	// `auto_dispatch_tag`). Surfaced on each queue row so the Hearth web UI
 	// can render a one-click "apply tag" button on Unlabeled beads without

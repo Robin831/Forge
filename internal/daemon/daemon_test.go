@@ -5210,9 +5210,9 @@ func TestHandleIPC_Queue_Timestamps(t *testing.T) {
 	const created = "2026-05-08T04:15:41Z"
 	const updated = "2026-05-12T11:08:11Z"
 	const createdBy = "Anna Sophie Pettersen Sylta"
-	d.replaceQueueTimestamps(
+	d.replaceQueueMeta(
 		map[string]struct{}{"forge": {}},
-		map[string]queueTimestamp{
+		map[string]queueSideMeta{
 			"forge/Forge-abc1": {CreatedAt: created, UpdatedAt: updated, CreatedBy: createdBy},
 		},
 	)
@@ -5221,8 +5221,8 @@ func TestHandleIPC_Queue_Timestamps(t *testing.T) {
 	require.Equal(t, "ok", resp.Type)
 
 	// Verify the raw JSON contains the new keys so the wire contract is
-	// stable for the frontend (created_at/updated_at must always be present,
-	// even when empty).
+	// stable for the frontend (created_at/updated_at/created_by must always be
+	// present, even when empty).
 	var raw struct {
 		Items []map[string]json.RawMessage `json:"items"`
 	}
@@ -5231,8 +5231,10 @@ func TestHandleIPC_Queue_Timestamps(t *testing.T) {
 	for _, item := range raw.Items {
 		_, hasCreated := item["created_at"]
 		_, hasUpdated := item["updated_at"]
+		_, hasCreatedBy := item["created_by"]
 		assert.True(t, hasCreated, "every queue item must expose a created_at key")
 		assert.True(t, hasUpdated, "every queue item must expose an updated_at key")
+		assert.True(t, hasCreatedBy, "every queue item must expose a created_by key")
 	}
 
 	var payload ipc.QueueResponse

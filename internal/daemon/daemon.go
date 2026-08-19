@@ -453,22 +453,22 @@ type Daemon struct {
 	// Bellows cycles do not stack reconcilers when one outlives the interval.
 	beadCloseReconciling atomic.Bool
 
-	// queueTimestamps holds the per-bead fields bd emits that the queue_cache
+	// queueMeta holds the per-bead fields bd emits that the queue_cache
 	// table does not carry (CreatedAt/UpdatedAt/CreatedBy) keyed by
 	// "anvil/beadID". It is refreshed alongside the queue_cache rebuild so the
 	// IPC "queue" handler can attach them to QueueItem responses without
 	// persisting them to SQLite. Missing entries return zero values, which
 	// serialise as empty strings on the wire.
-	queueTimestampsMu sync.RWMutex
-	queueTimestamps   map[string]queueTimestamp
+	queueMetaMu sync.RWMutex
+	queueMeta   map[string]queueSideMeta
 }
 
-// queueTimestamp carries the bd-emitted bead metadata that rides beside the
+// queueSideMeta carries the bd-emitted bead metadata that rides beside the
 // queue cache rather than inside it: the two ISO timestamps and the identity
 // that filed the bead. The strings are passed through verbatim (no parsing)
 // so any timezone or precision quirks from bd — and whatever spelling a bd
 // identity uses — flow straight to the client, which owns the display fold.
-type queueTimestamp struct {
+type queueSideMeta struct {
 	CreatedAt string
 	UpdatedAt string
 	CreatedBy string
@@ -619,7 +619,7 @@ func New(cfg *config.Config, configPath string) (*Daemon, error) {
 		reqTracker:            *ipc.NewRequestTracker("forge-"),
 		crucibleTickerResetCh: make(chan struct{}, 1),
 		lastPollMap:           make(map[string]anvilPollSnapshot),
-		queueTimestamps:       make(map[string]queueTimestamp),
+		queueMeta:             make(map[string]queueSideMeta),
 		authEscalated:         make(map[string]bool),
 		anvilHealth:           anvilhealth.New(),
 	}
@@ -3517,7 +3517,7 @@ func (d *Daemon) pollAndDispatch(ctx context.Context, fullPoll bool) {
 		// without persisting them in SQLite. The map is rebuilt per-poll for
 		// the same set of anvils as the cache itself, so freshness mirrors
 		// the cache exactly.
-		stamps := make(map[string]queueTimestamp)
+		stamps := make(map[string]queueSideMeta)
 		for _, b := range mergedForCache {
 			if b.Labels == nil {
 				b.Labels = []string{}
@@ -3535,7 +3535,7 @@ func (d *Daemon) pollAndDispatch(ctx context.Context, fullPoll bool) {
 				Section:     section,
 				Assignee:    b.Assignee,
 			})
-			stamps[b.Anvil+"/"+b.ID] = queueTimestamp{CreatedAt: b.CreatedAt, UpdatedAt: b.UpdatedAt, CreatedBy: b.CreatedBy}
+			stamps[b.Anvil+"/"+b.ID] = queueSideMeta{CreatedAt: b.CreatedAt, UpdatedAt: b.UpdatedAt, CreatedBy: b.CreatedBy}
 		}
 
 		// Also include in-progress beads from successful anvils.
@@ -3571,13 +3571,13 @@ func (d *Daemon) pollAndDispatch(ctx context.Context, fullPoll bool) {
 				Section:     state.QueueSectionInProgress,
 				Assignee:    b.Assignee,
 			})
-			stamps[b.Anvil+"/"+b.ID] = queueTimestamp{CreatedAt: b.CreatedAt, UpdatedAt: b.UpdatedAt, CreatedBy: b.CreatedBy}
+			stamps[b.Anvil+"/"+b.ID] = queueSideMeta{CreatedAt: b.CreatedAt, UpdatedAt: b.UpdatedAt, CreatedBy: b.CreatedBy}
 		}
 
 		if err := d.db.ReplaceQueueCacheForAnvils(succeededAnvils, dedupeCacheItems(cacheItems)); err != nil {
 			d.logger.Warn("failed to cache queue", "error", err)
 		} else {
-			d.replaceQueueTimestamps(succeededSet, stamps)
+			d.replaceQueueMeta(succeededSet, stamps)
 		}
 	}
 
@@ -6045,7 +6045,7 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 		out := make([]ipc.QueueItem, 0, len(items))
 		for _, it := range items {
 			labels := parseQueueLabels(it.Labels)
-			ts := d.lookupQueueTimestamp(it.Anvil, it.BeadID)
+			ts := d.lookupQueueMeta(it.Anvil, it.BeadID)
 			out = append(out, ipc.QueueItem{
 				BeadID:          it.BeadID,
 				Anvil:           it.Anvil,
@@ -9595,19 +9595,18 @@ func trimStrings(ss []string) []string {
 	return res
 }
 
-// replaceQueueTimestamps refreshes the in-memory timestamp map for the given
-// set of successfully-polled anvils. Entries belonging to other anvils are
-// kept verbatim, mirroring ReplaceQueueCacheForAnvils so a failed anvil poll
-// does not wipe its last-known timestamps. `fresh` is the full set of new
-// timestamps from this poll cycle (its keys must use the "anvil/beadID"
-// format).
-func (d *Daemon) replaceQueueTimestamps(succeeded map[string]struct{}, fresh map[string]queueTimestamp) {
-	d.queueTimestampsMu.Lock()
-	defer d.queueTimestampsMu.Unlock()
-	next := make(map[string]queueTimestamp, len(fresh)+len(d.queueTimestamps))
+// replaceQueueMeta refreshes the in-memory side-map for the given set of
+// successfully-polled anvils. Entries belonging to other anvils are kept
+// verbatim, mirroring ReplaceQueueCacheForAnvils so a failed anvil poll does
+// not wipe its last-known metadata. `fresh` is the full set of new entries
+// from this poll cycle (its keys must use the "anvil/beadID" format).
+func (d *Daemon) replaceQueueMeta(succeeded map[string]struct{}, fresh map[string]queueSideMeta) {
+	d.queueMetaMu.Lock()
+	defer d.queueMetaMu.Unlock()
+	next := make(map[string]queueSideMeta, len(fresh)+len(d.queueMeta))
 	// Keep entries from anvils that did not poll successfully this cycle so
-	// their timestamps remain available alongside their cached queue rows.
-	for k, v := range d.queueTimestamps {
+	// their metadata remains available alongside their cached queue rows.
+	for k, v := range d.queueMeta {
 		anvil, _, ok := strings.Cut(k, "/")
 		if !ok {
 			continue
@@ -9620,16 +9619,16 @@ func (d *Daemon) replaceQueueTimestamps(succeeded map[string]struct{}, fresh map
 	for k, v := range fresh {
 		next[k] = v
 	}
-	d.queueTimestamps = next
+	d.queueMeta = next
 }
 
-// lookupQueueTimestamp returns the CreatedAt/UpdatedAt/CreatedBy trio recorded
+// lookupQueueMeta returns the CreatedAt/UpdatedAt/CreatedBy trio recorded
 // for the given (anvil, beadID) during the most recent poll. Callers receive a
-// zero-valued queueTimestamp (empty strings) when no entry is present.
-func (d *Daemon) lookupQueueTimestamp(anvil, beadID string) queueTimestamp {
-	d.queueTimestampsMu.RLock()
-	defer d.queueTimestampsMu.RUnlock()
-	return d.queueTimestamps[anvil+"/"+beadID]
+// zero-valued queueSideMeta (empty strings) when no entry is present.
+func (d *Daemon) lookupQueueMeta(anvil, beadID string) queueSideMeta {
+	d.queueMetaMu.RLock()
+	defer d.queueMetaMu.RUnlock()
+	return d.queueMeta[anvil+"/"+beadID]
 }
 
 // parseQueueLabels decodes a JSON-encoded labels string from the queue_cache

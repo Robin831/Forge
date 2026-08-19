@@ -16,7 +16,7 @@
 // Identity is one distinct created_by value, decomposed for comparison.
 interface Identity {
   raw: string
-  // key is the whole identity compacted to lowercase alphanumerics, so
+  // key is the whole identity compacted to lowercase letters and digits, so
   // "Anna Sylta", "anna.sylta" and "annasylta" all collapse to one string.
   key: string
   // tokens are the identity's name parts, lowercased, in order.
@@ -31,10 +31,20 @@ function localPart(raw: string): string {
   return at > 0 ? raw.slice(0, at) : raw
 }
 
+// tokenSeparator is everything that is not a letter or a digit in any script.
+// The class is deliberately Unicode-aware rather than [^a-zA-Z0-9]: with the
+// ASCII form every non-ASCII letter acts as a separator, so "Åse Sylta"
+// tokenizes to ["se", "sylta"] and "Øystein" to ["ystein"] — keys built from
+// the mangled residue neither fold with the spellings they should nor stay
+// safely distinct from the ones they should not. Display is unaffected either
+// way (creatorLabel splits on whitespace); this is only about the fold, filter
+// and sort keys, and the deployment's names are Norwegian.
+const tokenSeparator = /[^\p{L}\p{N}]+/u
+
 function identityOf(raw: string): Identity {
   const local = localPart(raw.trim())
   const tokens = local
-    .split(/[^a-zA-Z0-9]+/)
+    .split(tokenSeparator)
     .filter(Boolean)
     .map((t) => t.toLowerCase())
   return { raw, key: tokens.join(''), tokens }
@@ -48,6 +58,17 @@ function identityOf(raw: string): Identity {
 // Two tokens is the floor deliberately. A single token would fold every
 // "Robin" into any "Robin <surname>" present in the queue, which is a much
 // likelier collision between two different people than a two-part match is.
+//
+// Two is a floor, not a proof: because the subsequence may skip tokens, a
+// handle spelled from any two of a longer name's parts folds into it, so a
+// real second person filing as "annapettersen" merges with "Anna Sophie
+// Pettersen Sylta". That residual risk is accepted rather than solved, on
+// two grounds — the fold is display-only (the daemon and the records keep
+// bd's value verbatim), and creatorTitle renders the row's own spelling in
+// the tooltip as "(filed as annapettersen)", so a wrong merge is inspectable
+// on the row rather than silent. Tightening the rule (requiring the first
+// and last token, say) would cost the fold most of the partial-name handles
+// it exists for.
 function concatOfTokenSubsequence(target: string, tokens: string[]): boolean {
   if (!target || tokens.length < 2) return false
   // reachable maps a consumed-prefix length of `target` to the largest number

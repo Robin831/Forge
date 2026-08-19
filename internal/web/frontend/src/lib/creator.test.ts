@@ -74,6 +74,20 @@ describe('buildCreatorAliases', () => {
     expect(aliases.size).toBe(1)
     expect(aliases.get('Forge')).toBe('Forge')
   })
+
+  it('keeps non-ASCII letters in the identity keys it folds on', () => {
+    // Tokenizing on [^a-zA-Z0-9] would turn "Åse Sylta" into ["se", "sylta"],
+    // so the handle spelling it would never fold and two unrelated names
+    // could collide on their ASCII residue instead.
+    const aliases = buildCreatorAliases(['Åse Sylta', 'åsesylta'])
+    expect(aliases.get('åsesylta')).toBe('Åse Sylta')
+  })
+
+  it('keeps two names that differ only in a non-ASCII letter apart', () => {
+    const aliases = buildCreatorAliases(['Åse Berg', 'Ase Berg'])
+    expect(aliases.get('Åse Berg')).toBe('Åse Berg')
+    expect(aliases.get('Ase Berg')).toBe('Ase Berg')
+  })
 })
 
 describe('canonicalCreator', () => {

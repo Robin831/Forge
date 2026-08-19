@@ -293,17 +293,36 @@ describe('QueuePane', () => {
           priority: 2,
           created_by: 'Anna Sophie Pettersen Sylta',
         }),
+        // A row from a queue snapshot older than the first poll that carried
+        // created_by — the mixed state the sort's empty-key branch exists for.
+        item({ bead_id: 'a4', anvil: 'forge', section: 'ready', priority: 3 }),
       ])
       await user.click(screen.getByRole('button', { name: /forge/ }))
-      await user.click(screen.getByRole('button', { name: /Ready \(3\)/ }))
+      await user.click(screen.getByRole('button', { name: /Ready \(4\)/ }))
       const idsInOrder = () => screen.getAllByRole('link').map((a) => a.textContent)
-      expect(idsInOrder()).toEqual(['a1', 'a2', 'a3'])
+      expect(idsInOrder()).toEqual(['a1', 'a2', 'a3', 'a4'])
 
       await user.selectOptions(screen.getByTestId('queue-sort-select'), 'created-by-asc')
 
       // "Anna Sylta" before "Forge", and the folded handle sorts with the
-      // full name rather than under "s".
-      expect(idsInOrder()).toEqual(['a2', 'a3', 'a1'])
+      // full name rather than under "s". The creator-less row sorts last
+      // rather than heading the list under an empty key.
+      expect(idsInOrder()).toEqual(['a2', 'a3', 'a1', 'a4'])
+    })
+
+    it('sorts every creator-less row last, in a list that has only those', async () => {
+      const user = userEvent.setup()
+      renderPane([
+        item({ bead_id: 'a1', anvil: 'forge', section: 'ready', priority: 0 }),
+        item({ bead_id: 'a2', anvil: 'forge', section: 'ready', priority: 1 }),
+      ])
+      await user.click(screen.getByRole('button', { name: /forge/ }))
+      await user.click(screen.getByRole('button', { name: /Ready \(2\)/ }))
+      await user.selectOptions(screen.getByTestId('queue-sort-select'), 'created-by-asc')
+
+      // Two empty keys compare equal, so the incoming order is preserved
+      // instead of the comparator inventing one.
+      expect(screen.getAllByRole('link').map((a) => a.textContent)).toEqual(['a1', 'a2'])
     })
   })
 

@@ -10,6 +10,9 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+
+	"github.com/Robin831/Forge/internal/ipc"
+	"github.com/Robin831/Forge/internal/state"
 )
 
 // bdShowMu serializes bdShowJSON swaps so that parallel tests cannot race
@@ -621,5 +624,143 @@ func TestBeadDetail_CommentsFailureReturnsEmpty(t *testing.T) {
 	}
 	if len(got.Comments) != 0 {
 		t.Errorf("expected zero comments on failure, got %+v", got.Comments)
+	}
+}
+
+// --- queueCreatedBy -------------------------------------------------------
+
+// queueCommandHandler answers the "queue" command with the given payload and
+// everything else with an empty object, which is all handleBeadDetail needs
+// from the daemon side.
+func queueCommandHandler(payload []byte, respType string) CommandHandler {
+	return func(cmd ipc.Command) ipc.Response {
+		if cmd.Type == "queue" {
+			return ipc.Response{Type: respType, Payload: payload}
+		}
+		return ipc.Response{Type: "ok", Payload: []byte(`{}`)}
+	}
+}
+
+func queuePayload(t *testing.T, items ...ipc.QueueItem) []byte {
+	t.Helper()
+	raw, err := json.Marshal(ipc.QueueResponse{Items: items})
+	if err != nil {
+		t.Fatalf("marshal queue payload: %v", err)
+	}
+	return raw
+}
+
+// seedQueueCacheBead puts one row in queue_cache so handleBeadDetail resolves
+// resp.Queue and reaches the queueCreatedBy lookup.
+func seedQueueCacheBead(t *testing.T, srv *Server, anvil, beadID string) {
+	t.Helper()
+	if err := srv.db.ReplaceQueueCacheForAnvils([]string{anvil}, []state.QueueItem{
+		{BeadID: beadID, Anvil: anvil, Title: "Creator bead", Priority: 2, Status: "open",
+			Labels: `[]`, Section: state.QueueSectionReady},
+	}); err != nil {
+		t.Fatalf("replace queue cache: %v", err)
+	}
+}
+
+// TestQueueCreatedBy_MatchesAndDegrades pins the helper's branches directly:
+// the anvil comparison is case-insensitive (queue_cache and the daemon's
+// registry do not always agree on casing), and every way the lookup can fail
+// yields "" rather than an error the detail page would have to render.
+func TestQueueCreatedBy_MatchesAndDegrades(t *testing.T) {
+	match := queuePayload(t,
+		ipc.QueueItem{BeadID: "Forge-other", Anvil: "forge", CreatedBy: "someone else"},
+		ipc.QueueItem{BeadID: "Forge-cby1", Anvil: "FORGE", CreatedBy: "Anna Sophie Pettersen Sylta"},
+	)
+	cases := []struct {
+		name     string
+		payload  []byte
+		respType string
+		want     string
+	}{
+		{"match on exact bead id and case-insensitive anvil", match, "ok", "Anna Sophie Pettersen Sylta"},
+		{"handler error", []byte(`{"items":[]}`), "error", ""},
+		{"empty payload", nil, "ok", ""},
+		{"undecodable payload", []byte(`{"items": "not-a-list"}`), "ok", ""},
+		{"bead absent from the snapshot", queuePayload(t,
+			ipc.QueueItem{BeadID: "Forge-none", Anvil: "forge", CreatedBy: "nobody"}), "ok", ""},
+		{"same bead id on another anvil", queuePayload(t,
+			ipc.QueueItem{BeadID: "Forge-cby1", Anvil: "hetzner", CreatedBy: "wrong anvil"}), "ok", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := newServerWithDefaults(t, queueCommandHandler(tc.payload, tc.respType))
+			if got := srv.queueCreatedBy("forge", "Forge-cby1"); got != tc.want {
+				t.Errorf("queueCreatedBy = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestBeadDetail_PopulatesCreatedBy covers the handleBeadDetail wiring: the
+// detail page and the queue pane must name the same filer, which is the whole
+// reason the field is sourced from the "queue" command rather than the cache.
+func TestBeadDetail_PopulatesCreatedBy(t *testing.T) {
+	stubBdShow(t, func(beadID string) ([]byte, error) {
+		return bdShowFixture(beadID, "Creator bead", "open", 2, nil, nil), nil
+	})
+	stubBdComments(t, func(_ string) ([]byte, error) { return []byte("[]"), nil })
+
+	payload := queuePayload(t,
+		ipc.QueueItem{BeadID: "Forge-cby1", Anvil: "FORGE", CreatedBy: "Anna Sophie Pettersen Sylta"},
+	)
+	srv := newServerWithDefaults(t, queueCommandHandler(payload, "ok"))
+	seedQueueCacheBead(t, srv, "forge", "Forge-cby1")
+	cookie := loginAndGetCookie(t, srv)
+
+	req := httptest.NewRequest("GET", "/api/bead/Forge-cby1", nil)
+	req.AddCookie(&http.Cookie{Name: "forge_session", Value: cookie})
+	rec := httptest.NewRecorder()
+	srv.routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	var got beadDetailResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if got.Queue == nil {
+		t.Fatalf("expected a queue row in the detail response")
+	}
+	if got.Queue.CreatedBy != "Anna Sophie Pettersen Sylta" {
+		t.Errorf("created_by = %q, want %q", got.Queue.CreatedBy, "Anna Sophie Pettersen Sylta")
+	}
+}
+
+// TestBeadDetail_CreatedByDegradesToEmpty is the other half: a daemon that
+// cannot answer the queue command still yields a rendered detail page, with
+// the byline simply absent.
+func TestBeadDetail_CreatedByDegradesToEmpty(t *testing.T) {
+	stubBdShow(t, func(beadID string) ([]byte, error) {
+		return bdShowFixture(beadID, "Creator bead", "open", 2, nil, nil), nil
+	})
+	stubBdComments(t, func(_ string) ([]byte, error) { return []byte("[]"), nil })
+
+	srv := newServerWithDefaults(t, queueCommandHandler([]byte(`{"items":[]}`), "error"))
+	seedQueueCacheBead(t, srv, "forge", "Forge-cby2")
+	cookie := loginAndGetCookie(t, srv)
+
+	req := httptest.NewRequest("GET", "/api/bead/Forge-cby2", nil)
+	req.AddCookie(&http.Cookie{Name: "forge_session", Value: cookie})
+	rec := httptest.NewRecorder()
+	srv.routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	var got beadDetailResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if got.Queue == nil {
+		t.Fatalf("expected a queue row in the detail response")
+	}
+	if got.Queue.CreatedBy != "" {
+		t.Errorf("created_by = %q, want empty", got.Queue.CreatedBy)
 	}
 }
