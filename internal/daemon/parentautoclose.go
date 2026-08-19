@@ -45,8 +45,10 @@ const (
 	autoCloseTryNext autoCloseVerdict = iota
 
 	// autoCloseDone: the walk ends here. Either the parent closed, or the
-	// candidate is this child's parent and this caller is simply not the one
-	// closing it — it is already closed, a sibling is closing it right now, it
+	// candidate could not be read at all (leaving the relationship unknown —
+	// unproven is not the same as ruled out), or the candidate is this child's
+	// parent and this caller is simply not the one closing it — it is already
+	// closed, the Crucible owns it, a sibling is closing it right now, it
 	// still has open children, or bd refused. "Identified but not closable by
 	// me" must end the walk just as firmly as a close: the trailing candidates
 	// are `blocks` sequencing edges that only look like parents from the
@@ -78,9 +80,10 @@ func (d *Daemon) maybeCloseGroupingParent(childID, anvil, anvilPath string) {
 	//
 	// At most one parent is closed per child close, and the walk stops at the
 	// first candidate that turns out to be this child's parent — closed or
-	// not. A bead has one parent; once it is found, the trailing candidates
-	// are sequencing edges and nothing that happens to the parent makes them
-	// closable.
+	// not — or that could not be read at all, leaving the relationship
+	// unknown. A bead has one parent; once it is found, the trailing
+	// candidates are sequencing edges and nothing that happens to the parent
+	// makes them closable.
 	for _, parentID := range poller.ParentCandidates(child.Bead) {
 		if d.closeGroupingParentIfComplete(parentID, childID, anvil, anvilPath) == autoCloseDone {
 			return
@@ -100,15 +103,6 @@ func (d *Daemon) closeGroupingParentIfComplete(parentID, childID, anvil, anvilPa
 		return autoCloseDone
 	}
 
-	if epic.IsOrchestrated(parent.Labels) {
-		// The Crucible owns an opted-in parent and closes it after the final
-		// PR merges. Closing it here would race that — and the Crucible owning
-		// this bead says nothing about the next candidate, so the walk goes on.
-		d.logger.Debug("grouping parent auto-close skipped: parent is orchestrated",
-			"parent", parentID, "child", childID, "anvil", anvil)
-		return autoCloseTryNext
-	}
-
 	children, open := parent.children()
 	if len(children) == 0 {
 		// A parent that reports no children at all is not the parent this
@@ -126,6 +120,18 @@ func (d *Daemon) closeGroupingParentIfComplete(parentID, childID, anvil, anvilPa
 
 	// From here the candidate is this child's parent, so every remaining exit
 	// ends the walk whether or not the close happens in this call.
+	if epic.IsOrchestrated(parent.Labels) {
+		// The Crucible owns an opted-in parent and closes it after the final
+		// PR merges. Closing it here would race that. This is the "identified
+		// but not closable by me" case: the parent is found, so the trailing
+		// candidates are sequencing edges and the walk must not fall through
+		// to them. (An orchestrated candidate that does NOT list this child
+		// already returned autoCloseTryNext above — being orchestrated says
+		// nothing about a bead that is not this child's parent.)
+		d.logger.Debug("grouping parent auto-close skipped: parent is orchestrated",
+			"parent", parentID, "child", childID, "anvil", anvil)
+		return autoCloseDone
+	}
 	if strings.EqualFold(strings.TrimSpace(parent.Status), "closed") {
 		return autoCloseDone
 	}

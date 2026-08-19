@@ -317,9 +317,26 @@ func TestMaybeCloseGroupingParent_ClosesAtMostOneParent(t *testing.T) {
 	assert.Equal(t, []string{"Forge-p1"}, h.closedIDs())
 }
 
-// An orchestrated first candidate is skipped rather than ending the walk: the
-// Crucible owning one bead says nothing about the next candidate.
+// An orchestrated first candidate that does not list this child is skipped
+// rather than ending the walk: being Crucible-owned says nothing about a bead
+// that is not this child's parent.
 func TestMaybeCloseGroupingParent_OrchestratedCandidateDoesNotBlockTheNext(t *testing.T) {
+	h := newAutoCloseHarness(t)
+	h.beads["Forge-c1"] = `{"id":"Forge-c1","status":"closed","parent":"Forge-p1",
+	 "dependencies":[{"issue_id":"Forge-c1","depends_on_id":"Forge-p2","type":"blocks"}]}`
+	h.beads["Forge-p1"] = parentPayload("Forge-p1", "open", []string{"crucible"}, "Forge-other:closed")
+	h.beads["Forge-p2"] = parentPayload("Forge-p2", "open", nil, "Forge-c1:closed")
+
+	h.run("Forge-c1")
+
+	assert.Equal(t, []string{"Forge-p2"}, h.closedIDs())
+}
+
+// An orchestrated candidate that DOES list this child is this child's parent,
+// and the Crucible owns its close. The walk must end there — falling through
+// would hand the close to a trailing `blocks` sequencing edge that only looks
+// like a parent from the child's side.
+func TestMaybeCloseGroupingParent_OrchestratedParentEndsTheWalk(t *testing.T) {
 	h := newAutoCloseHarness(t)
 	h.beads["Forge-c1"] = `{"id":"Forge-c1","status":"closed","parent":"Forge-p1",
 	 "dependencies":[{"issue_id":"Forge-c1","depends_on_id":"Forge-p2","type":"blocks"}]}`
@@ -328,7 +345,8 @@ func TestMaybeCloseGroupingParent_OrchestratedCandidateDoesNotBlockTheNext(t *te
 
 	h.run("Forge-c1")
 
-	assert.Equal(t, []string{"Forge-p2"}, h.closedIDs())
+	assert.Empty(t, h.closedIDs(),
+		"the identified parent is Crucible-owned; the trailing sequencing edge must not be closed in its place")
 }
 
 func TestMaybeCloseGroupingParent_NoHooksWired(t *testing.T) {
