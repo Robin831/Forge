@@ -2,11 +2,12 @@
 // own but are wanted by more than one surface — the CLI, the daemon's log and
 // event text, the web layer's messages and the PR comments questgiver posts.
 //
-// It exists because pluralization had been re-derived five times: three
+// It exists because pluralization had been re-derived six times: three
 // package-local plural helpers in two shapes (count-with-noun and bare
-// suffix), a fourth spelled pluralS, and one open-coded if/else. None of them
-// disagreed, which is exactly why the drift was invisible — the next surface
-// wrote a sixth rather than finding one of the five.
+// suffix), a fourth spelled pluralS, and two open-coded if/else copies in the
+// daemon alone. None of them disagreed, which is exactly why the drift was
+// invisible — every surface that wanted it wrote its own rather than finding
+// one of the others.
 package textfmt
 
 import "strconv"
