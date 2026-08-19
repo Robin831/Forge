@@ -141,6 +141,8 @@ func (s *Server) routes() http.Handler {
 		r.Post("/prs/{id}/close", s.handlePRClose)
 		r.Post("/prs/{id}/approve", s.handlePRApprove)
 		r.Post("/prs/{id}/bellows", s.handlePRBellows)
+		r.Post("/prs/{id}/bellows/detach", s.handlePRBellowsDetach)
+		r.Post("/prs/{id}/bellows/resume", s.handlePRBellowsResume)
 		r.Post("/prs/{id}/fix-ci", s.handlePRFixCI)
 		r.Post("/prs/{id}/fix-comments", s.handlePRFixComments)
 		r.Post("/prs/{id}/fix-conflicts", s.handlePRFixConflicts)

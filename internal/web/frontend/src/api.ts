@@ -402,6 +402,7 @@ export interface PRItem {
   ci_failing?: boolean
   reviews_approved?: boolean
   bellows_assigned?: boolean
+  bellows_detached?: boolean
   ci_fix_count?: number
   review_fix_count?: number
   rebase_count?: number

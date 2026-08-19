@@ -36,6 +36,7 @@ func TestPRActions_RequireAuth(t *testing.T) {
 	srv := newServerWithDefaults(t, nil)
 	for _, action := range []string{
 		"merge", "close", "approve", "bellows",
+		"bellows/detach", "bellows/resume",
 		"fix-ci", "fix-comments", "fix-conflicts", "reset-counters",
 	} {
 		path := "/api/prs/1/" + action
