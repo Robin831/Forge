@@ -403,7 +403,7 @@ Beads-Forge sessions (session capture, forgechat):
 
 `~/.forge/state.db` (SQLite with WAL mode) tracks:
 - **workers** — Smith process lifecycle with PID, status, log path
-- **prs** — Pull requests created across anvils
+- **prs** — Pull requests created across anvils. Three independent Bellows flags live on the row: `bellows_managed` (does Bellows run lifecycle workers for this PR at all — defaulted to 0 for `ext-*` PRs), `bellows_manually_assigned` (an operator pinned that answer, so the reconcile loop's defensive `ext-*` clobber leaves the row alone) and `bellows_detached` (managed, but **muted**: no events, no automatic quench/burnish/rebase/Assay dispatch, while mergeability and terminal state keep being refreshed). The detach flag is deliberately not folded into the other two — a mute is a different question from "is this PR ours" — and reconcile never touches it, so a detach survives the managed-flag rewrites. `UpdatePRBellowsDetached` is its only writer, behind the `detach_bellows` / `reattach_bellows` PR actions
 - **events** — Timestamped event log (bead_claimed, smith_done, warden_pass, etc.)
 - **retries** — Exponential backoff tracking; `needs_human=1` after exhausting retries
 - **bead_costs / daily_costs** — Token usage and USD estimates per bead and per day

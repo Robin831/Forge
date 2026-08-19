@@ -513,7 +513,7 @@ anvils:
 | `rate_limit_backoff` | duration | `5m` | | How long to wait before retrying when all providers are rate-limited. |
 | `schematic_enabled` | bool | `false` | | Enable Schematic pre-worker globally for complex beads. |
 | `schematic_word_threshold` | int | `100` | | Minimum word count in bead description to trigger Schematic analysis. |
-| `bellows_interval` | duration | `2m` | `30s` | How often Bellows polls GitHub for PR status changes. |
+| `bellows_interval` | duration | `2m` | `30s` | How often Bellows polls GitHub for PR status changes. A PR carrying the per-PR `bellows_detached` flag is skipped before the first emit on every one of those polls — see [Bellows Per-PR Flags](#bellows-per-pr-flags-managed-manually-assigned-detached). |
 | `daily_cost_limit` | float | `0` (no limit) | | Maximum estimated USD spend per calendar day. Auto-dispatch pauses once the **projected** total — recorded spend plus the estimated in-flight spend of currently active workers — reaches the limit, and the gate is re-checked before **each** dispatch. This accounting prevents N concurrent workers from overshooting the limit by roughly N × per-bead cost. See `per_worker_cost_estimate`. |
 | `per_worker_cost_estimate` | float | `2.00` | `0` (use default) | Floor (USD) used to estimate a single active worker's in-flight (not-yet-recorded) spend when projecting against `daily_cost_limit`. The daemon maintains a rolling average of recorded per-bead cost and uses `max(rolling average, this floor)`, so the reservation is never zero before any cost data exists. Only relevant when `daily_cost_limit > 0`. Lifecycle/bellows fix workers (quench/burnish/rebase/assay) also reserve this estimate so their spend counts against the gate; those workers are themselves **not** blocked by the gate (they fix already-open PRs), but their in-flight spend causes the gate to back off new Smith dispatch. `0` or unset falls back to the default of `2.00`. |
 | `copilot_daily_request_limit` | int | `0` (no limit) | | Maximum weighted Copilot premium requests per calendar day (e.g. 300 for Pro, 1500 for Pro+). When the limit is reached or exceeded, the Copilot provider is skipped in the fallback chain. Displayed as a progress indicator in the Hearth Usage panel. |
@@ -578,6 +578,73 @@ anvils:
 | `forgechat.turn_retention_cap` | int | `1000` | | Maximum number of Beads-Forge turns retained in the TurnStore. When exceeded, the oldest completed turns are evicted first (in-flight turns are never evicted). A negative value disables the cap. |
 
 Duration values use Go syntax: `30s`, `5m`, `1h30m`, `168h`, etc.
+
+### Bellows Per-PR Flags: managed, manually assigned, detached
+
+These three are **not** config settings — they are per-PR columns on the `prs`
+table in `~/.forge/state.db`, set by IPC `pr_action` verbs rather than from
+`forge.yaml`. They are listed here because they decide, per PR, how much of the
+Bellows behaviour configured above actually applies to it.
+
+| Flag | Default | Question it answers |
+|------|---------|---------------------|
+| `bellows_managed` | `1`, but `0` for externally-created (`ext-*`) PRs | Does Bellows run lifecycle workers for this PR **at all**? |
+| `bellows_manually_assigned` | `0` | Did an operator pin the answer above, so the reconcile loop must not rewrite it? |
+| `bellows_detached` | `0` | Is this PR managed but **muted**? |
+
+The first two are one pair, set together by the `assign_bellows` /
+`unassign_bellows` PR actions: assigning an `ext-*` PR sets both, so the
+reconcile loop's defensive "external PRs are not ours" correction leaves the
+user-pinned row alone.
+
+`bellows_detached` is a separate axis, set by the `detach_bellows` /
+`reattach_bellows` PR actions, and reconcile never touches it. That separation
+is the point: un-assigning says "this PR was never ours", detaching says "this
+PR is ours and I want the automatic loop off it for now", and folding the second
+into the first would have made every mute a claim about ownership that the
+reconcile loop is entitled to overwrite.
+
+**What detaching stops.** Bellows returns before its first emit for a detached
+PR, which also closes the steady-state re-emit branches ("still failing CI",
+"still conflicting", "still unresolved threads") that fire on *unchanged* state.
+No CI fix (quench), review fix (burnish), rebase or Assay review is dispatched —
+including an action queued before the detach and drained after it — and the
+quench/burnish/rebase workers already in flight for that PR are killed, so a
+session mid-run cannot push one more commit to the branch that was just taken
+off the loop.
+
+**What detaching does not stop.** The PR's mergeability and terminal state are
+still refreshed every poll: a muted PR is unwatched, not unknown, so the PR
+panel keeps telling the truth and a detached PR that merges is recorded as
+merged instead of being polled forever. What is *not* re-emitted while detached
+is the post-merge bookkeeping: Bellows returns before the branch that dispatches
+the bead close and worktree cleanup, so a PR that merges under a mute has the
+merge recorded but leaves its bead open — and an open bead blocks its
+dependents. Those two actions are the ones the detach gate deliberately still
+*permits*, so a close already queued before the detach, a manual `forge queue`
+close, or simply re-attaching gets the bookkeeping done; a long mute over a
+merged PR wants one of the three. Manual verbs in general are unaffected:
+`forge assay run`, `forge queue run` and the dashboard's own fix buttons still
+run a single pass by hand on a muted PR. Detach means "stop automatic work", not
+"brick the PR".
+
+**Resuming.** Re-attaching clears the flag and drops Bellows' cached snapshot
+for the PR, so failing CI, conflicts and unresolved threads that outlived the
+mute are re-detected as fresh transitions rather than swallowed as state Bellows
+has already seen. Nothing that was skipped is replayed and no worker is
+restarted — resuming re-enables future dispatch only.
+
+While a PR is detached its `bellows-<anvil>-<n>` monitor row stays in the
+Workers panel carrying the `detached` status (Hearth marks it `⊘`) rather than
+disappearing, so a mute is visible instead of looking like a lost monitor.
+
+**Surfaces.** Of the assignment pair, only `assign_bellows` has a surface: it is
+reachable from the dashboard's PR rows and from Hearth's PR menu. Un-assigning
+is an IPC verb only. The detach pair likewise exists as the `detach_bellows` /
+`reattach_bellows` `pr_action` verbs on the IPC socket only; the `forge bellows
+stop` / `forge bellows resume` CLI commands, the Hearth PR-menu items and the
+web route that wrap them are not implemented yet, and this section will name
+them once they are.
 
 ### Epic Orchestration Is Opt-In
 

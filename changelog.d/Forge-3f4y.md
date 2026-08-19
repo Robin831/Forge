@@ -1,0 +1,2 @@
+category: Changed
+- **Documented per-PR Bellows detach** - `docs/configuration.md` gains a "Bellows Per-PR Flags" section covering how `bellows_managed`, `bellows_manually_assigned` and `bellows_detached` differ, exactly what detaching stops (automatic quench/burnish/rebase/Assay dispatch, plus the in-flight workers) and what it does not (mergeability and terminal-state refresh, manual verbs), and which surfaces expose each verb today. (Forge-3f4y)
