@@ -3,6 +3,14 @@ import { ChevronDown, ChevronRight, List, MoreHorizontal, Play, RotateCcw, Squar
 import { Link } from 'react-router'
 import { actions, type QueueItem } from '../api'
 import { priorityClasses, priorityLabel, relativeTime } from '../lib/format'
+import {
+  buildCreatorAliases,
+  canonicalCreator,
+  creatorLabel,
+  creatorMatches,
+  creatorSortValue,
+  creatorTitle,
+} from '../lib/creator'
 import { useAction } from '../hooks/useAction'
 import { useUIState } from '../hooks/useUIState'
 import ConfirmModal from './ConfirmModal'
@@ -40,6 +48,7 @@ export type SortKey =
   | 'updated-asc'
   | 'created-desc'
   | 'created-asc'
+  | 'created-by-asc'
   | 'title-asc'
 
 const SORT_OPTIONS: ReadonlyArray<{ value: SortKey; label: string }> = [
@@ -48,6 +57,7 @@ const SORT_OPTIONS: ReadonlyArray<{ value: SortKey; label: string }> = [
   { value: 'updated-asc', label: 'Last updated (oldest first)' },
   { value: 'created-desc', label: 'Created (newest first)' },
   { value: 'created-asc', label: 'Created (oldest first)' },
+  { value: 'created-by-asc', label: 'Creator (A→Z)' },
   { value: 'title-asc', label: 'Title (A→Z)' },
 ]
 
@@ -73,7 +83,15 @@ function compareTimestamps(a: number, b: number, direction: 'asc' | 'desc'): num
   return direction === 'asc' ? a - b : b - a
 }
 
-export function sortItems(items: QueueItem[], sortKey: SortKey): QueueItem[] {
+// sortItems orders one bucket. `aliases` is the creator fold built by the pane
+// over the whole queue (see buildCreatorAliases); it is optional so the other
+// sorts — and callers that have no fold to hand — are unaffected, and the
+// creator sort simply falls back to bd's raw spellings without it.
+export function sortItems(
+  items: QueueItem[],
+  sortKey: SortKey,
+  aliases?: Map<string, string>,
+): QueueItem[] {
   const copy = items.slice()
   switch (sortKey) {
     case 'priority-asc':
@@ -91,6 +109,20 @@ export function sortItems(items: QueueItem[], sortKey: SortKey): QueueItem[] {
       const dir = sortKey === 'created-desc' ? 'desc' : 'asc'
       const ts = new Map(copy.map((item) => [item, parseTimestamp(item.created_at)]))
       copy.sort((a, b) => compareTimestamps(ts.get(a)!, ts.get(b)!, dir))
+      return copy
+    }
+    case 'created-by-asc': {
+      // Rows with no creator yet (a queue snapshot older than the first poll
+      // that carried created_by) sort last rather than heading the list.
+      const keys = new Map(copy.map((item) => [item, creatorSortValue(item.created_by, aliases)]))
+      copy.sort((a, b) => {
+        const ka = keys.get(a)!
+        const kb = keys.get(b)!
+        if (!ka && !kb) return 0
+        if (!ka) return 1
+        if (!kb) return -1
+        return ka.localeCompare(kb, undefined, { sensitivity: 'base' })
+      })
       return copy
     }
     case 'title-asc':
@@ -245,6 +277,14 @@ export default function QueuePane({
     return () => el.removeEventListener('scroll', onScroll)
   }, [setScrollTop])
 
+  // The creator fold is built from every row, not the filtered subset, so a
+  // teammate's two bd identities keep resolving to one name while the operator
+  // types — a fold that shifted with the filter would rename rows mid-search.
+  const creatorAliases = useMemo(
+    () => buildCreatorAliases(items.map((item) => item.created_by)),
+    [items],
+  )
+
   const filteredItems = useMemo(() => {
     const q = filter.trim().toLowerCase()
     if (!q) return items
@@ -252,19 +292,23 @@ export default function QueuePane({
       if (item.bead_id.toLowerCase().includes(q)) return true
       if (item.title && item.title.toLowerCase().includes(q)) return true
       if (item.labels.some((label) => label.toLowerCase().includes(q))) return true
+      if (creatorMatches(item.created_by, q, creatorAliases)) return true
       return false
     })
-  }, [items, filter])
+  }, [items, filter, creatorAliases])
 
   const groups = useMemo(() => {
     const grouped = groupQueueItems(filteredItems, { promotedToReady })
     return grouped.map((group) => ({
       ...group,
       buckets: Object.fromEntries(
-        BUCKET_ORDER.map((bucket) => [bucket, sortItems(group.buckets[bucket], sortKey)]),
+        BUCKET_ORDER.map((bucket) => [
+          bucket,
+          sortItems(group.buckets[bucket], sortKey, creatorAliases),
+        ]),
       ) as Record<BucketKey, QueueItem[]>,
     }))
-  }, [filteredItems, sortKey, promotedToReady])
+  }, [filteredItems, sortKey, promotedToReady, creatorAliases])
 
   const toggle = (key: string) =>
     setExpanded((prev) => ({ ...prev, [key]: !prev[key] }))
@@ -357,7 +401,7 @@ export default function QueuePane({
                 type="text"
                 value={filter}
                 onChange={(e) => setFilter(e.target.value)}
-                placeholder="Filter beads (id, title, label)"
+                placeholder="Filter beads (id, title, label, creator)"
                 aria-label="Filter beads"
                 className={`w-full rounded-md border border-slate-700 bg-slate-800 px-2 py-1 text-sm text-slate-100 placeholder:text-slate-500 focus:border-amber-400/40 focus:outline-none focus-visible:ring-1 focus-visible:ring-amber-300 ${filter.trim() ? 'pr-7' : ''}`}
               />
@@ -440,6 +484,7 @@ export default function QueuePane({
                             onUnclarify={handleUnclarify}
                             onApplyDispatchTag={handleApplyDispatchTag}
                             applyingTag={applyingTag}
+                            creatorAliases={creatorAliases}
                           />,
                         ]
                       })}
@@ -517,6 +562,9 @@ interface BucketSectionProps {
   onUnclarify: (item: QueueItem) => void
   onApplyDispatchTag: (item: QueueItem) => void
   applyingTag: Record<string, boolean>
+  // creatorAliases folds the queue's distinct created_by spellings onto one
+  // name per person; see buildCreatorAliases.
+  creatorAliases: Map<string, string>
 }
 
 function BucketSection({
@@ -534,6 +582,7 @@ function BucketSection({
   onUnclarify,
   onApplyDispatchTag,
   applyingTag,
+  creatorAliases,
 }: BucketSectionProps) {
   return (
     <div>
@@ -557,6 +606,11 @@ function BucketSection({
             const showApplyTag =
               bucket === 'unlabeled' && !!item.auto_dispatch_tag
             const applyInFlight = !!applyingTag[menuKey]
+            // Empty until the daemon's first poll carries created_by, in which
+            // case the row renders exactly as it did before — no segment, no
+            // separator dot, no placeholder.
+            const creatorCanonical = canonicalCreator(item.created_by, creatorAliases)
+            const creator = creatorLabel(creatorCanonical)
             return (
               <li key={menuKey} className="px-4 py-3 pl-8">
                 <div className="flex items-start gap-2">
@@ -592,6 +646,14 @@ function BucketSection({
                         <>
                           <span aria-hidden>·</span>
                           <span>@{item.assignee}</span>
+                        </>
+                      )}
+                      {creator && (
+                        <>
+                          <span aria-hidden>·</span>
+                          <span title={creatorTitle(item.created_by, creatorCanonical)}>
+                            by {creator}
+                          </span>
                         </>
                       )}
                       {item.updated_at && (

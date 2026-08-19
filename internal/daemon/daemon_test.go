@@ -5209,10 +5209,11 @@ func TestHandleIPC_Queue_Timestamps(t *testing.T) {
 
 	const created = "2026-05-08T04:15:41Z"
 	const updated = "2026-05-12T11:08:11Z"
-	d.replaceQueueTimestamps(
+	const createdBy = "Anna Sophie Pettersen Sylta"
+	d.replaceQueueMeta(
 		map[string]struct{}{"forge": {}},
-		map[string]queueTimestamp{
-			"forge/Forge-abc1": {CreatedAt: created, UpdatedAt: updated},
+		map[string]queueSideMeta{
+			"forge/Forge-abc1": {CreatedAt: created, UpdatedAt: updated, CreatedBy: createdBy},
 		},
 	)
 
@@ -5220,8 +5221,8 @@ func TestHandleIPC_Queue_Timestamps(t *testing.T) {
 	require.Equal(t, "ok", resp.Type)
 
 	// Verify the raw JSON contains the new keys so the wire contract is
-	// stable for the frontend (created_at/updated_at must always be present,
-	// even when empty).
+	// stable for the frontend (created_at/updated_at/created_by must always be
+	// present, even when empty).
 	var raw struct {
 		Items []map[string]json.RawMessage `json:"items"`
 	}
@@ -5230,8 +5231,10 @@ func TestHandleIPC_Queue_Timestamps(t *testing.T) {
 	for _, item := range raw.Items {
 		_, hasCreated := item["created_at"]
 		_, hasUpdated := item["updated_at"]
+		_, hasCreatedBy := item["created_by"]
 		assert.True(t, hasCreated, "every queue item must expose a created_at key")
 		assert.True(t, hasUpdated, "every queue item must expose an updated_at key")
+		assert.True(t, hasCreatedBy, "every queue item must expose a created_by key")
 	}
 
 	var payload ipc.QueueResponse
@@ -5244,10 +5247,14 @@ func TestHandleIPC_Queue_Timestamps(t *testing.T) {
 	}
 	assert.Equal(t, created, byID["Forge-abc1"].CreatedAt)
 	assert.Equal(t, updated, byID["Forge-abc1"].UpdatedAt)
+	// created_by rides the same snapshot, verbatim: the display fold (two bd
+	// identities for one human, long names shortened) belongs to the client.
+	assert.Equal(t, createdBy, byID["Forge-abc1"].CreatedBy)
 	// Beads missing from the snapshot fall back to empty strings rather
 	// than crashing the handler or omitting the row entirely.
 	assert.Equal(t, "", byID["Forge-def2"].CreatedAt)
 	assert.Equal(t, "", byID["Forge-def2"].UpdatedAt)
+	assert.Equal(t, "", byID["Forge-def2"].CreatedBy)
 }
 
 func TestHandleIPC_Workers(t *testing.T) {

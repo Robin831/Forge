@@ -37,6 +37,7 @@ import PreviewPanel from '../components/PreviewPanel'
 import SteerComposer from '../components/SteerComposer'
 import WorkerLogModal from '../components/WorkerLogModal'
 import { useAction } from '../hooks/useAction'
+import { creatorLabel } from '../lib/creator'
 import { eventClasses, priorityClasses, priorityLabel, relativeTime } from '../lib/format'
 
 const POLL_INTERVAL_MS = 5000
@@ -269,6 +270,15 @@ export default function BeadDetailPage() {
             <>
               <span aria-hidden>·</span>
               <span>{data.queue.status}</span>
+            </>
+          )}
+          {/* One bead, so there is no set of identities to fold against here:
+              the label is bd's own value shortened, with the full string in the
+              tooltip — the same shape the queue byline renders. */}
+          {data?.queue?.created_by && (
+            <>
+              <span aria-hidden>·</span>
+              <span title={data.queue.created_by}>by {creatorLabel(data.queue.created_by)}</span>
             </>
           )}
         </p>

@@ -214,6 +214,118 @@ describe('QueuePane', () => {
     expect(screen.getByRole('button', { name: /forge/ })).toHaveTextContent('2')
   })
 
+  describe('creator byline', () => {
+    it('shows who filed each bead, shortening a long display name', async () => {
+      const user = userEvent.setup()
+      renderPane([
+        item({
+          bead_id: 'a1',
+          anvil: 'forge',
+          section: 'ready',
+          created_by: 'Anna Sophie Pettersen Sylta',
+        }),
+      ])
+      await user.click(screen.getByRole('button', { name: /forge/ }))
+      await user.click(screen.getByRole('button', { name: /Ready \(1\)/ }))
+      const byline = screen.getByText('by Anna Sylta')
+      expect(byline).toBeInTheDocument()
+      // The full value stays reachable in the tooltip, the same way the
+      // relative timestamp hides its ISO string.
+      expect(byline).toHaveAttribute('title', 'Anna Sophie Pettersen Sylta')
+    })
+
+    it('folds a teammate’s two bd identities onto one name', async () => {
+      const user = userEvent.setup()
+      renderPane([
+        item({
+          bead_id: 'a1',
+          anvil: 'forge',
+          section: 'ready',
+          created_by: 'Anna Sophie Pettersen Sylta',
+        }),
+        item({ bead_id: 'a2', anvil: 'forge', section: 'ready', created_by: 'sophiesylta' }),
+      ])
+      await user.click(screen.getByRole('button', { name: /forge/ }))
+      await user.click(screen.getByRole('button', { name: /Ready \(2\)/ }))
+      expect(screen.getAllByText('by Anna Sylta')).toHaveLength(2)
+      // The folded row still says which identity actually filed it, so a
+      // wrong fold is visible rather than silently rewriting the record.
+      expect(
+        screen.getByTitle('Anna Sophie Pettersen Sylta (filed as sophiesylta)'),
+      ).toBeInTheDocument()
+    })
+
+    it('renders no creator segment for a bead the daemon has no creator for', async () => {
+      const user = userEvent.setup()
+      renderPane([item({ bead_id: 'a1', anvil: 'forge', section: 'ready' })])
+      await user.click(screen.getByRole('button', { name: /forge/ }))
+      await user.click(screen.getByRole('button', { name: /Ready \(1\)/ }))
+      expect(screen.queryByText(/^by /)).not.toBeInTheDocument()
+    })
+
+    it('narrows the list when a creator name is typed into the filter', async () => {
+      const user = userEvent.setup()
+      renderPane([
+        item({ bead_id: 'a1', anvil: 'forge', section: 'ready', created_by: 'Forge' }),
+        item({ bead_id: 'a2', anvil: 'forge', section: 'ready', created_by: 'sophiesylta' }),
+        item({
+          bead_id: 'a3',
+          anvil: 'forge',
+          section: 'ready',
+          created_by: 'Anna Sophie Pettersen Sylta',
+        }),
+      ])
+      await user.type(screen.getByRole('textbox', { name: /Filter beads/ }), 'sylta')
+      // Both of the same person's identities match, the machine-filed bead
+      // does not.
+      expect(screen.getByRole('button', { name: /forge/ })).toHaveTextContent('2')
+    })
+
+    it('offers a creator sort that groups a person’s beads together', async () => {
+      const user = userEvent.setup()
+      renderPane([
+        item({ bead_id: 'a1', anvil: 'forge', section: 'ready', priority: 0, created_by: 'Forge' }),
+        item({ bead_id: 'a2', anvil: 'forge', section: 'ready', priority: 1, created_by: 'sophiesylta' }),
+        item({
+          bead_id: 'a3',
+          anvil: 'forge',
+          section: 'ready',
+          priority: 2,
+          created_by: 'Anna Sophie Pettersen Sylta',
+        }),
+        // A row from a queue snapshot older than the first poll that carried
+        // created_by — the mixed state the sort's empty-key branch exists for.
+        item({ bead_id: 'a4', anvil: 'forge', section: 'ready', priority: 3 }),
+      ])
+      await user.click(screen.getByRole('button', { name: /forge/ }))
+      await user.click(screen.getByRole('button', { name: /Ready \(4\)/ }))
+      const idsInOrder = () => screen.getAllByRole('link').map((a) => a.textContent)
+      expect(idsInOrder()).toEqual(['a1', 'a2', 'a3', 'a4'])
+
+      await user.selectOptions(screen.getByTestId('queue-sort-select'), 'created-by-asc')
+
+      // "Anna Sylta" before "Forge", and the folded handle sorts with the
+      // full name rather than under "s". The creator-less row sorts last
+      // rather than heading the list under an empty key.
+      expect(idsInOrder()).toEqual(['a2', 'a3', 'a1', 'a4'])
+    })
+
+    it('sorts every creator-less row last, in a list that has only those', async () => {
+      const user = userEvent.setup()
+      renderPane([
+        item({ bead_id: 'a1', anvil: 'forge', section: 'ready', priority: 0 }),
+        item({ bead_id: 'a2', anvil: 'forge', section: 'ready', priority: 1 }),
+      ])
+      await user.click(screen.getByRole('button', { name: /forge/ }))
+      await user.click(screen.getByRole('button', { name: /Ready \(2\)/ }))
+      await user.selectOptions(screen.getByTestId('queue-sort-select'), 'created-by-asc')
+
+      // Two empty keys compare equal, so the incoming order is preserved
+      // instead of the comparator inventing one.
+      expect(screen.getAllByRole('link').map((a) => a.textContent)).toEqual(['a1', 'a2'])
+    })
+  })
+
   describe('apply-dispatch-tag button', () => {
     beforeEach(() => {
       vi.spyOn(actions, 'applyDispatchTag').mockResolvedValue({ tag: 'forgeReady' })

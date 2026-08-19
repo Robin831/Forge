@@ -273,6 +273,13 @@ type beadDetailQueue struct {
 	Section     string   `json:"section"`
 	Labels      []string `json:"labels"`
 	Assignee    string   `json:"assignee,omitempty"`
+	// CreatedBy is the bd identity that filed the bead. queue_cache does not
+	// store it (it rides the daemon's in-memory side-map alongside the
+	// timestamps), so it is filled from the "queue" command rather than the
+	// row read below — without it this view would show a creator-less bead
+	// while the queue pane showed the creator, which is the inconsistency the
+	// field was added to remove.
+	CreatedBy string `json:"created_by,omitempty"`
 }
 
 // beadDetailRetry mirrors state.RetryRecord for the JSON response.
@@ -668,6 +675,31 @@ func (s *Server) resolveAnvilPath(name string) string {
 	return ""
 }
 
+// queueCreatedBy returns the bd identity that filed the given bead, or "" when
+// it is unknown. queue_cache does not carry created_by — the daemon keeps it in
+// the same in-memory side-map as the bead timestamps — so the only way to read
+// it is the "queue" command the queue pane itself consumes. Sourcing it here
+// rather than widening the cache schema keeps the two surfaces reading one
+// value; any failure (handler error, undecodable payload, bead not in the
+// current queue snapshot) degrades to empty, exactly as the pane does before
+// the first poll completes.
+func (s *Server) queueCreatedBy(anvil, beadID string) string {
+	resp := s.handler(ipc.Command{Type: "queue"})
+	if resp.Type == "error" || len(resp.Payload) == 0 {
+		return ""
+	}
+	var qr ipc.QueueResponse
+	if err := json.Unmarshal(resp.Payload, &qr); err != nil {
+		return ""
+	}
+	for _, it := range qr.Items {
+		if it.BeadID == beadID && strings.EqualFold(it.Anvil, anvil) {
+			return it.CreatedBy
+		}
+	}
+	return ""
+}
+
 // handleBeadDetail returns a consolidated view of one bead used by the
 // /bead/:id page in the SPA. It bundles the queue cache row, ingot record,
 // retry/cost state, recent events, PR summaries, and worker history into a
@@ -716,6 +748,7 @@ func (s *Server) handleBeadDetail(w http.ResponseWriter, r *http.Request) {
 			if resp.Anvil == "" {
 				resp.Anvil = it.Anvil
 			}
+			resp.Queue.CreatedBy = s.queueCreatedBy(it.Anvil, it.BeadID)
 			break
 		}
 	}

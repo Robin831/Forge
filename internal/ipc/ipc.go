@@ -547,6 +547,16 @@ type QueueItem struct {
 	Assignee    string   `json:"assignee,omitempty"`
 	CreatedAt   string   `json:"created_at"`
 	UpdatedAt   string   `json:"updated_at"`
+	// CreatedBy is the bd identity that filed the bead (`created_by` from
+	// `bd ready --json`). Unlike Assignee — which is rarely set and answers
+	// "who is working on it" — it is populated on essentially every bead, so
+	// the queue UI can tell one operator's beads from a teammate's (and from
+	// the ones Forge itself raised) without opening each row. Empty until the
+	// first poll fills the daemon's side-map, the same way the timestamps
+	// above degrade — and tagged like them rather than like Assignee, with no
+	// omitempty, so a bead the map has no entry for serialises as an empty
+	// string instead of dropping the key.
+	CreatedBy string `json:"created_by"`
 	// AutoDispatchTag is the anvil's configured dispatch label (forge.yaml
 	// `auto_dispatch_tag`). Surfaced on each queue row so the Hearth web UI
 	// can render a one-click "apply tag" button on Unlabeled beads without
