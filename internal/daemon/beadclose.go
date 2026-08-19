@@ -213,6 +213,11 @@ func (d *Daemon) closeMergedBead(ctx context.Context, beadID, anvil, anvilPath, 
 		d.finishPendingBeadClose(beadID, anvil, prNumber, prior != nil)
 		d.logger.Info("bead closed after PR merge",
 			"bead", beadID, "anvil", anvil, "pr", prNumber, "attempts", attempts)
+		// A grouping parent has nobody else to close it: the Crucible only
+		// owns parents that opted in. Run it after the child's close has
+		// landed, and never let it change what this function reports — the
+		// bead is closed either way.
+		d.maybeCloseGroupingParent(beadID, anvil, anvilPath)
 		return nil
 	}
 

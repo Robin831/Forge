@@ -206,6 +206,28 @@ bd ready (poller) → pipeline.Run()
         ("merged but unclosed bead <ID> (PR #N) blocking M dependents")
       → every later bellows cycle re-derives the bead's status and re-attempts,
         clearing both once the close lands
+      → close landed → maybeCloseGroupingParent: resolve the child's parent
+        (poller.ParentCandidates) and close it when it is a plain grouping
+        parent whose every child is now closed. Independent mode's counterpart
+        to the Crucible closing an orchestrated parent after its final PR — so
+        it is a no-op for a parent epic.IsOrchestrated says the Crucible owns,
+        for an already-closed parent, and for one bd reports no children for at
+        all. At most one parent per child close (no cascade to grandparents),
+        and every bd failure leaves the parent open: it never changes what the
+        merge close reports. Candidates are walked in order, but only until one
+        of them turns out to BE this child's parent — it lists the child among
+        its own children — after which the walk ends whether or not the close
+        happened here: already closed, a sibling closing it right now (the
+        parentAutoCloseInFlight guard's loser), an open sibling, a bd refusal,
+        a candidate bd could not answer for at all. Only "this is somebody
+        else's parent" continues, because ParentCandidates' trailing entries
+        are `blocks` sequencing edges that merely look like parents from the
+        child's side, and falling through to one closes a bead outside the
+        relationship that justified acting. The one exception is an
+        orchestrated candidate, which is skipped rather than terminal: the
+        Crucible owning that bead says nothing about the next candidate. Child
+        IDs reach a persisted close reason and the rendered activity feed, so
+        they go through termtext.Line first
   → worktree.Remove
 
 Crucible path (parent beads with children AND the `crucible` opt-in label):
