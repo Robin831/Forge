@@ -202,7 +202,9 @@ Epic orchestration is **opt-in**: a parent bead must carry the `crucible` label
 (or an `epic-branch:<name>` label, which also names the branch) before anything
 epic-specific happens. Children of an unlabeled parent — including a parent typed
 `epic` — dispatch as ordinary standalone beads: worktree from `main`, PR to
-`main`, bd relations untouched.
+`main`, bd relations untouched. The unlabeled parent itself is closed
+automatically once the last of its children closes, so a bead filed purely to
+group work does not linger open behind finished children.
 
 ```bash
 bd label add <parent-id> crucible

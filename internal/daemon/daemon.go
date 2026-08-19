@@ -453,6 +453,15 @@ type Daemon struct {
 	// Bellows cycles do not stack reconcilers when one outlives the interval.
 	beadCloseReconciling atomic.Bool
 
+	// parentAutoCloseInFlight collapses concurrent grouping-parent auto-close
+	// attempts for the same "anvil\x00parent". Two siblings whose PRs merge in
+	// the same cycle both observe "all children closed"; without the guard
+	// they both run `bd close` on the parent, and the loser writes a second
+	// Dolt commit for no semantic change. Kept separate from
+	// beadCloseInFlight so holding a parent here can never make a real
+	// close-after-merge for that same bead return early.
+	parentAutoCloseInFlight sync.Map
+
 	// queueMeta holds the per-bead fields bd emits that the queue_cache
 	// table does not carry (CreatedAt/UpdatedAt/CreatedBy) keyed by
 	// "anvil/beadID". It is refreshed alongside the queue_cache rebuild so the
