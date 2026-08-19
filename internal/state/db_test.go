@@ -3602,6 +3602,31 @@ func TestDB_OpenPRsWithDetail(t *testing.T) {
 			t.Errorf("Branch: got %q, want fix-10", pr.Branch)
 		}
 	})
+
+	// The TUI's PR panel reads this view and nothing else, so the mute has to
+	// arrive on it or a detached PR renders — and offers a menu — as one
+	// bellows is still working.
+	t.Run("bellows detached flag carried", func(t *testing.T) {
+		if results[0].BellowsDetached {
+			t.Error("expected BellowsDetached=false before the mute")
+		}
+		if err := db.UpdatePRBellowsDetached(results[0].ID, true); err != nil {
+			t.Fatalf("UpdatePRBellowsDetached: %v", err)
+		}
+		after, err := db.OpenPRsWithDetail()
+		if err != nil {
+			t.Fatalf("OpenPRsWithDetail: %v", err)
+		}
+		if len(after) != 3 || after[0].ID != results[0].ID {
+			t.Fatalf("expected the same 3 open PRs in the same order, got %d", len(after))
+		}
+		if !after[0].BellowsDetached {
+			t.Error("expected BellowsDetached=true after the mute")
+		}
+		if after[1].BellowsDetached || after[2].BellowsDetached {
+			t.Error("muting one PR must not mark the others")
+		}
+	})
 }
 
 func TestDB_PendingWardenRules(t *testing.T) {
