@@ -316,10 +316,10 @@ func TestEagerLoadTestResults(t *testing.T) {
 		t.Fatal(err)
 	}
 	tr := &TestResult{
-		IngotID:   ingot.ID,
-		StepIndex: 0,
-		StepName:  "go build",
-		Passed:    true,
+		IngotID:    ingot.ID,
+		StepIndex:  0,
+		StepName:   "go build",
+		Passed:     true,
 		RecordedAt: time.Now(),
 	}
 	if err := InsertTestResult(db, tr); err != nil {

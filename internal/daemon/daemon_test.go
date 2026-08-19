@@ -18,8 +18,8 @@ import (
 
 	"github.com/Robin831/Forge/internal/bellows"
 	"github.com/Robin831/Forge/internal/config"
-	"github.com/Robin831/Forge/internal/executil"
 	"github.com/Robin831/Forge/internal/crucible"
+	"github.com/Robin831/Forge/internal/executil"
 	"github.com/Robin831/Forge/internal/ipc"
 	"github.com/Robin831/Forge/internal/lifecycle"
 	"github.com/Robin831/Forge/internal/pipeline"
@@ -999,7 +999,7 @@ func TestResolveAnvilConfig(t *testing.T) {
 	d := &Daemon{}
 	d.cfg.Store(&config.Config{
 		Anvils: map[string]config.AnvilConfig{
-			"munin":   {Path: "/tmp/munin"},
+			"munin":    {Path: "/tmp/munin"},
 			"Heimdall": {Path: "/tmp/heimdall"},
 		},
 	})
@@ -3676,6 +3676,7 @@ func TestHandleIPC_ForceSmith(t *testing.T) {
 //   - ext-* PRs are skipped (filtered in SQL, so they never arrive)
 //   - PRs whose anvil is not in the config are skipped without error
 //   - A valid merged PR causes a bd close call
+//
 // TestReconcileOpenPRs_RequiresPerInstanceForgeManagedMarker is a regression
 // test for Forge-m1ui (#578) extended for Forge-i1g7. The marker must now
 // carry the forge instance id (`<!-- forge-managed: <id> -->`) so that:

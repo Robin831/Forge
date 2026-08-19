@@ -308,7 +308,7 @@ func TestLogTailer_Compact(t *testing.T) {
 	}
 
 	// Add tool correlation entries: some in the discard range, some in the keep range.
-	tailer.toolIndex["old-tool"] = 10    // will be discarded
+	tailer.toolIndex["old-tool"] = 10 // will be discarded
 	tailer.toolNames["old-tool"] = "Bash"
 	tailer.toolIndex["new-tool"] = retentionCap + 100 // will be kept, adjusted
 	tailer.toolNames["new-tool"] = "Read"

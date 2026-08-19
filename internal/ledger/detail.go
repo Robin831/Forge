@@ -120,10 +120,10 @@ func (m *Model) renderDetailPanel() string {
 
 // renderBeadDetailContent writes the full bead detail text into sb.
 func renderBeadDetailContent(sb *strings.Builder, b *Bead, innerW int) {
-	keyStyle    := lipgloss.NewStyle().Foreground(colorMuted).Bold(true)
-	mutedStyle  := lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Dark: "252", Light: "240"})
+	keyStyle := lipgloss.NewStyle().Foreground(colorMuted).Bold(true)
+	mutedStyle := lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Dark: "252", Light: "240"})
 	accentStyle := lipgloss.NewStyle().Bold(true).Foreground(colorAccent)
-	sc          := statusColor(b.Status)
+	sc := statusColor(b.Status)
 	statusStyle := lipgloss.NewStyle().Foreground(sc)
 
 	// ID header

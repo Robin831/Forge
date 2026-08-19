@@ -16,7 +16,7 @@ import (
 type SortField int
 
 const (
-	SortPriority  SortField = iota // default
+	SortPriority SortField = iota // default
 	SortStatus
 	SortUpdatedAt
 )
@@ -47,7 +47,7 @@ const (
 	colID       = 14
 	colStatus   = 13
 	colAnvil    = 14
-	colExt      = 6  // compact GitHub issue number, e.g. "#42"
+	colExt      = 6 // compact GitHub issue number, e.g. "#42"
 	colLabels   = 14
 	colAssignee = 12
 	// Title gets the remainder.

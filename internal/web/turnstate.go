@@ -37,7 +37,7 @@ const (
 	// TurnEventMessage carries a persisted assistant message. Data is the
 	// state.ForgeSessionMessage row so SSE consumers can replay the chat
 	// view in real time.
-	TurnEventMessage TurnEventType = "message"
+	TurnEventMessage  TurnEventType = "message"
 	TurnEventComplete TurnEventType = "complete"
 	TurnEventError    TurnEventType = "error"
 	// TurnEventTurnExpired is emitted on the SSE stream when a reconnecting

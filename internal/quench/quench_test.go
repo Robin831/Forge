@@ -304,7 +304,7 @@ func (f *fakeVCS) FetchReviewComments(_ context.Context, _ string, _ int) ([]vcs
 	return nil, nil
 }
 func (f *fakeVCS) ResolveThread(_ context.Context, _ string, _ string) error { return nil }
-func (f *fakeVCS) Platform() vcs.Platform                                     { return vcs.GitHub }
+func (f *fakeVCS) Platform() vcs.Platform                                    { return vcs.GitHub }
 
 // openTestDB opens a temporary SQLite state database for use in tests.
 func openTestDB(t *testing.T) *state.DB {

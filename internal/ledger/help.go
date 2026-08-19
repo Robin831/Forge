@@ -15,29 +15,29 @@ import (
 
 // Shared bindings available across all views.
 var (
-	keyQuit    = key.NewBinding(key.WithKeys("q", "ctrl+c"), key.WithHelp("q", "quit"))
-	keyHelp    = key.NewBinding(key.WithKeys("?"), key.WithHelp("?", "help"))
-	keyTab     = key.NewBinding(key.WithKeys("tab", "v"), key.WithHelp("tab/v", "switch view"))
-	keyNew     = key.NewBinding(key.WithKeys("n"), key.WithHelp("n", "new bead"))
-	keyEdit    = key.NewBinding(key.WithKeys("e"), key.WithHelp("e", "edit"))
-	keyCloseB  = key.NewBinding(key.WithKeys("x"), key.WithHelp("x", "close"))
-	keyReopen  = key.NewBinding(key.WithKeys("r"), key.WithHelp("r", "reopen"))
-	keyLabel   = key.NewBinding(key.WithKeys("l"), key.WithHelp("l", "label"))
-	keyPriorityB = key.NewBinding(key.WithKeys("p"), key.WithHelp("p", "priority"))
+	keyQuit         = key.NewBinding(key.WithKeys("q", "ctrl+c"), key.WithHelp("q", "quit"))
+	keyHelp         = key.NewBinding(key.WithKeys("?"), key.WithHelp("?", "help"))
+	keyTab          = key.NewBinding(key.WithKeys("tab", "v"), key.WithHelp("tab/v", "switch view"))
+	keyNew          = key.NewBinding(key.WithKeys("n"), key.WithHelp("n", "new bead"))
+	keyEdit         = key.NewBinding(key.WithKeys("e"), key.WithHelp("e", "edit"))
+	keyCloseB       = key.NewBinding(key.WithKeys("x"), key.WithHelp("x", "close"))
+	keyReopen       = key.NewBinding(key.WithKeys("r"), key.WithHelp("r", "reopen"))
+	keyLabel        = key.NewBinding(key.WithKeys("l"), key.WithHelp("l", "label"))
+	keyPriorityB    = key.NewBinding(key.WithKeys("p"), key.WithHelp("p", "priority"))
 	keyComment      = key.NewBinding(key.WithKeys("C"), key.WithHelp("C", "comment"))
 	keyNotes        = key.NewBinding(key.WithKeys("N"), key.WithHelp("N", "notes"))
 	keyToggleClosed = key.NewBinding(key.WithKeys("c"), key.WithHelp("c", "toggle closed"))
 	keyBackToAnvils = key.NewBinding(key.WithKeys("esc", "f"), key.WithHelp("esc/f", "back to anvils"))
-	keyAssign  = key.NewBinding(key.WithKeys("a"), key.WithHelp("a", "assign"))
-	keyAddDep  = key.NewBinding(key.WithKeys("d"), key.WithHelp("d", "add dep"))
-	keyViewDeps = key.NewBinding(key.WithKeys("b"), key.WithHelp("b", "view deps"))
-	keyAI          = key.NewBinding(key.WithKeys("i"), key.WithHelp("i", "AI improve"))
-	keyCopyID      = key.NewBinding(key.WithKeys("y"), key.WithHelp("y", "copy ID"))
-	keyDepUpdate   = key.NewBinding(key.WithKeys("U"), key.WithHelp("U", "update deps"))
-	keyDetailPanel = key.NewBinding(key.WithKeys("\\"), key.WithHelp("\\", "toggle detail"))
-	keySpace   = key.NewBinding(key.WithKeys(" "), key.WithHelp("space", "select"))
-	keyCtrlA   = key.NewBinding(key.WithKeys("ctrl+a"), key.WithHelp("ctrl+a", "select all"))
-	keyEscB    = key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "clear"))
+	keyAssign       = key.NewBinding(key.WithKeys("a"), key.WithHelp("a", "assign"))
+	keyAddDep       = key.NewBinding(key.WithKeys("d"), key.WithHelp("d", "add dep"))
+	keyViewDeps     = key.NewBinding(key.WithKeys("b"), key.WithHelp("b", "view deps"))
+	keyAI           = key.NewBinding(key.WithKeys("i"), key.WithHelp("i", "AI improve"))
+	keyCopyID       = key.NewBinding(key.WithKeys("y"), key.WithHelp("y", "copy ID"))
+	keyDepUpdate    = key.NewBinding(key.WithKeys("U"), key.WithHelp("U", "update deps"))
+	keyDetailPanel  = key.NewBinding(key.WithKeys("\\"), key.WithHelp("\\", "toggle detail"))
+	keySpace        = key.NewBinding(key.WithKeys(" "), key.WithHelp("space", "select"))
+	keyCtrlA        = key.NewBinding(key.WithKeys("ctrl+a"), key.WithHelp("ctrl+a", "select all"))
+	keyEscB         = key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "clear"))
 	keyBulkClose    = key.NewBinding(key.WithKeys("ctrl+x"), key.WithHelp("ctrl+x", "bulk close"))
 	keyBulkLabel    = key.NewBinding(key.WithKeys("ctrl+l"), key.WithHelp("ctrl+l", "bulk label"))
 	keyBulkPriority = key.NewBinding(key.WithKeys("ctrl+p"), key.WithHelp("ctrl+p", "bulk priority"))
@@ -87,13 +87,13 @@ func (listKeyMap) ShortHelp() []key.Binding {
 
 func (listKeyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
-		{keyUp, keyDown, keySpace, keyCtrlA, keyEscB},              // Navigation
-		{keyNew, keyEdit, keyCloseB, keyReopen},                    // CRUD
-		{keyLabel, keyPriorityB, keyComment, keyNotes, keyAssign},  // Metadata
-		{keyAddDep, keyViewDeps},                                   // Dependencies
-		{keyBulkClose, keyBulkLabel, keyBulkPriority},              // Bulk
-		{keyAI, keyDepUpdate, keyCopyID},                           // AI / Updates
-		{keyToggleClosed, keySort},                                 // Filters
+		{keyUp, keyDown, keySpace, keyCtrlA, keyEscB},               // Navigation
+		{keyNew, keyEdit, keyCloseB, keyReopen},                     // CRUD
+		{keyLabel, keyPriorityB, keyComment, keyNotes, keyAssign},   // Metadata
+		{keyAddDep, keyViewDeps},                                    // Dependencies
+		{keyBulkClose, keyBulkLabel, keyBulkPriority},               // Bulk
+		{keyAI, keyDepUpdate, keyCopyID},                            // AI / Updates
+		{keyToggleClosed, keySort},                                  // Filters
 		{keyTab, keyBackToAnvils, keyDetailPanel, keyHelp, keyQuit}, // General
 	}
 }
@@ -108,13 +108,13 @@ func (kanbanKeyMap) ShortHelp() []key.Binding {
 func (kanbanKeyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
 		{keyUp, keyDown, keyLaneLeft, keyLaneRight, keyMoveLeft, keyMoveRight}, // Navigation
-		{keyNew, keyEdit, keyCloseB, keyReopen},                               // CRUD
-		{keyPriorityB, keyComment, keyNotes, keyAssign},                       // Metadata
-		{keyAddDep, keyViewDeps},                                              // Dependencies
-		{keyBulkClose, keyBulkLabel, keyBulkPriority},                         // Bulk
-		{keyAI, keyDepUpdate, keyCopyID},                                      // AI / Updates
-		{keyToggleClosed},                                                     // Filters
-		{keyTab, keyBackToAnvils, keyDetailPanel, keyHelp, keyQuit}, // General
+		{keyNew, keyEdit, keyCloseB, keyReopen},                                // CRUD
+		{keyPriorityB, keyComment, keyNotes, keyAssign},                        // Metadata
+		{keyAddDep, keyViewDeps},                                               // Dependencies
+		{keyBulkClose, keyBulkLabel, keyBulkPriority},                          // Bulk
+		{keyAI, keyDepUpdate, keyCopyID},                                       // AI / Updates
+		{keyToggleClosed},                                                      // Filters
+		{keyTab, keyBackToAnvils, keyDetailPanel, keyHelp, keyQuit},            // General
 	}
 }
 
@@ -127,13 +127,13 @@ func (hierarchyKeyMap) ShortHelp() []key.Binding {
 
 func (hierarchyKeyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
-		{keyUp, keyDown, keyExpand, keySpace, keyCtrlA, keyEscB},                   // Navigation
-		{keyNew, keyEdit, keyCloseB, keyReopen},                                    // CRUD
-		{keyPriorityB, keyComment, keyNotes, keyAssign},                            // Metadata
-		{keyAddDep, keyViewDeps},                                                   // Dependencies
-		{keyBulkClose, keyBulkLabel, keyBulkPriority},                              // Bulk
-		{keyAI, keyDepUpdate, keyCopyID},                                           // AI / Updates
-		{keyToggleClosed},                                                          // Filters
+		{keyUp, keyDown, keyExpand, keySpace, keyCtrlA, keyEscB},    // Navigation
+		{keyNew, keyEdit, keyCloseB, keyReopen},                     // CRUD
+		{keyPriorityB, keyComment, keyNotes, keyAssign},             // Metadata
+		{keyAddDep, keyViewDeps},                                    // Dependencies
+		{keyBulkClose, keyBulkLabel, keyBulkPriority},               // Bulk
+		{keyAI, keyDepUpdate, keyCopyID},                            // AI / Updates
+		{keyToggleClosed},                                           // Filters
 		{keyTab, keyBackToAnvils, keyDetailPanel, keyHelp, keyQuit}, // General
 	}
 }
@@ -196,10 +196,10 @@ func (m *Model) renderHelpOverlay() string {
 	}
 
 	titleStyle := lipgloss.NewStyle().Bold(true).Foreground(colorAccent)
-	catStyle   := lipgloss.NewStyle().Bold(true).Foreground(colorMuted)
-	dimStyle   := lipgloss.NewStyle().Foreground(colorMuted)
-	keyStyle   := lipgloss.NewStyle().Foreground(colorAccent)
-	descStyle  := lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Dark: "252", Light: "240"})
+	catStyle := lipgloss.NewStyle().Bold(true).Foreground(colorMuted)
+	dimStyle := lipgloss.NewStyle().Foreground(colorMuted)
+	keyStyle := lipgloss.NewStyle().Foreground(colorAccent)
+	descStyle := lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Dark: "252", Light: "240"})
 
 	var sb strings.Builder
 	sb.WriteString(titleStyle.Render("⌨  Keybindings") + "\n\n")

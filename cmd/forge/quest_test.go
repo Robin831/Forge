@@ -286,4 +286,3 @@ func TestQuestRunQuestNotFound(t *testing.T) {
 		t.Errorf("expected 'no quests found' in error, got: %s", got)
 	}
 }
-

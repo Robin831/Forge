@@ -102,9 +102,9 @@ func ConsolidateAnvil(ctx context.Context, opts ConsolidateOptions) (Consolidate
 	initialCount := len(rf.Rules)
 
 	var (
-		summary       []warden.MergeResult
-		replaced      []warden.Rule
-		firstPassErr  error
+		summary      []warden.MergeResult
+		replaced     []warden.Rule
+		firstPassErr error
 	)
 	if opts.Consolidator != nil && opts.DedupThreshold > 0 {
 		var errs []error

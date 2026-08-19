@@ -56,7 +56,7 @@ func TestPRsAll_SectionAssignment(t *testing.T) {
 	// Insert one forge-managed PR, one external PR, and one recently-merged PR.
 	now := time.Now().UTC()
 	forgePR := &state.PR{
-		Number:    1, Anvil: "anvil-a", BeadID: "Forge-aaaa",
+		Number: 1, Anvil: "anvil-a", BeadID: "Forge-aaaa",
 		Branch: "feature/x", Status: state.PROpen, Title: "Forge change",
 		CreatedAt: now,
 	}
@@ -66,7 +66,7 @@ func TestPRsAll_SectionAssignment(t *testing.T) {
 	// InsertPR sets bellows_managed=1 by default for forge PRs.
 
 	externalPR := &state.PR{
-		Number:    2, Anvil: "anvil-a", BeadID: "ext-2",
+		Number: 2, Anvil: "anvil-a", BeadID: "ext-2",
 		Branch: "patch", Status: state.PROpen, Title: "External patch",
 		CreatedAt: now,
 	}
@@ -78,7 +78,7 @@ func TestPRsAll_SectionAssignment(t *testing.T) {
 	}
 
 	mergedPR := &state.PR{
-		Number:    3, Anvil: "anvil-a", BeadID: "Forge-bbbb",
+		Number: 3, Anvil: "anvil-a", BeadID: "Forge-bbbb",
 		Branch: "feature/y", Status: state.PROpen, Title: "Old change",
 		CreatedAt: now.Add(-2 * 24 * time.Hour),
 	}
@@ -348,7 +348,7 @@ func TestPRsAll_RecentlyMerged_RespectsWindow(t *testing.T) {
 	srv := newServerWithDefaults(t, nil)
 
 	pr := &state.PR{
-		Number:    99, Anvil: "anvil-a", BeadID: "Forge-cccc",
+		Number: 99, Anvil: "anvil-a", BeadID: "Forge-cccc",
 		Branch: "old", Status: state.PROpen, Title: "Stale merged",
 		CreatedAt: time.Now().UTC().Add(-30 * 24 * time.Hour),
 	}

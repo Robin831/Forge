@@ -25,7 +25,7 @@ type TreeNode struct {
 
 // flatItem is a single displayable row in the flattened hierarchy list.
 type flatItem struct {
-	bead        *Bead  // nil for dep-arrow rows
+	bead        *Bead // nil for dep-arrow rows
 	depth       int
 	isDep       bool   // true if this is a depends_on sub-item
 	depID       string // dependency bead ID (when isDep=true)

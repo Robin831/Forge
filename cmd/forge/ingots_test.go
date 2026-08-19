@@ -92,4 +92,3 @@ func TestTemperDisplay(t *testing.T) {
 		})
 	}
 }
-

@@ -11,7 +11,7 @@ import (
 )
 
 // seedResumableWorker inserts a worker row and stamps its session_id/model so
-// ResumableWorkerByBeadID (which filters on branch != '' AND session_id != '')
+// ResumableWorkerByBeadID (which filters on branch != "" AND session_id != "")
 // can find it. Passing an empty branch/session lets a test exercise the
 // negative filters.
 func seedResumableWorker(t *testing.T, db *state.DB, id, beadID, anvil, branch, session, model string) {

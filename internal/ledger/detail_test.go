@@ -136,19 +136,19 @@ func TestRenderBeadDetailContentOptionalFields(t *testing.T) {
 	closed := now.Add(-24 * time.Hour)
 	var sb strings.Builder
 	b := &Bead{
-		ID:        "Forge-xyz",
-		Title:     "Full bead",
-		Status:    "closed",
-		Priority:  1,
-		Anvil:     "repo",
-		IssueType: "bug",
-		Assignee:  "alice",
-		Labels:    []string{"urgent", "backend"},
-		HasPR:     true,
-		UpdatedAt: &now,
-		ClosedAt:  &closed,
-		DependsOn: []string{"Forge-dep1"},
-		Blocks:    []string{"Forge-blk1"},
+		ID:          "Forge-xyz",
+		Title:       "Full bead",
+		Status:      "closed",
+		Priority:    1,
+		Anvil:       "repo",
+		IssueType:   "bug",
+		Assignee:    "alice",
+		Labels:      []string{"urgent", "backend"},
+		HasPR:       true,
+		UpdatedAt:   &now,
+		ClosedAt:    &closed,
+		DependsOn:   []string{"Forge-dep1"},
+		Blocks:      []string{"Forge-blk1"},
 		Description: "Some description text",
 	}
 	renderBeadDetailContent(&sb, b, 30)

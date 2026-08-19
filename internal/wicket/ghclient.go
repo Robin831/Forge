@@ -56,11 +56,11 @@ func NewGitHubClient() GitHubClient {
 // ghIssue is the JSON shape returned by `gh issue list --json` and
 // `gh issue view --json`.
 type ghIssue struct {
-	Number    int      `json:"number"`
-	Title     string   `json:"title"`
-	Body      string   `json:"body"`
-	State     string   `json:"state"`
-	CreatedAt string   `json:"createdAt"`
+	Number    int    `json:"number"`
+	Title     string `json:"title"`
+	Body      string `json:"body"`
+	State     string `json:"state"`
+	CreatedAt string `json:"createdAt"`
 	Author    struct {
 		Login string `json:"login"`
 	} `json:"author"`
@@ -128,7 +128,7 @@ func (g *ghClient) GetIssue(ctx context.Context, repo string, number int) (*Issu
 
 // ghAPIComment is the JSON shape of a comment from the GitHub REST API.
 type ghAPIComment struct {
-	ID   int64  `json:"id"`
+	ID   int64 `json:"id"`
 	User struct {
 		Login string `json:"login"`
 	} `json:"user"`

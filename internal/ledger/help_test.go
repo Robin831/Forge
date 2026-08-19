@@ -17,11 +17,11 @@ func sendMouseWheel(m *Model, button tea.MouseButton) *Model {
 // newTestModel returns a minimal Model suitable for Update-level tests.
 func newTestModel() *Model {
 	m := &Model{
-		anvils:  map[string]string{"test": "/tmp/test"},
-		view:    ViewList,
-		width:   80,
-		height:  24,
-		helpSt:  newHelpState(),
+		anvils: map[string]string{"test": "/tmp/test"},
+		view:   ViewList,
+		width:  80,
+		height: 24,
+		helpSt: newHelpState(),
 	}
 	return m
 }

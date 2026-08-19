@@ -51,7 +51,7 @@ func TestJaccard_Disjoint(t *testing.T) {
 }
 
 func TestJaccard_PartialOverlap(t *testing.T) {
-	a := Tokenize("missing error check return")  // 4
+	a := Tokenize("missing error check return")   // 4
 	b := Tokenize("unchecked error return value") // 4 (unchecked, error, return, value)
 	// intersection: {error, return} = 2
 	// union: {missing, error, check, return, unchecked, value} = 6

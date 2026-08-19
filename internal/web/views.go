@@ -367,21 +367,21 @@ type beadDetailDepRef struct {
 
 // beadDetailResponse is the consolidated JSON shape for /api/bead/{id}.
 type beadDetailResponse struct {
-	BeadID    string              `json:"bead_id"`
-	Anvil     string              `json:"anvil,omitempty"`
-	Queue     *beadDetailQueue    `json:"queue,omitempty"`
-	Ingot     *ingot.Ingot        `json:"ingot,omitempty"`
-	Retry     *beadDetailRetry    `json:"retry,omitempty"`
-	Cost      *beadDetailCost     `json:"cost,omitempty"`
-	Workers   []beadDetailWorker  `json:"workers"`
-	Events    []beadDetailEvent   `json:"events"`
-	PRs       []beadDetailPR      `json:"prs"`
-	Blocks    []beadDetailDepRef  `json:"blocks"`
-	BlockedBy []beadDetailDepRef  `json:"blocked_by"`
-	Notes              string         `json:"notes,omitempty"`
-	Design             string         `json:"design,omitempty"`
-	AcceptanceCriteria string         `json:"acceptance_criteria,omitempty"`
-	Comments  []beadDetailComment `json:"comments"`
+	BeadID             string              `json:"bead_id"`
+	Anvil              string              `json:"anvil,omitempty"`
+	Queue              *beadDetailQueue    `json:"queue,omitempty"`
+	Ingot              *ingot.Ingot        `json:"ingot,omitempty"`
+	Retry              *beadDetailRetry    `json:"retry,omitempty"`
+	Cost               *beadDetailCost     `json:"cost,omitempty"`
+	Workers            []beadDetailWorker  `json:"workers"`
+	Events             []beadDetailEvent   `json:"events"`
+	PRs                []beadDetailPR      `json:"prs"`
+	Blocks             []beadDetailDepRef  `json:"blocks"`
+	BlockedBy          []beadDetailDepRef  `json:"blocked_by"`
+	Notes              string              `json:"notes,omitempty"`
+	Design             string              `json:"design,omitempty"`
+	AcceptanceCriteria string              `json:"acceptance_criteria,omitempty"`
+	Comments           []beadDetailComment `json:"comments"`
 }
 
 // beadDepsResponse is the JSON shape returned by /api/bead/{id}/deps.
@@ -400,16 +400,16 @@ type beadDepsResponse struct {
 // links (e.g. "discovered-from", "related"); only "blocks" is surfaced
 // as Blocks/BlockedBy.
 type bdShowEntry struct {
-	ID             string        `json:"id"`
-	Title          string        `json:"title"`
-	Status         string        `json:"status"`
-	Priority       int           `json:"priority"`
-	Notes          string        `json:"notes"`
-	Design             string    `json:"design"`
-	AcceptanceCriteria string    `json:"acceptance_criteria"`
-	DependencyType string        `json:"dependency_type"`
-	Dependencies   []bdShowEntry `json:"dependencies"`
-	Dependents     []bdShowEntry `json:"dependents"`
+	ID                 string        `json:"id"`
+	Title              string        `json:"title"`
+	Status             string        `json:"status"`
+	Priority           int           `json:"priority"`
+	Notes              string        `json:"notes"`
+	Design             string        `json:"design"`
+	AcceptanceCriteria string        `json:"acceptance_criteria"`
+	DependencyType     string        `json:"dependency_type"`
+	Dependencies       []bdShowEntry `json:"dependencies"`
+	Dependents         []bdShowEntry `json:"dependents"`
 }
 
 // isBlockingDep reports whether a dep edge counts as a "blocks" relation.

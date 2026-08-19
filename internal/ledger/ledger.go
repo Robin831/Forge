@@ -76,9 +76,9 @@ const (
 	FormComment
 	FormNotes
 	FormAssign
-	FormAddDep      // d key: pick a bead to add as a dependency
-	FormViewDeps    // b key: view and optionally remove dependencies
-	FormBulkLabel   // ctrl+l: set a label on all selected beads
+	FormAddDep       // d key: pick a bead to add as a dependency
+	FormViewDeps     // b key: view and optionally remove dependencies
+	FormBulkLabel    // ctrl+l: set a label on all selected beads
 	FormBulkPriority // ctrl+p: set priority on all selected beads
 )
 
@@ -99,7 +99,7 @@ type Model struct {
 	// sortChoice holds the pointer used by the huh sort selector form.
 	sortChoice *string
 
-	anvils       map[string]string            // name → path
+	anvils       map[string]string             // name → path
 	anvilConfigs map[string]config.AnvilConfig // per-anvil configuration (for dep updates)
 	db           *state.DB
 
@@ -154,7 +154,6 @@ type Model struct {
 
 	// Detail panel state — persistent bead detail shown on the right side.
 	showDetailPanel bool
-
 }
 
 // NewModel creates a new Ledger model. anvilConfigs is the per-anvil
@@ -227,7 +226,6 @@ func (m *Model) cycleView() {
 		m.view = ViewList
 	}
 }
-
 
 // filterHint returns a compact display string reflecting the active filters,
 // e.g. "  [forge]  +5 closed". Returns "" when no filters are active.

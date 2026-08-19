@@ -17,7 +17,6 @@ const (
 
 	// rateLimitMaxBackoff caps exponential growth to avoid very long waits.
 	rateLimitMaxBackoff = 60 * time.Minute
-
 )
 
 // RateLimitError is returned by GitHub client calls when the GitHub API rate
