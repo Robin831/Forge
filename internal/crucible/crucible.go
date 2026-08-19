@@ -832,6 +832,11 @@ func independentNote(excluded []string) string {
 
 // bdShowBead extends the Bead with the raw dependents array that bd returns
 // instead of a flat "blocks" field.
+//
+// bd only emits that array when the show carries
+// executil.BdIncludeDependentsFlag (see FetchBead); unflagged it reports a bare
+// `dependent_count`, which decodes to nothing here and would leave
+// FetchChildren walking an empty descendant tree.
 type bdShowBead struct {
 	poller.Bead
 	Dependents []struct {
@@ -840,11 +845,14 @@ type bdShowBead struct {
 	} `json:"dependents"`
 }
 
-// FetchBead calls `bd show <beadID> --json` and returns the parsed bead.
-// bd show returns dependents as an array of objects with dependency_type,
-// not a flat "blocks" array, so we extract blocks from the dependents.
+// FetchBead calls `bd show <beadID> --json --include-dependents` and returns
+// the parsed bead. bd show returns dependents as an array of objects with
+// dependency_type, not a flat "blocks" array, so we extract blocks from the
+// dependents — and only asks for that array when the flag is present, which is
+// why the invocation goes through executil.BdShowDependents rather than being
+// spelled out here.
 func FetchBead(ctx context.Context, beadID, dir string) (poller.Bead, error) {
-	cmd, cancel := executil.BdCommand(ctx, "show", beadID, "--json")
+	cmd, cancel := executil.BdShowDependents(ctx, beadID)
 	defer cancel()
 	cmd.Dir = dir
 
@@ -852,7 +860,8 @@ func FetchBead(ctx context.Context, beadID, dir string) (poller.Bead, error) {
 	cmd.Stderr = &stderr
 	output, err := cmd.Output()
 	if err != nil {
-		return poller.Bead{}, fmt.Errorf("bd show %s: %w: %s", beadID, err, stderr.String())
+		return poller.Bead{}, fmt.Errorf("bd show %s: %w: %s",
+			beadID, executil.ClassifyBdShowError(err, stderr.String()), stderr.String())
 	}
 
 	// bd show --json may return an array with a single element: [{...}]

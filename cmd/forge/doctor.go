@@ -71,6 +71,9 @@ var doctorCmd = &cobra.Command{
 		// 2. Check bd (beads) installed
 		checks = append(checks, checkBinary("bd", "beads issue tracker"))
 
+		// 2a. Check bd is new enough to emit the dependents array on demand
+		checks = append(checks, checkBdIncludeDependents())
+
 		// 3. Check VCS CLI tools — platform-aware based on configured anvils
 		checks = append(checks, checkVCSTools()...)
 
@@ -721,6 +724,57 @@ func checkGovulncheck() checkResult {
 		Name:   "govulncheck",
 		Status: "ok",
 		Detail: path,
+	}
+}
+
+// checkBdIncludeDependents verifies that the installed bd knows
+// executil.BdIncludeDependentsFlag.
+//
+// The flag is a hard requirement, not a nicety: bd made the `dependents` array
+// opt-in, and a bd that does not have it answers `bd show --json` with a
+// dependent_count and no array. Forge reads that array to decide whether a
+// parent bead has children at all, so on an older bd every epic looks empty —
+// the Crucible never finds work to orchestrate and a decomposed parent is
+// auto-closed while its children are still blocked on it. None of that surfaces
+// as an error at runtime, which is exactly why it is checked here.
+//
+// The probe reads `bd show --help` rather than comparing version strings: it
+// asks the question that actually matters, and does not have to track which
+// release first shipped the flag across forks or pre-release builds.
+func checkBdIncludeDependents() checkResult {
+	const name = "bd dependents support"
+
+	bdPath, err := execLookPath("bd")
+	if err != nil {
+		return checkResult{
+			Name:   name,
+			Status: "warn",
+			Detail: "bd not in PATH — cannot verify " + executil.BdIncludeDependentsFlag + " support",
+		}
+	}
+
+	out, err := execRunCommand(bdPath, "show", "--help")
+	if err != nil {
+		return checkResult{
+			Name:   name,
+			Status: "warn",
+			Detail: "could not run `bd show --help`: " + err.Error(),
+		}
+	}
+	if !strings.Contains(string(out), executil.BdIncludeDependentsFlag) {
+		return checkResult{
+			Name:   name,
+			Status: "fail",
+			Detail: "bd does not support " + executil.BdIncludeDependentsFlag +
+				" — upgrade bd to 1.1.2 or newer; without it `bd show --json` omits the " +
+				"dependents array and Forge cannot see a bead's children (epic orchestration, " +
+				"decomposed-parent auto-close and the bead detail view all read it)",
+		}
+	}
+	return checkResult{
+		Name:   name,
+		Status: "ok",
+		Detail: executil.BdIncludeDependentsFlag + " supported",
 	}
 }
 

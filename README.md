@@ -289,7 +289,9 @@ See the `notifications` section of `forge.yaml` and [docs/configuration.md](docs
 ## Requirements
 
 - **Go 1.26+**
-- **bd** (beads) — issue tracker
+- **bd** (beads) 1.1.2+ — issue tracker. 1.1.2 is the floor because `bd show --json`
+  only emits the `dependents` array when passed `--include-dependents`, and Forge reads
+  that array to find a bead's children. `forge doctor` checks for the flag.
 - **claude** — Claude Code CLI
 - **gh** — GitHub CLI (authenticated)
 - **git** — with worktree support

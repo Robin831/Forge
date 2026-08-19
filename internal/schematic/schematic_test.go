@@ -1,15 +1,19 @@
 package schematic
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"os/exec"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/Robin831/Forge/internal/executil"
 	"github.com/Robin831/Forge/internal/poller"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -237,7 +241,14 @@ func newFakeRunnerWithDeps(upstreamIDs, downstreamIDs []string) *fakeRunner {
 				return []byte(fmt.Sprintf(`{"id":%q}`, id)), nil
 			}
 			// bd show <id> --json → return deps/dependents JSON.
-			if len(args) >= 2 && args[0] == "show" && args[len(args)-1] == "--json" {
+			//
+			// The dependents half is withheld unless the call carries
+			// --include-dependents, which is what bd itself does (verified
+			// against 1.1.2): unflagged it reports a dependent_count and omits
+			// the array. Without that discrimination a re-fetch that lost the
+			// flag would still look correct here while silently dropping the
+			// parent's downstream blocks in production.
+			if len(args) >= 2 && args[0] == "show" && slices.Contains(args, "--json") {
 				var deps, dependents string
 				for _, id := range upstreamIDs {
 					if deps != "" {
@@ -245,13 +256,17 @@ func newFakeRunnerWithDeps(upstreamIDs, downstreamIDs []string) *fakeRunner {
 					}
 					deps += fmt.Sprintf(`{"id":%q}`, id)
 				}
-				for _, id := range downstreamIDs {
-					if dependents != "" {
-						dependents += ","
+				if slices.Contains(args, executil.BdIncludeDependentsFlag) {
+					for _, id := range downstreamIDs {
+						if dependents != "" {
+							dependents += ","
+						}
+						dependents += fmt.Sprintf(`{"id":%q}`, id)
 					}
-					dependents += fmt.Sprintf(`{"id":%q}`, id)
+					return []byte(fmt.Sprintf(`[{"dependencies":[%s],"dependents":[%s]}]`, deps, dependents)), nil
 				}
-				return []byte(fmt.Sprintf(`[{"dependencies":[%s],"dependents":[%s]}]`, deps, dependents)), nil
+				return []byte(fmt.Sprintf(`[{"dependencies":[%s],"dependent_count":%d}]`,
+					deps, len(downstreamIDs))), nil
 			}
 			// dep add, update, close, etc. succeed silently.
 			return []byte("ok"), nil
@@ -1044,4 +1059,41 @@ func TestIsTransientDepErr(t *testing.T) {
 			assert.Equal(t, tc.want, got)
 		})
 	}
+}
+
+// The parent re-fetch falls back to struct fields bd may never have populated,
+// so a failure there silently drops the parent's downstream blocks. The warning
+// is all that separates that from a parent with no blocks — so it has to carry
+// bd's own output, and name the flag when an old bd is the reason.
+func TestCreateSubBeads_ReFetchFailureNamesTheFlagAndBdsOutput(t *testing.T) {
+	disableDepRetrySleep(t)
+
+	fake := &fakeRunner{response: func(args []string) ([]byte, error) {
+		if len(args) > 0 && args[0] == "create" {
+			return []byte(`{"id":"test-1"}`), nil
+		}
+		if len(args) > 0 && args[0] == "show" {
+			// run() hands back the combined buffer, which is where a cobra
+			// rejection lands.
+			return []byte("Error: unknown flag: " + executil.BdIncludeDependentsFlag),
+				errors.New("exit status 1")
+		}
+		return []byte("ok"), nil
+	}}
+
+	var logged bytes.Buffer
+	restore := log.Writer()
+	log.SetOutput(&logged)
+	t.Cleanup(func() { log.SetOutput(restore) })
+
+	parent := poller.Bead{ID: "parent-1", Title: "Big feature", Priority: 2}
+	tasks := []subTaskVerdict{{Title: "Task A", Description: "Detailed description for Task A"}}
+
+	_, err := createSubBeads(context.Background(), parent, tasks, "/tmp", fake.run)
+	require.NoError(t, err, "an unreadable re-fetch is a warning, not a failed decomposition")
+
+	out := logged.String()
+	assert.Contains(t, out, executil.BdIncludeDependentsFlag,
+		"the warning must name the flag an old bd is missing")
+	assert.Contains(t, out, "unknown flag", "the warning must carry bd's own output")
 }

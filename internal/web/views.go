@@ -1,10 +1,12 @@
 package web
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"sort"
@@ -420,17 +422,35 @@ func isBlockingDep(e bdShowEntry) bool {
 }
 
 // bdShowJSON is the command runner used by the dep helpers to invoke
-// `bd show <id> --json`. The variable is package-level so tests can swap it
-// for a fake without spawning real subprocesses. The dir parameter is the
-// anvil's on-disk path; passing a non-empty value sets cmd.Dir so bd can
-// locate the Dolt database.
+// `bd show <id> --json --include-dependents`. The variable is package-level so
+// tests can swap it for a fake without spawning real subprocesses. The dir
+// parameter is the anvil's on-disk path; passing a non-empty value sets cmd.Dir
+// so bd can locate the Dolt database.
+//
+// The flag is not optional here: the bead detail view's "blocks" list is read
+// straight out of the dependents array, which bd omits unless asked for (see
+// executil.BdIncludeDependentsFlag), so without it every bead renders as
+// blocking nothing.
 var bdShowJSON = func(ctx context.Context, dir, beadID string) ([]byte, error) {
-	cmd, cancel := executil.BdCommand(ctx, "show", beadID, "--json")
+	cmd, cancel := executil.BdShowDependents(ctx, beadID)
 	defer cancel()
 	if dir != "" {
 		cmd.Dir = dir
 	}
-	return cmd.Output()
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+	if err == nil {
+		return out, nil
+	}
+	// Capturing stderr for the classification also stops exec.ExitError from
+	// carrying it, so it is folded back into the error rather than dropped:
+	// every caller here degrades to an empty dep list, and the diagnostic is
+	// all that separates "bd is missing" from "this bead has no children".
+	if diag := strings.TrimSpace(stderr.String()); diag != "" {
+		err = fmt.Errorf("%w: %s", err, diag)
+	}
+	return out, executil.ClassifyBdShowError(err, stderr.String())
 }
 
 // maxDepDepth caps the recursion depth on /api/bead/{id}/deps. The modal's
@@ -438,14 +458,19 @@ var bdShowJSON = func(ctx context.Context, dir, beadID string) ([]byte, error) {
 // pathological fan-out on large graphs.
 const maxDepDepth = 3
 
-// fetchBeadShow runs `bd show <id> --json` and returns the first entry.
-// Empty output, unparseable output, or non-zero exit codes are all reported
-// as errors so callers can degrade to empty dep lists. Both the array form
-// ([{...}]) and bare object form ({...}) are accepted, and leading/trailing
+// fetchBeadShow runs `bd show <id> --json --include-dependents` and returns the
+// first entry. Empty output, unparseable output, or non-zero exit codes are all
+// reported as errors so callers can degrade to empty dep lists. Both the array
+// form ([{...}]) and bare object form ({...}) are accepted, and leading/trailing
 // diagnostic noise from bd is tolerated via executil.DecodeJSON.
-func fetchBeadShow(ctx context.Context, dir, beadID string) (*bdShowEntry, error) {
+//
+// Every caller swallows the error to keep the response shape stable, so this is
+// where it is logged: a bd too old for the dependents flag renders every bead as
+// blocking nothing, and without a line naming it that reads as an empty graph.
+func fetchBeadShow(ctx context.Context, dir, beadID string, logger *slog.Logger) (*bdShowEntry, error) {
 	out, err := bdShowJSON(ctx, dir, beadID)
 	if err != nil {
+		logBdShowErr(logger, beadID, err)
 		return nil, err
 	}
 	if len(out) == 0 {
@@ -462,6 +487,22 @@ func fetchBeadShow(ctx context.Context, dir, beadID string) (*bdShowEntry, error
 		return &single, nil
 	}
 	return nil, errors.New("bd show: no entries")
+}
+
+// logBdShowErr reports a failed bead lookup. An older bd is called out by name
+// (and at Warn) because it is an operator-fixable configuration problem rather
+// than a transient one, and because its symptom — every dependency list empty —
+// looks like data, not a failure.
+func logBdShowErr(logger *slog.Logger, beadID string, err error) {
+	if logger == nil {
+		return
+	}
+	if errors.Is(err, executil.ErrIncludeDependentsUnsupported) {
+		logger.Warn("bd show cannot report dependents; dependency lists will be empty",
+			"bead_id", beadID, "error", err)
+		return
+	}
+	logger.Debug("bd show failed", "bead_id", beadID, "error", err)
 }
 
 // anvilLookup resolves a bead ID to its anvil name. The default lookup uses
@@ -501,8 +542,8 @@ func newAnvilLookup(db *state.DB) anvilLookup {
 // for the given bead. dir is the anvil's on-disk path passed to bdShowJSON.
 // Errors yield empty slices so the bead detail handler can degrade gracefully
 // when bd is missing or returns unexpected output.
-func fetchBeadDeps(ctx context.Context, dir, beadID string, lookup anvilLookup) (blocks, blockedBy []beadDetailDepRef) {
-	entry, err := fetchBeadShow(ctx, dir, beadID)
+func fetchBeadDeps(ctx context.Context, dir, beadID string, lookup anvilLookup, logger *slog.Logger) (blocks, blockedBy []beadDetailDepRef) {
+	entry, err := fetchBeadShow(ctx, dir, beadID, logger)
 	if err != nil {
 		return []beadDetailDepRef{}, []beadDetailDepRef{}
 	}
@@ -614,11 +655,11 @@ func makeDepRef(e bdShowEntry, lookup anvilLookup) beadDetailDepRef {
 // multiple paths). When a bead is encountered that has already been
 // walked, its ref is included but its own Blocks/BlockedBy children are
 // elided so the response stays a tree rather than a DAG.
-func walkBeadDeps(ctx context.Context, dir, beadID string, depth int, lookup anvilLookup, visited map[string]bool) (blocks, blockedBy []beadDetailDepRef) {
+func walkBeadDeps(ctx context.Context, dir, beadID string, depth int, lookup anvilLookup, visited map[string]bool, logger *slog.Logger) (blocks, blockedBy []beadDetailDepRef) {
 	if depth <= 0 {
 		return nil, nil
 	}
-	entry, err := fetchBeadShow(ctx, dir, beadID)
+	entry, err := fetchBeadShow(ctx, dir, beadID, logger)
 	if err != nil {
 		return []beadDetailDepRef{}, []beadDetailDepRef{}
 	}
@@ -631,7 +672,7 @@ func walkBeadDeps(ctx context.Context, dir, beadID string, depth int, lookup anv
 		if !visited[d.ID] {
 			visited[d.ID] = true
 			if depth-1 > 0 {
-				ref.Blocks, ref.BlockedBy = walkBeadDeps(ctx, dir, d.ID, depth-1, lookup, visited)
+				ref.Blocks, ref.BlockedBy = walkBeadDeps(ctx, dir, d.ID, depth-1, lookup, visited, logger)
 			}
 		}
 		blocks = append(blocks, ref)
@@ -645,7 +686,7 @@ func walkBeadDeps(ctx context.Context, dir, beadID string, depth int, lookup anv
 		if !visited[d.ID] {
 			visited[d.ID] = true
 			if depth-1 > 0 {
-				ref.Blocks, ref.BlockedBy = walkBeadDeps(ctx, dir, d.ID, depth-1, lookup, visited)
+				ref.Blocks, ref.BlockedBy = walkBeadDeps(ctx, dir, d.ID, depth-1, lookup, visited, logger)
 			}
 		}
 		blockedBy = append(blockedBy, ref)
@@ -865,7 +906,7 @@ func (s *Server) handleBeadDetail(w http.ResponseWriter, r *http.Request) {
 	// show call does not starve the comment fetch.
 	showCtx, showCancel := context.WithTimeout(r.Context(), executil.BdTimeout())
 	defer showCancel()
-	if entry, err := fetchBeadShow(showCtx, anvilPath, beadID); err == nil && entry != nil {
+	if entry, err := fetchBeadShow(showCtx, anvilPath, beadID, s.logger); err == nil && entry != nil {
 		resp.Notes = entry.Notes
 		resp.Design = entry.Design
 		resp.AcceptanceCriteria = entry.AcceptanceCriteria
@@ -912,7 +953,7 @@ func (s *Server) handleBeadDeps(w http.ResponseWriter, r *http.Request) {
 	// child of itself (e.g. a corrupt or pathological dep graph).
 	lookup := newAnvilLookup(s.db)
 	visited := map[string]bool{beadID: true}
-	blocks, blockedBy := walkBeadDeps(ctx, s.resolveAnvilPath(lookup(beadID)), beadID, depth, lookup, visited)
+	blocks, blockedBy := walkBeadDeps(ctx, s.resolveAnvilPath(lookup(beadID)), beadID, depth, lookup, visited, s.logger)
 	if blocks == nil {
 		blocks = []beadDetailDepRef{}
 	}

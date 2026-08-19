@@ -648,3 +648,64 @@ func TestCheckAssayPasses_EnabledBinaryMissing(t *testing.T) {
 		}
 	}
 }
+
+// The dependents array is opt-in on bd, and a bd that lacks the flag fails
+// silently: `bd show --json` still succeeds, just without the array, so every
+// bead reads as childless. Doctor is where that becomes visible, so the three
+// outcomes are pinned — supported, unsupported, and unverifiable.
+func TestCheckBdIncludeDependents(t *testing.T) {
+	tests := []struct {
+		name       string
+		lookPath   func(string) (string, error)
+		runCommand func(string, ...string) ([]byte, error)
+		wantStatus string
+		wantDetail string
+	}{
+		{
+			name:     "flag present in help output",
+			lookPath: func(string) (string, error) { return "/usr/bin/bd", nil },
+			runCommand: func(string, ...string) ([]byte, error) {
+				return []byte("Flags:\n      --include-dependents   Stream full dependent issues in JSON output\n"), nil
+			},
+			wantStatus: "ok",
+		},
+		{
+			name:     "older bd without the flag fails the check",
+			lookPath: func(string) (string, error) { return "/usr/bin/bd", nil },
+			runCommand: func(string, ...string) ([]byte, error) {
+				return []byte("Flags:\n      --long   Show all available fields\n"), nil
+			},
+			wantStatus: "fail",
+			wantDetail: "upgrade bd",
+		},
+		{
+			name:       "bd missing is only a warning",
+			lookPath:   func(string) (string, error) { return "", errors.New("not found") },
+			runCommand: func(string, ...string) ([]byte, error) { return nil, nil },
+			wantStatus: "warn",
+		},
+		{
+			name:     "help that will not run is a warning, not a verdict",
+			lookPath: func(string) (string, error) { return "/usr/bin/bd", nil },
+			runCommand: func(string, ...string) ([]byte, error) {
+				return nil, errors.New("exec format error")
+			},
+			wantStatus: "warn",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mockExec(t, tt.lookPath, tt.runCommand)
+
+			got := checkBdIncludeDependents()
+
+			if got.Status != tt.wantStatus {
+				t.Errorf("Status = %q, want %q (detail: %s)", got.Status, tt.wantStatus, got.Detail)
+			}
+			if tt.wantDetail != "" && !strings.Contains(got.Detail, tt.wantDetail) {
+				t.Errorf("Detail = %q, want it to mention %q", got.Detail, tt.wantDetail)
+			}
+		})
+	}
+}

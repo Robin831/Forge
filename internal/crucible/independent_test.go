@@ -219,7 +219,7 @@ func beadIDs(beads []poller.Bead) []string {
 // must not even fetch an opted-out child's subtree — carving a bead out carves
 // out the work hanging off it, which reaches main through that bead's own PR.
 func TestFetchChildren_SkipsIndependentDescendantsAndTheirSubtree(t *testing.T) {
-	withFakeBd(t, `case "$2" in
+	withFakeBd(t, `case "${2#--id=}" in
 parent-1) echo '[{"id":"parent-1","status":"open","dependents":[{"id":"child-1","dependency_type":"blocks"},{"id":"child-2","dependency_type":"blocks"}]}]';;
 child-1) echo '[{"id":"child-1","status":"open","labels":["independent"],"dependents":[{"id":"grandchild-1","dependency_type":"blocks"}]}]';;
 child-2) echo '[{"id":"child-2","status":"open","labels":["forgeReady"]}]';;

@@ -20,6 +20,13 @@ import (
 // This is needed because `bd ready --json` may not include the blocks field.
 // All bead types are checked — any bead (feature, task, etc.) can have
 // children that need to be resolved.
+//
+// Each lookup pays for executil.BdIncludeDependentsFlag, which bd documents as
+// "may be slow on hub beads" because it streams every dependent's record rather
+// than a count — and this is the widest fan-out of it in Forge, one goroutine
+// per ready bead with no Blocks. It is bounded by the ready-bead count of a
+// single poll cycle, so it is left unlimited; the cost is recorded on
+// executil.BdShowDependentsArgs.
 func ResolveBlocks(ctx context.Context, beads []Bead, anvilPaths map[string]string) {
 	type result struct {
 		index  int
@@ -87,6 +94,12 @@ type bdShowDependent struct {
 // bdShowResponse is the subset of `bd show --json` output we need to extract
 // the blocks (children) of a bead. bd returns "dependents" as an array of
 // objects rather than a flat "blocks" string array.
+//
+// The array is only there when the show was run with
+// executil.BdIncludeDependentsFlag: bd (1.1.2) reports `dependent_count`
+// unflagged and omits `dependents` entirely, so an unflagged show decodes into
+// a zero-value struct here and every reader concludes the bead has no children.
+// Both readers therefore go through executil.BdShowDependents.
 type bdShowResponse struct {
 	Dependents []bdShowDependent `json:"dependents"`
 }
@@ -107,7 +120,7 @@ type bdShowResponse struct {
 // An error is returned rather than an empty slice when bd cannot be reached:
 // "no children" and "cannot tell" lead to opposite decisions.
 func OpenChildren(ctx context.Context, beadID, anvilPath string) ([]string, error) {
-	cmd, cancel := executil.BdCommand(ctx, "show", beadID, "--json")
+	cmd, cancel := executil.BdShowDependents(ctx, beadID)
 	defer cancel()
 	cmd.Dir = anvilPath
 
@@ -115,6 +128,7 @@ func OpenChildren(ctx context.Context, beadID, anvilPath string) ([]string, erro
 	cmd.Stderr = &stderr
 	output, err := cmd.Output()
 	if err != nil {
+		err = executil.ClassifyBdShowError(err, stderr.String())
 		return nil, fmt.Errorf("bd show %s: %w: %s", beadID, err, strings.TrimSpace(stderr.String()))
 	}
 
@@ -200,7 +214,7 @@ func isChildDependency(depType string) bool {
 // when it rebuilds Blocks from a poll batch. The labels come from a second
 // lookup rather than from the dependents payload, which does not carry them.
 func lookupBlocks(ctx context.Context, beadID, anvilPath string) []string {
-	cmd, cancel := executil.BdCommand(ctx, "show", beadID, "--json")
+	cmd, cancel := executil.BdShowDependents(ctx, beadID)
 	defer cancel()
 	cmd.Dir = anvilPath
 
@@ -208,7 +222,12 @@ func lookupBlocks(ctx context.Context, beadID, anvilPath string) []string {
 	cmd.Stderr = &stderr
 	output, err := cmd.Output()
 	if err != nil {
-		log.Printf("lookupBlocks: bd show %s failed: %v: %s", beadID, err, stderr.String())
+		// Classified before logging: this site swallows its error and returns
+		// nil, which every orchestration gate reads as "no children". A bd too
+		// old for the flag would therefore be indistinguishable from an epic
+		// with nothing in it, so the log line has to name the cause.
+		log.Printf("lookupBlocks: bd show %s failed: %v: %s",
+			beadID, executil.ClassifyBdShowError(err, stderr.String()), stderr.String())
 		return nil
 	}
 
@@ -283,26 +302,17 @@ func dropIndependent(ctx context.Context, childIDs []string, anvilPath string) [
 // is absent from the map and so counts as an ordinary child — the same
 // conservative direction dropIndependent takes for an outright failure.
 //
-// The ids are passed positionally and are values Forge did not write (they come
-// out of a dolt database that syncs through the git remote), so an id that would
-// be read as a flag is dropped from the query rather than handed to bd. Dropping
-// it lands in the same conservative direction: it is simply not reported as
-// independent. bd's own ids cannot take that shape.
+// The ids are values Forge did not write (they come out of a dolt database that
+// syncs through the git remote), so they go to bd as `--id=<id>` flags rather
+// than positionally — executil.BdShowArgs is the one builder that decides that,
+// shared with the dependents-array shape, so an id that would otherwise be read
+// as a flag is named explicitly here and there alike.
 func resolveIndependent(ctx context.Context, beadIDs []string, anvilPath string) (map[string]bool, error) {
-	args := make([]string, 0, len(beadIDs)+2)
-	args = append(args, "show")
-	for _, id := range beadIDs {
-		if id == "" || strings.HasPrefix(id, "-") {
-			continue
-		}
-		args = append(args, id)
-	}
-	if len(args) == 1 {
+	if len(executil.BdShowIDArgs(beadIDs...)) == 0 {
 		return map[string]bool{}, nil
 	}
-	args = append(args, "--json")
 
-	cmd, cancel := executil.BdCommand(ctx, args...)
+	cmd, cancel := executil.BdCommand(ctx, executil.BdShowArgs(beadIDs...)...)
 	defer cancel()
 	cmd.Dir = anvilPath
 

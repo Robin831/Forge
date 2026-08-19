@@ -735,12 +735,23 @@ func createSubBeads(ctx context.Context, parent poller.Bead, tasks []subTaskVerd
 		// Re-fetch parent to get accurate dependency data from bd.
 		var upstreamIDs, downstreamIDs []string
 		showCtx, showCancel := context.WithTimeout(ctx, executil.BdTimeout())
-		showOut, showErr := run(showCtx, anvilPath, "show", parent.ID, "--json")
+		// --include-dependents: bd omits the dependents array without it, which
+		// would leave downstreamIDs empty and silently drop the parent's
+		// downstream blocks instead of transferring them to the last sub-bead.
+		showOut, showErr := run(showCtx, anvilPath,
+			executil.BdShowDependentsArgs(parent.ID)...)
 		showCancel()
 		if showErr == nil {
 			upstreamIDs, downstreamIDs = parseDepsFromShow(string(showOut))
 		} else {
-			log.Printf("[schematic:%s] Warning: could not re-fetch parent deps: %v", parent.ID, showErr)
+			// run() returns the combined buffer, so bd's own diagnostics are in
+			// showOut: classify them (an old bd is named rather than logged as a
+			// bare exit status) and print them, like the dep-add warnings below.
+			// The fallback is silent data loss otherwise — struct fields bd does
+			// not populate, i.e. no blocks transferred and no reason given.
+			showErr = executil.ClassifyBdShowError(showErr, string(showOut))
+			log.Printf("[schematic:%s] Warning: could not re-fetch parent deps: %v: %s",
+				parent.ID, showErr, strings.TrimSpace(string(showOut)))
 			// Fall back to the (possibly empty) struct fields.
 			upstreamIDs = parent.DependsOn
 			downstreamIDs = parent.Blocks
