@@ -181,6 +181,12 @@ type PRItem struct {
 	RebaseCount          int
 	IsExternal           bool // true for PRs discovered via GitHub reconciliation
 	BellowsManaged       bool // true when bellows runs lifecycle workers for this PR
+	// BellowsDetached is the mute: bellows still refreshes the PR's
+	// mergeability and terminal state, but runs no automatic CI fix, review
+	// fix, rebase or Assay work for it. It is a separate axis from
+	// BellowsManaged — "is this PR ours" and "are we working it" are two
+	// questions — so both flags are read to decide what the menu offers.
+	BellowsDetached bool
 }
 
 // PRActionMenuChoice represents an action the user can take on an open PR.
@@ -194,6 +200,9 @@ const (
 	PRActionResolveConflicts                           // Trigger rebase worker
 	PRActionClosePR                                    // Close the PR
 	PRActionAssignBellows                              // Assign bellows to monitor & autofix
+	PRActionUnassignBellows                            // Release bellows from an external PR
+	PRActionStopBellows                                // Mute bellows for this PR (detach)
+	PRActionResumeBellows                              // Unmute bellows for this PR (reattach)
 )
 
 // WorkerItem represents a worker in the workers panel.
@@ -1834,11 +1843,17 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case PRActionResultMsg:
 		if msg.Err != nil {
 			errSummary := strings.SplitN(msg.Err.Error(), "\n", 2)[0]
-			m.setStatus(fmt.Sprintf("PR #%d %s failed: %s", msg.PRNumber, msg.Action, errSummary), true)
+			m.setStatus(fmt.Sprintf("PR #%d %s failed: %s", msg.PRNumber, prActionLabel(msg.Action), errSummary), true)
 		} else if msg.RequestID != "" {
-			m.trackPending(msg.RequestID, fmt.Sprintf("PR #%d: %s", msg.PRNumber, msg.Action))
+			m.trackPending(msg.RequestID, fmt.Sprintf("PR #%d: %s", msg.PRNumber, prActionLabel(msg.Action)))
 		} else {
-			m.setStatus(fmt.Sprintf("PR #%d: %s dispatched", msg.PRNumber, msg.Action), false)
+			m.setStatus(prActionDoneStatus(msg.PRNumber, msg.Action), false)
+			// The mute is a flag on the PR row, not a worker: nothing else
+			// tells the panel it moved, so re-read it now rather than leaving
+			// the row contradicting the confirmation until the next tick.
+			if isBellowsMuteAction(msg.Action) && m.data != nil {
+				return m, FetchOpenPRs(m.data.DB)
+			}
 		}
 
 	case NotesResultMsg:
@@ -3087,7 +3102,7 @@ func (m *Model) renderPRPanel() string {
 			} else if pr.IsExternal && pr.BellowsManaged {
 				extTag = lipgloss.NewStyle().Foreground(colorBlue).Render(" [ext+bellows]")
 			}
-			line := fmt.Sprintf("  %s %-12s %-10s %-10s %s", prNum, pr.BeadID, pr.Anvil, pr.Status, flagStr) + extTag
+			line := fmt.Sprintf("  %s %-12s %-10s %-10s %s", prNum, pr.BeadID, pr.Anvil, pr.Status, flagStr) + extTag + prDetachedTag(pr)
 			if pr.Title != "" {
 				titleDisplay := sanitizeTitle(pr.Title)
 				maxTitleLen := innerW - 10
@@ -3108,6 +3123,18 @@ func (m *Model) renderPRPanel() string {
 
 	content := strings.Join(lines, "\n")
 	return logViewerStyle.Width(viewerWidth).Height(viewerHeight).Render(content)
+}
+
+// prDetachedTag marks a PR bellows has been muted for. The row keeps its real
+// PR status and its real CI/comment/conflict flags — a muted PR is unwatched,
+// not unknown, and bellows goes on refreshing its mergeability — so the mute
+// needs a mark of its own, in the muted style, or the row is indistinguishable
+// from one that is actively being worked.
+func prDetachedTag(pr PRItem) string {
+	if !pr.BellowsDetached {
+		return ""
+	}
+	return dimStyle.Render(" [detached]")
 }
 
 // renderPRActionMenu renders the action menu overlay for a selected PR.
@@ -3131,6 +3158,20 @@ func (m *Model) renderPRActionMenu() string {
 
 // buildPRActionForm creates the huh form for PR actions.
 func (m *Model) buildPRActionForm(item *PRItem, choice *PRActionMenuChoice) *huh.Form {
+	return huh.NewForm(
+		huh.NewGroup(
+			huh.NewSelect[PRActionMenuChoice]().
+				Title(fmt.Sprintf("PR #%d", item.PRNumber)).
+				Options(prActionOptions(item)...).
+				Value(choice),
+		),
+	).WithTheme(huh.ThemeCharm()).WithWidth(60)
+}
+
+// prActionOptions is the menu itself — which actions a PR in this state offers.
+// It is separate from the form so the decision can be read (and tested) without
+// driving a huh widget.
+func prActionOptions(item *PRItem) []huh.Option[PRActionMenuChoice] {
 	opts := []huh.Option[PRActionMenuChoice]{
 		huh.NewOption("Open in browser  — View on GitHub", PRActionOpenBrowser),
 	}
@@ -3153,16 +3194,25 @@ func (m *Model) buildPRActionForm(item *PRItem, choice *PRActionMenuChoice) *huh
 	if item.IsExternal && !item.BellowsManaged {
 		opts = append(opts, huh.NewOption("Assign bellows   — Auto-monitor & fix CI/reviews", PRActionAssignBellows))
 	}
+	// The mute is offered only for a PR bellows actually manages — muting one
+	// it never watches would write a flag nothing reads. It is one item in two
+	// directions rather than two items, so the menu always says what the next
+	// click does rather than which of the pair is a no-op. An external PR that
+	// was assigned can also be released outright, which is the other axis:
+	// unassigning stops bellows managing the PR at all, muting leaves it
+	// managed and merely unworked.
+	if item.BellowsManaged {
+		if item.BellowsDetached {
+			opts = append(opts, huh.NewOption("Resume bellows   — "+prResumeBellowsHint, PRActionResumeBellows))
+		} else {
+			opts = append(opts, huh.NewOption("Stop bellows     — "+prStopBellowsHint, PRActionStopBellows))
+		}
+		if item.IsExternal {
+			opts = append(opts, huh.NewOption("Unassign bellows — Stop bellows managing this PR", PRActionUnassignBellows))
+		}
+	}
 	opts = append(opts, huh.NewOption("Close PR         — Close this pull request", PRActionClosePR))
-
-	return huh.NewForm(
-		huh.NewGroup(
-			huh.NewSelect[PRActionMenuChoice]().
-				Title(fmt.Sprintf("PR #%d", item.PRNumber)).
-				Options(opts...).
-				Value(choice),
-		),
-	).WithTheme(huh.ThemeCharm()).WithWidth(60)
+	return opts
 }
 
 // PRActionResultMsg is delivered asynchronously when a PR action IPC call completes.
@@ -3196,6 +3246,12 @@ func (m *Model) executePRAction(choice PRActionMenuChoice) tea.Cmd {
 		action = "close"
 	case PRActionAssignBellows:
 		action = "assign_bellows"
+	case PRActionUnassignBellows:
+		action = "unassign_bellows"
+	case PRActionStopBellows:
+		action = ipc.PRActionDetachBellows
+	case PRActionResumeBellows:
+		action = ipc.PRActionReattachBellows
 	default:
 		return nil
 	}
@@ -3205,12 +3261,56 @@ func (m *Model) executePRAction(choice PRActionMenuChoice) tea.Cmd {
 		return nil
 	}
 
-	m.setStatus(fmt.Sprintf("PR #%d: %s...", item.PRNumber, action), false)
+	m.setStatus(fmt.Sprintf("PR #%d: %s...", item.PRNumber, prActionLabel(action)), false)
 
 	return func() tea.Msg {
 		reqID, err := m.OnPRAction(item.PRID, item.PRNumber, item.Anvil, item.BeadID, item.Branch, action)
 		return PRActionResultMsg{PRNumber: item.PRNumber, Action: action, Err: err, RequestID: reqID}
 	}
+}
+
+// The bellows mute wording is defined once here because it appears in the menu
+// item, in the confirmation and — in the same words — in `forge bellows
+// stop|resume`'s own output: an operator who mutes a PR from the TUI and reads
+// about it in the CLI should not have to work out that the two are the same
+// thing.
+const (
+	prStopBellowsHint   = "Mute automatic CI/review/rebase/Assay work"
+	prResumeBellowsHint = "Unmute: automatic work resumes next cycle"
+)
+
+// isBellowsMuteAction reports whether a wire pr_action verb is one of the two
+// that flip prs.bellows_detached.
+func isBellowsMuteAction(action string) bool {
+	return action == ipc.PRActionDetachBellows || action == ipc.PRActionReattachBellows
+}
+
+// prActionLabel renders a wire pr_action verb the way an operator reads it.
+// The mute verbs are the ones that need it: "detach_bellows" names the wire
+// call rather than what it does, and the TUI's own vocabulary for it is the
+// CLI's — `forge bellows stop` / `forge bellows resume`.
+func prActionLabel(action string) string {
+	switch action {
+	case ipc.PRActionDetachBellows:
+		return "bellows stop"
+	case ipc.PRActionReattachBellows:
+		return "bellows resume"
+	}
+	return action
+}
+
+// prActionDoneStatus is the confirmation line for a completed PR action. The
+// mute verbs say what changed rather than "detach_bellows dispatched" — the
+// same reason the CLI prints its own state line instead of echoing the
+// daemon's generic reply — and in the CLI's words.
+func prActionDoneStatus(prNumber int, action string) string {
+	switch action {
+	case ipc.PRActionDetachBellows:
+		return fmt.Sprintf("PR #%d: bellows stopped — no automatic CI fixes, review fixes, rebases or Assay runs until it is resumed", prNumber)
+	case ipc.PRActionReattachBellows:
+		return fmt.Sprintf("PR #%d: bellows resumed — automatic work returns from the next cycle", prNumber)
+	}
+	return fmt.Sprintf("PR #%d: %s dispatched", prNumber, action)
 }
 
 // The choice pointer is bound to the form's value so huh updates it on selection.

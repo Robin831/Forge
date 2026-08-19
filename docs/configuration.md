@@ -638,13 +638,22 @@ While a PR is detached its `bellows-<anvil>-<n>` monitor row stays in the
 Workers panel carrying the `detached` status (Hearth marks it `⊘`) rather than
 disappearing, so a mute is visible instead of looking like a lost monitor.
 
-**Surfaces.** Of the assignment pair, only `assign_bellows` has a surface: it is
-reachable from the dashboard's PR rows and from Hearth's PR menu. Un-assigning
-is an IPC verb only. The detach pair likewise exists as the `detach_bellows` /
-`reattach_bellows` `pr_action` verbs on the IPC socket only; the `forge bellows
-stop` / `forge bellows resume` CLI commands, the Hearth PR-menu items and the
-web route that wrap them are not implemented yet, and this section will name
-them once they are.
+**Surfaces.** `assign_bellows` is reachable from the dashboard's PR rows and
+from Hearth's PR menu; `unassign_bellows` is reachable from Hearth's PR menu,
+on an external PR that is currently assigned, and over IPC.
+
+The detach pair has three surfaces, all wrapping the same `detach_bellows` /
+`reattach_bellows` `pr_action` verbs:
+
+- `forge bellows stop <pr> --anvil <name>` and `forge bellows resume <pr>
+  --anvil <name>`, addressing the PR by its GitHub number;
+- the dashboard's PR rows (`POST /api/prs/{id}/bellows/detach|resume`);
+- Hearth's PR menu, which offers **Stop bellows** on an attached PR and
+  **Resume bellows** on a muted one — one item pointing in whichever direction
+  is available, so the menu never offers the half that would be a no-op. A
+  muted PR's row in Hearth's PR panel carries a `[detached]` marker beside its
+  status, since bellows goes on refreshing that row's CI, comment and conflict
+  flags and without the marker it reads as one still being worked.
 
 ### Epic Orchestration Is Opt-In
 

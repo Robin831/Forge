@@ -1195,6 +1195,7 @@ func FetchOpenPRs(db *state.DB) tea.Cmd {
 				RebaseCount:          p.RebaseCount,
 				IsExternal:           p.IsExternal,
 				BellowsManaged:       p.BellowsManaged,
+				BellowsDetached:      p.BellowsDetached,
 			})
 		}
 		return UpdateOpenPRsMsg{Items: items}

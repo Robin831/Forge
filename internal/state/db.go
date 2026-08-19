@@ -2344,6 +2344,7 @@ type OpenPRDetail struct {
 	RebaseCount          int
 	IsExternal           bool // true for PRs discovered via GitHub reconciliation (ext-* bead ID)
 	BellowsManaged       bool // true when bellows runs lifecycle workers for this PR
+	BellowsDetached      bool // true when bellows is muted for this PR (managed, but not worked)
 }
 
 // OpenPRsWithDetail returns all non-terminal PRs with title resolution and full status fields.
@@ -2354,7 +2355,7 @@ func (db *DB) OpenPRsWithDetail() ([]OpenPRDetail, error) {
 		        p.ci_passing, p.is_conflicting, p.has_unresolved_threads,
 		        p.has_pending_reviews, p.has_approval,
 		        p.ci_fix_count, p.review_fix_count, p.rebase_count,
-		        p.bellows_managed
+		        p.bellows_managed, p.bellows_detached
 		 FROM prs p
 		 LEFT JOIN queue_cache q ON p.bead_id = q.bead_id AND p.anvil = q.anvil
 		 LEFT JOIN (
@@ -2378,10 +2379,10 @@ func (db *DB) OpenPRsWithDetail() ([]OpenPRDetail, error) {
 	for rows.Next() {
 		var p OpenPRDetail
 		var status string
-		var ciPassing, isConflicting, hasThreads, hasPending, hasApproval, bellowsManaged int
+		var ciPassing, isConflicting, hasThreads, hasPending, hasApproval, bellowsManaged, bellowsDetached int
 		if err := rows.Scan(&p.ID, &p.Number, &p.Anvil, &p.BeadID, &p.Branch, &status,
 			&p.Title, &ciPassing, &isConflicting, &hasThreads, &hasPending, &hasApproval,
-			&p.CIFixCount, &p.ReviewFixCount, &p.RebaseCount, &bellowsManaged); err != nil {
+			&p.CIFixCount, &p.ReviewFixCount, &p.RebaseCount, &bellowsManaged, &bellowsDetached); err != nil {
 			return nil, err
 		}
 		p.Status = PRStatus(status)
@@ -2392,6 +2393,7 @@ func (db *DB) OpenPRsWithDetail() ([]OpenPRDetail, error) {
 		p.HasApproval = hasApproval != 0
 		p.IsExternal = strings.HasPrefix(p.BeadID, "ext-")
 		p.BellowsManaged = bellowsManaged != 0
+		p.BellowsDetached = bellowsDetached != 0
 		result = append(result, p)
 	}
 	return result, rows.Err()
