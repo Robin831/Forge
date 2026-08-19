@@ -2959,10 +2959,17 @@ func (d *Daemon) runSelfDeploy(sd config.SelfDeployConfig) {
 }
 
 // activeWorkerIDs identifies the workers that would be disrupted by a restart:
-// all non-terminal dispatch/lifecycle workers plus operator-paused workers
-// (which still hold a worktree and would resume into a running Smith). Workers
-// are named by bead where known, since that is what an operator recognises when
-// a deploy reports what is holding it up.
+// the dispatch/lifecycle workers that own a live process or pipeline goroutine
+// (smith and the quench/burnish/rebase/assay fix workers) plus operator-paused
+// workers (which still hold a worktree and would resume into a running Smith).
+// Workers are named by bead where known, since that is what an operator
+// recognises when a deploy reports what is holding it up.
+//
+// Bellows' per-PR monitor rows are excluded (state.WorkerStatus.IsMonitorOnly):
+// they are non-terminal, so ActiveWorkers reports them, but they carry no PID
+// and nothing to interrupt, and they live for as long as their PR stays open.
+// Waiting on them meant a single PR parked in the fix loop deferred every
+// self-deploy for the full max_drain_wait, forever (Forge-ti4e).
 func (d *Daemon) activeWorkerIDs() ([]string, error) {
 	active, err := d.db.ActiveWorkers()
 	if err != nil {
@@ -2975,6 +2982,9 @@ func (d *Daemon) activeWorkerIDs() ([]string, error) {
 	ids := make([]string, 0, len(active)+len(paused))
 	for _, group := range [][]state.Worker{active, paused} {
 		for _, w := range group {
+			if w.Status.IsMonitorOnly() {
+				continue
+			}
 			if w.BeadID != "" {
 				ids = append(ids, w.BeadID)
 				continue

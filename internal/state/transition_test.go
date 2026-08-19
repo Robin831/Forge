@@ -50,3 +50,33 @@ func TestCanTransitionPause(t *testing.T) {
 		})
 	}
 }
+
+// TestWorkerStatusIsMonitorOnly pins which statuses mark a row as bookkeeping
+// rather than work in progress. Every status that owns a process, a pipeline
+// goroutine or a worktree must answer false, so a caller draining before a
+// restart keeps waiting on it (Forge-ti4e).
+func TestWorkerStatusIsMonitorOnly(t *testing.T) {
+	tests := []struct {
+		status WorkerStatus
+		want   bool
+	}{
+		{WorkerMonitoring, true},
+		{WorkerDetached, true},
+
+		{WorkerPending, false},
+		{WorkerRunning, false},
+		{WorkerReviewing, false},
+		{WorkerStalled, false},
+		{WorkerPaused, false},
+		{WorkerDone, false},
+		{WorkerFailed, false},
+		{WorkerPartial, false},
+		{WorkerTimeout, false},
+		{WorkerKilled, false},
+	}
+	for _, tt := range tests {
+		if got := tt.status.IsMonitorOnly(); got != tt.want {
+			t.Errorf("WorkerStatus(%q).IsMonitorOnly() = %v, want %v", tt.status, got, tt.want)
+		}
+	}
+}

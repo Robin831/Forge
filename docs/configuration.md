@@ -1132,7 +1132,12 @@ console and stays out of the daemon's Ctrl-C group.
   unrelated merge cannot trigger a production restart.
 - **Drain guardrail** — dispatch is paused, then the drain check is re-run every
   10s until no worker is active (including operator-paused workers, which still
-  hold a worktree). Because a deploy is triggered by a merge — exactly when a
+  hold a worktree). "Active" means a worker that owns a live process or pipeline
+  — a Smith, or a quench/burnish/rebase/Assay fix worker. Bellows' per-PR
+  monitor rows do **not** count: they carry no PID and nothing a restart could
+  interrupt, and they live for as long as their PR stays open, so waiting on one
+  would defer every deploy for the full `max_drain_wait` whenever a PR sat in the
+  fix loop. Because a deploy is triggered by a merge — exactly when a
   Smith is most likely to still be mid-run — the wait is bounded rather than
   sampled once: the deploy lands in the first gap that opens. If workers are
   still active after `max_drain_wait`, the deploy is deferred (a

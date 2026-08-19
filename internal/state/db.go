@@ -771,6 +771,27 @@ const (
 	WorkerKilled  WorkerStatus = "killed"
 )
 
+// IsMonitorOnly reports whether a worker in this status is a bookkeeping row
+// rather than work in progress: bellows' per-PR monitor rows, which carry no
+// PID, no pipeline goroutine and no worktree, and live for as long as their PR
+// stays open.
+//
+// The distinction matters wherever "is the forge busy" means "would restarting
+// this process destroy something": the self-deploy drain waits on the active
+// set, and a monitor row is not something to wait for — nothing is running, and
+// the row outlives any number of restarts. Counting them made every deploy wait
+// out the full max_drain_wait whenever a single PR sat in the fix loop
+// (Forge-ti4e).
+//
+// Both statuses are the same row in two states — a monitored PR and a muted one
+// — so they answer this question identically. Note that a pipeline hands its
+// own row over to bellows by moving it to WorkerMonitoring once the PR exists
+// (see internal/pipeline), so this covers those rows too: at that point the
+// Smith is finished and the worktree released.
+func (s WorkerStatus) IsMonitorOnly() bool {
+	return s == WorkerMonitoring || s == WorkerDetached
+}
+
 // pausedTransitions is the authoritative state-machine table for transitions
 // into and out of the paused status. It is the single source of truth shared by
 // sibling concerns (IPC handlers, the pipeline goroutine) so they never encode
