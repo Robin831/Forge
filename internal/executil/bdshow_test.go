@@ -9,8 +9,8 @@ import (
 
 // The argument vector is the whole point of the helper: bd omits the dependents
 // array unless asked, so a call site that loses the flag reads every bead as
-// childless without erroring. Pinning the shape here is what keeps the ids
-// positional (bd takes several) and the flags trailing.
+// childless without erroring. Pinning the shape here is what keeps every id
+// named through --id (bd takes several) and the flags trailing.
 func TestBdShowDependentsArgs(t *testing.T) {
 	tests := []struct {
 		name string
@@ -20,17 +20,34 @@ func TestBdShowDependentsArgs(t *testing.T) {
 		{
 			name: "single id",
 			ids:  []string{"Forge-abc1"},
-			want: []string{"show", "Forge-abc1", "--json", "--include-dependents"},
+			want: []string{"show", "--id=Forge-abc1", "--json", "--include-dependents"},
 		},
 		{
 			name: "several ids",
 			ids:  []string{"a", "b", "c"},
-			want: []string{"show", "a", "b", "c", "--json", "--include-dependents"},
+			want: []string{"show", "--id=a", "--id=b", "--id=c", "--json", "--include-dependents"},
 		},
 		{
 			name: "no ids",
 			ids:  nil,
 			want: []string{"show", "--json", "--include-dependents"},
+		},
+		{
+			// A bead id is a value Forge did not write. Passed positionally, one
+			// shaped like a flag would be parsed as one — silently changing the
+			// command, or drawing an "unknown flag" rejection
+			// ClassifyBdShowError would then report as an old bd. --id= carries
+			// it verbatim instead, so it is neither dropped nor obeyed.
+			name: "flag-shaped id is named, not parsed",
+			ids:  []string{"--include-dependents=x", "-f"},
+			want: []string{"show", "--id=--include-dependents=x", "--id=-f", "--json", "--include-dependents"},
+		},
+		{
+			// An empty id is not a bead; sending `--id=` would be a request bd
+			// can only reject.
+			name: "empty id is dropped",
+			ids:  []string{"", "Forge-abc1", ""},
+			want: []string{"show", "--id=Forge-abc1", "--json", "--include-dependents"},
 		},
 	}
 	for _, tt := range tests {

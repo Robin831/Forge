@@ -302,26 +302,17 @@ func dropIndependent(ctx context.Context, childIDs []string, anvilPath string) [
 // is absent from the map and so counts as an ordinary child — the same
 // conservative direction dropIndependent takes for an outright failure.
 //
-// The ids are passed positionally and are values Forge did not write (they come
-// out of a dolt database that syncs through the git remote), so an id that would
-// be read as a flag is dropped from the query rather than handed to bd. Dropping
-// it lands in the same conservative direction: it is simply not reported as
-// independent. bd's own ids cannot take that shape.
+// The ids are values Forge did not write (they come out of a dolt database that
+// syncs through the git remote), so they go to bd as `--id=<id>` flags rather
+// than positionally — executil.BdShowArgs is the one builder that decides that,
+// shared with the dependents-array shape, so an id that would otherwise be read
+// as a flag is named explicitly here and there alike.
 func resolveIndependent(ctx context.Context, beadIDs []string, anvilPath string) (map[string]bool, error) {
-	args := make([]string, 0, len(beadIDs)+2)
-	args = append(args, "show")
-	for _, id := range beadIDs {
-		if id == "" || strings.HasPrefix(id, "-") {
-			continue
-		}
-		args = append(args, id)
-	}
-	if len(args) == 1 {
+	if len(executil.BdShowIDArgs(beadIDs...)) == 0 {
 		return map[string]bool{}, nil
 	}
-	args = append(args, "--json")
 
-	cmd, cancel := executil.BdCommand(ctx, args...)
+	cmd, cancel := executil.BdCommand(ctx, executil.BdShowArgs(beadIDs...)...)
 	defer cancel()
 	cmd.Dir = anvilPath
 

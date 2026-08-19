@@ -208,7 +208,7 @@ func TestOpenChildren_MissingLabelsAreAnOrdinaryChild(t *testing.T) {
 // epic that still has work.
 func TestOpenChildren_UnreadableLabelsAreOrdinaryChildren(t *testing.T) {
 	withFakeBd(t, `case "$*" in
-  "show parent-1 --json --include-dependents") echo '[{"id":"parent-1","dependents":[`+
+  "show --id=parent-1 --json --include-dependents") echo '[{"id":"parent-1","dependents":[`+
 		`{"id":"child-1","dependency_type":"blocks","status":"open"},`+
 		`{"id":"child-2","dependency_type":"blocks","status":"open"}]}]' ;;
   *) echo "bd exploded" >&2; exit 3 ;;
@@ -274,7 +274,7 @@ func TestLookupBlocks_MissingLabelsAreAnOrdinaryChild(t *testing.T) {
 // And the same when the label lookup itself fails.
 func TestLookupBlocks_UnreadableLabelsAreOrdinaryChildren(t *testing.T) {
 	withFakeBd(t, `case "$*" in
-  "show parent-1 --json --include-dependents") echo '[{"id":"parent-1","dependents":[{"id":"child-1","dependency_type":"blocks","status":"open"}]}]' ;;
+  "show --id=parent-1 --json --include-dependents") echo '[{"id":"parent-1","dependents":[{"id":"child-1","dependency_type":"blocks","status":"open"}]}]' ;;
   *) echo "bd exploded" >&2; exit 3 ;;
 esac`)
 
@@ -408,7 +408,7 @@ func withFakeBdShow(t *testing.T, records map[string]string) {
 
 	withFakeBd(t, `ids=""
 for a in "$@"; do
-  case "$a" in show|--json|-*) ;; *) ids="$ids $a" ;; esac
+  case "$a" in --id=*) ids="$ids ${a#--id=}" ;; show|--json|-*) ;; *) ids="$ids $a" ;; esac
 done
 out=""
 for id in $ids; do
@@ -461,29 +461,36 @@ JSON`)
 	assert.NotContains(t, logged.String(), "child-1", "an opt-out with no opt-in is not a conflict")
 }
 
-// The ids come out of a dolt database that syncs through the git remote, and
-// they are passed to bd positionally. One shaped like a flag is dropped from the
-// query rather than handed over — which leaves it counted as an ordinary child,
-// the same direction every other unreadable case takes.
-func TestResolveIndependent_DropsFlagShapedIDs(t *testing.T) {
-	withFakeBd(t, `printf '%s\n' "$*" >&2
-case "$*" in
-  *--force*) echo "bd read an argument as a flag" >&2; exit 2 ;;
-esac
-echo '[{"id":"child-1","labels":["independent"]}]'`)
+// The ids come out of a dolt database that syncs through the git remote, so an
+// id shaped like a flag is a value bd must be told is an id, not one it is left
+// to parse. Every id therefore goes over as --id=<id>: the fake fails the run if
+// bd's own parser would have consumed one, and the opt-out is still read off the
+// bead that carries it rather than being dropped along with its neighbour.
+func TestResolveIndependent_NamesFlagShapedIDsRatherThanParsingThem(t *testing.T) {
+	withFakeBd(t, `out=""
+for a in "$@"; do
+  case "$a" in
+    --id=*) rec='{"id":"'"${a#--id=}"'","labels":["independent"]}'
+            if [ -z "$out" ]; then out="$rec"; else out="$out,$rec"; fi ;;
+    show|--json) ;;
+    *) echo "bd read an argument as a flag: $a" >&2; exit 2 ;;
+  esac
+done
+printf '[%s]\n' "$out"`)
 
 	got, err := resolveIndependent(context.Background(), []string{"--force", "child-1", ""}, t.TempDir())
 
 	require.NoError(t, err)
-	assert.Equal(t, map[string]bool{"child-1": true}, got)
+	assert.Equal(t, map[string]bool{"--force": true, "child-1": true}, got,
+		"both ids must reach bd verbatim, the flag-shaped one included")
 }
 
-// Every id screened out leaves nothing to ask about, and asking bd for nothing
-// would return every bead in the anvil.
+// An empty id is not a bead, and a call carrying nothing else has nothing to ask
+// about — asking bd for a show with no ids is a request it can only reject.
 func TestResolveIndependent_NoUsableIDsAsksNothing(t *testing.T) {
 	withFakeBd(t, `echo "bd must not be called" >&2; exit 9`)
 
-	got, err := resolveIndependent(context.Background(), []string{"--force"}, t.TempDir())
+	got, err := resolveIndependent(context.Background(), []string{"", ""}, t.TempDir())
 
 	require.NoError(t, err)
 	assert.Empty(t, got)

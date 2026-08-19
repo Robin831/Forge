@@ -28,6 +28,7 @@ ids=""
 for a in "$@"; do
   case "$a" in
     --include-dependents) flag=1 ;;
+    --id=*) ids="$ids ${a#--id=}" ;;
     show|--json|-*) ;;
     *) ids="$ids $a" ;;
   esac

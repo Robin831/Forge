@@ -744,7 +744,14 @@ func createSubBeads(ctx context.Context, parent poller.Bead, tasks []subTaskVerd
 		if showErr == nil {
 			upstreamIDs, downstreamIDs = parseDepsFromShow(string(showOut))
 		} else {
-			log.Printf("[schematic:%s] Warning: could not re-fetch parent deps: %v", parent.ID, showErr)
+			// run() returns the combined buffer, so bd's own diagnostics are in
+			// showOut: classify them (an old bd is named rather than logged as a
+			// bare exit status) and print them, like the dep-add warnings below.
+			// The fallback is silent data loss otherwise — struct fields bd does
+			// not populate, i.e. no blocks transferred and no reason given.
+			showErr = executil.ClassifyBdShowError(showErr, string(showOut))
+			log.Printf("[schematic:%s] Warning: could not re-fetch parent deps: %v: %s",
+				parent.ID, showErr, strings.TrimSpace(string(showOut)))
 			// Fall back to the (possibly empty) struct fields.
 			upstreamIDs = parent.DependsOn
 			downstreamIDs = parent.Blocks

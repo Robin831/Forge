@@ -1,9 +1,11 @@
 package schematic
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"os/exec"
 	"slices"
 	"strings"
@@ -1057,4 +1059,41 @@ func TestIsTransientDepErr(t *testing.T) {
 			assert.Equal(t, tc.want, got)
 		})
 	}
+}
+
+// The parent re-fetch falls back to struct fields bd may never have populated,
+// so a failure there silently drops the parent's downstream blocks. The warning
+// is all that separates that from a parent with no blocks — so it has to carry
+// bd's own output, and name the flag when an old bd is the reason.
+func TestCreateSubBeads_ReFetchFailureNamesTheFlagAndBdsOutput(t *testing.T) {
+	disableDepRetrySleep(t)
+
+	fake := &fakeRunner{response: func(args []string) ([]byte, error) {
+		if len(args) > 0 && args[0] == "create" {
+			return []byte(`{"id":"test-1"}`), nil
+		}
+		if len(args) > 0 && args[0] == "show" {
+			// run() hands back the combined buffer, which is where a cobra
+			// rejection lands.
+			return []byte("Error: unknown flag: " + executil.BdIncludeDependentsFlag),
+				errors.New("exit status 1")
+		}
+		return []byte("ok"), nil
+	}}
+
+	var logged bytes.Buffer
+	restore := log.Writer()
+	log.SetOutput(&logged)
+	t.Cleanup(func() { log.SetOutput(restore) })
+
+	parent := poller.Bead{ID: "parent-1", Title: "Big feature", Priority: 2}
+	tasks := []subTaskVerdict{{Title: "Task A", Description: "Detailed description for Task A"}}
+
+	_, err := createSubBeads(context.Background(), parent, tasks, "/tmp", fake.run)
+	require.NoError(t, err, "an unreadable re-fetch is a warning, not a failed decomposition")
+
+	out := logged.String()
+	assert.Contains(t, out, executil.BdIncludeDependentsFlag,
+		"the warning must name the flag an old bd is missing")
+	assert.Contains(t, out, "unknown flag", "the warning must carry bd's own output")
 }

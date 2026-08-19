@@ -27,8 +27,42 @@ var ErrIncludeDependentsUnsupported = errors.New(
 	"bd does not support " + BdIncludeDependentsFlag + " (requires bd 1.1.2 or newer); " +
 		"upgrade bd — without it `bd show --json` omits the dependents array and Forge cannot see a bead's children")
 
+// BdShowIDFlag is the bd flag that names a bead id explicitly instead of
+// passing it positionally. bd documents it for exactly this ("use for IDs that
+// look like flags"), and Forge uses it for every id it hands to `bd show`: bead
+// ids come out of a dolt database that syncs through the git remote, so they
+// are values Forge did not write, and one shaped like `-f` or
+// `--include-dependents=x` would otherwise be consumed by bd's cobra parser as
+// a flag — changing what the command means, or producing an "unknown flag"
+// rejection ClassifyBdShowError would then read as an old bd.
+const BdShowIDFlag = "--id"
+
+// BdShowIDArgs renders bead ids as `--id=<id>` arguments. An empty id is
+// dropped rather than sent as a valueless flag; every other value is passed
+// through verbatim, since the point of the flag form is that no id needs
+// screening to be safe.
+func BdShowIDArgs(ids ...string) []string {
+	args := make([]string, 0, len(ids))
+	for _, id := range ids {
+		if id == "" {
+			continue
+		}
+		args = append(args, BdShowIDFlag+"="+id)
+	}
+	return args
+}
+
+// BdShowArgs builds the argument vector for `bd show --id=<id>... --json`.
+func BdShowArgs(ids ...string) []string {
+	args := make([]string, 0, len(ids)+2)
+	args = append(args, "show")
+	args = append(args, BdShowIDArgs(ids...)...)
+	args = append(args, "--json")
+	return args
+}
+
 // BdShowDependentsArgs builds the argument vector for
-// `bd show <ids...> --json --include-dependents`.
+// `bd show --id=<id>... --json --include-dependents`.
 //
 // Cost note: bd documents the flag as "may be slow on hub beads" because it
 // streams each dependent's full record rather than a count. Forge pays that per
@@ -39,17 +73,14 @@ var ErrIncludeDependentsUnsupported = errors.New(
 // round trips for exactly the beads that matter — the parents — to save nothing
 // on beads whose dependent list is empty and therefore cheap to stream.
 func BdShowDependentsArgs(ids ...string) []string {
-	args := make([]string, 0, len(ids)+3)
-	args = append(args, "show")
-	args = append(args, ids...)
-	args = append(args, "--json", BdIncludeDependentsFlag)
-	return args
+	return append(BdShowArgs(ids...), BdIncludeDependentsFlag)
 }
 
-// BdShowDependents builds a bounded `bd show <ids...> --json --include-dependents`
-// command. It is the single entry point for every Forge call site that reads the
-// dependents array, so the flag cannot be present on one path and missing on
-// another. The caller owns the returned CancelFunc.
+// BdShowDependents builds a bounded
+// `bd show --id=<id>... --json --include-dependents` command. It is the single
+// entry point for every Forge call site that reads the dependents array, so the
+// flag cannot be present on one path and missing on another. The caller owns
+// the returned CancelFunc.
 func BdShowDependents(parent context.Context, ids ...string) (*BdCmd, context.CancelFunc) {
 	return BdCommand(parent, BdShowDependentsArgs(ids...)...)
 }

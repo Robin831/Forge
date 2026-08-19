@@ -112,7 +112,7 @@ func TestFetchBeadDeps_PopulatesBothDirections(t *testing.T) {
 		), nil
 	})
 
-	blocks, blockedBy := fetchBeadDeps(context.Background(), "", "Forge-root", nil)
+	blocks, blockedBy := fetchBeadDeps(context.Background(), "", "Forge-root", nil, nil)
 	if len(blocks) != 1 || blocks[0].BeadID != "Forge-child" {
 		t.Fatalf("expected one blocks entry pointing at Forge-child, got %+v", blocks)
 	}
@@ -132,7 +132,7 @@ func TestFetchBeadDeps_IsolatedBead(t *testing.T) {
 		return bdShowFixture("Forge-lonely", "Lonely", "open", 3, nil, nil), nil
 	})
 
-	blocks, blockedBy := fetchBeadDeps(context.Background(), "", "Forge-lonely", nil)
+	blocks, blockedBy := fetchBeadDeps(context.Background(), "", "Forge-lonely", nil, nil)
 	if blocks == nil || blockedBy == nil {
 		t.Fatalf("expected non-nil slices, got blocks=%v blockedBy=%v", blocks, blockedBy)
 	}
@@ -146,7 +146,7 @@ func TestFetchBeadDeps_BdErrorReturnsEmpty(t *testing.T) {
 		return nil, errors.New("bd missing")
 	})
 
-	blocks, blockedBy := fetchBeadDeps(context.Background(), "", "Forge-err", nil)
+	blocks, blockedBy := fetchBeadDeps(context.Background(), "", "Forge-err", nil, nil)
 	if blocks == nil || blockedBy == nil {
 		t.Fatalf("expected non-nil slices on error, got nil")
 	}
@@ -493,7 +493,7 @@ func TestFetchBeadDeps_FiltersNonBlockingEdges(t *testing.T) {
 		return raw, nil
 	})
 
-	blocks, blockedBy := fetchBeadDeps(context.Background(), "", "Forge-mixed", nil)
+	blocks, blockedBy := fetchBeadDeps(context.Background(), "", "Forge-mixed", nil, nil)
 	if len(blocks) != 1 || blocks[0].BeadID != "Forge-blocked-by-me" {
 		t.Errorf("blocks should contain only the blocking downstream, got %+v", blocks)
 	}

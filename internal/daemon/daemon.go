@@ -433,8 +433,11 @@ type Daemon struct {
 	// bd-update implementation; may be replaced in tests to avoid exec.Command.
 	labelAdder func(anvilPath, beadID, tag string) error
 
-	// beadShower returns the raw JSON output of `bd show <id> --json`.
-	// Defaults to exec.Command; may be replaced in tests.
+	// beadShower returns the raw JSON output of
+	// `bd show --id=<id> --json --include-dependents` — the flagged shape, since
+	// every consumer reads the dependents array bd omits without it (see
+	// executil.BdIncludeDependentsFlag). Defaults to defaultBeadShower; may be
+	// replaced in tests.
 	beadShower func(anvilPath, beadID string) (stdout []byte, stderr string, err error)
 
 	// beadFetcher fetches a full bead by ID (via `bd show`) for the manual
@@ -713,26 +716,7 @@ func New(cfg *config.Config, configPath string) (*Daemon, error) {
 		}
 		return nil
 	}
-	d.beadShower = func(anvilPath, beadID string) ([]byte, string, error) {
-		// Use context.Background() so the bd show call succeeds even during
-		// graceful shutdown (d.runCtx may already be cancelled at that point).
-		//
-		// The dependents array is requested for every consumer of this shower,
-		// not just maybeCloseDecomposedParent, so there is one bd invocation
-		// shape here rather than a flagged and an unflagged one to pick between.
-		// Without it bd omits the array (see executil.BdIncludeDependentsFlag)
-		// and maybeCloseDecomposedParent reads "no dependents" for every parent
-		// — the branch that auto-closes a bead its children are still blocked
-		// on. The two field lookups (status, external_ref) are unaffected by the
-		// extra data beyond its cost.
-		cmd, cancel := executil.BdShowDependents(context.Background(), beadID)
-		defer cancel()
-		cmd.Dir = anvilPath
-		var stderrBuf bytes.Buffer
-		cmd.Stderr = &stderrBuf
-		out, err := cmd.Output()
-		return out, stderrBuf.String(), executil.ClassifyBdShowError(err, stderrBuf.String())
-	}
+	d.beadShower = defaultBeadShower
 	d.beadFetcher = crucible.FetchBead
 	d.parentCloser = func(anvilPath, beadID, reason string) error {
 		// Use context.Background() so the bd close call succeeds even during
