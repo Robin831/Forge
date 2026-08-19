@@ -213,7 +213,20 @@ bd ready (poller) → pipeline.Run()
         for an already-closed parent, and for one bd reports no children for at
         all. At most one parent per child close (no cascade to grandparents),
         and every bd failure leaves the parent open: it never changes what the
-        merge close reports
+        merge close reports. Candidates are walked in order, but only until one
+        of them turns out to BE this child's parent — it lists the child among
+        its own children — after which the walk ends whether or not the close
+        happened here: already closed, a sibling closing it right now (the
+        parentAutoCloseInFlight guard's loser), an open sibling, a bd refusal,
+        a candidate bd could not answer for at all. Only "this is somebody
+        else's parent" continues, because ParentCandidates' trailing entries
+        are `blocks` sequencing edges that merely look like parents from the
+        child's side, and falling through to one closes a bead outside the
+        relationship that justified acting. The one exception is an
+        orchestrated candidate, which is skipped rather than terminal: the
+        Crucible owning that bead says nothing about the next candidate. Child
+        IDs reach a persisted close reason and the rendered activity feed, so
+        they go through termtext.Line first
   → worktree.Remove
 
 Crucible path (parent beads with children AND the `crucible` opt-in label):

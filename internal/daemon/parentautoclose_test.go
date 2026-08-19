@@ -26,10 +26,11 @@ const autoCloseAnvil = "forge"
 type autoCloseHarness struct {
 	d *Daemon
 
-	mu       sync.Mutex
-	beads    map[string]string // bead ID → `bd show --json` payload
-	showErr  map[string]error  // bead ID → error the show hook returns
-	closeErr error
+	mu        sync.Mutex
+	beads     map[string]string // bead ID → `bd show --json` payload
+	showErr   map[string]error  // bead ID → error the show hook returns
+	closeErr  error
+	closeHook func(beadID string) // called inside parentCloser, outside the lock
 
 	shown  []string
 	closed []struct{ id, reason string }
@@ -69,10 +70,18 @@ func newAutoCloseHarness(t *testing.T) *autoCloseHarness {
 	}
 	d.parentCloser = func(_, beadID, reason string) error {
 		h.mu.Lock()
-		defer h.mu.Unlock()
-		if h.closeErr != nil {
-			return h.closeErr
+		hook, closeErr := h.closeHook, h.closeErr
+		h.mu.Unlock()
+		// The hook runs unlocked so a test can park a goroutine inside the
+		// close while a sibling goroutine keeps reading fixtures.
+		if hook != nil {
+			hook(beadID)
 		}
+		if closeErr != nil {
+			return closeErr
+		}
+		h.mu.Lock()
+		defer h.mu.Unlock()
 		h.closed = append(h.closed, struct{ id, reason string }{beadID, reason})
 		return nil
 	}
@@ -86,6 +95,27 @@ func (h *autoCloseHarness) anvilPath() string {
 
 func (h *autoCloseHarness) run(childID string) {
 	h.d.maybeCloseGroupingParent(childID, autoCloseAnvil, h.anvilPath())
+}
+
+// shownIDs is the list of beads bd show was called for, in order.
+func (h *autoCloseHarness) shownIDs() []string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return append([]string(nil), h.shown...)
+}
+
+// autoClosedEvents returns the bead_auto_closed event messages recorded so far.
+func (h *autoCloseHarness) autoClosedEvents(t *testing.T) []string {
+	t.Helper()
+	events, err := h.d.db.RecentEvents(50)
+	require.NoError(t, err)
+	var out []string
+	for _, e := range events {
+		if e.Type == state.EventBeadAutoClosed {
+			out = append(out, e.Message)
+		}
+	}
+	return out
 }
 
 func (h *autoCloseHarness) closedIDs() []string {
@@ -130,20 +160,12 @@ func TestMaybeCloseGroupingParent_ClosesWhenAllChildrenClosed(t *testing.T) {
 
 	require.Len(t, h.closed, 1)
 	assert.Equal(t, "Forge-p1", h.closed[0].id)
-	assert.Contains(t, h.closed[0].reason, "Forge-c1")
-	assert.Contains(t, h.closed[0].reason, "Forge-c2")
-	assert.Contains(t, h.closed[0].reason, "all 2 children closed")
+	assert.Equal(t, "auto-closed: all 2 children closed (Forge-c1, Forge-c2)", h.closed[0].reason)
 
-	events, err := h.d.db.RecentEvents(10)
-	require.NoError(t, err)
-	var found bool
-	for _, e := range events {
-		if e.Type == state.EventBeadAutoClosed && e.BeadID == "Forge-p1" {
-			found = true
-			assert.Contains(t, e.Message, "auto-closed")
-		}
-	}
-	assert.True(t, found, "expected a bead_auto_closed event for the parent")
+	require.Equal(t,
+		[]string{"Parent Forge-p1 auto-closed: all 2 children closed (Forge-c1, Forge-c2)"},
+		h.autoClosedEvents(t),
+		"the event supplies its own framing, so the detail must not repeat the prefix")
 }
 
 func TestMaybeCloseGroupingParent_KeepsParentWithOpenChild(t *testing.T) {
@@ -310,22 +332,241 @@ func TestMaybeCloseGroupingParent_OrchestratedCandidateDoesNotBlockTheNext(t *te
 }
 
 func TestMaybeCloseGroupingParent_NoHooksWired(t *testing.T) {
+	// Either hook missing takes the same early return: the lookup hook is as
+	// load-bearing as the closer.
+	for _, name := range []string{"parentCloser", "beadShower"} {
+		t.Run(name, func(t *testing.T) {
+			h := newAutoCloseHarness(t)
+			if name == "parentCloser" {
+				h.d.parentCloser = nil
+			} else {
+				h.d.beadShower = nil
+			}
+			h.beads["Forge-c1"] = childPayload("Forge-c1", "Forge-p1")
+			h.beads["Forge-p1"] = parentPayload("Forge-p1", "open", nil, "Forge-c1:closed")
+
+			h.run("Forge-c1")
+
+			assert.Empty(t, h.closedIDs())
+			assert.Empty(t, h.shownIDs(), "without both hooks there is nothing to look up")
+		})
+	}
+}
+
+// A candidate that lists children, but not the one that just closed, is some
+// other bead's parent: the walk moves past it to the real one.
+func TestMaybeCloseGroupingParent_SkipsCandidateThatDoesNotListTheChild(t *testing.T) {
 	h := newAutoCloseHarness(t)
-	h.d.parentCloser = nil
-	h.beads["Forge-c1"] = childPayload("Forge-c1", "Forge-p1")
-	h.beads["Forge-p1"] = parentPayload("Forge-p1", "open", nil, "Forge-c1:closed")
+	h.beads["Forge-c1"] = `{"id":"Forge-c1","status":"closed","parent":"Forge-p1",
+	 "dependencies":[{"issue_id":"Forge-c1","depends_on_id":"Forge-p2","type":"blocks"}]}`
+	h.beads["Forge-p1"] = parentPayload("Forge-p1", "open", nil, "Forge-other:closed")
+	h.beads["Forge-p2"] = parentPayload("Forge-p2", "open", nil, "Forge-c1:closed")
 
 	h.run("Forge-c1")
 
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	assert.Empty(t, h.shown, "without a closer there is nothing to look up")
+	assert.Equal(t, []string{"Forge-p2"}, h.closedIDs())
+}
+
+// A parent someone already closed ends the walk. Continuing would evaluate the
+// trailing `blocks` sequencing candidates and close a bead that was never this
+// child's parent.
+func TestMaybeCloseGroupingParent_ClosedParentEndsTheWalk(t *testing.T) {
+	h := newAutoCloseHarness(t)
+	h.beads["Forge-c1"] = `{"id":"Forge-c1","status":"closed","parent":"Forge-p1",
+	 "dependencies":[{"issue_id":"Forge-c1","depends_on_id":"Forge-x","type":"blocks"}]}`
+	h.beads["Forge-p1"] = parentPayload("Forge-p1", "closed", nil, "Forge-c1:closed")
+	h.beads["Forge-x"] = parentPayload("Forge-x", "open", nil, "Forge-c1:closed")
+
+	h.run("Forge-c1")
+
+	assert.Empty(t, h.closedIDs())
+	assert.NotContains(t, h.shownIDs(), "Forge-x",
+		"the sequencing candidate behind a closed parent must not even be looked at")
+}
+
+// The same holds while the parent is merely *not yet* closable: an open
+// sibling is a reason to stop, not a reason to look one edge further out.
+func TestMaybeCloseGroupingParent_OpenSiblingEndsTheWalk(t *testing.T) {
+	h := newAutoCloseHarness(t)
+	h.beads["Forge-c1"] = `{"id":"Forge-c1","status":"closed","parent":"Forge-p1",
+	 "dependencies":[{"issue_id":"Forge-c1","depends_on_id":"Forge-x","type":"blocks"}]}`
+	h.beads["Forge-p1"] = parentPayload("Forge-p1", "open", nil, "Forge-c1:closed", "Forge-c2:open")
+	h.beads["Forge-x"] = parentPayload("Forge-x", "open", nil, "Forge-c1:closed")
+
+	h.run("Forge-c1")
+
+	assert.Empty(t, h.closedIDs())
+	assert.NotContains(t, h.shownIDs(), "Forge-x")
+}
+
+// A `bd close` that reports the parent as already closed is the world state
+// the walk was heading for, so it ends there: no event, no second candidate.
+func TestMaybeCloseGroupingParent_AlreadyClosedCloseErrorEndsTheWalk(t *testing.T) {
+	for _, msg := range []string{
+		"bd close Forge-p1: issue Forge-p1 is already closed",
+		"bd close: ALREADY_CLOSED",
+	} {
+		t.Run(msg, func(t *testing.T) {
+			h := newAutoCloseHarness(t)
+			h.beads["Forge-c1"] = `{"id":"Forge-c1","status":"closed","parent":"Forge-p1",
+			 "dependencies":[{"issue_id":"Forge-c1","depends_on_id":"Forge-x","type":"blocks"}]}`
+			h.beads["Forge-p1"] = parentPayload("Forge-p1", "open", nil, "Forge-c1:closed")
+			h.beads["Forge-x"] = parentPayload("Forge-x", "open", nil, "Forge-c1:closed")
+			h.closeErr = errors.New(msg)
+
+			h.run("Forge-c1")
+
+			assert.Empty(t, h.closedIDs())
+			assert.Empty(t, h.autoClosedEvents(t), "nothing closed here, so nothing to announce")
+			assert.NotContains(t, h.shownIDs(), "Forge-x",
+				"an already-closed parent is handled, not a reason to try a sequencing edge")
+		})
+	}
+}
+
+// A generic bd failure is the parent's problem, not the next candidate's: the
+// walk ends at the parent it identified.
+func TestMaybeCloseGroupingParent_FailedCloseEndsTheWalk(t *testing.T) {
+	h := newAutoCloseHarness(t)
+	h.beads["Forge-c1"] = `{"id":"Forge-c1","status":"closed","parent":"Forge-p1",
+	 "dependencies":[{"issue_id":"Forge-c1","depends_on_id":"Forge-x","type":"blocks"}]}`
+	h.beads["Forge-p1"] = parentPayload("Forge-p1", "open", nil, "Forge-c1:closed")
+	h.beads["Forge-x"] = parentPayload("Forge-x", "open", nil, "Forge-c1:closed")
+	h.closeErr = errors.New("bd close: exit status 1")
+
+	h.run("Forge-c1")
+
+	assert.Empty(t, h.closedIDs())
+	assert.NotContains(t, h.shownIDs(), "Forge-x")
+}
+
+// An unreadable candidate leaves the relationship unknown, and an unanswered
+// question is never grounds for closing the bead one edge further out.
+func TestMaybeCloseGroupingParent_UnreadableCandidateEndsTheWalk(t *testing.T) {
+	h := newAutoCloseHarness(t)
+	h.beads["Forge-c1"] = `{"id":"Forge-c1","status":"closed","parent":"Forge-p1",
+	 "dependencies":[{"issue_id":"Forge-c1","depends_on_id":"Forge-x","type":"blocks"}]}`
+	h.showErr["Forge-p1"] = errors.New("dolt is wedged")
+	h.beads["Forge-x"] = parentPayload("Forge-x", "open", nil, "Forge-c1:closed")
+
+	h.run("Forge-c1")
+
+	assert.Empty(t, h.closedIDs())
+	assert.NotContains(t, h.shownIDs(), "Forge-x")
+}
+
+// Two siblings whose PRs merge in the same cycle both reach the parent with a
+// fully closed sibling set. Exactly one close must land — and the loser must
+// end its walk there rather than falling through to a sequencing candidate.
+func TestMaybeCloseGroupingParent_ConcurrentSiblingsCloseOnce(t *testing.T) {
+	h := newAutoCloseHarness(t)
+	for _, child := range []string{"Forge-c1", "Forge-c2"} {
+		h.beads[child] = fmt.Sprintf(`{"id":%q,"status":"closed","parent":"Forge-p1",
+		 "dependencies":[{"issue_id":%q,"depends_on_id":"Forge-x","type":"blocks"}]}`, child, child)
+	}
+	h.beads["Forge-p1"] = parentPayload("Forge-p1", "open", nil, "Forge-c1:closed", "Forge-c2:closed")
+	// The trailing candidate: open, and its own dependents all closed, so it
+	// would pass every gate if the loser ever got to it.
+	h.beads["Forge-x"] = parentPayload("Forge-x", "open", nil, "Forge-c1:closed", "Forge-c2:closed")
+
+	// The winner parks inside bd close, which guarantees the other goroutine
+	// meets the in-flight guard rather than a finished close.
+	entered := make(chan struct{}, 1)
+	release := make(chan struct{})
+	var park sync.Once
+	h.closeHook = func(string) {
+		// Only the first close parks. A regression that let the loser walk on
+		// to Forge-x must fail the assertions below rather than deadlock here.
+		parked := false
+		park.Do(func() { parked = true })
+		if !parked {
+			return
+		}
+		entered <- struct{}{}
+		<-release
+	}
+
+	done := make(chan struct{}, 2)
+	for _, child := range []string{"Forge-c1", "Forge-c2"} {
+		go func() {
+			defer func() { done <- struct{}{} }()
+			h.run(child)
+		}()
+	}
+
+	<-entered // one goroutine holds the in-flight key and is inside bd close
+	<-done    // the other has finished its whole walk
+	close(release)
+	<-done
+
+	assert.Equal(t, []string{"Forge-p1"}, h.closedIDs(), "the parent closes exactly once")
+	assert.NotContains(t, h.shownIDs(), "Forge-x",
+		"the losing sibling must stop at the parent, not walk on to a sequencing edge")
+	assert.Len(t, h.autoClosedEvents(t), 1)
+}
+
+// bd's own output capitalizes and pads status strings in places, so the gates
+// compare them case- and whitespace-insensitively.
+func TestMaybeCloseGroupingParent_StatusComparisonIsCaseAndSpaceTolerant(t *testing.T) {
+	t.Run("padded uppercase parent status counts as closed", func(t *testing.T) {
+		h := newAutoCloseHarness(t)
+		h.beads["Forge-c1"] = childPayload("Forge-c1", "Forge-p1")
+		h.beads["Forge-p1"] = parentPayload("Forge-p1", " CLOSED ", nil, "Forge-c1:closed")
+
+		h.run("Forge-c1")
+
+		assert.Empty(t, h.closedIDs(), "an already-closed parent must not be closed again")
+	})
+
+	t.Run("padded uppercase child status counts as closed", func(t *testing.T) {
+		h := newAutoCloseHarness(t)
+		h.beads["Forge-c1"] = childPayload("Forge-c1", "Forge-p1")
+		h.beads["Forge-p1"] = parentPayload("Forge-p1", "open", nil, "Forge-c1: CLOSED ")
+
+		h.run("Forge-c1")
+
+		assert.Equal(t, []string{"Forge-p1"}, h.closedIDs())
+	})
+
+	t.Run("padded child status that is not closed keeps the parent open", func(t *testing.T) {
+		h := newAutoCloseHarness(t)
+		h.beads["Forge-c1"] = childPayload("Forge-c1", "Forge-p1")
+		h.beads["Forge-p1"] = parentPayload("Forge-p1", "open", nil, "Forge-c1:closed", "Forge-c2: OPEN ")
+
+		h.run("Forge-c1")
+
+		assert.Empty(t, h.closedIDs())
+	})
+}
+
+// bd IDs are whatever the Dolt database carries, and they land in a persisted
+// close reason and a rendered activity feed — so they are stripped like any
+// other text Forge did not write.
+func TestMaybeCloseGroupingParent_SanitizesBdSuppliedText(t *testing.T) {
+	h := newAutoCloseHarness(t)
+	h.beads["Forge-c1"] = childPayload("Forge-c1", "Forge-p1")
+	// Written out rather than built by parentPayload: the escape has to
+	// reach the decoder as JSON's own \u001b, not Go's \x1b.
+	h.beads["Forge-p1"] = `{"id":"Forge-p1","status":"open","labels":[],"dependents":[{"id":"Forge-c1","dependency_type":"parent-child","status":"closed"},{"id":"Forge-\u001b[31mc2","dependency_type":"parent-child","status":"closed"}]}`
+
+	h.run("Forge-c1")
+
+	require.Len(t, h.closed, 1)
+	assert.NotContains(t, h.closed[0].reason, "\u001b")
+	assert.Contains(t, h.closed[0].reason, "Forge-c2",
+		"the sequence is removed whole, leaving no visible residue")
+
+	events := h.autoClosedEvents(t)
+	require.Len(t, events, 1)
+	assert.NotContains(t, events[0], "\u001b")
 }
 
 func TestAutoCloseParentDetail(t *testing.T) {
-	assert.Equal(t, "auto-closed: all 1 child closed (Forge-a)",
+	// The "auto-closed:" prefix belongs to the bd reason, not to the shared
+	// detail — the event supplies its own framing and would otherwise stutter.
+	assert.Equal(t, "all 1 child closed (Forge-a)",
 		autoCloseParentDetail([]string{"Forge-a"}))
-	assert.Equal(t, "auto-closed: all 2 children closed (Forge-a, Forge-b)",
+	assert.Equal(t, "all 2 children closed (Forge-a, Forge-b)",
 		autoCloseParentDetail([]string{"Forge-a", "Forge-b"}))
 
 	many := make([]string, 0, 12)
@@ -376,6 +617,14 @@ func TestCloseMergedBead_RunsGroupingParentAutoClose(t *testing.T) {
 
 	t.Run("a failed parent close never fails the merge close", func(t *testing.T) {
 		d, closed := newDaemon(t, errors.New("bd close: exit status 1"))
+		err := d.closeMergedBead(context.Background(), "Forge-c1", closeTestAnvil,
+			anvilPathFor(t, d), "PR #7 merged", 7, nil)
+		require.NoError(t, err)
+		assert.Empty(t, *closed)
+	})
+
+	t.Run("a parent bd already closed never fails the merge close", func(t *testing.T) {
+		d, closed := newDaemon(t, errors.New("bd close Forge-p1: already closed"))
 		err := d.closeMergedBead(context.Background(), "Forge-c1", closeTestAnvil,
 			anvilPathFor(t, d), "PR #7 merged", 7, nil)
 		require.NoError(t, err)

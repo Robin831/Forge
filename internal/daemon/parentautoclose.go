@@ -5,9 +5,9 @@ import (
 	"strings"
 
 	"github.com/Robin831/Forge/internal/epic"
-	"github.com/Robin831/Forge/internal/executil"
 	"github.com/Robin831/Forge/internal/poller"
 	"github.com/Robin831/Forge/internal/state"
+	"github.com/Robin831/Forge/internal/termtext"
 )
 
 // Auto-close of a plain grouping parent.
@@ -30,6 +30,31 @@ import (
 // children must not write fifty IDs into it; the count carries the rest.
 const maxNamedAutoClosedChildren = 8
 
+// autoCloseReasonPrefix labels the persisted `bd close` reason, where the
+// detail stands alone. The event message supplies its own framing, so the
+// prefix lives here rather than inside the shared detail.
+const autoCloseReasonPrefix = "auto-closed: "
+
+// autoCloseVerdict is what one candidate reports back to the candidate walk in
+// maybeCloseGroupingParent.
+type autoCloseVerdict int
+
+const (
+	// autoCloseTryNext: this candidate is not the parent the just-closed child
+	// belongs to, so the walk moves on.
+	autoCloseTryNext autoCloseVerdict = iota
+
+	// autoCloseDone: the walk ends here. Either the parent closed, or the
+	// candidate is this child's parent and this caller is simply not the one
+	// closing it — it is already closed, a sibling is closing it right now, it
+	// still has open children, or bd refused. "Identified but not closable by
+	// me" must end the walk just as firmly as a close: the trailing candidates
+	// are `blocks` sequencing edges that only look like parents from the
+	// child's side, so falling through to them closes a bead outside the
+	// relationship that justified acting at all.
+	autoCloseDone
+)
+
 // maybeCloseGroupingParent closes the grouping parent of a just-closed child
 // when that child was the last one open.
 //
@@ -51,36 +76,37 @@ func (d *Daemon) maybeCloseGroupingParent(childID, anvil, anvilPath string) {
 	// that is an open, unorchestrated parent with children is the one this
 	// child belongs to.
 	//
-	// At most one parent is closed per child close. A bead has one parent, and
-	// the trailing candidates are `blocks` sequencing edges that only look like
-	// parents from this side; closing a second bead off one merge would be
-	// reaching past the relationship that justified the first.
+	// At most one parent is closed per child close, and the walk stops at the
+	// first candidate that turns out to be this child's parent — closed or
+	// not. A bead has one parent; once it is found, the trailing candidates
+	// are sequencing edges and nothing that happens to the parent makes them
+	// closable.
 	for _, parentID := range poller.ParentCandidates(child.Bead) {
-		if d.closeGroupingParentIfComplete(parentID, childID, anvil, anvilPath) {
+		if d.closeGroupingParentIfComplete(parentID, childID, anvil, anvilPath) == autoCloseDone {
 			return
 		}
 	}
 }
 
 // closeGroupingParentIfComplete runs the gates for one candidate parent and
-// closes it when they all pass. It reports whether the parent was closed.
-func (d *Daemon) closeGroupingParentIfComplete(parentID, childID, anvil, anvilPath string) bool {
+// closes it when they all pass. Its verdict tells the walk whether to continue.
+func (d *Daemon) closeGroupingParentIfComplete(parentID, childID, anvil, anvilPath string) autoCloseVerdict {
 	parent, ok := d.showBeadRelations(anvilPath, parentID, "parent")
 	if !ok {
-		// Cannot tell: an unreadable parent is not a closable one.
-		return false
+		// A candidate bd cannot answer for may well be the real parent, and
+		// the next candidate is only safe to consider once this one has been
+		// ruled out. An unanswered question ends the walk rather than pushing
+		// it one edge further out.
+		return autoCloseDone
 	}
 
 	if epic.IsOrchestrated(parent.Labels) {
 		// The Crucible owns an opted-in parent and closes it after the final
-		// PR merges. Closing it here would race that.
+		// PR merges. Closing it here would race that — and the Crucible owning
+		// this bead says nothing about the next candidate, so the walk goes on.
 		d.logger.Debug("grouping parent auto-close skipped: parent is orchestrated",
 			"parent", parentID, "child", childID, "anvil", anvil)
-		return false
-	}
-
-	if strings.EqualFold(strings.TrimSpace(parent.Status), "closed") {
-		return false
+		return autoCloseTryNext
 	}
 
 	children, open := parent.children()
@@ -88,42 +114,71 @@ func (d *Daemon) closeGroupingParentIfComplete(parentID, childID, anvil, anvilPa
 		// A parent that reports no children at all is not the parent this
 		// child just finished — a stale index or a relation read from the
 		// wrong side. Never close on the strength of an empty list.
-		return false
+		return autoCloseTryNext
+	}
+	if !containsBeadID(children, childID) {
+		// Children, but not this one: another bead's parent, or a sequencing
+		// predecessor that happens to have children of its own.
+		d.logger.Debug("grouping parent auto-close skipped: candidate does not list this child",
+			"candidate", parentID, "child", childID, "anvil", anvil)
+		return autoCloseTryNext
+	}
+
+	// From here the candidate is this child's parent, so every remaining exit
+	// ends the walk whether or not the close happens in this call.
+	if strings.EqualFold(strings.TrimSpace(parent.Status), "closed") {
+		return autoCloseDone
 	}
 	if len(open) > 0 {
 		d.logger.Debug("grouping parent stays open: children still open",
 			"parent", parentID, "child", childID, "anvil", anvil,
 			"open_children", len(open), "total_children", len(children))
-		return false
+		return autoCloseDone
 	}
 
 	// Collapse the sibling race: two children whose PRs merge in the same
-	// cycle both see a fully closed sibling set.
+	// cycle both see a fully closed sibling set. The loser is done — the close
+	// is happening, just not on this goroutine.
 	key := anvil + "\x00" + parentID
 	if _, busy := d.parentAutoCloseInFlight.LoadOrStore(key, true); busy {
-		return false
+		return autoCloseDone
 	}
 	defer d.parentAutoCloseInFlight.Delete(key)
 
-	detail := autoCloseParentDetail(children)
-	if err := d.parentCloser(anvilPath, parentID, detail); err != nil {
-		if isAlreadyClosedBdError(err) {
-			return true
+	// The IDs come from bd, so they are text Forge did not write on their way
+	// to a persisted close reason and a rendered activity feed.
+	detail := termtext.Line(autoCloseParentDetail(children))
+	if err := d.parentCloser(anvilPath, parentID, autoCloseReasonPrefix+detail); err != nil {
+		if !isAlreadyClosedBdError(err) {
+			d.logger.Warn("failed to auto-close grouping parent; leaving it open",
+				"parent", parentID, "child", childID, "anvil", anvil, "error", err)
 		}
-		d.logger.Warn("failed to auto-close grouping parent; leaving it open",
-			"parent", parentID, "child", childID, "anvil", anvil, "error", err)
-		return false
+		return autoCloseDone
 	}
 
 	d.logger.Info("auto-closed grouping parent (all children closed)",
 		"parent", parentID, "last_child", childID, "anvil", anvil, "children", len(children))
 	_ = d.db.LogEvent(state.EventBeadAutoClosed,
-		fmt.Sprintf("Parent %s auto-closed: %s", parentID, detail), parentID, anvil)
-	return true
+		fmt.Sprintf("Parent %s auto-closed: %s", termtext.Line(parentID), detail), parentID, anvil)
+	return autoCloseDone
 }
 
-// autoCloseParentDetail renders the close reason, naming the children so the
-// closed parent records *why* it closed rather than just that something did it.
+// containsBeadID reports whether ids holds beadID, tolerating the case and
+// padding differences bd's own output shows between fields.
+func containsBeadID(ids []string, beadID string) bool {
+	want := strings.TrimSpace(beadID)
+	for _, id := range ids {
+		if strings.EqualFold(strings.TrimSpace(id), want) {
+			return true
+		}
+	}
+	return false
+}
+
+// autoCloseParentDetail renders the body of the close reason, naming the
+// children so the closed parent records *why* it closed rather than just that
+// something did it. The caller supplies the framing (autoCloseReasonPrefix on
+// the bd reason, "Parent <id> auto-closed:" in the event).
 func autoCloseParentDetail(children []string) string {
 	named := children
 	suffix := ""
@@ -135,7 +190,7 @@ func autoCloseParentDetail(children []string) string {
 	if len(children) == 1 {
 		plural = "child"
 	}
-	return fmt.Sprintf("auto-closed: all %d %s closed (%s%s)",
+	return fmt.Sprintf("all %d %s closed (%s%s)",
 		len(children), plural, strings.Join(named, ", "), suffix)
 }
 
@@ -183,16 +238,11 @@ func (d *Daemon) showBeadRelations(anvilPath, beadID, role string) (beadRelation
 		return beadRelations{}, false
 	}
 
-	var rel beadRelations
-	if err := executil.DecodeJSON(out, &rel); err != nil {
-		// bd show may answer with a single-element array.
-		var rels []beadRelations
-		if arrErr := executil.DecodeJSON(out, &rels); arrErr != nil || len(rels) == 0 {
-			d.logger.Debug("grouping parent auto-close: failed to parse bd show",
-				"bead", beadID, "role", role, "error", err)
-			return beadRelations{}, false
-		}
-		rel = rels[0]
+	rel, err := decodeBdShow[beadRelations](out)
+	if err != nil {
+		d.logger.Debug("grouping parent auto-close: failed to parse bd show",
+			"bead", beadID, "role", role, "error", err)
+		return beadRelations{}, false
 	}
 	return rel, true
 }

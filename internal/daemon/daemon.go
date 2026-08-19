@@ -8829,16 +8829,10 @@ func (d *Daemon) fetchBeadStatus(anvilPath, beadID string) string {
 		Status string `json:"status"`
 	}
 
-	var resp beadShowResponse
-	if err := executil.DecodeJSON(output, &resp); err != nil {
-		var resps []beadShowResponse
-		if arrayErr := executil.DecodeJSON(output, &resps); arrayErr != nil {
-			d.logger.Debug("fetchBeadStatus: failed to parse status from bd show", "bead", beadID, "error", err)
-			return ""
-		}
-		if len(resps) > 0 {
-			resp = resps[0]
-		}
+	resp, err := decodeBdShow[beadShowResponse](output)
+	if err != nil {
+		d.logger.Debug("fetchBeadStatus: failed to parse status from bd show", "bead", beadID, "error", err)
+		return ""
 	}
 	return resp.Status
 }
@@ -8859,18 +8853,10 @@ func (d *Daemon) fetchExternalRef(anvilPath, beadID string) string {
 		ExternalRef string `json:"external_ref"`
 	}
 
-	// Try object form first (tolerates leading/trailing diagnostic noise).
-	var resp beadShowResponse
-	if err := executil.DecodeJSON(output, &resp); err != nil {
-		// Fall back to array form.
-		var resps []beadShowResponse
-		if arrayErr := executil.DecodeJSON(output, &resps); arrayErr != nil {
-			d.logger.Debug("failed to parse external_ref from bd show", "bead", beadID, "error", err)
-			return ""
-		}
-		if len(resps) > 0 {
-			resp = resps[0]
-		}
+	resp, err := decodeBdShow[beadShowResponse](output)
+	if err != nil {
+		d.logger.Debug("failed to parse external_ref from bd show", "bead", beadID, "error", err)
+		return ""
 	}
 
 	if resp.ExternalRef != "" {
@@ -8894,23 +8880,8 @@ func (d *Daemon) maybeCloseDecomposedParent(bead poller.Bead, anvilCfg config.An
 		return
 	}
 
-	// bd show --json may return [{...}]; unwrap.
-	output = bytes.TrimSpace(output)
-	if len(output) > 1 && output[0] == '[' {
-		start := bytes.IndexByte(output, '{')
-		end := bytes.LastIndexByte(output, '}')
-		if start >= 0 && end > start {
-			output = output[start : end+1]
-		}
-	}
-
-	var resp struct {
-		Dependents []struct {
-			ID             string `json:"id"`
-			DependencyType string `json:"dependency_type"`
-		} `json:"dependents"`
-	}
-	if err := json.Unmarshal(output, &resp); err != nil {
+	resp, err := decodeBdShow[beadRelations](output)
+	if err != nil {
 		d.logger.Warn("failed to parse parent bead dependents; leaving open",
 			"bead", beadID, "error", err, "output", string(output), "stderr", stderrStr)
 		return
