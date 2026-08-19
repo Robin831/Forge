@@ -46,6 +46,11 @@ type Bead struct {
 	// bead age without a SQLite schema migration.
 	CreatedAt string `json:"created_at"`
 	UpdatedAt string `json:"updated_at"`
+	// CreatedBy is the bd identity that filed the bead, emitted by
+	// `bd ready --json` on every row. It rides the same side-channel as the
+	// timestamps so the queue UI can say who raised a bead — the question
+	// Assignee does not answer, and which is unset on most beads anyway.
+	CreatedBy string `json:"created_by"`
 
 	// Forge-injected: which anvil this bead belongs to
 	Anvil string `json:"-"`

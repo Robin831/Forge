@@ -14,6 +14,11 @@ export interface QueueItem {
   assignee?: string
   created_at: string
   updated_at: string
+  // created_by is the bd identity that filed the bead. Unlike `assignee` it is
+  // set on essentially every bead, and it answers a different question: who
+  // raised the work, not who is doing it. Empty until the daemon's first poll
+  // populates it, the same way the timestamps above degrade.
+  created_by?: string
   // auto_dispatch_tag is the anvil's configured dispatch label (forge.yaml
   // `auto_dispatch_tag`). Surfaced per-row so the queue UI can render a
   // one-click apply-tag button on Unlabeled beads without an extra fetch.
@@ -230,6 +235,9 @@ export interface BeadDetailQueue {
   section: string
   labels: string[]
   assignee?: string
+  // created_by is the bd identity that filed the bead, mirroring the queue
+  // pane's byline so the two surfaces do not disagree about who raised it.
+  created_by?: string
 }
 
 export interface BeadDetailRetry {

@@ -5209,10 +5209,11 @@ func TestHandleIPC_Queue_Timestamps(t *testing.T) {
 
 	const created = "2026-05-08T04:15:41Z"
 	const updated = "2026-05-12T11:08:11Z"
+	const createdBy = "Anna Sophie Pettersen Sylta"
 	d.replaceQueueTimestamps(
 		map[string]struct{}{"forge": {}},
 		map[string]queueTimestamp{
-			"forge/Forge-abc1": {CreatedAt: created, UpdatedAt: updated},
+			"forge/Forge-abc1": {CreatedAt: created, UpdatedAt: updated, CreatedBy: createdBy},
 		},
 	)
 
@@ -5244,10 +5245,14 @@ func TestHandleIPC_Queue_Timestamps(t *testing.T) {
 	}
 	assert.Equal(t, created, byID["Forge-abc1"].CreatedAt)
 	assert.Equal(t, updated, byID["Forge-abc1"].UpdatedAt)
+	// created_by rides the same snapshot, verbatim: the display fold (two bd
+	// identities for one human, long names shortened) belongs to the client.
+	assert.Equal(t, createdBy, byID["Forge-abc1"].CreatedBy)
 	// Beads missing from the snapshot fall back to empty strings rather
 	// than crashing the handler or omitting the row entirely.
 	assert.Equal(t, "", byID["Forge-def2"].CreatedAt)
 	assert.Equal(t, "", byID["Forge-def2"].UpdatedAt)
+	assert.Equal(t, "", byID["Forge-def2"].CreatedBy)
 }
 
 func TestHandleIPC_Workers(t *testing.T) {

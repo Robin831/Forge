@@ -214,6 +214,99 @@ describe('QueuePane', () => {
     expect(screen.getByRole('button', { name: /forge/ })).toHaveTextContent('2')
   })
 
+  describe('creator byline', () => {
+    it('shows who filed each bead, shortening a long display name', async () => {
+      const user = userEvent.setup()
+      renderPane([
+        item({
+          bead_id: 'a1',
+          anvil: 'forge',
+          section: 'ready',
+          created_by: 'Anna Sophie Pettersen Sylta',
+        }),
+      ])
+      await user.click(screen.getByRole('button', { name: /forge/ }))
+      await user.click(screen.getByRole('button', { name: /Ready \(1\)/ }))
+      const byline = screen.getByText('by Anna Sylta')
+      expect(byline).toBeInTheDocument()
+      // The full value stays reachable in the tooltip, the same way the
+      // relative timestamp hides its ISO string.
+      expect(byline).toHaveAttribute('title', 'Anna Sophie Pettersen Sylta')
+    })
+
+    it('folds a teammate’s two bd identities onto one name', async () => {
+      const user = userEvent.setup()
+      renderPane([
+        item({
+          bead_id: 'a1',
+          anvil: 'forge',
+          section: 'ready',
+          created_by: 'Anna Sophie Pettersen Sylta',
+        }),
+        item({ bead_id: 'a2', anvil: 'forge', section: 'ready', created_by: 'sophiesylta' }),
+      ])
+      await user.click(screen.getByRole('button', { name: /forge/ }))
+      await user.click(screen.getByRole('button', { name: /Ready \(2\)/ }))
+      expect(screen.getAllByText('by Anna Sylta')).toHaveLength(2)
+      // The folded row still says which identity actually filed it, so a
+      // wrong fold is visible rather than silently rewriting the record.
+      expect(
+        screen.getByTitle('Anna Sophie Pettersen Sylta (filed as sophiesylta)'),
+      ).toBeInTheDocument()
+    })
+
+    it('renders no creator segment for a bead the daemon has no creator for', async () => {
+      const user = userEvent.setup()
+      renderPane([item({ bead_id: 'a1', anvil: 'forge', section: 'ready' })])
+      await user.click(screen.getByRole('button', { name: /forge/ }))
+      await user.click(screen.getByRole('button', { name: /Ready \(1\)/ }))
+      expect(screen.queryByText(/^by /)).not.toBeInTheDocument()
+    })
+
+    it('narrows the list when a creator name is typed into the filter', async () => {
+      const user = userEvent.setup()
+      renderPane([
+        item({ bead_id: 'a1', anvil: 'forge', section: 'ready', created_by: 'Forge' }),
+        item({ bead_id: 'a2', anvil: 'forge', section: 'ready', created_by: 'sophiesylta' }),
+        item({
+          bead_id: 'a3',
+          anvil: 'forge',
+          section: 'ready',
+          created_by: 'Anna Sophie Pettersen Sylta',
+        }),
+      ])
+      await user.type(screen.getByRole('textbox', { name: /Filter beads/ }), 'sylta')
+      // Both of the same person's identities match, the machine-filed bead
+      // does not.
+      expect(screen.getByRole('button', { name: /forge/ })).toHaveTextContent('2')
+    })
+
+    it('offers a creator sort that groups a person’s beads together', async () => {
+      const user = userEvent.setup()
+      renderPane([
+        item({ bead_id: 'a1', anvil: 'forge', section: 'ready', priority: 0, created_by: 'Forge' }),
+        item({ bead_id: 'a2', anvil: 'forge', section: 'ready', priority: 1, created_by: 'sophiesylta' }),
+        item({
+          bead_id: 'a3',
+          anvil: 'forge',
+          section: 'ready',
+          priority: 2,
+          created_by: 'Anna Sophie Pettersen Sylta',
+        }),
+      ])
+      await user.click(screen.getByRole('button', { name: /forge/ }))
+      await user.click(screen.getByRole('button', { name: /Ready \(3\)/ }))
+      const idsInOrder = () => screen.getAllByRole('link').map((a) => a.textContent)
+      expect(idsInOrder()).toEqual(['a1', 'a2', 'a3'])
+
+      await user.selectOptions(screen.getByTestId('queue-sort-select'), 'created-by-asc')
+
+      // "Anna Sylta" before "Forge", and the folded handle sorts with the
+      // full name rather than under "s".
+      expect(idsInOrder()).toEqual(['a2', 'a3', 'a1'])
+    })
+  })
+
   describe('apply-dispatch-tag button', () => {
     beforeEach(() => {
       vi.spyOn(actions, 'applyDispatchTag').mockResolvedValue({ tag: 'forgeReady' })

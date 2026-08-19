@@ -453,22 +453,25 @@ type Daemon struct {
 	// Bellows cycles do not stack reconcilers when one outlives the interval.
 	beadCloseReconciling atomic.Bool
 
-	// queueTimestamps holds CreatedAt/UpdatedAt strings (as emitted by
-	// `bd ready --json` / `bd list --json`) keyed by "anvil/beadID". It is
-	// refreshed alongside the queue_cache rebuild so the IPC "queue" handler
-	// can attach timestamps to QueueItem responses without persisting them
-	// to SQLite. Missing entries return zero values, which serialise as
-	// empty strings on the wire.
+	// queueTimestamps holds the per-bead fields bd emits that the queue_cache
+	// table does not carry (CreatedAt/UpdatedAt/CreatedBy) keyed by
+	// "anvil/beadID". It is refreshed alongside the queue_cache rebuild so the
+	// IPC "queue" handler can attach them to QueueItem responses without
+	// persisting them to SQLite. Missing entries return zero values, which
+	// serialise as empty strings on the wire.
 	queueTimestampsMu sync.RWMutex
 	queueTimestamps   map[string]queueTimestamp
 }
 
-// queueTimestamp pairs the two ISO timestamps that bd emits for a bead. The
-// strings are passed through verbatim (no parsing) so any timezone or
-// precision quirks from bd flow straight to the client.
+// queueTimestamp carries the bd-emitted bead metadata that rides beside the
+// queue cache rather than inside it: the two ISO timestamps and the identity
+// that filed the bead. The strings are passed through verbatim (no parsing)
+// so any timezone or precision quirks from bd — and whatever spelling a bd
+// identity uses — flow straight to the client, which owns the display fold.
 type queueTimestamp struct {
 	CreatedAt string
 	UpdatedAt string
+	CreatedBy string
 }
 
 // configureEventBus constructs the in-process event Bus and wires it into the
@@ -3532,7 +3535,7 @@ func (d *Daemon) pollAndDispatch(ctx context.Context, fullPoll bool) {
 				Section:     section,
 				Assignee:    b.Assignee,
 			})
-			stamps[b.Anvil+"/"+b.ID] = queueTimestamp{CreatedAt: b.CreatedAt, UpdatedAt: b.UpdatedAt}
+			stamps[b.Anvil+"/"+b.ID] = queueTimestamp{CreatedAt: b.CreatedAt, UpdatedAt: b.UpdatedAt, CreatedBy: b.CreatedBy}
 		}
 
 		// Also include in-progress beads from successful anvils.
@@ -3568,7 +3571,7 @@ func (d *Daemon) pollAndDispatch(ctx context.Context, fullPoll bool) {
 				Section:     state.QueueSectionInProgress,
 				Assignee:    b.Assignee,
 			})
-			stamps[b.Anvil+"/"+b.ID] = queueTimestamp{CreatedAt: b.CreatedAt, UpdatedAt: b.UpdatedAt}
+			stamps[b.Anvil+"/"+b.ID] = queueTimestamp{CreatedAt: b.CreatedAt, UpdatedAt: b.UpdatedAt, CreatedBy: b.CreatedBy}
 		}
 
 		if err := d.db.ReplaceQueueCacheForAnvils(succeededAnvils, dedupeCacheItems(cacheItems)); err != nil {
@@ -6035,10 +6038,10 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 				anvilTags[name] = a.AutoDispatchTag
 			}
 		}
-		// Timestamps live in an in-memory map populated alongside the queue
-		// cache rebuild (see pollAndDispatch). Sourcing them here avoids a
-		// SQLite schema migration on queue_cache; entries missing from the
-		// map serialise as empty strings on the wire.
+		// Timestamps and the creator live in an in-memory map populated
+		// alongside the queue cache rebuild (see pollAndDispatch). Sourcing
+		// them here avoids a SQLite schema migration on queue_cache; entries
+		// missing from the map serialise as empty strings on the wire.
 		out := make([]ipc.QueueItem, 0, len(items))
 		for _, it := range items {
 			labels := parseQueueLabels(it.Labels)
@@ -6055,6 +6058,7 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 				Assignee:        it.Assignee,
 				CreatedAt:       ts.CreatedAt,
 				UpdatedAt:       ts.UpdatedAt,
+				CreatedBy:       ts.CreatedBy,
 				AutoDispatchTag: anvilTags[it.Anvil],
 			})
 		}
@@ -9619,8 +9623,8 @@ func (d *Daemon) replaceQueueTimestamps(succeeded map[string]struct{}, fresh map
 	d.queueTimestamps = next
 }
 
-// lookupQueueTimestamp returns the CreatedAt/UpdatedAt pair recorded for the
-// given (anvil, beadID) during the most recent poll. Callers receive a
+// lookupQueueTimestamp returns the CreatedAt/UpdatedAt/CreatedBy trio recorded
+// for the given (anvil, beadID) during the most recent poll. Callers receive a
 // zero-valued queueTimestamp (empty strings) when no entry is present.
 func (d *Daemon) lookupQueueTimestamp(anvil, beadID string) queueTimestamp {
 	d.queueTimestampsMu.RLock()

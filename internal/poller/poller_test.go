@@ -58,6 +58,27 @@ func TestBead_UnmarshalJSON_Tags(t *testing.T) {
 	assert.Nil(t, beads[1].Labels)
 }
 
+// TestBead_UnmarshalJSON_CreatedBy pins the created_by decode. bd emits the
+// field on every ready bead, and the queue byline is the only thing that says
+// who raised a bead — assignee is set on a small minority and answers a
+// different question. A bead filed by Forge itself keeps its "Forge" creator
+// rather than being blanked: which work the machine raised is signal too.
+func TestBead_UnmarshalJSON_CreatedBy(t *testing.T) {
+	jsonData := `[
+		{"id": "BD-1", "title": "Human filed", "created_by": "Anna Sophie Pettersen Sylta"},
+		{"id": "BD-2", "title": "Machine filed", "created_by": "Forge"},
+		{"id": "BD-3", "title": "No creator"}
+	]`
+
+	var beads []Bead
+	require.NoError(t, json.Unmarshal([]byte(jsonData), &beads))
+	require.Len(t, beads, 3)
+
+	assert.Equal(t, "Anna Sophie Pettersen Sylta", beads[0].CreatedBy)
+	assert.Equal(t, "Forge", beads[1].CreatedBy)
+	assert.Empty(t, beads[2].CreatedBy)
+}
+
 func TestBead_AnvilFieldNotInJSON(t *testing.T) {
 	// Anvil is injected at runtime and should not appear in JSON output
 	b := Bead{ID: "x", Anvil: "myrepo"}
