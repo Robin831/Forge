@@ -427,6 +427,14 @@ type Daemon struct {
 	// Defaults to exec.Command; may be replaced in tests.
 	beadShower func(anvilPath, beadID string) (stdout []byte, stderr string, err error)
 
+	// childLister returns the raw JSON output of
+	// `bd list --parent <id> --all --json`, i.e. every direct child of a bead
+	// including the closed ones. It is a separate seam from beadShower because
+	// a `bd show` payload cannot answer the question: it carries the
+	// parent-child edge on the child's side only. Defaults to exec.Command;
+	// may be replaced in tests.
+	childLister func(anvilPath, parentID string) (stdout []byte, stderr string, err error)
+
 	// beadFetcher fetches a full bead by ID (via `bd show`) for the manual
 	// create-PR-from-existing-branch recovery. Defaults to crucible.FetchBead;
 	// may be replaced in tests to avoid a real bd invocation.
@@ -698,6 +706,18 @@ func New(cfg *config.Config, configPath string) (*Daemon, error) {
 		// Use context.Background() so the bd show call succeeds even during
 		// graceful shutdown (d.runCtx may already be cancelled at that point).
 		cmd, cancel := executil.BdCommand(context.Background(), "show", beadID, "--json")
+		defer cancel()
+		cmd.Dir = anvilPath
+		var stderrBuf bytes.Buffer
+		cmd.Stderr = &stderrBuf
+		out, err := cmd.Output()
+		return out, stderrBuf.String(), err
+	}
+	d.childLister = func(anvilPath, parentID string) ([]byte, string, error) {
+		// context.Background() for the same reason beadShower uses it: the
+		// lookup must still work while d.runCtx is being cancelled.
+		cmd, cancel := executil.BdCommand(context.Background(), "list",
+			"--parent", parentID, "--all", "--limit", "0", "--json")
 		defer cancel()
 		cmd.Dir = anvilPath
 		var stderrBuf bytes.Buffer

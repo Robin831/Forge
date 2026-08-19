@@ -124,6 +124,7 @@ settings:
   crucible_enabled: true
   crucible_poll_interval: 3m
   auto_merge_crucible_children: true
+  auto_close_parents: true          # close a parent bead once every child is closed
   warden:                          # review-time rule filtering (see Warden Rule Filtering)
     max_rules_per_review: 30
     archive_after_days: 180
@@ -549,6 +550,7 @@ anvils:
 | `crucible_enabled` | bool | `false` | | Enable Crucible auto-orchestration for **opted-in** parent beads with children (see [Epic Orchestration Is Opt-In](#epic-orchestration-is-opt-in)). When a parent carrying the `crucible` label blocks other beads, the Crucible creates its feature branch, dispatches children in topological order, merges each child PR, then creates a final PR to main. A parent that carries the label while this setting is `false` is not dispatched: it is escalated to Needs Attention and its children are held back, since they are already routed to a branch nothing would create. |
 | `crucible_poll_interval` | duration | `3m` | `30s` or `0` | Interval for the slow unfiltered poll that rebuilds the Crucible parent-child (Blocks) graph. The fast path polls with a label filter every `poll_interval`; the slow path runs every `crucible_poll_interval` to discover parent-child relationships. `0` disables two-tier polling (all polls are unfiltered). |
 | `auto_merge_crucible_children` | bool | `true` | | Auto-merge child PRs targeting a Crucible feature branch after the pipeline succeeds. Set to `false` to require manual merge of child PRs. |
+| `auto_close_parents` | bool | `true` | | Close a parent bead automatically once **every** one of its children is closed (see [Closing a Parent in Independent Mode](#closing-a-parent-in-independent-mode)). Checked after each `bd close` that follows a merged PR. A parent carrying the `crucible` opt-in is skipped — the Crucible closes it when the final PR is created. Every failure leaves the parent open: an unreadable bead, a child list bd could not produce, or a single child whose status is anything other than `closed`. Set to `false` to close parents by hand. |
 | `forge_id` | string | `""` (hostname) | | Per-instance identifier embedded in the forge-managed marker on every PR Forge creates (`<!-- forge-managed: <id> -->`). When multiple Forge instances target the same anvil, this ID ensures each instance only manages the PRs it created. When empty, `os.Hostname()` is used; falls back to `"default"`. Set this explicitly in environments where the hostname is not stable (e.g. ephemeral pods). |
 | `bus_enabled` | bool | `false` | | Enable the in-process event Bus that fans logged events out to real-time SSE/IPC consumers. Disabled by default for safe rollout: when off, no Bus is constructed and consumers fall back to legacy polling (re-reading events via `EventsSince`). Also settable at daemon startup with `--enable-bus`. |
 | `bus_buffer_size` | int | `256` | `1024` | Per-subscriber channel buffer for the event Bus. Bounds how many events a slow consumer can fall behind before the Bus drops the oldest and delivers a gap marker prompting a re-sync. Only relevant when `bus_enabled` is true; a value `<= 0` falls back to `256`. Also settable at daemon startup with `--bus-buffer-size`. |
@@ -652,6 +654,37 @@ dispatches the parent alone leaves them pointing at a branch nobody creates.
 > candidate and any `epic`-typed parent routed its children onto a feature
 > branch. Add the `crucible` label to the parents that should keep being
 > orchestrated; every other parent becomes independent with no config change.
+
+### Closing a Parent in Independent Mode
+
+An orchestrated parent is closed by the Crucible once its final PR exists.
+Without the opt-in label there is no Crucible and no final PR: the children each
+merge on their own PR, `bd close` runs per child, and the parent stays open
+forever with nothing left to do — blocking whatever was queued behind it.
+
+`auto_close_parents` (default `true`) closes that gap. After a child's post-merge
+`bd close` succeeds, Forge asks bd for the child's parents and, for each one:
+
+- skips it when it is already closed, or when it carries the `crucible` /
+  `epic-branch:<name>` opt-in (that parent is the Crucible's to close);
+- lists its direct children with `bd list --parent <id> --all`, closed ones
+  included, and closes the parent only when **every** child is closed;
+- requires the child that just closed to appear in that list. A `blocks`-type
+  sequencing edge makes its predecessor look like a parent, and bd's own
+  hierarchy is what tells the two apart — without the check, finishing the last
+  bead of a chain would close the bead that merely came before it;
+- walks up: a parent that closes may have been the last open child of its own
+  parent, up to five levels.
+
+The close reason names the count and the last child (`all 3 child beads closed
+(last: Forge-abc1)`), and a `parent_bead_auto_closed` event records it in the
+activity feed — the close has no PR, no worker and no operator behind it, so
+that event is the only place it is visible.
+
+Anything that cannot be established leaves the parent open: bd unreachable, an
+unparseable payload, a child whose status is missing or is anything other than
+`closed`. A parent left open costs one `bd close`; a parent closed over
+unfinished children costs the work queued behind it.
 
 ### Event Bus vs Legacy Polling
 
@@ -1933,6 +1966,7 @@ Environment variables with the `FORGE_` prefix override YAML values. Nested keys
 | `FORGE_SETTINGS_BUS_BUFFER_SIZE` | `settings.bus_buffer_size` |
 | `FORGE_SETTINGS_SSE_POLL_FALLBACK` | `settings.sse_poll_fallback` |
 | `FORGE_SETTINGS_AUTO_MERGE_CRUCIBLE_CHILDREN` | `settings.auto_merge_crucible_children` |
+| `FORGE_SETTINGS_AUTO_CLOSE_PARENTS` | `settings.auto_close_parents` |
 | `FORGE_SETTINGS_QUESTGIVER_ENABLED` | `settings.questgiver_enabled` |
 | `FORGE_SETTINGS_QUESTGIVER_INTERVAL` | `settings.questgiver_interval` |
 | `FORGE_SETTINGS_ADVENTURER_TIMEOUT` | `settings.adventurer_timeout` |

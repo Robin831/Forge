@@ -212,6 +212,11 @@ func (d *Daemon) closeMergedBead(ctx context.Context, beadID, anvil, anvilPath, 
 		d.finishPendingBeadClose(beadID, anvil, prNumber, prior != nil)
 		d.logger.Info("bead closed after PR merge",
 			"bead", beadID, "anvil", anvil, "pr", prNumber, "attempts", attempts)
+		// The bead that just closed may have been the last open child of a
+		// parent nothing else will ever close (see parentclose.go). Run it
+		// here, after the close is known to have landed, and never on the
+		// failure path — a parent is only complete once bd agrees the child is.
+		d.maybeCloseParents(ctx, beadID, anvil, anvilPath)
 		return nil
 	}
 

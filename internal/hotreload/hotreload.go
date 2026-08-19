@@ -403,6 +403,15 @@ func applyChanges(old, new *config.Config) []string {
 			old.Settings.CopilotWardenSampleRate, new.Settings.CopilotWardenSampleRate))
 	}
 
+	// Read per bead close (parentclose.go), so swapping the config in is all a
+	// reload takes — it only needs reporting.
+	oldAutoCloseParents := old.Settings.IsAutoCloseParentsEnabled()
+	newAutoCloseParents := new.Settings.IsAutoCloseParentsEnabled()
+	if oldAutoCloseParents != newAutoCloseParents {
+		changes = append(changes, fmt.Sprintf("auto_close_parents: %v → %v",
+			oldAutoCloseParents, newAutoCloseParents))
+	}
+
 	oldSmelterEnabled := old.Settings.IsSmelterEnabled()
 	newSmelterEnabled := new.Settings.IsSmelterEnabled()
 	if oldSmelterEnabled != newSmelterEnabled {

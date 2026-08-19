@@ -707,6 +707,12 @@ type SettingsConfig struct {
 	// needs-attention and skipped for dispatch until the conflicts clear.
 	// Default: true.
 	AnvilHealthCheck *bool `mapstructure:"anvil_health_check" yaml:"anvil_health_check,omitempty"`
+	// AutoCloseParents controls whether a parent bead is closed automatically
+	// once every one of its children is closed. It covers the independent
+	// (non-Crucible) path only: an orchestrated parent is closed by the
+	// Crucible when the final PR is created, so a parent carrying the
+	// `crucible` opt-in is always skipped here. Default: true.
+	AutoCloseParents *bool `mapstructure:"auto_close_parents" yaml:"auto_close_parents,omitempty"`
 	// LogRetentionDays is how many days a preserved bead-log directory under
 	// ~/.forge/logs/<beadID>/ is kept after its newest file. The retention
 	// sweep removes older directories (unless the bead has a running worker).
@@ -1267,6 +1273,7 @@ func (s SettingsConfig) MarshalYAML() (interface{}, error) {
 		VulncheckTimeout          string              `yaml:"vulncheck_timeout,omitempty"`
 		VulncheckEnabled          *bool               `yaml:"vulncheck_enabled,omitempty"`
 		AnvilHealthCheck          *bool               `yaml:"anvil_health_check,omitempty"`
+		AutoCloseParents          *bool               `yaml:"auto_close_parents,omitempty"`
 		LogRetentionDays          int                 `yaml:"log_retention_days"`
 		LogSweepInterval          string              `yaml:"log_sweep_interval,omitempty"`
 		GoRaceDetection           bool                `yaml:"go_race_detection"`
@@ -1355,6 +1362,7 @@ func (s SettingsConfig) MarshalYAML() (interface{}, error) {
 		StaleInterval:             durationString(s.StaleInterval),
 		VulncheckEnabled:          s.VulncheckEnabled,
 		AnvilHealthCheck:          s.AnvilHealthCheck,
+		AutoCloseParents:          s.AutoCloseParents,
 		LogRetentionDays:          s.LogRetentionDays,
 		GoRaceDetection:           s.GoRaceDetection,
 		TemperOutputCap:           s.TemperOutputCap,
@@ -1535,6 +1543,17 @@ func (s SettingsConfig) IsAnvilHealthCheckEnabled() bool {
 		return true
 	}
 	return *s.AnvilHealthCheck
+}
+
+// IsAutoCloseParentsEnabled returns true unless auto_close_parents is
+// explicitly false. Defaults to true: the close only ever fires when bd itself
+// reports every child of the parent as closed, and the alternative is a parent
+// that stays open forever once its last child merges.
+func (s SettingsConfig) IsAutoCloseParentsEnabled() bool {
+	if s.AutoCloseParents == nil {
+		return true
+	}
+	return *s.AutoCloseParents
 }
 
 // IsAutoMergeCrucibleChildren returns true unless auto_merge_crucible_children

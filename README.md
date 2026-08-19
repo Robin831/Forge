@@ -204,6 +204,12 @@ epic-specific happens. Children of an unlabeled parent — including a parent ty
 `epic` — dispatch as ordinary standalone beads: worktree from `main`, PR to
 `main`, bd relations untouched.
 
+Such a parent is closed automatically once every one of its children is closed
+(`settings.auto_close_parents`, default on) — the independent-mode counterpart to
+the Crucible closing an orchestrated parent when its final PR is created. The
+close only fires when bd reports every child closed; anything it cannot read
+leaves the parent open.
+
 ```bash
 bd label add <parent-id> crucible
 ```

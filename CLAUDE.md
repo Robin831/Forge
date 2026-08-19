@@ -94,7 +94,7 @@ Forge is a **Go orchestrator daemon** that autonomously drives Claude Code agent
 
 | Package | Role |
 |---------|------|
-| `internal/daemon` | Main background process. Runs the poll loop, manages IPC server, hot-reloads config |
+| `internal/daemon` | Main background process. Runs the poll loop, manages IPC server, hot-reloads config. `parentclose.go` is the independent-mode counterpart to the Crucible's parent close: after a post-merge `bd close` lands, the child's parents are resolved through `poller.ParentCandidates` and one is closed only when `bd list --parent` reports **every** child closed AND that list contains the bead that just closed — the membership check is what keeps a `blocks` sequencing edge, which `ParentCandidates` also yields, from getting its predecessor closed. Orchestrated parents are skipped (the Crucible closes those when the final PR exists), the walk continues up to `maxParentCloseDepth` levels, and every unreadable answer — bd down, unparseable payload, a child whose status is not `closed` — leaves the parent open |
 | `internal/pipeline` | Orchestrates one bead through Schematic → Smith → Temper → Warden |
 | `internal/smith` | Spawns `claude` CLI as a subprocess in a worktree |
 | `internal/temper` | Runs build/lint/test checks; auto-detects Go, .NET, Node |
@@ -205,6 +205,11 @@ bd ready (poller) → pipeline.Run()
         ("merged but unclosed bead <ID> (PR #N) blocking M dependents")
       → every later bellows cycle re-derives the bead's status and re-attempts,
         clearing both once the close lands
+      → close landed → parent auto-close (settings.auto_close_parents, default
+        on): the child's parents are resolved from bd, and a parent that is
+        open, not `crucible`-labeled, and every one of whose children bd
+        reports as closed is closed too (`parent_bead_auto_closed`), walking up
+        to five levels. Anything unreadable leaves the parent open
   → worktree.Remove
 
 Crucible path (parent beads with children AND the `crucible` opt-in label):

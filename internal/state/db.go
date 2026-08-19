@@ -2592,6 +2592,16 @@ const (
 	EventBeadCloseRetryExhausted EventType = "bead_close_retry_exhausted"
 	EventBeadCloseRecovered      EventType = "bead_close_recovered"
 
+	// EventParentBeadAutoClosed fires when a parent bead is closed because the
+	// last of its children closed. It is the independent-mode counterpart to
+	// the Crucible closing an orchestrated parent once the final PR exists:
+	// without it a parent whose work is entirely done stays open forever,
+	// blocking whatever was queued behind it. The event names the parent (and
+	// how many children were counted) because the close has no PR, no worker
+	// and no operator behind it — the activity feed is the only place it is
+	// visible.
+	EventParentBeadAutoClosed EventType = "parent_bead_auto_closed"
+
 	// EventAnvilWedged fires when an anvil's beads (Dolt) working set is found
 	// mid-merge with unresolved conflicts, meaning every bd write against that
 	// anvil is rolled back. EventAnvilRecovered fires once the conflicts are
