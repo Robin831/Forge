@@ -92,15 +92,8 @@ func categoriesForFile(path string) map[string]bool {
 			"performance": true, "style": true, "other": true,
 		}
 	case strings.HasSuffix(lower, ".tsx"),
-		strings.HasSuffix(lower, ".ts"):
-		// TypeScript is a full application language, not just a styling
-		// surface: the frontend carries security (untrusted markdown),
-		// performance (large-string splits), error-handling (unvalidated
-		// date parsing) and async-concurrency defects too. Restricting it
-		// to ui/style/other silently drops every frontend-scoped rule in
-		// those categories on a frontend-only diff.
-		return allCanonicalCategories()
-	case strings.HasSuffix(lower, ".css"):
+		strings.HasSuffix(lower, ".ts"),
+		strings.HasSuffix(lower, ".css"):
 		return map[string]bool{"ui": true, "style": true, "other": true}
 	case strings.HasSuffix(lower, ".yaml"),
 		strings.HasSuffix(lower, ".yml"),

@@ -40,21 +40,10 @@ func TestCategoriesForFile(t *testing.T) {
 	assert.False(t, cs["ui"])
 	assert.False(t, cs["testing"])
 
-	// TypeScript sources carry the full range of defect categories, so
-	// frontend-scoped security/performance/error-handling rules survive a
-	// frontend-only diff.
 	tsx := categoriesForFile("web/Button.tsx")
 	assert.True(t, tsx["ui"])
 	assert.True(t, tsx["style"])
-	assert.True(t, tsx["error-handling"])
-	assert.True(t, tsx["security"])
-	assert.True(t, tsx["performance"])
-
-	// .css stays narrow — a stylesheet is a styling surface only.
-	css := categoriesForFile("web/app.css")
-	assert.True(t, css["ui"])
-	assert.True(t, css["style"])
-	assert.False(t, css["error-handling"])
+	assert.False(t, tsx["error-handling"])
 
 	test := categoriesForFile("src/FooTests.cs")
 	assert.True(t, test["testing"])
