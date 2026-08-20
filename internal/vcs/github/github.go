@@ -267,7 +267,7 @@ func (p *Provider) CheckStatusLight(ctx context.Context, worktreePath string, pr
 func (p *Provider) ListOpenPRs(ctx context.Context, worktreePath string) ([]vcs.OpenPR, error) {
 	cmd := executil.HideWindow(exec.CommandContext(ctx, "gh", "pr", "list",
 		"--state", "open",
-		"--json", "number,title,headRefName,body",
+		"--json", "number,title,headRefName,baseRefName,body",
 		"--limit", "100",
 	))
 	cmd.Dir = worktreePath
@@ -281,6 +281,7 @@ func (p *Provider) ListOpenPRs(ctx context.Context, worktreePath string) ([]vcs.
 		Number      int    `json:"number"`
 		Title       string `json:"title"`
 		HeadRefName string `json:"headRefName"`
+		BaseRefName string `json:"baseRefName"`
 		Body        string `json:"body"`
 	}
 	if err := json.Unmarshal(stdout.Bytes(), &raw); err != nil {
@@ -288,7 +289,7 @@ func (p *Provider) ListOpenPRs(ctx context.Context, worktreePath string) ([]vcs.
 	}
 	out := make([]vcs.OpenPR, len(raw))
 	for i, r := range raw {
-		out[i] = vcs.OpenPR{Number: r.Number, Title: r.Title, Branch: r.HeadRefName, Body: r.Body}
+		out[i] = vcs.OpenPR{Number: r.Number, Title: r.Title, Branch: r.HeadRefName, BaseBranch: r.BaseRefName, Body: r.Body}
 	}
 	return out, nil
 }
@@ -300,7 +301,7 @@ func (p *Provider) GetPRByHeadBranch(ctx context.Context, worktreePath, branch s
 	cmd := executil.HideWindow(exec.CommandContext(ctx, "gh", "pr", "list",
 		"--head", branch,
 		"--state", "open",
-		"--json", "number,title,headRefName,body",
+		"--json", "number,title,headRefName,baseRefName,body",
 		"--limit", "1",
 	))
 	cmd.Dir = worktreePath
@@ -314,6 +315,7 @@ func (p *Provider) GetPRByHeadBranch(ctx context.Context, worktreePath, branch s
 		Number      int    `json:"number"`
 		Title       string `json:"title"`
 		HeadRefName string `json:"headRefName"`
+		BaseRefName string `json:"baseRefName"`
 		Body        string `json:"body"`
 	}
 	if err := json.Unmarshal(stdout.Bytes(), &raw); err != nil {
@@ -323,7 +325,7 @@ func (p *Provider) GetPRByHeadBranch(ctx context.Context, worktreePath, branch s
 		return nil, nil
 	}
 	r := raw[0]
-	return &vcs.OpenPR{Number: r.Number, Title: r.Title, Branch: r.HeadRefName, Body: r.Body}, nil
+	return &vcs.OpenPR{Number: r.Number, Title: r.Title, Branch: r.HeadRefName, BaseBranch: r.BaseRefName, Body: r.Body}, nil
 }
 
 // GetRepoOwnerAndName extracts the owner and repository name from git remote origin.

@@ -2,7 +2,7 @@ package quench
 
 import (
 	"context"
-	"errors"
+	"slices"
 	"testing"
 
 	"github.com/Robin831/Forge/internal/provider"
@@ -34,10 +34,19 @@ func TestFix_TemperGatesOnChangedFiles(t *testing.T) {
 		return smith.NewProcessForTest(&smith.Result{ExitCode: 0, ResultSubtype: "success"}), nil
 	}
 
+	// A different answer per call, so the two runs cannot both be satisfied by
+	// one computation: Smith commits a fix between them, and the verify run
+	// has to see the file it ADDED. A stub returning the same list every time
+	// would pass even if the list were hoisted to once per attempt.
 	var gotWorktree, gotBase string
-	changedFilesFn = func(_ context.Context, worktreePath, baseBranch string) ([]string, error) {
+	changedCalls := 0
+	changedFilesFn = func(_ context.Context, worktreePath, baseBranch, _ string) []string {
 		gotWorktree, gotBase = worktreePath, baseBranch
-		return []string{"client/src/App.tsx"}, nil
+		changedCalls++
+		if changedCalls == 1 {
+			return []string{"client/src/App.tsx"}
+		}
+		return []string{"client/src/App.tsx", "client/src/Fixed.tsx"}
 	}
 
 	// The anvil's shared temper config: quench must not stamp this PR's
@@ -67,10 +76,19 @@ func TestFix_TemperGatesOnChangedFiles(t *testing.T) {
 	if len(seen) != 2 {
 		t.Fatalf("expected 2 temper runs (repro + verify), got %d", len(seen))
 	}
-	for i, cfg := range seen {
-		if len(cfg.ChangedFiles) != 1 || cfg.ChangedFiles[0] != "client/src/App.tsx" {
-			t.Errorf("temper run %d carried ChangedFiles=%v, want the branch's changed files", i+1, cfg.ChangedFiles)
-		}
+	if changedCalls != 2 {
+		t.Errorf("changed files computed %d time(s), want once per temper run (2)", changedCalls)
+	}
+	if len(seen[0].ChangedFiles) != 1 || seen[0].ChangedFiles[0] != "client/src/App.tsx" {
+		t.Errorf("reproduce run carried ChangedFiles=%v, want the branch's changed files", seen[0].ChangedFiles)
+	}
+	// The verify run must carry the RE-derived list, not the reproduce run's:
+	// a file Smith created between them is gated on by the second list alone.
+	if len(seen[1].ChangedFiles) != 2 || seen[1].ChangedFiles[1] != "client/src/Fixed.tsx" {
+		t.Errorf("verify run carried ChangedFiles=%v, want the list re-derived after Smith committed", seen[1].ChangedFiles)
+	}
+	if slices.Equal(seen[0].ChangedFiles, seen[1].ChangedFiles) {
+		t.Errorf("both temper runs carried the same ChangedFiles (%v) — the post-Smith list was not re-derived", seen[0].ChangedFiles)
 	}
 	if anvilCfg.ChangedFiles != nil {
 		t.Errorf("the anvil's shared temper config was mutated: ChangedFiles=%v", anvilCfg.ChangedFiles)
@@ -89,8 +107,10 @@ func TestFix_ChangedFilesError_FailsOpen(t *testing.T) {
 		seen = append(seen, cfg)
 		return &temper.Result{Passed: true}
 	}
-	changedFilesFn = func(_ context.Context, _, _ string) ([]string, error) {
-		return nil, errors.New("git diff: fatal: bad revision")
+	// The fail-open decision lives in temper.ChangedFilesOrNil, which answers
+	// nil on a git error; the stub stands in for that answer.
+	changedFilesFn = func(_ context.Context, _, _, _ string) []string {
+		return nil
 	}
 
 	cfg := temper.Config{}

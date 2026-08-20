@@ -26,7 +26,7 @@ type testHarness struct {
 	origGitPush     func(ctx context.Context, worktreePath, branch string) error
 	origGitRevParse func(ctx context.Context, dir, ref string) (string, error)
 	origHookRun     func(ctx context.Context, workerID, hookName, cmd string, env hooks.HookEnv) error
-	origChangedFile func(ctx context.Context, worktreePath, baseBranch string) ([]string, error)
+	origChangedFile func(ctx context.Context, worktreePath, baseBranch, logPrefix string) []string
 }
 
 func newTestHarness() *testHarness {

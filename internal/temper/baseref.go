@@ -2,6 +2,7 @@ package temper
 
 import (
 	"context"
+	"log"
 	"os/exec"
 
 	"github.com/Robin831/Forge/internal/executil"
@@ -56,4 +57,23 @@ func ChangedFilesForBase(ctx context.Context, worktreePath, baseBranch string) (
 		return nil, nil
 	}
 	return ChangedFilesFromGit(ctx, worktreePath, baseRef)
+}
+
+// ChangedFilesOrNil is ChangedFilesForBase plus the fail-open handling every
+// caller outside the pipeline applies to it identically: an error is logged
+// under logPrefix and answered with nil.
+//
+// Nil means "unknown" to Temper, which runs every step. A git failure says
+// nothing about the diff, so gating on a list that could not be read would
+// skip steps that should have run; running everything only costs time. This
+// lives here for the same reason ResolveBaseRef does — burnish and quench had
+// a copy each, and two copies of a fail-open rule are two chances to fail
+// closed.
+func ChangedFilesOrNil(ctx context.Context, worktreePath, baseBranch, logPrefix string) []string {
+	files, err := ChangedFilesForBase(ctx, worktreePath, baseBranch)
+	if err != nil {
+		log.Printf("%s WARN could not compute changed files for step gating (%v) — running all steps", logPrefix, err)
+		return nil
+	}
+	return files
 }

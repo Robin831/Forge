@@ -279,6 +279,7 @@ func (g *GitLabProvider) ListOpenPRs(ctx context.Context, worktreePath string) (
 		IID          int    `json:"iid"`
 		Title        string `json:"title"`
 		SourceBranch string `json:"source_branch"`
+		TargetBranch string `json:"target_branch"`
 		Description  string `json:"description"`
 	}
 	if err := json.Unmarshal(stdout.Bytes(), &raw); err != nil {
@@ -288,10 +289,11 @@ func (g *GitLabProvider) ListOpenPRs(ctx context.Context, worktreePath string) (
 	out := make([]OpenPR, len(raw))
 	for i, r := range raw {
 		out[i] = OpenPR{
-			Number: r.IID,
-			Title:  r.Title,
-			Branch: r.SourceBranch,
-			Body:   r.Description,
+			Number:     r.IID,
+			Title:      r.Title,
+			Branch:     r.SourceBranch,
+			BaseBranch: r.TargetBranch,
+			Body:       r.Description,
 		}
 	}
 	return out, nil
@@ -319,6 +321,7 @@ func (g *GitLabProvider) GetPRByHeadBranch(ctx context.Context, worktreePath, br
 		IID          int    `json:"iid"`
 		Title        string `json:"title"`
 		SourceBranch string `json:"source_branch"`
+		TargetBranch string `json:"target_branch"`
 		Description  string `json:"description"`
 	}
 	if err := json.Unmarshal(stdout.Bytes(), &raw); err != nil {
@@ -328,7 +331,7 @@ func (g *GitLabProvider) GetPRByHeadBranch(ctx context.Context, worktreePath, br
 		return nil, nil
 	}
 	r := raw[0]
-	return &OpenPR{Number: r.IID, Title: r.Title, Branch: r.SourceBranch, Body: r.Description}, nil
+	return &OpenPR{Number: r.IID, Title: r.Title, Branch: r.SourceBranch, BaseBranch: r.TargetBranch, Body: r.Description}, nil
 }
 
 // GetRepoOwnerAndName extracts the namespace (group/subgroup) and project name from the git remote.

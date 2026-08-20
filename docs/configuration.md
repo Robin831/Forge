@@ -500,8 +500,8 @@ applied. The auto-detector now attaches a conservative glob set per ecosystem:
 
 | Detected | Steps | Default `paths` |
 |----------|-------|-----------------|
-| Go (`go.mod`) | `build`, `vet`, `golangci-lint`, `test`, `race` | `**/*.go`, `**/go.mod`, `**/go.sum`, `go.work`, `go.work.sum`, `**/testdata/**`, `**/*.s`, `**/*.c`, `**/*.h` |
-| .NET (`*.sln` / `*/*.csproj`) | `build`, `test` | `**/*.cs`, `**/*.csproj`, `**/*.vb`, `**/*.vbproj`, `**/*.fs`, `**/*.fsproj`, `*.sln`, `**/*.sln`, `**/*.slnx`, `**/*.props`, `**/*.targets`, `**/appsettings*.json`, `**/*.razor`, `**/*.cshtml`, `**/*.resx`, `**/nuget.config`, `**/NuGet.config`, `**/packages.lock.json` |
+| Go (`go.mod`) | `build`, `vet`, `golangci-lint`, `test`, `race` | `**/*.go`, `**/go.mod`, `**/go.sum`, `go.work`, `go.work.sum`, `**/testdata/**`, `**/*.s`, `**/*.c`, `**/*.h`, `**/.golangci.*`, plus every `//go:embed` target found in the worktree |
+| .NET (`*.sln` / `*/*.csproj`) | `build`, `test` | `**/*.cs`, `**/*.csproj`, `**/*.vb`, `**/*.vbproj`, `**/*.fs`, `**/*.fsproj`, `**/*.sln`, `**/*.slnx`, `**/*.props`, `**/*.targets`, `**/appsettings*.json`, `**/*.razor`, `**/*.cshtml`, `**/*.resx`, `**/nuget.config`, `**/NuGet.config`, `**/packages.lock.json`, `**/global.json`, `**/TestData/**`, `**/testdata/**`, `**/Fixtures/**`, `**/fixtures/**` |
 | Node in a subdirectory (`web/`, `frontend/`, `client/`, `app/`, `ui/`) | `<dir>:lint`, `<dir>:test` | `<dir>/**` |
 | Node at the repository root | `lint`, `test` | *(none — always run)* |
 
@@ -510,6 +510,20 @@ one step that did not need to run, a miss costs a verification that reports PASS
 over code it never looked at. A Node project at the ROOT is left ungated for the
 same reason — "everything under the root" is the whole repository, so there is no
 conservative subset to gate on.
+
+**Embedded assets are discovered, not guessed.** `go build` compiles whatever a
+package binds in with `//go:embed`, and those files (prompts, templates, SQL, a
+built web bundle) share no extension the list above could enumerate. So the Go
+detector scans the worktree for `//go:embed` directives and gates the Go steps on
+what they name as well — `//go:embed prompts/*.md` in `internal/assay` adds
+`internal/assay/prompts/*.md`, and `//go:embed dist` in `internal/web` adds
+`internal/web/dist` and everything beneath it. A scan that cannot complete leaves
+the Go steps ungated (they run unconditionally) rather than gating on a partial
+answer.
+
+The remaining gap is a file a test reads off disk from outside `testdata/` and
+outside any embed directive — nothing in the tree declares it as an input. An
+anvil that does that should write explicit `temper.steps` with its own `paths`.
 
 **Explicit configuration is unchanged.** `temper.steps` and the
 `temper.build`/`test`/`lint` shorthand bypass auto-detection entirely, so a step

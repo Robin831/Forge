@@ -262,10 +262,11 @@ func (g *GiteaProvider) ListOpenPRs(ctx context.Context, worktreePath string) ([
 
 		for _, pr := range prs {
 			out = append(out, OpenPR{
-				Number: pr.Number,
-				Title:  pr.Title,
-				Branch: pr.Head.Ref,
-				Body:   pr.Body,
+				Number:     pr.Number,
+				Title:      pr.Title,
+				Branch:     pr.Head.Ref,
+				BaseBranch: pr.Base.Ref,
+				Body:       pr.Body,
 			})
 		}
 

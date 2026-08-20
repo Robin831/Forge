@@ -96,21 +96,42 @@ type StepResult struct {
 	// SkipReason names why a skipped step did not run, so a caller reading
 	// the result can tell a path-gated skip from a blocked one. Empty for
 	// steps that ran.
-	SkipReason string
+	SkipReason SkipReason
 	// Classification categorises a failure (test_failure/build_error/timeout/
 	// infra). Empty for passed or skipped steps.
 	Classification Classification
 }
 
+// SkipReason identifies why a step did not run. It is a named type with
+// opaque identifier values rather than the sentence a log line prints: the
+// values are compared (PathSkippedStepNames keys off one of them), so display
+// text doubling as the comparison key would silently change the key the next
+// time somebody reworded the message. Use Description for the prose.
+type SkipReason string
+
 // Skip reasons recorded on a StepResult that did not run.
 const (
 	// SkipReasonPathFilter means no changed file matched the step's Paths
 	// globs, so running it could not have told the caller anything.
-	SkipReasonPathFilter = "changed-file gating"
+	SkipReasonPathFilter SkipReason = "path_filter"
 	// SkipReasonBlockedInstall means Temper refused to run a destructive
 	// npm install against a linked node_modules.
-	SkipReasonBlockedInstall = "blocked destructive npm install"
+	SkipReasonBlockedInstall SkipReason = "blocked_install"
 )
+
+// Description renders a skip reason as the sentence surfaces show operators.
+// Unknown reasons render as themselves so a value added later still reads as
+// something rather than as an empty string.
+func (r SkipReason) Description() string {
+	switch r {
+	case SkipReasonPathFilter:
+		return "changed-file gating"
+	case SkipReasonBlockedInstall:
+		return "blocked destructive npm install"
+	default:
+		return string(r)
+	}
+}
 
 // Result is the overall Temper verification result.
 type Result struct {
@@ -131,11 +152,16 @@ type Result struct {
 	Summary string
 }
 
-// SkippedStepNames returns the names of the steps that were skipped because
-// no changed file matched their Paths globs. Callers that run Temper outside
-// the pipeline (burnish, quench) log these so a skip reads as a skip in their
-// own logs rather than as a step that quietly passed.
-func SkippedStepNames(r *Result) []string {
+// PathSkippedStepNames returns the names of the steps that were skipped
+// because no changed file matched their Paths globs. Callers that run Temper
+// outside the pipeline (burnish, quench) log these so a skip reads as a skip
+// in their own logs rather than as a step that quietly passed.
+//
+// Deliberately only the path-gated skips: a step Temper BLOCKED (a destructive
+// npm install, SkipReasonBlockedInstall) is not a step the diff made
+// unnecessary, so it does not belong in a "gating skipped these" note. Callers
+// wanting every skipped step read Result.Steps directly.
+func PathSkippedStepNames(r *Result) []string {
 	if r == nil {
 		return nil
 	}
@@ -146,6 +172,19 @@ func SkippedStepNames(r *Result) []string {
 		}
 	}
 	return names
+}
+
+// LogPathSkips names the steps changed-file gating skipped, under logPrefix,
+// so a skip is distinguishable from a pass in the caller's own log rather
+// than reading as a verification that covered more than it did. A run that
+// skipped nothing logs nothing.
+func LogPathSkips(logPrefix string, r *Result) {
+	skipped := PathSkippedStepNames(r)
+	if len(skipped) == 0 {
+		return
+	}
+	log.Printf("%s %d step(s) skipped by %s: %s",
+		logPrefix, len(skipped), SkipReasonPathFilter.Description(), strings.Join(skipped, ", "))
 }
 
 // Step defines a verification step to run.
@@ -869,8 +908,17 @@ func dotnetTestHostCrashTolerable(output string) bool {
 var (
 	// defaultGoPaths gates the Go build/vet/lint/test steps. `**/go.mod`
 	// (not just the root one) covers multi-module repos, testdata is in
-	// because Go tests read fixtures from it, and the cgo/assembly
-	// extensions are in because `go build` compiles them.
+	// because Go tests read fixtures from it, the cgo/assembly extensions
+	// are in because `go build` compiles them, and the golangci config is in
+	// because it decides what the lint step reports.
+	//
+	// It does NOT cover //go:embed targets, which have no extension in
+	// common and live wherever their package does — those are discovered per
+	// worktree by goEmbedPaths and appended by goStepPaths, which is what
+	// every auto-detected Go step is actually gated on. Anything a test reads
+	// off disk from outside `testdata/` and outside an embed directive is
+	// still invisible here: an anvil that does that needs explicit
+	// `temper.steps` with its own `paths`.
 	defaultGoPaths = []string{
 		"**/*.go",
 		"**/go.mod",
@@ -881,13 +929,20 @@ var (
 		"**/*.s",
 		"**/*.c",
 		"**/*.h",
+		"**/.golangci.*",
 	}
 	// defaultDotnetPaths gates the `dotnet build` / `dotnet test` steps.
 	// Beyond C# sources it covers the project/solution files, the MSBuild
 	// fragments they import (Directory.Build.props/targets and friends),
-	// the Razor/Blazor view formats that compile into the assembly, the
-	// settings files a test host loads, and the resource files the
-	// compiler embeds.
+	// `global.json` (which pins the SDK the build and test run under), the
+	// Razor/Blazor view formats that compile into the assembly, the settings
+	// files a test host loads, and the resource files the compiler embeds.
+	//
+	// .NET has no `testdata/` convention, so the fixture files test projects
+	// copy to the output directory via <Content>/<None CopyToOutputDirectory>
+	// carry arbitrary extensions. The conventional directory names are gated
+	// on instead — wider than the compiler reads, which is the trade this
+	// whole set makes.
 	defaultDotnetPaths = []string{
 		"**/*.cs",
 		"**/*.csproj",
@@ -895,7 +950,6 @@ var (
 		"**/*.vbproj",
 		"**/*.fs",
 		"**/*.fsproj",
-		"*.sln",
 		"**/*.sln",
 		"**/*.slnx",
 		"**/*.props",
@@ -907,6 +961,11 @@ var (
 		"**/nuget.config",
 		"**/NuGet.config",
 		"**/packages.lock.json",
+		"**/global.json",
+		"**/TestData/**",
+		"**/testdata/**",
+		"**/Fixtures/**",
+		"**/fixtures/**",
 	}
 )
 
@@ -936,19 +995,22 @@ func detectSteps(worktreePath string, opts *DetectOptions, goRace bool) []Step {
 
 	// Check for Go project
 	if fileExists(worktreePath, "go.mod") {
+		// Computed once per detection rather than per step: the scan walks
+		// the worktree, and every Go step is gated on the same answer.
+		goPaths := goStepPaths(worktreePath)
 		steps = append(steps, Step{
 			Name:    "build",
 			Command: "go",
 			Args:    []string{"build", "./..."},
 			Timeout: 3 * time.Minute,
-			Paths:   defaultGoPaths,
+			Paths:   goPaths,
 		})
 		steps = append(steps, Step{
 			Name:    "vet",
 			Command: "go",
 			Args:    []string{"vet", "./..."},
 			Timeout: 2 * time.Minute,
-			Paths:   defaultGoPaths,
+			Paths:   goPaths,
 		})
 
 		// golangci-lint: optional step, skipped if binary not found or disabled
@@ -961,7 +1023,7 @@ func detectSteps(worktreePath string, opts *DetectOptions, goRace bool) []Step {
 					Args:     []string{"run", "./..."},
 					Timeout:  3 * time.Minute,
 					Optional: true,
-					Paths:    defaultGoPaths,
+					Paths:    goPaths,
 				})
 			}
 		}
@@ -971,7 +1033,7 @@ func detectSteps(worktreePath string, opts *DetectOptions, goRace bool) []Step {
 			Command: "go",
 			Args:    []string{"test", "-short", "./..."},
 			Timeout: 5 * time.Minute,
-			Paths:   defaultGoPaths,
+			Paths:   goPaths,
 		})
 		if goRace {
 			steps = append(steps, Step{
@@ -979,7 +1041,7 @@ func detectSteps(worktreePath string, opts *DetectOptions, goRace bool) []Step {
 				Command: "go",
 				Args:    []string{"test", "-race", "-short", "./..."},
 				Timeout: 10 * time.Minute,
-				Paths:   defaultGoPaths,
+				Paths:   goPaths,
 			})
 		}
 	}

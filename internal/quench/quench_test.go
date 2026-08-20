@@ -324,7 +324,7 @@ type quenchTestHarness struct {
 	origHookRun    func(ctx context.Context, workerID, hookName, cmd string, env hooks.HookEnv) error
 	origTemperRun  func(ctx context.Context, worktreePath string, cfg temper.Config, db *state.DB, beadID, anvil string) *temper.Result
 	origSmithSpawn func(ctx context.Context, worktreePath, prompt, logDir string, pv provider.Provider, extraFlags []string) (*smith.Process, error)
-	origChangedFls func(ctx context.Context, worktreePath, baseBranch string) ([]string, error)
+	origChangedFls func(ctx context.Context, worktreePath, baseBranch, logPrefix string) []string
 }
 
 func newQuenchTestHarness() *quenchTestHarness {

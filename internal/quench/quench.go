@@ -282,37 +282,15 @@ var temperRunFn = func(ctx context.Context, worktreePath string, cfg temper.Conf
 	return temper.Run(ctx, worktreePath, cfg, db, beadID, anvil)
 }
 
-// changedFilesFn computes the changed-file list Temper gates its steps on.
-// Package-level so tests can substitute a stub.
-var changedFilesFn = temper.ChangedFilesForBase
+// changedFilesFn computes the changed-file list Temper gates its steps on,
+// failing open to nil. Package-level so tests can substitute a stub; the
+// derivation and its fail-open rule live in temper, shared with burnish.
+var changedFilesFn = temper.ChangedFilesOrNil
 
-// resolveChangedFiles returns the files this PR branch changed against its
-// base, or nil when they cannot be computed.
-//
-// Nil means "unknown" to Temper, which runs every step — so this fails OPEN,
-// exactly as the pipeline does. A git failure says nothing about the diff, and
-// gating on a list that could not be read would skip steps that should have
-// run; running everything only costs time.
-func resolveChangedFiles(ctx context.Context, p FixParams) []string {
-	files, err := changedFilesFn(ctx, p.WorktreePath, p.BaseBranch)
-	if err != nil {
-		log.Printf("[quench] PR #%d: WARN could not compute changed files for Temper gating (%v) — running all steps",
-			p.PRNumber, err)
-		return nil
-	}
-	return files
-}
-
-// logSkippedSteps names the steps changed-file gating skipped, so a skip is
-// distinguishable from a pass in the quench log rather than reading as a
-// Temper run that covered more than it did.
-func logSkippedSteps(p FixParams, r *temper.Result) {
-	skipped := temper.SkippedStepNames(r)
-	if len(skipped) == 0 {
-		return
-	}
-	log.Printf("[quench] PR #%d: %d step(s) skipped by changed-file gating: %s",
-		p.PRNumber, len(skipped), strings.Join(skipped, ", "))
+// logPrefix is the identifier quench's log lines lead with, reused for the
+// lines temper emits on its behalf.
+func (p FixParams) logPrefix() string {
+	return fmt.Sprintf("[quench] PR #%d:", p.PRNumber)
 }
 
 // smithSpawnFn is the function used to spawn Smith. Package-level variable for test stubbing.
@@ -372,7 +350,7 @@ func Fix(ctx context.Context, p FixParams) *FixResult {
 		// without this even steps that DO declare `paths` ran unconditionally
 		// — the whole backend suite re-run for a frontend-only CI failure.
 		// Recomputed per attempt because Smith rewrites files between them.
-		temperCfg.ChangedFiles = resolveChangedFiles(ctx, p)
+		temperCfg.ChangedFiles = changedFilesFn(ctx, p.WorktreePath, p.BaseBranch, p.logPrefix())
 
 		hEnv := hooks.HookEnv{
 			BeadID:       p.BeadID,
@@ -392,7 +370,7 @@ func Fix(ctx context.Context, p FixParams) *FixResult {
 		if err := hookRunFn(ctx, p.WorkerID, "after_temper", hooks.HookCmd(p.Hooks, "after_temper"), hEnv); err != nil {
 			log.Printf("[quench] PR #%d: after_temper hook failed (non-fatal): %v", p.PRNumber, err)
 		}
-		logSkippedSteps(p, temperResult)
+		temper.LogPathSkips(p.logPrefix(), temperResult)
 		result.LastTemperResult = temperResult
 
 		if temperResult.Passed {
@@ -535,12 +513,12 @@ func Fix(ctx context.Context, p FixParams) *FixResult {
 		// Re-derive the changed-file list: Smith committed a fix between the
 		// reproduce run above and this one, and a file it ADDED must not be
 		// missed by the path filters that decide which steps verify it.
-		temperCfg.ChangedFiles = resolveChangedFiles(ctx, p)
+		temperCfg.ChangedFiles = changedFilesFn(ctx, p.WorktreePath, p.BaseBranch, p.logPrefix())
 		verifyResult := temperRunFn(ctx, p.WorktreePath, temperCfg, p.DB, p.BeadID, p.AnvilName)
 		if err := hookRunFn(ctx, p.WorkerID, "after_temper", hooks.HookCmd(p.Hooks, "after_temper"), verifyEnv); err != nil {
 			log.Printf("[quench] PR #%d: after_temper hook failed (non-fatal): %v", p.PRNumber, err)
 		}
-		logSkippedSteps(p, verifyResult)
+		temper.LogPathSkips(p.logPrefix(), verifyResult)
 		result.LastTemperResult = verifyResult
 
 		if verifyResult.Passed {

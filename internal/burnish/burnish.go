@@ -951,7 +951,7 @@ func runVerifyRetrying(ctx context.Context, vp verifyParams, cfg temper.Config) 
 	// per burnish run because Smith rewrites files between attempts, and the
 	// timeout retries below reuse the same list because they re-verify the
 	// same tree.
-	cfg.ChangedFiles = resolveChangedFiles(ctx, vp)
+	cfg.ChangedFiles = changedFilesFn(ctx, vp.worktreePath, vp.baseBranch, vp.logPrefix())
 
 	runs := 0
 	var outc verifyOutcome
@@ -969,7 +969,7 @@ func runVerifyRetrying(ctx context.Context, vp verifyParams, cfg temper.Config) 
 		outc = runVerifyWithTimeout(ctx, vp.prNumber, vp.beadID, vp.anvilName, vp.worktreePath, cfg, vp.db, vp.timeout)
 		runs++
 		if !outc.timedOut {
-			logSkippedSteps(vp, outc.result)
+			temper.LogPathSkips(vp.logPrefix(), outc.result)
 			return outc, runs
 		}
 		// An outer cancellation will never produce a different answer, and
@@ -982,36 +982,14 @@ func runVerifyRetrying(ctx context.Context, vp verifyParams, cfg temper.Config) 
 }
 
 // changedFilesFn computes the changed-file list verification gates its steps
-// on. Package-level so tests can substitute a stub.
-var changedFilesFn = temper.ChangedFilesForBase
+// on, failing open to nil. Package-level so tests can substitute a stub; the
+// derivation and its fail-open rule live in temper, shared with quench.
+var changedFilesFn = temper.ChangedFilesOrNil
 
-// resolveChangedFiles returns the files this PR branch changed against its
-// base, or nil when they cannot be computed.
-//
-// Nil means "unknown" to Temper, which runs every step — so this fails OPEN,
-// exactly as the pipeline does. A git failure says nothing about the diff, and
-// gating on a list that could not be read would skip steps that should have
-// run; running everything only costs time.
-func resolveChangedFiles(ctx context.Context, vp verifyParams) []string {
-	files, err := changedFilesFn(ctx, vp.worktreePath, vp.baseBranch)
-	if err != nil {
-		log.Printf("[burnish] PR #%d bead=%s: WARN could not compute changed files for verification gating (%v) — running all steps",
-			vp.prNumber, vp.beadID, err)
-		return nil
-	}
-	return files
-}
-
-// logSkippedSteps names the steps changed-file gating skipped, so a skip is
-// distinguishable from a pass in the burnish log rather than reading as a
-// verification that covered more than it did.
-func logSkippedSteps(vp verifyParams, r *temper.Result) {
-	skipped := temper.SkippedStepNames(r)
-	if len(skipped) == 0 {
-		return
-	}
-	log.Printf("[burnish] PR #%d bead=%s: %d step(s) skipped by changed-file gating: %s",
-		vp.prNumber, vp.beadID, len(skipped), strings.Join(skipped, ", "))
+// logPrefix is the identifier burnish's log lines lead with, reused for the
+// lines temper emits on its behalf.
+func (vp verifyParams) logPrefix() string {
+	return fmt.Sprintf("[burnish] PR #%d bead=%s:", vp.prNumber, vp.beadID)
 }
 
 // resolveVerifyTimeoutOutcome decides what happens to a finished fix commit

@@ -46,7 +46,8 @@ func TestDetectSteps_GoStepsCarryDefaultPaths(t *testing.T) {
 
 	for _, name := range []string{"build", "vet", "test", "race"} {
 		require.Contains(t, paths, name)
-		assert.Equal(t, defaultGoPaths, paths[name], "step %q must carry the Go default globs", name)
+		assert.Equal(t, goStepPaths(dir), paths[name], "step %q must carry the Go default globs", name)
+		assert.Subset(t, paths[name], defaultGoPaths, "step %q must carry the static Go globs", name)
 	}
 	// The globs must cover a Go file anywhere, the module files, and the
 	// fixture trees tests read — a change to any of them changes what `go
@@ -54,6 +55,8 @@ func TestDetectSteps_GoStepsCarryDefaultPaths(t *testing.T) {
 	for _, f := range []string{"main.go", "internal/x/y.go", "go.mod", "go.sum", "internal/x/testdata/case.json"} {
 		assert.True(t, matchesChangedFiles(defaultGoPaths, []string{f}), "%q must match the Go globs", f)
 	}
+	// The lint config decides what the lint step reports, so it is in the set.
+	assert.True(t, matchesChangedFiles(defaultGoPaths, []string{".golangci.yml"}))
 	assert.False(t, matchesChangedFiles(defaultGoPaths, []string{"docs/architecture.md"}))
 }
 
@@ -76,6 +79,9 @@ func TestDetectSteps_DotnetStepsCarryDefaultPaths(t *testing.T) {
 		"src/Api/appsettings.Development.json",
 		"src/Web/Pages/Index.razor",
 		"src/Web/Views/Home.cshtml",
+		"global.json",
+		"tests/Api.Tests/TestData/payload.xml",
+		"tests/Api.Tests/Fixtures/response.txt",
 	} {
 		assert.True(t, matchesChangedFiles(defaultDotnetPaths, []string{f}), "%q must match the .NET globs", f)
 	}
@@ -158,19 +164,19 @@ func TestRun_AutoDetectedStepsSkipWhenNothingMatches(t *testing.T) {
 		assert.Equal(t, SkipReasonPathFilter, s.SkipReason)
 	}
 	assert.True(t, result.Passed)
-	assert.Equal(t, []string{"build", "dotnet-build"}, SkippedStepNames(result))
+	assert.Equal(t, []string{"build", "dotnet-build"}, PathSkippedStepNames(result))
 }
 
-// TestSkippedStepNames_ExcludesBlockedSteps keeps the two reasons a step can
+// TestPathSkippedStepNames_ExcludesBlockedSteps keeps the two reasons a step can
 // fail to run apart: only changed-file gating is reported as gating, so a
 // blocked npm install is never mistaken for a diff that did not need it.
-func TestSkippedStepNames_ExcludesBlockedSteps(t *testing.T) {
+func TestPathSkippedStepNames_ExcludesBlockedSteps(t *testing.T) {
 	r := &Result{Steps: []StepResult{
 		{Name: "gated", Skipped: true, SkipReason: SkipReasonPathFilter},
 		{Name: "blocked", Skipped: true, SkipReason: SkipReasonBlockedInstall},
 		{Name: "ran", Passed: true},
 	}}
 
-	assert.Equal(t, []string{"gated"}, SkippedStepNames(r))
-	assert.Nil(t, SkippedStepNames(nil))
+	assert.Equal(t, []string{"gated"}, PathSkippedStepNames(r))
+	assert.Nil(t, PathSkippedStepNames(nil))
 }
