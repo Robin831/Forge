@@ -579,7 +579,16 @@ type OpenPR struct {
 	Number int
 	Title  string
 	Branch string
-	Body   string
+	// BaseBranch is the branch the PR targets. Empty when the platform did
+	// not report one, which callers read as "the repository default".
+	//
+	// Carried because the reconcile loop registers untracked PRs from this
+	// listing, and a row with no base branch makes every later derivation
+	// that needs one — changed-file gating (temper.ResolveBaseRef) and the
+	// rebase path — fall back to origin/main. For a Crucible child based on
+	// feature/<parent-id> that is the wrong branch.
+	BaseBranch string
+	Body       string
 }
 
 // CICheck represents a CI check result from the platform.

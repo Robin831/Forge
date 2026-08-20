@@ -297,7 +297,7 @@ Omitting `platform` or setting it to an empty string defaults to `github`. Exist
 
 ### Custom Temper Commands
 
-By default, Temper auto-detects the project type (Go, .NET, Node) and runs appropriate build/test/lint steps. The `temper` object lets you override these with custom commands, enabling support for Python, Rust, or repos with non-standard build tooling.
+By default, Temper auto-detects the project type (Go, .NET, Node) and runs appropriate build/test/lint steps — each gated on the files the diff actually touched (see [Changed-File Gating](#changed-file-gating)). The `temper` object lets you override these with custom commands, enabling support for Python, Rust, or repos with non-standard build tooling.
 
 Use the shorthand when your project has a straightforward build/test/lint shape. For more complex pipelines, use the `steps` list described in [Custom Temper Steps](#custom-temper-steps-advanced) below.
 
@@ -357,7 +357,7 @@ For pipelines that need more than three steps, per-step working directories, or 
 | `dir` | string | worktree root | Working directory for the step. Relative paths resolve against the worktree; absolute paths used as-is. |
 | `timeout` | duration | `5m` | Per-step timeout. Same parsing as elsewhere in Forge config (`5m`, `30s`, `1h`). |
 | `required` | bool | `true` | When `true`, failure fails the whole temper run. When `false`, failure is reported as a warning. |
-| `paths` | `[]string` | `[]` (always run) | Glob patterns (doublestar syntax, e.g. `client/**`, `**/*.go`). When set, the step is skipped if no changed files in the PR diff match any pattern. When empty or omitted, the step always runs. |
+| `paths` | `[]string` | `[]` (always run) | Glob patterns (doublestar syntax, e.g. `client/**`, `**/*.go`). When set, the step is skipped if no changed files in the PR diff match any pattern. When empty or omitted, the step always runs. Auto-detected steps carry per-ecosystem defaults; a step listed here does not — see [Changed-File Gating](#changed-file-gating). |
 | `verify_clean` | `[]string` | `[]` (no check) | Pathspecs (relative to the worktree, e.g. `web/dist`) that must remain clean after the step runs. When the step succeeds but `git status --porcelain -- <pathspecs>` reports changes, the step is converted to a failure. Use this to enforce that committed build artifacts (e.g. an embedded frontend bundle) match a fresh build of the source. |
 | `verify_no_conflict_markers` | `[]string` | `[]` (no check) | Pathspecs (relative to the worktree) that must not contain git merge-conflict markers (`<<<<<<<`, `=======`, `>>>>>>>` at line start). When set on a step with **no** `command`, Temper performs a cheap scan-only check that runs unconditionally (no `paths` gating) — complementary to `verify_clean`, which depends on a rebuild and can miss markers committed directly into build output. A scan-only step (empty `command`) is valid only when this is set. |
 | `tolerate_host_crash` | bool | `false` | When `true`, re-classifies a non-zero exit from this step as a pass **only if** the output shows a completed, all-passed .NET test summary **and** an explicit test-host crash/abort marker. Exists for .NET test hosts that occasionally OOM/crash at teardown after every test has already passed, producing false Temper failures. A real test failure (`Failed: N>0`) or a build error (no crash marker) still fails. |
@@ -487,6 +487,71 @@ anvils:
           command: pytest
           args: [-q]
 ```
+
+### Changed-File Gating
+
+A step with `paths` globs runs only when the branch's diff touched a file
+matching one of them. This is what keeps a one-line frontend change on a
+mixed-stack repository from re-running the whole backend build and test suite.
+
+**Auto-detected steps carry default globs.** Gating used to require writing a
+`temper.steps` list by hand, so on an anvil that configured nothing it never
+applied. The auto-detector now attaches a conservative glob set per ecosystem:
+
+| Detected | Steps | Default `paths` |
+|----------|-------|-----------------|
+| Go (`go.mod`) | `build`, `vet`, `golangci-lint`, `test`, `race` | `**/*.go`, `**/go.mod`, `**/go.sum`, `go.work`, `go.work.sum`, `**/testdata/**`, `**/*.s`, `**/*.c`, `**/*.h`, `**/.golangci.*`, plus every `//go:embed` target found in the worktree |
+| .NET (`*.sln` / `*/*.csproj`) | `build`, `test` | `**/*.cs`, `**/*.csproj`, `**/*.vb`, `**/*.vbproj`, `**/*.fs`, `**/*.fsproj`, `**/*.sln`, `**/*.slnx`, `**/*.props`, `**/*.targets`, `**/appsettings*.json`, `**/*.razor`, `**/*.cshtml`, `**/*.resx`, `**/nuget.config`, `**/NuGet.config`, `**/packages.lock.json`, `**/global.json`, `**/TestData/**`, `**/testdata/**`, `**/Fixtures/**`, `**/fixtures/**` |
+| Node in a subdirectory (`web/`, `frontend/`, `client/`, `app/`, `ui/`) | `<dir>:lint`, `<dir>:test` | `<dir>/**` |
+| Node at the repository root | `lint`, `test` | *(none — always run)* |
+
+The sets are deliberately wider than what a compiler reads: a false match costs
+one step that did not need to run, a miss costs a verification that reports PASS
+over code it never looked at. A Node project at the ROOT is left ungated for the
+same reason — "everything under the root" is the whole repository, so there is no
+conservative subset to gate on.
+
+**Embedded assets are discovered, not guessed.** `go build` compiles whatever a
+package binds in with `//go:embed`, and those files (prompts, templates, SQL, a
+built web bundle) share no extension the list above could enumerate. So the Go
+detector scans the worktree for `//go:embed` directives and gates the Go steps on
+what they name as well — `//go:embed prompts/*.md` in `internal/assay` adds
+`internal/assay/prompts/*.md`, and `//go:embed dist` in `internal/web` adds
+`internal/web/dist` and everything beneath it. A scan that cannot complete leaves
+the Go steps ungated (they run unconditionally) rather than gating on a partial
+answer.
+
+The remaining gap is a file a test reads off disk from outside `testdata/` and
+outside any embed directive — nothing in the tree declares it as an input. An
+anvil that does that should write explicit `temper.steps` with its own `paths`.
+
+**Explicit configuration is unchanged.** `temper.steps` and the
+`temper.build`/`test`/`lint` shorthand bypass auto-detection entirely, so a step
+you wrote with no `paths` still runs unconditionally. Nothing is added to it.
+
+**Where the changed-file list comes from.** Every stage that runs Temper derives
+it the same way — `git diff --name-only --no-renames <base>..HEAD` in the
+worktree, where `<base>` is `origin/<the PR's base branch>`, falling back to
+`origin/main` and then `origin/master`:
+
+| Stage | Recomputed |
+|-------|------------|
+| Pipeline (Smith → Temper → Warden) | every iteration, so files a later Smith iteration adds are not missed |
+| Burnish (review fix) | every verification attempt, including the retries after a verification timeout |
+| Quench (CI fix) | before the reproduce run and again before the post-Smith verify run |
+
+Deletions and renames are both represented by every path they touch: a move is
+reported as a delete plus an add, so removing the last file from a gated
+directory still triggers the steps that covered it.
+
+**Failure is open.** When the list cannot be computed — no base ref resolves,
+git fails — it stays empty, which Temper reads as "unknown" and which runs
+**every** step. Burnish and quench log a WARN when that happens, and log the
+steps a run skipped by name, so a skip never reads as a step that passed.
+
+Gating never applies to a scan-only `verify_no_conflict_markers` step: that check
+is independent of any rebuild by design (see the `verify_no_conflict_markers`
+row above).
 
 ## Settings
 

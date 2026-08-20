@@ -1054,12 +1054,18 @@ func (d *Daemon) reconcileOpenPRs(ctx context.Context) {
 				}
 			}
 			dbPR := &state.PR{
-				Number:    pr.Number,
-				Anvil:     anvilName,
-				BeadID:    beadID,
-				Branch:    pr.Branch,
-				Status:    state.PROpen,
-				CreatedAt: time.Now(),
+				Number: pr.Number,
+				Anvil:  anvilName,
+				BeadID: beadID,
+				Branch: pr.Branch,
+				// The base branch the platform reports, not a guess: every
+				// later derivation that needs one (temper.ResolveBaseRef for
+				// changed-file gating, the rebase path) falls back to
+				// origin/main without it, and a Crucible child registered
+				// this way is based on feature/<parent-id>.
+				BaseBranch: pr.BaseBranch,
+				Status:     state.PROpen,
+				CreatedAt:  time.Now(),
 			}
 			if err := d.db.InsertPR(dbPR); err == nil {
 				d.logger.Info("reconcile: registered untracked PR",
@@ -2405,6 +2411,7 @@ func (d *Daemon) handleLifecycleAction(ctx context.Context, req lifecycle.Action
 					AnvilPath:       anvilCfg.Path,
 					PRNumber:        req.PRNumber,
 					Branch:          req.Branch,
+					BaseBranch:      req.BaseBranch,
 					DB:              d.db,
 					WorkerID:        workerID,
 					ExtraFlags:      cfg.Settings.ClaudeFlags,
@@ -2499,6 +2506,7 @@ func (d *Daemon) handleLifecycleAction(ctx context.Context, req lifecycle.Action
 						AnvilPath:       anvilCfg.Path,
 						PRNumber:        req.PRNumber,
 						Branch:          req.Branch,
+						BaseBranch:      req.BaseBranch,
 						DB:              d.db,
 						WorkerID:        workerID,
 						ExtraFlags:      burnishCfg.Settings.ClaudeFlags,
@@ -2523,6 +2531,7 @@ func (d *Daemon) handleLifecycleAction(ctx context.Context, req lifecycle.Action
 					AnvilPath:       anvilCfg.Path,
 					PRNumber:        req.PRNumber,
 					Branch:          req.Branch,
+					BaseBranch:      req.BaseBranch,
 					DB:              d.db,
 					WorkerID:        workerID,
 					MaxAttempts:     burnishCfg.Settings.MaxReviewAttempts,

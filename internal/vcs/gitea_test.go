@@ -465,7 +465,7 @@ func TestGiteaCombinedStatusParsing(t *testing.T) {
 func TestGiteaPRListParsing(t *testing.T) {
 	raw := `[
 		{"number": 1, "title": "First PR", "body": "First desc", "state": "open", "html_url": "https://gitea.example.com/o/r/pulls/1", "mergeable": true, "head": {"ref": "feature/one", "sha": "aaa"}, "base": {"ref": "main", "sha": "bbb"}},
-		{"number": 2, "title": "Second PR", "body": "", "state": "open", "html_url": "https://gitea.example.com/o/r/pulls/2", "mergeable": false, "head": {"ref": "fix/two", "sha": "ccc"}, "base": {"ref": "main", "sha": "ddd"}}
+		{"number": 2, "title": "Second PR", "body": "", "state": "open", "html_url": "https://gitea.example.com/o/r/pulls/2", "mergeable": false, "head": {"ref": "fix/two", "sha": "ccc"}, "base": {"ref": "feature/Forge-epic", "sha": "ddd"}}
 	]`
 
 	var prs []giteaPullRequest
@@ -474,10 +474,11 @@ func TestGiteaPRListParsing(t *testing.T) {
 	out := make([]OpenPR, len(prs))
 	for i, pr := range prs {
 		out[i] = OpenPR{
-			Number: pr.Number,
-			Title:  pr.Title,
-			Branch: pr.Head.Ref,
-			Body:   pr.Body,
+			Number:     pr.Number,
+			Title:      pr.Title,
+			Branch:     pr.Head.Ref,
+			BaseBranch: pr.Base.Ref,
+			Body:       pr.Body,
 		}
 	}
 
@@ -486,8 +487,13 @@ func TestGiteaPRListParsing(t *testing.T) {
 	assert.Equal(t, "First PR", out[0].Title)
 	assert.Equal(t, "feature/one", out[0].Branch)
 	assert.Equal(t, "First desc", out[0].Body)
+	assert.Equal(t, "main", out[0].BaseBranch)
 	assert.Equal(t, 2, out[1].Number)
 	assert.Equal(t, "", out[1].Body)
+	// The base branch has to survive the listing: the reconcile loop registers
+	// untracked PRs from it, and a row with no base falls back to origin/main
+	// — wrong for a Crucible child based on its epic branch.
+	assert.Equal(t, "feature/Forge-epic", out[1].BaseBranch)
 }
 
 // TestGiteaReviewCommentParsing tests JSON deserialization of review comments

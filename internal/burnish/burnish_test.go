@@ -26,6 +26,7 @@ type testHarness struct {
 	origGitPush     func(ctx context.Context, worktreePath, branch string) error
 	origGitRevParse func(ctx context.Context, dir, ref string) (string, error)
 	origHookRun     func(ctx context.Context, workerID, hookName, cmd string, env hooks.HookEnv) error
+	origChangedFile func(ctx context.Context, worktreePath, baseBranch, logPrefix string) []string
 }
 
 func newTestHarness() *testHarness {
@@ -35,6 +36,7 @@ func newTestHarness() *testHarness {
 		origGitPush:     gitPushFn,
 		origGitRevParse: gitRevParseFn,
 		origHookRun:     hookRunFn,
+		origChangedFile: changedFilesFn,
 	}
 }
 
@@ -44,6 +46,7 @@ func (h *testHarness) restore() {
 	gitPushFn = h.origGitPush
 	gitRevParseFn = h.origGitRevParse
 	hookRunFn = h.origHookRun
+	changedFilesFn = h.origChangedFile
 }
 
 // fakeVCS implements vcs.Provider for testing.
