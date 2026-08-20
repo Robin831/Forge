@@ -7412,10 +7412,6 @@ rules:
       source: copilot:PR#705
       added: "2026-07-13"
       paths:
-        - '**/*.go'
-        - '**/*.html'
-        - '**/*.js'
-        - '**/*.md'
         - '**/*.ts'
         - '**/*.tsx'
     - id: fallback-model-before-persist
@@ -7428,11 +7424,6 @@ rules:
       added: "2026-07-13"
       paths:
         - '**/*.go'
-        - '**/*.html'
-        - '**/*.js'
-        - '**/*.md'
-        - '**/*.ts'
-        - '**/*.tsx'
     - id: react-key-filtered-index
       category: ui
       pattern: >-
@@ -7442,11 +7433,6 @@ rules:
       source: copilot:PR#707
       added: "2026-07-13"
       paths:
-        - '**/*.css'
-        - '**/*.html'
-        - '**/*.js'
-        - '**/*.json'
-        - '**/*.md'
         - '**/*.ts'
         - '**/*.tsx'
     - id: sync-derived-state-on-prop-change
@@ -7458,11 +7444,6 @@ rules:
       source: copilot:PR#707
       added: "2026-07-13"
       paths:
-        - '**/*.css'
-        - '**/*.html'
-        - '**/*.js'
-        - '**/*.json'
-        - '**/*.md'
         - '**/*.ts'
         - '**/*.tsx'
     - id: test-export-comment-mismatch
@@ -7474,11 +7455,7 @@ rules:
       source: copilot:PR#707
       added: "2026-07-13"
       paths:
-        - '**/*.css'
-        - '**/*.html'
-        - '**/*.js'
-        - '**/*.json'
-        - '**/*.md'
+        - '**/*.go'
         - '**/*.ts'
         - '**/*.tsx'
     - id: split-on-collapsed-preview
@@ -7490,11 +7467,6 @@ rules:
       source: copilot:PR#707
       added: "2026-07-13"
       paths:
-        - '**/*.css'
-        - '**/*.html'
-        - '**/*.js'
-        - '**/*.json'
-        - '**/*.md'
         - '**/*.ts'
         - '**/*.tsx'
     - id: markdown-image-render-untrusted
@@ -7506,11 +7478,6 @@ rules:
       source: copilot:PR#707
       added: "2026-07-13"
       paths:
-        - '**/*.css'
-        - '**/*.html'
-        - '**/*.js'
-        - '**/*.json'
-        - '**/*.md'
         - '**/*.ts'
         - '**/*.tsx'
     - id: no-zero-default-missing-tokens
@@ -7522,11 +7489,6 @@ rules:
       source: copilot:PR#707
       added: "2026-07-13"
       paths:
-        - '**/*.css'
-        - '**/*.html'
-        - '**/*.js'
-        - '**/*.json'
-        - '**/*.md'
         - '**/*.ts'
         - '**/*.tsx'
     - id: duration-seconds-carry
@@ -7538,11 +7500,6 @@ rules:
       source: copilot:PR#707
       added: "2026-07-13"
       paths:
-        - '**/*.css'
-        - '**/*.html'
-        - '**/*.js'
-        - '**/*.json'
-        - '**/*.md'
         - '**/*.ts'
         - '**/*.tsx'
     - id: path-prefix-boundary-check
@@ -7554,11 +7511,7 @@ rules:
       source: copilot:PR#707
       added: "2026-07-13"
       paths:
-        - '**/*.css'
-        - '**/*.html'
-        - '**/*.js'
-        - '**/*.json'
-        - '**/*.md'
+        - '**/*.go'
         - '**/*.ts'
         - '**/*.tsx'
     - id: worker-scoped-list-keys
@@ -7570,11 +7523,6 @@ rules:
       source: copilot:PR#707
       added: "2026-07-13"
       paths:
-        - '**/*.css'
-        - '**/*.html'
-        - '**/*.js'
-        - '**/*.json'
-        - '**/*.md'
         - '**/*.ts'
         - '**/*.tsx'
     - id: markdown-code-block-detection
@@ -7586,74 +7534,14 @@ rules:
       source: copilot:PR#707
       added: "2026-07-13"
       paths:
-        - '**/*.css'
-        - '**/*.html'
-        - '**/*.js'
-        - '**/*.json'
-        - '**/*.md'
         - '**/*.ts'
         - '**/*.tsx'
-    - id: log-filename-path-traversal
-      category: security
-      pattern: >-
-        A caller-supplied string (prefix, name, ID) is interpolated into a filename via filepath.Join or fmt.Sprintf, especially on a newly exported/public API
-      check: >-
-        Verify the input is sanitized to a safe basename — path separators and '..' stripped or replaced — before building the path, so it cannot escape the intended directory
-      source: copilot:PR#708
-      added: "2026-07-13"
-      paths:
-        - '**/*.go'
-        - '**/*.md'
-    - id: high-res-log-timestamp
-      category: concurrency
-      pattern: >-
-        Log or output filenames built from time.Now().Unix() (second-resolution timestamps)
-      check: >-
-        Verify the timestamp has sub-second resolution (e.g. UnixNano) or another uniqueness component so rapid successive runs within the same second cannot overwrite earlier files and lose transcripts/logs
-      source: copilot:PR#708
-      added: "2026-07-13"
-      paths:
-        - '**/*.go'
-        - '**/*.md'
-    - id: normalize-separators-before-basename
-      category: security
-      pattern: >-
-        Sanitizing a user-influenced string into a safe filename/basename via filepath.Base for path-traversal defense
-      check: >-
-        Verify both '/' and '\' separators are normalized before calling filepath.Base, so the value is consistently reduced to a safe basename across platforms (matching sanitization used elsewhere like preserveWorktreeLogs)
-      source: copilot:PR#708
-      added: "2026-07-13"
-      paths:
-        - '**/*.go'
-        - '**/*.md'
-    - id: stale-doc-comment-units
+    - id: log-filename-doc-drift
       category: style
       pattern: >-
-        Doc comments or code comments containing example values, format strings, or placeholders (e.g. filename patterns like "<unixtime>.log") near code whose behavior or units changed
+        A doc comment, log message, changelog fragment, or documentation string describes a generated log/artifact filename or naming scheme (e.g. `temper-<ts>.log`, `smith-<unixtime>.log`, `warden-<ts>-<seq>.log`) near code that constructs that filename
       check: >-
-        Verify that comment examples and placeholders still match the actual code behavior — when units or formats change (e.g. Unix seconds to milliseconds), update placeholders to stay accurate or use a unit-agnostic placeholder
-      source: copilot:PR#708
-      added: "2026-07-13"
-      paths:
-        - '**/*.go'
-        - '**/*.md'
-    - id: log-filename-comment-drift
-      category: style
-      pattern: >-
-        A doc comment or docstring documents a generated log/file name format (e.g. `smith-<ts>.log`) near code that constructs the actual filename
-      check: >-
-        Verify the documented filename format matches the implementation exactly — timestamp units (Unix seconds vs UnixMilli) and any added components like a sequence suffix (`-<seq>`)
-      source: copilot:PR#708
-      added: "2026-07-13"
-      paths:
-        - '**/*.go'
-        - '**/*.md'
-    - id: temper-log-filename-precision-comment
-      category: style
-      pattern: >-
-        A code comment or doc describes a generated log/file name with a time-based token (e.g. "temper-<unixtime>.log") while the implementation formats the timestamp differently (UnixMilli vs Unix seconds)
-      check: >-
-        Verify the comment's described filename format matches the actual timestamp precision used in code (e.g. UnixMilli means milliseconds, not seconds), and that the token naming doesn't imply the wrong precision
+        Verify the documented filename format matches exactly what the code produces — the timestamp unit (time.Now().Unix() seconds vs UnixMilli() milliseconds) and every component such as a sequence suffix — and that it stays consistent with sibling stage-log naming. When units or formats change, update the placeholder or switch to a unit-agnostic one rather than leaving a stale example.
       source: copilot:PR#708
       added: "2026-07-13"
       paths:
@@ -7669,51 +7557,26 @@ rules:
       added: "2026-07-13"
       paths:
         - '**/*.go'
-        - '**/*.md'
-    - id: log-filename-timestamp-format-mismatch
-      category: other
-      pattern: >-
-        Doc comments or log messages that describe a log/artifact filename with a literal timestamp format (e.g. `name-<unixtime>.log`)
-      check: >-
-        Verify the described timestamp unit/format matches what the code actually generates (e.g. time.Now().UnixMilli() vs Unix seconds) and is consistent with sibling stage-log naming conventions
-      source: copilot:PR#708
-      added: "2026-07-13"
-      paths:
-        - '**/*.go'
-        - '**/*.md'
     - id: stale-api-reference-comment
       category: style
       pattern: >-
-        A code comment names a specific function/API (e.g. smith.SpawnWithProvider) that the surrounding code calls, but the code was changed to call a different API (e.g. smith.SpawnWithOptions)
+        A code comment or docstring names a specific function/method/API entrypoint (e.g. smith.SpawnWithProvider) while the surrounding code calls a different one (e.g. smith.SpawnWithOptions)
       check: >-
-        Verify that comments referencing specific function or API names still match the actual call in the code; update stale references so they don't mislead readers about behavior like provider fallback or logging
+        Verify comments reference the API the current code actually calls; when a call site is renamed or switched to a new entrypoint, update the nearby comments so readers aren't misled about behavior like provider fallback or logging.
       source: copilot:PR#708
       added: "2026-07-13"
       paths:
         - '**/*.go'
-        - '**/*.md'
-    - id: stale-api-reference-in-comments
-      category: style
-      pattern: >-
-        Code comments or docstrings that name a specific function/method/API entrypoint (e.g. smith.SpawnWithProvider) while the surrounding code calls a different one
-      check: >-
-        Verify comments reference the API actually used by the current code; when a call site is renamed or switched to a new entrypoint, update any nearby comments to match so readers aren't pointed at the wrong function
-      source: copilot:PR#708
-      added: "2026-07-13"
-      paths:
-        - '**/*.go'
-        - '**/*.md'
     - id: preserve-logs-before-cleanup
       category: error-handling
       pattern: >-
-        A log or output file is written under a temporary directory that is later removed (e.g. defer os.RemoveAll(workDir)), while its path is stored in the DB or referenced as a preserved artifact
+        A log/transcript file is written under a temporary directory that is later removed (e.g. defer os.RemoveAll(workDir)) while its path is stored in the DB or captured via a configured LogDir
       check: >-
-        Verify the file is copied/persisted to a durable location (e.g. the worktree's .forge-logs or ~/.forge/logs/<beadID>/) before the temp dir is cleaned up, so persisted logPath references remain valid after the function returns
+        Verify the file is copied to a durable location (the worktree's .forge-logs or ~/.forge/logs/<beadID>/) before the temp dir is cleaned up — matching how the primary Run() path persists logs — so persisted logPath references stay valid and transcripts aren't lost to temp-dir cleanup.
       source: copilot:PR#708
       added: "2026-07-13"
       paths:
         - '**/*.go'
-        - '**/*.md'
     - id: stream-large-output-to-file
       category: performance
       pattern: >-
@@ -7724,18 +7587,16 @@ rules:
       added: "2026-07-13"
       paths:
         - '**/*.go'
-        - '**/*.md'
     - id: path-traversal-filename-sanitization
       category: security
       pattern: >-
-        Code that builds a filesystem path from an external or caller-supplied string and relies on filepath.Base (or similar) to sanitize it before joining with a base directory
+        A caller-supplied or external string (prefix, name, ID) is interpolated into a filesystem path via filepath.Join or fmt.Sprintf, relying on filepath.Base (or similar) to sanitize it — especially on a newly exported API
       check: >-
-        Verify the sanitized component cannot still be or contain a path separator (e.g. inputs like "/", "///", or "..") that make filepath.Base return a separator or traversal sequence, causing the joined path to become absolute or escape the intended directory; ensure the result is validated to stay within the base dir
+        Verify the input is reduced to a safe basename before joining: normalize both '/' and '\' separators first (matching the sanitization used elsewhere, e.g. preserveWorktreeLogs), strip '..', and reject separator-only inputs like "/" or "///" that make filepath.Base return a separator and turn the joined path absolute. Validate that the result stays inside the intended base directory.
       source: copilot:PR#708
       added: "2026-07-13"
       paths:
         - '**/*.go'
-        - '**/*.md'
     - id: path-sanitization-separator-prefix-test
       category: testing
       pattern: >-
@@ -7746,62 +7607,16 @@ rules:
       added: "2026-07-13"
       paths:
         - '**/*.go'
-        - '**/*.md'
-    - id: temp-dir-log-persistence
-      category: error-handling
-      pattern: >-
-        A worker/session runs in a temporary directory that is cleaned up via defer os.RemoveAll, while a LogDir is configured to capture its transcript/log output
-      check: >-
-        Verify the session log is copied out to cfg.LogDir before the temp dir is removed, matching how the primary Run() path persists logs, so transcripts aren't lost during temp-dir cleanup
-      source: copilot:PR#708
-      added: "2026-07-13"
-      paths:
-        - '**/*.go'
-        - '**/*.md'
-    - id: timestamp-log-filename-collision
-      category: concurrency
-      pattern: >-
-        Using a timestamp (e.g. time.Now().UnixMilli()) as a filename for a file created with os.Create or other truncating open
-      check: >-
-        Verify that concurrent or rapid successive calls cannot produce the same filename within the timestamp's resolution; if they can, add a uniqueness component (PID, counter, random suffix, or O_EXCL) to avoid truncating and losing earlier files
-      source: copilot:PR#708
-      added: "2026-07-13"
-      paths:
-        - '**/*.go'
-        - '**/*.md'
     - id: timestamp-filename-collision
       category: concurrency
       pattern: >-
-        File names derived from a timestamp (e.g. time.Now().UnixMilli()/Unix()) combined with truncating/overwriting file opens (O_TRUNC) for logs or output artifacts
+        A log or output filename is built from a timestamp (e.g. time.Now().Unix() or time.Now().UnixMilli()) and created with a truncating open such as os.Create
       check: >-
-        Verify the filename is unique enough to avoid collisions when the code runs multiple times in the same time granularity (fast retries, parallel invocations); add a unique discriminator (counter, PID, random suffix, or per-run ID) or use O_EXCL/append so an earlier file isn't silently overwritten and its output lost
+        Verify rapid successive or concurrent runs cannot produce the same filename within the timestamp's resolution. Use sub-second resolution plus a uniqueness discriminator (sequence counter, PID, random suffix, per-run ID) or O_EXCL/append, so an earlier transcript isn't silently overwritten and lost.
       source: copilot:PR#708
       added: "2026-07-13"
       paths:
         - '**/*.go'
-        - '**/*.md'
-    - id: stage-log-naming-doc-accuracy
-      category: style
-      pattern: >-
-        Doc comments or documentation describing a generated filename or naming scheme (e.g. stage log files)
-      check: >-
-        Verify the documented filename format matches the actual code that constructs it, including all components like timestamps and sequence numbers
-      source: copilot:PR#708
-      added: "2026-07-13"
-      paths:
-        - '**/*.go'
-        - '**/*.md'
-    - id: doc-comment-log-filename-mismatch
-      category: style
-      pattern: >-
-        A doc comment, log message, or documentation string describes a generated file name or format (e.g. `temper-<ts>.log`)
-      check: >-
-        Verify the described file name pattern matches the actual format produced by the code, including sequence suffixes and timestamp units (e.g. milliseconds vs seconds)
-      source: copilot:PR#708
-      added: "2026-07-13"
-      paths:
-        - '**/*.go'
-        - '**/*.md'
     - id: unchecked-buffered-writer-flush
       category: error-handling
       pattern: >-
@@ -7812,40 +7627,6 @@ rules:
       added: "2026-07-13"
       paths:
         - '**/*.go'
-        - '**/*.md'
-    - id: changelog-log-filename-accuracy
-      category: other
-      pattern: >-
-        Changelog fragment or docs give example log/artifact filenames (e.g. warden-<ts>.log, temper-<ts>.log, smith-<ts>.log)
-      check: >-
-        Verify the documented filename format matches the actual format produced by the implementation, including any sequence/counter components (e.g. warden-<ts>-<seq>.log)
-      source: copilot:PR#708
-      added: "2026-07-13"
-      paths:
-        - '**/*.go'
-        - '**/*.md'
-    - id: log-naming-doc-drift
-      category: other
-      pattern: >-
-        Documentation or comments describe a log/artifact file naming scheme (e.g. `burnish-<ts>.log`) alongside code that generates those file names
-      check: >-
-        Verify the documented naming pattern matches the actual format produced by the code, including all components like millisecond timestamps and sequence suffixes
-      source: copilot:PR#708
-      added: "2026-07-13"
-      paths:
-        - '**/*.go'
-        - '**/*.md'
-    - id: register-handle-with-active-state
-      category: concurrency
-      pattern: >-
-        A control/steer handle (or similar per-bead coordination object) is registered at a different code site than where the bead is marked in-flight (activeBeads set)
-      check: >-
-        Verify the handle is registered at every site where the in-flight state is set (poll loop, IPC run_bead handler, dispatchBead), so early steer/interrupt requests can be queued immediately and don't fail on an already-active bead
-      source: copilot:PR#709
-      added: "2026-07-13"
-      paths:
-        - '**/*.go'
-        - '**/*.md'
     - id: scoped-interrupt-lifetime
       category: concurrency
       pattern: >-
@@ -7856,172 +7637,56 @@ rules:
       added: "2026-07-13"
       paths:
         - '**/*.go'
-        - '**/*.md'
     - id: defer-lifecycle-symmetry-order
       category: concurrency
       pattern: >-
-        Multiple deferred cleanup calls that register/deregister paired lifecycle state (e.g. an in-flight marker and a control-handle registration) within the same function
+        Multiple `defer` statements tear down paired lifecycle state for the same entity (e.g. an in-flight/active marker and a control-handle registration) as separate deferred calls
       check: >-
-        Verify the LIFO defer order tears down the paired state consistently — the in-flight/active marker should not outlive its companion handle, so no tail window exists where a bead is marked active but its control handle is already deregistered (or vice versa)
+        Verify the LIFO defer order never exposes a transient inconsistent state — the in-flight marker must not outlive its companion handle, and no window may exist where work is still marked active but its handle is already deregistered. Prefer combining tightly-coupled cleanups into a single deferred func with explicit ordering, and confirm that ordering matches any comment describing it.
       source: copilot:PR#709
       added: "2026-07-13"
       paths:
         - '**/*.go'
-        - '**/*.md'
-    - id: couple-defer-cleanup-lifecycle
-      category: concurrency
-      pattern: >-
-        Multiple `defer` statements cleaning up related state for the same entity (e.g. deregistering a handle and deleting a registry/map entry) registered separately
-      check: >-
-        Verify LIFO defer ordering doesn't create a transient inconsistent state where one part of coupled state is torn down before another; combine tightly-coupled cleanups into a single deferred func with explicit ordering
-      source: copilot:PR#709
-      added: "2026-07-13"
-      paths:
-        - '**/*.go'
-        - '**/*.md'
     - id: register-control-handle-at-reservation
       category: concurrency
       pattern: >-
-        A control handle (steer/interrupt) is registered inside the dispatch goroutine after the bead is already reserved via activeBeads.LoadOrStore and run_bead has returned "dispatched".
+        A control/steer handle (or similar per-bead coordination object) is registered at a different site — or in a separate statement — from where the bead is marked in-flight via activeBeads.LoadOrStore
       check: >-
-        Verify the control handle is registered at the same point as the activeBeads reservation (both in the poll loop and run_bead paths), so a lookup can't return false for a bead that already reports as dispatched — closing the race where a rapid follow-up steer/interrupt command fails.
+        Verify the handle is registered at the same point as the in-flight reservation on every path (poll loop, IPC run_bead handler, dispatchBead), ideally through one shared reserve/release helper holding a single lock, so a lookup can't return false for a bead that already reports as "dispatched" and a rapid follow-up steer/interrupt can't fail. If a transient "no handle yet" window is accepted instead, confirm the IPC/lookup layer tolerates it and that the surrounding comments describe the real ordering.
       source: copilot:PR#709
       added: "2026-07-13"
       paths:
         - '**/*.go'
-        - '**/*.md'
     - id: changelog-no-overpromise
       category: other
       pattern: >-
-        A changelog fragment describes what a PR delivers, especially when the PR adds internal/foundational plumbing (registries, wiring, interrupt hooks) rather than complete user-facing features
+        A changelog.d fragment describes a new user-facing capability (e.g. pause/cancel via IPC) while the PR only adds foundational plumbing — registries, accessors, interrupt hooks, wiring — that no user-facing surface calls yet
       check: >-
-        Verify the changelog wording matches what the PR actually ships — that it doesn't claim user-facing capabilities (e.g. new IPC commands, pause/cancel behavior) that aren't implemented yet, and frames foundational-only work as groundwork for upcoming functionality rather than a finished feature
+        Confirm the changelog wording claims only what the diff actually exposes to users: it must not announce IPC commands, pause/cancel behavior, or other capabilities that aren't implemented, and should frame scaffolding-only work as groundwork for upcoming functionality rather than a finished feature.
       source: copilot:PR#709
       added: "2026-07-13"
       paths:
-        - '**/*.go'
-        - '**/*.md'
-    - id: defer-order-inflight-before-handle
+        - changelog.d/**
+    - id: misleading-atomicity-comment
       category: concurrency
       pattern: >-
-        Deferred cleanup that both removes an in-flight/active marker and tears down an associated handle (e.g. control/steering handle) for the same unit of work
+        A code, struct, or doc comment asserts an atomicity or no-gap invariant (e.g. "registered atomically", "no window where the bead is active but has no handle") about shared concurrent state such as a sync.Map, handle registry, or activeBeads reservation
       check: >-
-        Verify the deferred cleanups run in an order that keeps the handle available as long as the work is marked in-flight — the in-flight marker must be removed before (or atomically with) the handle deregistration, so no window exists where the work is still active but its handle is gone; confirm this matches the documented/commented ordering
+        Trace where the state is actually reserved versus where the handle is registered and deregistered. The comment is only accurate if the operations are a single atomic step and every code path mutating that state follows the same invariant; separate statements, a reservation on a different path, or a map reused for another purpose all break it. When the invariant doesn't hold, rewrite the comment to document the real ordering and idempotence instead of implying an atomic update.
       source: copilot:PR#709
       added: "2026-07-13"
       paths:
         - '**/*.go'
-        - '**/*.md'
-    - id: changelog-overstates-feature-scope
-      category: other
-      pattern: >-
-        A changelog.d fragment describes a new capability (e.g. pause/cancel via IPC) while the PR only adds foundational plumbing (in-memory registry, accessors) without wiring it to a user-facing surface.
-      check: >-
-        Confirm the changelog entry only claims what the diff actually exposes to users; if the PR adds scaffolding but no callers invoke it yet, the note should describe the foundation, not imply the feature is already available.
-      source: copilot:PR#709
-      added: "2026-07-13"
-      paths:
-        - '**/*.go'
-        - '**/*.md'
-    - id: misleading-invariant-comment-handle-registration
-      category: concurrency
-      pattern: >-
-        A comment asserts an atomicity/no-gap invariant (e.g. 'no window where X is set but the handle/registration does not exist') near reservation or registration of shared state
-      check: >-
-        Verify the claimed invariant actually holds by tracing where the state is reserved versus where the handle/registration happens — if reservation occurs earlier in a different path than registration, the comment is misleading and should instead document the actual ordering (e.g. handle is registered just before dispatch, after a successful claim)
-      source: copilot:PR#709
-      added: "2026-07-13"
-      paths:
-        - '**/*.go'
-        - '**/*.md'
-    - id: handle-lifecycle-comment-accuracy
-      category: concurrency
-      pattern: >-
-        Comments describing registration/deregistration ordering of a resource relative to a concurrent map/registry (e.g. activeBeads, handle registry) in the daemon lifecycle
-      check: >-
-        Verify the comment matches the actual code ordering — that the described reservation/registration and deregistration points align with where activeBeads (or equivalent) is reserved and deleted, so no misleading claim is made about in-flight items lacking a handle
-      source: copilot:PR#709
-      added: "2026-07-13"
-      paths:
-        - '**/*.go'
-        - '**/*.md'
-    - id: atomic-inflight-handle-registration
-      category: concurrency
-      pattern: >-
-        Marking a bead/task as in-flight (e.g. activeBeads.LoadOrStore) and registering its control/steering handle in two separate statements, so a goroutine switch can occur between them
-      check: >-
-        Verify that marking a unit of work in-flight and registering its control handle happen atomically under one shared lock (e.g. via a single reserve/release helper used by all paths), so the invariant that steering/interrupt is available the instant a bead is in-flight holds; otherwise confirm the IPC/lookup layer tolerates a transient 'no handle yet' window
-      source: copilot:PR#709
-      added: "2026-07-13"
-      paths:
-        - '**/*.go'
-        - '**/*.md'
-    - id: set-field-before-publishing-handle
-      category: concurrency
-      pattern: >-
-        A struct field is assigned after the struct (or a handle/pointer to it) has already been registered in a shared registry, map, or otherwise made reachable by other goroutines (IPC, API, poll loops).
-      check: >-
-        Verify that all fields read by other goroutines are set before the handle is published, or that concurrent field access goes through a synchronized accessor (mutex-guarded or atomic) used consistently for both reads and writes.
-      source: copilot:PR#709
-      added: "2026-07-13"
-      paths:
-        - '**/*.go'
-        - '**/*.md'
-    - id: misleading-atomicity-comments
-      category: concurrency
-      pattern: >-
-        Code comments claiming operations are atomic or that there is 'no window' between related state mutations (e.g. registering a handle alongside a map LoadOrStore)
-      check: >-
-        Verify the claim matches reality: the operations are actually a single atomic step (not separate statements), and no other code paths mutate the shared state without following the same registration invariant — otherwise the comment is misleading.
-      source: copilot:PR#709
-      added: "2026-07-13"
-      paths:
-        - '**/*.go'
-        - '**/*.md'
-    - id: misleading-atomic-comment
-      category: concurrency
-      pattern: >-
-        A code comment or doc uses "atomically" (or similar single-operation guarantee language) to describe a function that performs multiple separate mutations (e.g. two map operations)
-      check: >-
-        Verify the comment accurately reflects the code's real concurrency guarantees — describe ordering and idempotence instead of implying a single atomic update when the operations are not actually atomic
-      source: copilot:PR#709
-      added: "2026-07-13"
-      paths:
-        - '**/*.go'
-        - '**/*.md'
-    - id: comment-invariant-drift
-      category: concurrency
-      pattern: >-
-        Doc comments or struct-level comments asserting atomicity or invariants (e.g. "registered atomically", "no window where X has no handle") about shared concurrent state like maps or handle registries
-      check: >-
-        Verify the comment matches what the code actually guarantees — that the described invariant is truly enforced (single atomic step, not multi-step registration) and that any shared map isn't also used for other purposes that violate the stated 1:1 correspondence
-      source: copilot:PR#709
-      added: "2026-07-13"
-      paths:
-        - '**/*.go'
-        - '**/*.md'
     - id: publish-before-fully-initialized
       category: concurrency
       pattern: >-
-        A shared pointer/handle is inserted into a map or registry that concurrent lookups can read, then one of its fields is mutated afterward (e.g. ctrl.workerID set after registration)
+        A struct/handle is inserted into a shared registry or concurrent map (e.g. sync.Map) that other goroutines can read via IPC, API, or poll loops, and one of its fields is assigned afterwards (e.g. ctrl.workerID set after registration)
       check: >-
-        Verify the object is fully initialized and immutable before it is published to a concurrently-accessible structure — pass all fields (like workerID) into the constructor and register only after the prerequisite steps (insert/claim) succeed, or guard post-publication mutations with a mutex/atomic
+        Verify the object is fully initialized before it is published — pass every field read by other goroutines into the constructor and register only after the prerequisite insert/claim succeeds — or guard post-publication mutations with a mutex/atomic used consistently for both reads and writes, so concurrent lookups never observe a partially-initialized or mutating handle.
       source: copilot:PR#709
       added: "2026-07-13"
       paths:
         - '**/*.go'
-        - '**/*.md'
-    - id: publish-before-init
-      category: concurrency
-      pattern: >-
-        A handle/control struct is registered into a shared concurrent map (e.g. sync.Map) with placeholder/empty fields, then those fields are mutated in place after publication
-      check: >-
-        Verify the handle is fully initialized before being published to the shared map, or that post-publication field updates are synchronized; concurrent lookups must never observe a partially-initialized or mutating handle
-      source: copilot:PR#709
-      added: "2026-07-13"
-      paths:
-        - '**/*.go'
-        - '**/*.md'
     - id: deregister-control-handle-on-bead-release
       category: concurrency
       pattern: >-
@@ -8032,62 +7697,36 @@ rules:
       added: "2026-07-13"
       paths:
         - '**/*.go'
-        - '**/*.md'
-    - id: misleading-test-comment-atomicity
-      category: testing
-      pattern: >-
-        Test comments or documentation describing an operation as "atomic", "transactional", or "in one step" when the underlying implementation performs multiple separate operations
-      check: >-
-        Verify that concurrency/atomicity claims in test comments match the actual implementation — if the code does separate non-atomic operations (e.g. two independent deletes), the comment must not describe it as atomic
-      source: copilot:PR#709
-      added: "2026-07-13"
-      paths:
-        - '**/*.go'
-        - '**/*.md'
-    - id: delete-handle-before-slot-release
+    - id: release-slot-by-owner-identity
       category: concurrency
       pattern: >-
-        Cleanup code that releases a shared resource slot (e.g. deletes from activeBeads) and also deregisters an associated handle/registration from another map, where a concurrent dispatcher can re-acquire the slot and register a new handle between the two operations
+        Cleanup code releases a shared resource slot (e.g. an activeBeads entry) and deregisters the associated handle from another map — from a deferred cleanup, a stop/cancel path, or after a Load plus type assertion — where a concurrent dispatcher can re-acquire the slot and register a new handle in between
       check: >-
-        Verify the handle/registration is deleted before the slot is released (or a compare-and-delete is used), so a new dispatch acquiring the freed slot cannot have its newly-registered handle clobbered by the old goroutine's cleanup
+        Verify the teardown is keyed on owner identity, not just the bead/resource ID: deregister the handle before releasing the slot and use CompareAndDelete with the handle the cleanup itself registered (see releaseBeadSlotIfOwner), so a stale cleanup cannot clobber a re-dispatched run's freshly registered handle and cause duplicate dispatch or broken steering. Unconditional Delete after a Load is a race.
       source: copilot:PR#709
       added: "2026-07-13"
       paths:
         - '**/*.go'
-        - '**/*.md'
-    - id: handle-cleanup-ordering-race
-      category: concurrency
-      pattern: >-
-        Deferred/cleanup code that deregisters a shared handle (e.g. control handle) relying on activeBeads or another map being cleared first, where a new dispatch can register a fresh handle between the two operations
-      check: >-
-        Verify the cleanup deregisters the handle by identity (only if it's still the same handle it registered) rather than unconditionally, so a concurrently-registered new handle can't be clobbered; and confirm any comment describing the ordering matches the actual releaseBeadSlot semantics.
-      source: copilot:PR#709
-      added: "2026-07-13"
-      paths:
-        - '**/*.go'
-        - '**/*.md'
     - id: test-comment-impl-mismatch
       category: testing
       pattern: >-
-        A test contains a comment describing implementation behavior, such as ordering of operations (e.g. which of two resources is released/deleted first)
+        A test contains a comment describing implementation behavior — ordering of operations, or a claim that something is "atomic", "transactional", or done "in one step"
       check: >-
-        Verify the comment accurately matches the actual implementation order; if the ordering matters, ensure the test asserts it rather than just describing it in prose
+        Verify the comment matches the actual implementation: if the code performs separate non-atomic operations (e.g. two independent deletes), the comment must not describe it as atomic. Where the ordering matters, have the test assert it rather than only describing it in prose.
       source: copilot:PR#709
       added: "2026-07-13"
       paths:
         - '**/*.go'
-        - '**/*.md'
-    - id: invoke-cancel-under-lock
+    - id: invoke-callback-outside-lock
       category: concurrency
       pattern: >-
-        A cancel/interrupt/callback func is read from shared state under a mutex, then invoked after the lock is released, while another path can clear or replace that same func.
+        A stored callback (interrupt, cancel, or notify func) is read from shared state guarded by a mutex and then invoked, while another path can clear or replace that same func
       check: >-
-        Verify the callback is invoked while still holding the lock (cancel funcs are fast and non-blocking), so a concurrent clear/reset (e.g. setInterrupt(nil)) reliably prevents a stale callback from firing after the 'cleared' boundary.
+        Verify the func pointer is read under the lock and invoked only after the lock is released, so a slow or panicking callback cannot deadlock or block concurrent lock users. Do not hold the mutex across the call to close the clear/reset race — defend against a stale callback firing with an identity/generation check, or model the signal as a buffered channel the way controlHandle does.
       source: copilot:PR#709
       added: "2026-07-13"
       paths:
         - '**/*.go'
-        - '**/*.md'
     - id: guard-type-assertions-in-registries
       category: error-handling
       pattern: >-
@@ -8098,40 +7737,6 @@ rules:
       added: "2026-07-13"
       paths:
         - '**/*.go'
-        - '**/*.md'
-    - id: conditional-slot-release-by-owner
-      category: concurrency
-      pattern: >-
-        A shared resource slot or handle (e.g. activeBeads entry, control handle) is released both eagerly by one caller (stop/cancel path) and in a deferred cleanup of the owning goroutine, keyed only by bead/resource ID.
-      check: >-
-        Verify that release is conditional on the expected owner instance (e.g. matching workerID/handle) or deferred until the owning goroutine exits, so a stale cleanup cannot delete a newer re-dispatched run's handle or slot and cause duplicate dispatch or broken steering.
-      source: copilot:PR#709
-      added: "2026-07-13"
-      paths:
-        - '**/*.go'
-        - '**/*.md'
-    - id: compare-and-delete-concurrent-map
-      category: concurrency
-      pattern: >-
-        A sync.Map cleanup path that calls Delete(key) after a Load/type-assertion check, based on the value observed during Load
-      check: >-
-        Verify the delete uses CompareAndDelete with the loaded value (not an unconditional Delete), so a handle stored concurrently between the Load and the Delete is not clobbered
-      source: copilot:PR#709
-      added: "2026-07-13"
-      paths:
-        - '**/*.go'
-        - '**/*.md'
-    - id: unlock-before-callback
-      category: concurrency
-      pattern: >-
-        A method invokes a user-supplied or stored callback function (e.g. an interrupt, cancel, or notify func) while holding a mutex
-      check: >-
-        Verify the callback is invoked after releasing the lock — read the function pointer under the lock, then unlock before calling it — so a panicking or slow callback cannot deadlock or block concurrent lock users
-      source: copilot:PR#709
-      added: "2026-07-13"
-      paths:
-        - '**/*.go'
-        - '**/*.md'
     - id: overstated-guarantee-comment
       category: concurrency
       pattern: >-
@@ -8142,7 +7747,6 @@ rules:
       added: "2026-07-13"
       paths:
         - '**/*.go'
-        - '**/*.md'
     - id: prefer-done-over-steer-in-select
       category: concurrency
       pattern: >-
@@ -8153,7 +7757,6 @@ rules:
       added: "2026-07-13"
       paths:
         - '**/*.go'
-        - '**/*.md'
     - id: closed-channel-buffered-recv
       category: concurrency
       pattern: >-
@@ -8164,7 +7767,6 @@ rules:
       added: "2026-07-13"
       paths:
         - '**/*.go'
-        - '**/*.md'
     - id: capture-provider-with-session-id
       category: concurrency
       pattern: >-
@@ -8175,7 +7777,6 @@ rules:
       added: "2026-07-13"
       paths:
         - '**/*.go'
-        - '**/*.md'
     - id: ignore-empty-steer-payload
       category: error-handling
       pattern: >-
@@ -8186,7 +7787,6 @@ rules:
       added: "2026-07-13"
       paths:
         - '**/*.go'
-        - '**/*.md'
     - id: generic-feedback-source-label
       category: other
       pattern: >-
@@ -8197,7 +7797,6 @@ rules:
       added: "2026-07-13"
       paths:
         - '**/*.go'
-        - '**/*.md'
     - id: sanitize-path-from-db-id
       category: security
       pattern: >-
@@ -8208,7 +7807,6 @@ rules:
       added: "2026-07-13"
       paths:
         - '**/*.go'
-        - '**/*.md'
     - id: scope-sql-query-to-contract
       category: performance
       pattern: >-
@@ -8219,7 +7817,6 @@ rules:
       added: "2026-07-13"
       paths:
         - '**/*.go'
-        - '**/*.md'
     - id: cross-platform-path-glob
       category: other
       pattern: >-
@@ -8230,7 +7827,6 @@ rules:
       added: "2026-07-13"
       paths:
         - '**/*.go'
-        - '**/*.md'
     - id: regular-file-only-copy
       category: security
       pattern: >-
@@ -8241,7 +7837,6 @@ rules:
       added: "2026-07-13"
       paths:
         - '**/*.go'
-        - '**/*.md'
     - id: portable-base-cross-os-paths
       category: other
       pattern: >-
@@ -8252,7 +7847,6 @@ rules:
       added: "2026-07-13"
       paths:
         - '**/*.go'
-        - '**/*.md'
     - id: batch-writes-in-transaction
       category: performance
       pattern: >-
@@ -8263,7 +7857,6 @@ rules:
       added: "2026-07-13"
       paths:
         - '**/*.go'
-        - '**/*.md'
     - id: test-worktree-symlink-skip
       category: testing
       pattern: >-
@@ -8274,7 +7867,6 @@ rules:
       added: "2026-07-13"
       paths:
         - '**/*.go'
-        - '**/*.md'
     - id: validate-portablebase-basename
       category: error-handling
       pattern: >-
@@ -8285,7 +7877,6 @@ rules:
       added: "2026-07-13"
       paths:
         - '**/*.go'
-        - '**/*.md'
     - id: persist-write-error-handling
       category: error-handling
       pattern: >-
@@ -8296,11 +7887,6 @@ rules:
       added: "2026-07-13"
       paths:
         - '**/*.go'
-        - '**/*.html'
-        - '**/*.js'
-        - '**/*.md'
-        - '**/*.ts'
-        - '**/*.tsx'
     - id: log-swallowed-errors
       category: error-handling
       pattern: >-
@@ -8311,11 +7897,6 @@ rules:
       added: "2026-07-13"
       paths:
         - '**/*.go'
-        - '**/*.html'
-        - '**/*.js'
-        - '**/*.md'
-        - '**/*.ts'
-        - '**/*.tsx'
     - id: atomic-value-load-before-store
       category: concurrency
       pattern: >-
@@ -8326,26 +7907,16 @@ rules:
       added: "2026-07-13"
       paths:
         - '**/*.go'
-        - '**/*.html'
-        - '**/*.js'
-        - '**/*.md'
-        - '**/*.ts'
-        - '**/*.tsx'
-    - id: persist-before-clearing-guard-flag
+    - id: guard-flag-persist-ordering
       category: concurrency
       pattern: >-
-        An atomic/shared guard flag (e.g. dispatchPaused) is flipped to its permissive value before the corresponding state is persisted to the DB
+        A command handler both flips an in-memory guard flag (e.g. the dispatchPaused atomic) and persists the same state to the DB, as two separate steps
       check: >-
-        Verify the code persists the new state first and only clears/relaxes the in-memory guard flag after persistence succeeds, so a failed write can't leave a window where concurrent workers act on the un-persisted permissive state
+        Verify the ordering is fail-safe and matches the daemon convention. When tightening a guard (pause), flip the in-memory flag first so concurrent poll cycles observe the restriction immediately, then persist and revert the flag if the write fails. When relaxing it (resume), persist first and clear the in-memory flag only after the write succeeds, so a failed write can't leave a window where workers act on un-persisted permissive state. Both directions must hold the same mutex for the whole transition.
       source: copilot:PR#706
       added: "2026-07-13"
       paths:
         - '**/*.go'
-        - '**/*.html'
-        - '**/*.js'
-        - '**/*.md'
-        - '**/*.ts'
-        - '**/*.tsx'
     - id: date-parse-fallback
       category: error-handling
       pattern: >-
@@ -8355,10 +7926,6 @@ rules:
       source: copilot:PR#706
       added: "2026-07-13"
       paths:
-        - '**/*.go'
-        - '**/*.html'
-        - '**/*.js'
-        - '**/*.md'
         - '**/*.ts'
         - '**/*.tsx'
     - id: logevent-error-ignored
@@ -8371,11 +7938,6 @@ rules:
       added: "2026-07-13"
       paths:
         - '**/*.go'
-        - '**/*.html'
-        - '**/*.js'
-        - '**/*.md'
-        - '**/*.ts'
-        - '**/*.tsx'
     - id: jsx-punctuation-whitespace
       category: ui
       pattern: >-
@@ -8385,11 +7947,6 @@ rules:
       source: copilot:PR#706
       added: "2026-07-13"
       paths:
-        - '**/*.go'
-        - '**/*.html'
-        - '**/*.js'
-        - '**/*.md'
-        - '**/*.ts'
         - '**/*.tsx'
     - id: restore-persisted-state-before-ipc
       category: concurrency
@@ -8401,101 +7958,26 @@ rules:
       added: "2026-07-13"
       paths:
         - '**/*.go'
-        - '**/*.html'
-        - '**/*.js'
-        - '**/*.md'
-        - '**/*.ts'
-        - '**/*.tsx'
-    - id: persist-before-inmemory-flag
-      category: concurrency
-      pattern: >-
-        A command handler persists a state flag to durable storage (SQLite/DB) before updating the in-memory atomic/variable that concurrent loops actually read
-      check: >-
-        Verify the in-memory flag is flipped first (under the appropriate mutex) so concurrent readers observe the change immediately, with the durable write following and the in-memory value reverted if persistence fails
-      source: copilot:PR#706
-      added: "2026-07-13"
-      paths:
-        - '**/*.go'
-        - '**/*.html'
-        - '**/*.js'
-        - '**/*.md'
-        - '**/*.ts'
-        - '**/*.tsx'
-    - id: block-async-goroutine-tests
+    - id: async-goroutine-race-in-tests
       category: testing
       pattern: >-
-        A test triggers a code path that spawns a background goroutine (e.g. resuming dispatch via IPC starts an async pollAndDispatch) while the daemon/harness is only partially initialized and defers db.Close() at the end.
+        A test triggers a code path that spawns a background goroutine (e.g. resuming dispatch starts an async pollAndDispatch) on a lightweight or partially-initialized struct, relying on a cancelled context to make the goroutine exit before the deferred db.Close()
       check: >-
-        Verify the test either waits for or blocks the async goroutine so it cannot race with the deferred db.Close() (avoiding flaky "sql: database is closed" errors); if the test doesn't assert the background behavior, ensure it's prevented from running.
+        Verify the goroutine actually checks ctx.Done() before it touches shared fields or the DB — a cancelled context is not enough when the goroutine does work first. Block it deterministically instead (e.g. pre-set the try-lock/pollRunning guard flag) or wait for it to finish, so the test cannot race with teardown and flake on "sql: database is closed".
       source: copilot:PR#706
       added: "2026-07-13"
       paths:
         - '**/*.go'
-        - '**/*.html'
-        - '**/*.js'
-        - '**/*.md'
-        - '**/*.ts'
-        - '**/*.tsx'
-    - id: async-goroutine-ctx-race-in-tests
-      category: testing
-      pattern: >-
-        A test constructs a lightweight/partially-initialized struct and triggers a code path that spawns an async goroutine (e.g. pollAndDispatch), relying on a cancelled context to make it exit early
-      check: >-
-        Verify the spawned goroutine actually exits before it touches shared fields or DB — a cancelled context is insufficient if the goroutine does work before consulting ctx; set a guard flag (e.g. pollRunning=true) or otherwise ensure deterministic early return so it cannot race with teardown (db.Close) or run on partially initialized state
-      source: copilot:PR#706
-      added: "2026-07-13"
-      paths:
-        - '**/*.go'
-        - '**/*.html'
-        - '**/*.js'
-        - '**/*.md'
-        - '**/*.ts'
-        - '**/*.tsx'
-    - id: unlock-before-persist-paired-event
-      category: concurrency
-      pattern: >-
-        A mutex guarding paired state transitions (e.g. pause/resume) is released before the corresponding event/flag is persisted to the database
-      check: >-
-        Verify the lock is held until after the state-change event is written and any persisted flag is updated, so concurrent opposite operations cannot interleave and produce out-of-order or inconsistent event history
-      source: copilot:PR#706
-      added: "2026-07-13"
-      paths:
-        - '**/*.go'
-        - '**/*.html'
-        - '**/*.js'
-        - '**/*.md'
-        - '**/*.ts'
-        - '**/*.tsx'
     - id: hold-lock-until-event-logged
       category: concurrency
       pattern: >-
-        A mutex guarding serialized state transitions (e.g. pauseMu protecting pause/resume settings and atomics) is released before writing the corresponding event/history row
+        A mutex serializing paired state transitions (e.g. pauseMu guarding pause/resume settings and atomics) is released before the corresponding event/history row and persisted flag are written
       check: >-
-        Verify the lock is held until after the state-transition event is logged, so concurrent transitions cannot interleave and record events out of order relative to the serialized state changes
+        Verify the lock is held until after the state-change event is logged and any persisted flag is updated, so concurrent opposite transitions cannot interleave and record events out of order relative to the serialized state changes.
       source: copilot:PR#706
       added: "2026-07-13"
       paths:
         - '**/*.go'
-        - '**/*.html'
-        - '**/*.js'
-        - '**/*.md'
-        - '**/*.ts'
-        - '**/*.tsx'
-    - id: test-ctx-cancel-goroutine-race
-      category: testing
-      pattern: >-
-        A test cancels a context expecting a background goroutine (e.g. pollAndDispatch) to exit early and skip shared-state/DB access
-      check: >-
-        Verify the goroutine actually checks ctx.Done() before doing that work; if it doesn't, the test races with teardown and can flake or panic — instead block the goroutine deterministically (e.g. pre-set the try-lock/running flag) and use a normal context
-      source: copilot:PR#706
-      added: "2026-07-13"
-      paths:
-        - '**/*.go'
-        - '**/*.html'
-        - '**/*.js'
-        - '**/*.md'
-        - '**/*.ts'
-        - '**/*.tsx'
     - id: steer-persistence-test-coverage
       category: testing
       pattern: >-
@@ -8506,4 +7988,3 @@ rules:
       added: "2026-07-13"
       paths:
         - '**/*.go'
-        - '**/*.md'
