@@ -1,2 +1,0 @@
-category: Added
-- **Hearth PR menu: stop/resume Bellows** - The TUI's PR action menu now offers "Stop bellows" on an attached PR and "Resume bellows" on a muted one (plus "Unassign bellows" for an assigned external PR), wired to the same `detach_bellows` / `reattach_bellows` actions as `forge bellows stop|resume` and the dashboard, and worded to match them. A muted PR's row in the PR panel carries a `[detached]` marker so it no longer reads like one Bellows is still working. (Forge-v24o)
