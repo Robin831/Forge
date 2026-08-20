@@ -133,3 +133,59 @@ func TestChangedFilesForBase_ResolvesAndDiffs(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, []string{"api/handler.go"}, files)
 }
+
+// TestChangedFilesOrNil_GitFailureIsNilNotEmpty is the fail-open decision the
+// helper exists to hold in one place, and the distinction is the whole point:
+// Temper consults its `paths` globs only when Config.ChangedFiles is non-nil,
+// so an EMPTY non-nil slice matches nothing and skips every gated step — a
+// git failure would silently turn verification into a no-op. Nil means
+// "unknown", which runs everything.
+//
+// assert.Nil, never assert.Empty: assert.Empty passes for both, which is
+// exactly the difference under test.
+func TestChangedFilesOrNil_GitFailureIsNilNotEmpty(t *testing.T) {
+	if !gitAvailable() {
+		t.Skip("git not available on PATH")
+	}
+
+	t.Run("unresolvable explicit base", func(t *testing.T) {
+		// An explicit base skips the probe, so the ref reaches git diff and
+		// fails there — the error path ChangedFilesForBase forwards.
+		dir := commitFileOn(t, "api/handler.go")
+
+		files := ChangedFilesOrNil(context.Background(), dir, "no-such-branch", "[test]")
+
+		assert.Nil(t, files, "a failed diff must be nil (unknown), not an empty list (nothing changed)")
+	})
+
+	t.Run("not a git repository", func(t *testing.T) {
+		dir := t.TempDir()
+
+		files := ChangedFilesOrNil(context.Background(), dir, "main", "[test]")
+
+		assert.Nil(t, files)
+	})
+
+	t.Run("no base ref resolves", func(t *testing.T) {
+		// Not an error at all (ChangedFilesForBase returns nil, nil), but the
+		// answer has to be the same nil the error path produces.
+		dir := newRepo(t)
+
+		files := ChangedFilesOrNil(context.Background(), dir, "", "[test]")
+
+		assert.Nil(t, files)
+	})
+}
+
+// TestChangedFilesOrNil_ForwardsFileList is the other half: when the diff does
+// resolve, the helper is a pass-through and the gate really is applied.
+func TestChangedFilesOrNil_ForwardsFileList(t *testing.T) {
+	if !gitAvailable() {
+		t.Skip("git not available on PATH")
+	}
+	dir := commitFileOn(t, "api/handler.go")
+
+	files := ChangedFilesOrNil(context.Background(), dir, "", "[test]")
+
+	assert.Equal(t, []string{"api/handler.go"}, files)
+}

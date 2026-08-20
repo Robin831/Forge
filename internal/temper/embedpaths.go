@@ -2,6 +2,9 @@ package temper
 
 import (
 	"bytes"
+	"errors"
+	"fmt"
+	"io"
 	"io/fs"
 	"log"
 	"os"
@@ -20,7 +23,16 @@ const embedDirective = "//go:embed"
 // vendored blob, a huge table) that in practice does not carry an embed, and
 // reading it whole would make the scan proportional to the repo's biggest
 // artifacts rather than to its source.
+//
+// Exceeding it ABORTS the scan rather than skipping the file, because the cap
+// is about the scan's cost and says nothing about the file's contents: a
+// skipped .go file may carry the one embed that had to reach the build step,
+// and a list missing it is indistinguishable from a complete one. Aborting
+// leaves the Go steps ungated, which only costs a full run.
 const maxEmbedScanFileSize = 4 << 20 // 4 MiB
+
+// errEmbedScanFileTooLarge is returned for a .go file past maxEmbedScanFileSize.
+var errEmbedScanFileTooLarge = errors.New("file exceeds the embed scan size cap")
 
 // embedScanSkipDirs are directories never descended into while scanning for
 // embed directives: they hold no first-party Go source whose embeds matter
@@ -85,6 +97,11 @@ func goEmbedPaths(worktreePath string) ([]string, error) {
 			// fail open and leave the Go steps ungated. A PARTIAL embed list
 			// would be the dangerous answer: it reads as a complete one, and
 			// the embeds it missed are the ones that would skip the build.
+			// The same rule covers every later `return rerr` below — an
+			// oversized or unreadable .go file ends the scan rather than
+			// being quietly dropped from the list. Its one deliberate
+			// exception is non-regular files, justified where they are
+			// skipped.
 			return err
 		}
 		if d.IsDir() {
@@ -96,11 +113,28 @@ func goEmbedPaths(worktreePath string) ([]string, error) {
 		if !strings.HasSuffix(d.Name(), ".go") {
 			return nil
 		}
-		if info, ierr := d.Info(); ierr == nil && info.Size() > maxEmbedScanFileSize {
+		if !d.Type().IsRegular() {
+			// Symlinks, FIFOs and device nodes are never opened. WalkDir
+			// reports entries by Lstat, so for a committed `x.go -> /dev/zero`
+			// the size guard sees the link's own few bytes and a following
+			// read grows without bound until the daemon is OOM-killed; a link
+			// to /dev/stdin or a FIFO blocks this goroutine forever (nothing
+			// inside the walk consults a context); and any link out of the
+			// worktree reads a host file the scan has no business opening.
+			// The trees reaching here are not all Forge's own — quench and
+			// burnish verify contributor branches behind ext-* PRs.
+			//
+			// This is the one accepted hole in the completeness rule above: a
+			// symlinked .go file's directives go unread. `//go:embed` itself
+			// refuses irregular files, and a link whose target is inside the
+			// worktree is walked at that target's own path anyway.
 			return nil
 		}
-		data, rerr := os.ReadFile(p)
-		if rerr != nil || !bytes.Contains(data, []byte(embedDirective)) {
+		data, rerr := readForEmbedScan(p)
+		if rerr != nil {
+			return rerr
+		}
+		if !bytes.Contains(data, []byte(embedDirective)) {
 			return nil
 		}
 		rel, rerr := filepath.Rel(worktreePath, filepath.Dir(p))
@@ -126,6 +160,43 @@ func goEmbedPaths(worktreePath string) ([]string, error) {
 	}
 	sort.Strings(out)
 	return out, nil
+}
+
+// readForEmbedScan reads p for directive scanning, refusing anything that is
+// not a regular file and bounding the read at maxEmbedScanFileSize.
+//
+// Both checks are made against the open descriptor rather than the walk's
+// Lstat entry: that entry describes the path as it was a moment ago, and a
+// path replaced in between (or one that lies about its length, as every /dev
+// character device does) must not be able to make this read without limit.
+// The LimitReader is what enforces the cap even when the reported size does
+// not — the Stat check only lets an oversized ordinary file fail by name.
+func readForEmbedScan(p string) ([]byte, error) {
+	f, err := os.Open(p)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	info, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("%s: not a regular file (%s)", p, info.Mode().Type())
+	}
+	if info.Size() > maxEmbedScanFileSize {
+		return nil, fmt.Errorf("%s (%d bytes): %w", p, info.Size(), errEmbedScanFileTooLarge)
+	}
+
+	data, err := io.ReadAll(io.LimitReader(f, maxEmbedScanFileSize+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > maxEmbedScanFileSize {
+		return nil, fmt.Errorf("%s: %w", p, errEmbedScanFileTooLarge)
+	}
+	return data, nil
 }
 
 // parseEmbedPatterns extracts the patterns named by every `//go:embed`

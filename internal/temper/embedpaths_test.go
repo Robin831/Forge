@@ -3,6 +3,7 @@ package temper
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -111,6 +112,95 @@ func TestGoStepPaths_NoEmbedsIsTheStaticSet(t *testing.T) {
 // the whole scheme exists to avoid.
 func TestGoStepPaths_MissingWorktreeFailsOpen(t *testing.T) {
 	assert.Nil(t, goStepPaths(filepath.Join(t.TempDir(), "does-not-exist")))
+}
+
+// TestGoEmbedPaths_SkipsSymlinkedGoFiles pins the trust boundary: the scan
+// runs over trees Forge did not author (quench/burnish verify contributor
+// branches behind ext-* PRs), and a committed `x.go -> /dev/zero` would read
+// without bound while `-> /dev/stdin` or a FIFO would block the verification
+// goroutine forever. WalkDir reports entries by Lstat, so the size guard sees
+// only the link's own length — the entry type is what has to refuse it.
+//
+// The link here points at an ordinary in-tree file so the test asserts the
+// skip itself rather than depending on a device node; the real link never
+// gets far enough to be read.
+func TestGoEmbedPaths_SkipsSymlinkedGoFiles(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "go.mod", "module test\n")
+	writeFile(t, dir, "outside.txt", "package p\n\n//go:embed secret/*\nvar fs embed.FS\n")
+	if err := os.Symlink(filepath.Join(dir, "outside.txt"), filepath.Join(dir, "link.go")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	globs, err := goEmbedPaths(dir)
+	require.NoError(t, err, "a symlink is skipped, not an abort")
+	assert.NotContains(t, globs, "secret/*",
+		"a symlinked .go file is never opened, so its directives are not read")
+}
+
+// TestGoEmbedPaths_OversizedFileAbortsScan is the completeness rule the walk
+// callback documents: a .go file the scan cannot read whole may carry the one
+// embed that had to reach the build step, and a list missing it reads exactly
+// like a complete one. So the cap ends the scan — goStepPaths then fails open
+// and leaves the Go steps ungated, which only costs a full run.
+func TestGoEmbedPaths_OversizedFileAbortsScan(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "go.mod", "module test\n")
+	writeFile(t, dir, "pkg/small.go", "package pkg\n\n//go:embed assets/*\nvar fs embed.FS\n")
+	writeFile(t, dir, "pkg/huge.go", "package pkg\n"+strings.Repeat("// filler\n", (maxEmbedScanFileSize/10)+1))
+
+	_, err := goEmbedPaths(dir)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, errEmbedScanFileTooLarge)
+
+	assert.Nil(t, goStepPaths(dir),
+		"an aborted scan leaves the Go steps ungated rather than gated on a partial list")
+}
+
+// TestGoEmbedPaths_UnreadableFileAbortsScan is the same rule for a .go file
+// that exists but cannot be opened — a permission bit, or a file that vanished
+// mid-walk. Silently dropping it produced the partial list.
+func TestGoEmbedPaths_UnreadableFileAbortsScan(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("running as root: mode bits do not deny reads")
+	}
+	dir := t.TempDir()
+	writeFile(t, dir, "go.mod", "module test\n")
+	writeFile(t, dir, "pkg/locked.go", "package pkg\n\n//go:embed assets/*\nvar fs embed.FS\n")
+	locked := filepath.Join(dir, "pkg", "locked.go")
+	if err := os.Chmod(locked, 0o000); err != nil {
+		t.Skipf("chmod unavailable: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(locked, 0o644) })
+	if f, err := os.Open(locked); err == nil {
+		f.Close()
+		t.Skip("filesystem does not enforce mode bits")
+	}
+
+	_, err := goEmbedPaths(dir)
+	assert.Error(t, err)
+	assert.Nil(t, goStepPaths(dir))
+}
+
+// TestReadForEmbedScan_RefusesIrregularAndOversized covers the descriptor-side
+// checks directly: the walk's entry type describes the path as it was a moment
+// ago, so the open file is re-checked before anything is read.
+func TestReadForEmbedScan_RefusesIrregularAndOversized(t *testing.T) {
+	dir := t.TempDir()
+
+	small := filepath.Join(dir, "ok.go")
+	require.NoError(t, os.WriteFile(small, []byte("package p\n"), 0o644))
+	data, err := readForEmbedScan(small)
+	require.NoError(t, err)
+	assert.Equal(t, "package p\n", string(data))
+
+	big := filepath.Join(dir, "big.go")
+	require.NoError(t, os.WriteFile(big, make([]byte, maxEmbedScanFileSize+1), 0o644))
+	_, err = readForEmbedScan(big)
+	assert.ErrorIs(t, err, errEmbedScanFileTooLarge)
+
+	_, err = readForEmbedScan(dir)
+	assert.Error(t, err, "a directory is not a regular file")
 }
 
 func TestParseEmbedPatterns(t *testing.T) {
