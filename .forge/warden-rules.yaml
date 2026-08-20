@@ -7403,3 +7403,588 @@ rules:
       added: "2026-06-01"
       paths:
         - '**/*.md'
+    - id: worker-shape-field-parity
+      category: other
+      pattern: >-
+        Adding a field to one worker-shaped TypeScript type (e.g. WorkerInfo) that mirrors a backend JSON response
+      check: >-
+        Verify the new field is added to all parallel worker types returned by the backend (e.g. HistoryWorker, BeadDetailWorker) and any mappers (like workerToInfo) that forward it, so frontend types stay consistent with the actual JSON and downstream UI can access the field
+      source: copilot:PR#705
+      added: "2026-07-13"
+      paths:
+        - '**/*.ts'
+        - '**/*.tsx'
+    - id: fallback-model-before-persist
+      category: error-handling
+      pattern: >-
+        Persisting a model/config value taken only from an in-band provider stream field (e.g. result.Model) when the same value may have been supplied out-of-band via flags (e.g. --model in extraFlags)
+      check: >-
+        Verify the code falls back to the configured/flag-selected value when the stream-reported field is empty, so it never records an empty value despite a specific model being used
+      source: copilot:PR#705
+      added: "2026-07-13"
+      paths:
+        - '**/*.go'
+    - id: react-key-filtered-index
+      category: ui
+      pattern: >-
+        React list rendering that uses the array index as the key when the array is derived from filtering/transforming a source list (e.g. verbose toggle hiding entries), especially for rows holding local state like expand/collapse
+      check: >-
+        Verify the key is a stable identifier tied to the original unfiltered entry (e.g. the source index or entry ID), not the filtered array index, so stateful rows don't bind to the wrong entry when the visible list changes
+      source: copilot:PR#707
+      added: "2026-07-13"
+      paths:
+        - '**/*.ts'
+        - '**/*.tsx'
+    - id: sync-derived-state-on-prop-change
+      category: ui
+      pattern: >-
+        A React component derives initial state from a prop only in useState initializer (e.g. `useState(entry.isError)`), while that prop can change after mount during live streaming/async updates
+      check: >-
+        Verify the component syncs the derived state when the source prop flips (via useEffect on the prop), so late-arriving data like an error result still triggers the intended default (e.g. auto-expanding error rows) instead of being ignored after first mount
+      source: copilot:PR#707
+      added: "2026-07-13"
+      paths:
+        - '**/*.ts'
+        - '**/*.tsx'
+    - id: test-export-comment-mismatch
+      category: testing
+      pattern: >-
+        A comment claims a function is exported for unit testing (or otherwise describes its visibility/behavior)
+      check: >-
+        Verify the code matches the comment — e.g. the function is actually exported; otherwise export it or fix the comment so docs and code agree
+      source: copilot:PR#707
+      added: "2026-07-13"
+      paths:
+        - '**/*.go'
+        - '**/*.ts'
+        - '**/*.tsx'
+    - id: split-on-collapsed-preview
+      category: performance
+      pattern: >-
+        Computing a truncated preview or line count from a potentially large string by calling String.split('\n') on the full content, especially in a component that renders while collapsed or during streaming updates
+      check: >-
+        Verify the full string isn't split/allocated just to produce a preview or hidden-line count when collapsed; prefer a single memoized scan (indexOf/loop) bounded by the preview size instead of splitting the entire result
+      source: copilot:PR#707
+      added: "2026-07-13"
+      paths:
+        - '**/*.ts'
+        - '**/*.tsx'
+    - id: markdown-image-render-untrusted
+      category: security
+      pattern: >-
+        ReactMarkdown (or a markdown renderer) used to display log/assistant text that may contain untrusted content, with default rendering enabled
+      check: >-
+        Verify markdown images and other embeds are disallowed (e.g. via disallowedElements/allowedElements or a custom img component) so untrusted text can't trigger outbound requests to arbitrary URLs
+      source: copilot:PR#707
+      added: "2026-07-13"
+      paths:
+        - '**/*.ts'
+        - '**/*.tsx'
+    - id: no-zero-default-missing-tokens
+      category: ui
+      pattern: >-
+        Rendering a summary/label that combines optional numeric fields (e.g. input/output token counts) by defaulting absent values to 0
+      check: >-
+        Verify that missing/undefined values are omitted from the display rather than shown as 0, so absent data isn't misrepresented as a real zero measurement
+      source: copilot:PR#707
+      added: "2026-07-13"
+      paths:
+        - '**/*.ts'
+        - '**/*.tsx'
+    - id: duration-seconds-carry
+      category: ui
+      pattern: >-
+        Formatting a duration by splitting into minutes and seconds using modulo, then rounding the seconds remainder (e.g. Math.round(seconds % 60))
+      check: >-
+        Verify the seconds component is floored (or the rounding carries into minutes) so it stays within 0–59 and cannot render invalid output like '1m 60s'
+      source: copilot:PR#707
+      added: "2026-07-13"
+      paths:
+        - '**/*.ts'
+        - '**/*.tsx'
+    - id: path-prefix-boundary-check
+      category: error-handling
+      pattern: >-
+        Stripping or matching a directory/path prefix using startsWith (or similar) on a normalized path string
+      check: >-
+        Verify the code confirms the character immediately after the prefix is a path separator (or end of string) before stripping, so sibling paths like /repo/root2 aren't mistakenly treated as being under /repo/root
+      source: copilot:PR#707
+      added: "2026-07-13"
+      paths:
+        - '**/*.go'
+        - '**/*.ts'
+        - '**/*.tsx'
+    - id: worker-scoped-list-keys
+      category: ui
+      pattern: >-
+        React list rows rendered with a positional/index-only key (e.g. originalIndex) while each row holds local UI state (useState like expanded/collapsed) and the list content is swapped for a different data source (different worker, entity, or record)
+      check: >-
+        Verify the list key includes a stable identity of the data source (e.g. worker.id) so rows remount cleanly when switching between entities, preventing React from reusing rows and carrying stale local UI state across unrelated lists
+      source: copilot:PR#707
+      added: "2026-07-13"
+      paths:
+        - '**/*.ts'
+        - '**/*.tsx'
+    - id: markdown-code-block-detection
+      category: ui
+      pattern: >-
+        React-markdown custom code/pre renderer that distinguishes block vs inline code by inspecting the language-* className
+      check: >-
+        Verify block-vs-inline code is detected via react-markdown's inline prop rather than the presence of a language-* class, so unlabeled fenced code blocks still render as blocks
+      source: copilot:PR#707
+      added: "2026-07-13"
+      paths:
+        - '**/*.ts'
+        - '**/*.tsx'
+    - id: log-filename-doc-drift
+      category: style
+      pattern: >-
+        A doc comment, log message, changelog fragment, or documentation string describes a generated log/artifact filename or naming scheme (e.g. `temper-<ts>.log`, `smith-<unixtime>.log`, `warden-<ts>-<seq>.log`) near code that constructs that filename
+      check: >-
+        Verify the documented filename format matches exactly what the code produces — the timestamp unit (time.Now().Unix() seconds vs UnixMilli() milliseconds) and every component such as a sequence suffix — and that it stays consistent with sibling stage-log naming. When units or formats change, update the placeholder or switch to a unit-agnostic one rather than leaving a stale example.
+      source: copilot:PR#708
+      added: "2026-07-13"
+      paths:
+        - '**/*.go'
+        - '**/*.md'
+    - id: avoid-string-to-bytes-copy-on-write
+      category: performance
+      pattern: >-
+        os.WriteFile(path, []byte(builder.String()), ...) or similar conversion of a large string/strings.Builder into []byte just to write it to a file
+      check: >-
+        Verify that large output is written via os.Create + File.WriteString (or io.WriteString) instead of converting the string to []byte, avoiding an unnecessary full-size allocation and copy
+      source: copilot:PR#708
+      added: "2026-07-13"
+      paths:
+        - '**/*.go'
+    - id: stale-api-reference-comment
+      category: style
+      pattern: >-
+        A code comment or docstring names a specific function/method/API entrypoint (e.g. smith.SpawnWithProvider) while the surrounding code calls a different one (e.g. smith.SpawnWithOptions)
+      check: >-
+        Verify comments reference the API the current code actually calls; when a call site is renamed or switched to a new entrypoint, update the nearby comments so readers aren't misled about behavior like provider fallback or logging.
+      source: copilot:PR#708
+      added: "2026-07-13"
+      paths:
+        - '**/*.go'
+    - id: preserve-logs-before-cleanup
+      category: error-handling
+      pattern: >-
+        A log/transcript file is written under a temporary directory that is later removed (e.g. defer os.RemoveAll(workDir)) while its path is stored in the DB or captured via a configured LogDir
+      check: >-
+        Verify the file is copied to a durable location (the worktree's .forge-logs or ~/.forge/logs/<beadID>/) before the temp dir is cleaned up — matching how the primary Run() path persists logs — so persisted logPath references stay valid and transcripts aren't lost to temp-dir cleanup.
+      source: copilot:PR#708
+      added: "2026-07-13"
+      paths:
+        - '**/*.go'
+    - id: stream-large-output-to-file
+      category: performance
+      pattern: >-
+        Building an entire file's content in a strings.Builder (or similar in-memory buffer) before writing to disk, especially when the source data (e.g. per-step build/test output) is already held in memory
+      check: >-
+        Verify large or unbounded output is streamed directly to the file (e.g. bufio.Writer + fmt.Fprintf) rather than fully accumulated in memory first, to avoid duplicating the full content and inflating peak memory on constrained hosts
+      source: copilot:PR#708
+      added: "2026-07-13"
+      paths:
+        - '**/*.go'
+    - id: path-traversal-filename-sanitization
+      category: security
+      pattern: >-
+        A caller-supplied or external string (prefix, name, ID) is interpolated into a filesystem path via filepath.Join or fmt.Sprintf, relying on filepath.Base (or similar) to sanitize it — especially on a newly exported API
+      check: >-
+        Verify the input is reduced to a safe basename before joining: normalize both '/' and '\' separators first (matching the sanitization used elsewhere, e.g. preserveWorktreeLogs), strip '..', and reject separator-only inputs like "/" or "///" that make filepath.Base return a separator and turn the joined path absolute. Validate that the result stays inside the intended base directory.
+      source: copilot:PR#708
+      added: "2026-07-13"
+      paths:
+        - '**/*.go'
+    - id: path-sanitization-separator-prefix-test
+      category: testing
+      pattern: >-
+        Tests for a function that sanitizes user-controlled strings into file paths via filepath.Join, covering cases like ".." and nested paths
+      check: >-
+        Verify the tests also cover prefixes that are bare path separators ("/", "///"), since filepath.Join can turn these into absolute paths and escape the intended directory
+      source: copilot:PR#708
+      added: "2026-07-13"
+      paths:
+        - '**/*.go'
+    - id: timestamp-filename-collision
+      category: concurrency
+      pattern: >-
+        A log or output filename is built from a timestamp (e.g. time.Now().Unix() or time.Now().UnixMilli()) and created with a truncating open such as os.Create
+      check: >-
+        Verify rapid successive or concurrent runs cannot produce the same filename within the timestamp's resolution. Use sub-second resolution plus a uniqueness discriminator (sequence counter, PID, random suffix, per-run ID) or O_EXCL/append, so an earlier transcript isn't silently overwritten and lost.
+      source: copilot:PR#708
+      added: "2026-07-13"
+      paths:
+        - '**/*.go'
+    - id: unchecked-buffered-writer-flush
+      category: error-handling
+      pattern: >-
+        A buffered writer (e.g. bufio.Writer) flushed via a deferred call whose error is discarded, especially in code documented as logging errors on a best-effort basis
+      check: >-
+        Verify that Flush/Close/write errors from the buffered writer are captured and logged rather than silently ignored, so a mid-write failure (e.g. disk full) does not silently drop data and contradict the stated best-effort logging behavior
+      source: copilot:PR#708
+      added: "2026-07-13"
+      paths:
+        - '**/*.go'
+    - id: scoped-interrupt-lifetime
+      category: concurrency
+      pattern: >-
+        A cancellation/interrupt signal is armed before a long operation but cleared via defer, keeping it wired for the entire remaining function body including post-operation work
+      check: >-
+        Verify the interrupt/cancellation is scoped to only the operation it should affect (set immediately before, cleared immediately after that operation returns) rather than deferred, so late signals cannot cancel unrelated post-operation work like PR creation or finalization
+      source: copilot:PR#709
+      added: "2026-07-13"
+      paths:
+        - '**/*.go'
+    - id: defer-lifecycle-symmetry-order
+      category: concurrency
+      pattern: >-
+        Multiple `defer` statements tear down paired lifecycle state for the same entity (e.g. an in-flight/active marker and a control-handle registration) as separate deferred calls
+      check: >-
+        Verify the LIFO defer order never exposes a transient inconsistent state — the in-flight marker must not outlive its companion handle, and no window may exist where work is still marked active but its handle is already deregistered. Prefer combining tightly-coupled cleanups into a single deferred func with explicit ordering, and confirm that ordering matches any comment describing it.
+      source: copilot:PR#709
+      added: "2026-07-13"
+      paths:
+        - '**/*.go'
+    - id: register-control-handle-at-reservation
+      category: concurrency
+      pattern: >-
+        A control/steer handle (or similar per-bead coordination object) is registered at a different site — or in a separate statement — from where the bead is marked in-flight via activeBeads.LoadOrStore
+      check: >-
+        Verify the handle is registered at the same point as the in-flight reservation on every path (poll loop, IPC run_bead handler, dispatchBead), ideally through one shared reserve/release helper holding a single lock, so a lookup can't return false for a bead that already reports as "dispatched" and a rapid follow-up steer/interrupt can't fail. If a transient "no handle yet" window is accepted instead, confirm the IPC/lookup layer tolerates it and that the surrounding comments describe the real ordering.
+      source: copilot:PR#709
+      added: "2026-07-13"
+      paths:
+        - '**/*.go'
+    - id: changelog-no-overpromise
+      category: other
+      pattern: >-
+        A changelog.d fragment describes a new user-facing capability (e.g. pause/cancel via IPC) while the PR only adds foundational plumbing — registries, accessors, interrupt hooks, wiring — that no user-facing surface calls yet
+      check: >-
+        Confirm the changelog wording claims only what the diff actually exposes to users: it must not announce IPC commands, pause/cancel behavior, or other capabilities that aren't implemented, and should frame scaffolding-only work as groundwork for upcoming functionality rather than a finished feature.
+      source: copilot:PR#709
+      added: "2026-07-13"
+      paths:
+        - 'changelog.d/**'
+    - id: misleading-atomicity-comment
+      category: concurrency
+      pattern: >-
+        A code, struct, or doc comment asserts an atomicity or no-gap invariant (e.g. "registered atomically", "no window where the bead is active but has no handle") about shared concurrent state such as a sync.Map, handle registry, or activeBeads reservation
+      check: >-
+        Trace where the state is actually reserved versus where the handle is registered and deregistered. The comment is only accurate if the operations are a single atomic step and every code path mutating that state follows the same invariant; separate statements, a reservation on a different path, or a map reused for another purpose all break it. When the invariant doesn't hold, rewrite the comment to document the real ordering and idempotence instead of implying an atomic update.
+      source: copilot:PR#709
+      added: "2026-07-13"
+      paths:
+        - '**/*.go'
+    - id: publish-before-fully-initialized
+      category: concurrency
+      pattern: >-
+        A struct/handle is inserted into a shared registry or concurrent map (e.g. sync.Map) that other goroutines can read via IPC, API, or poll loops, and one of its fields is assigned afterwards (e.g. ctrl.workerID set after registration)
+      check: >-
+        Verify the object is fully initialized before it is published — pass every field read by other goroutines into the constructor and register only after the prerequisite insert/claim succeeds — or guard post-publication mutations with a mutex/atomic used consistently for both reads and writes, so concurrent lookups never observe a partially-initialized or mutating handle.
+      source: copilot:PR#709
+      added: "2026-07-13"
+      paths:
+        - '**/*.go'
+    - id: deregister-control-handle-on-bead-release
+      category: concurrency
+      pattern: >-
+        A code path releases an in-flight bead slot by deleting from activeBeads directly (e.g. stop_bead, handleQueueStop) instead of going through the central release helper
+      check: >-
+        Verify every path that releases a real bead slot also deregisters the controlHandles entry (use releaseBeadSlot(beadID)), so no stale handle/mailbox/cancel-func reference is leaked and left reachable via IPC
+      source: copilot:PR#709
+      added: "2026-07-13"
+      paths:
+        - '**/*.go'
+    - id: release-slot-by-owner-identity
+      category: concurrency
+      pattern: >-
+        Cleanup code releases a shared resource slot (e.g. an activeBeads entry) and deregisters the associated handle from another map — from a deferred cleanup, a stop/cancel path, or after a Load plus type assertion — where a concurrent dispatcher can re-acquire the slot and register a new handle in between
+      check: >-
+        Verify the teardown is keyed on owner identity, not just the bead/resource ID: deregister the handle before releasing the slot and use CompareAndDelete with the handle the cleanup itself registered (see releaseBeadSlotIfOwner), so a stale cleanup cannot clobber a re-dispatched run's freshly registered handle and cause duplicate dispatch or broken steering. Unconditional Delete after a Load is a race.
+      source: copilot:PR#709
+      added: "2026-07-13"
+      paths:
+        - '**/*.go'
+    - id: test-comment-impl-mismatch
+      category: testing
+      pattern: >-
+        A test contains a comment describing implementation behavior — ordering of operations, or a claim that something is "atomic", "transactional", or done "in one step"
+      check: >-
+        Verify the comment matches the actual implementation: if the code performs separate non-atomic operations (e.g. two independent deletes), the comment must not describe it as atomic. Where the ordering matters, have the test assert it rather than only describing it in prose.
+      source: copilot:PR#709
+      added: "2026-07-13"
+      paths:
+        - '**/*.go'
+    - id: invoke-callback-outside-lock
+      category: concurrency
+      pattern: >-
+        A stored callback (interrupt, cancel, or notify func) is read from shared state guarded by a mutex and then invoked, while another path can clear or replace that same func
+      check: >-
+        Verify the func pointer is read under the lock and invoked only after the lock is released, so a slow or panicking callback cannot deadlock or block concurrent lock users. Do not hold the mutex across the call to close the clear/reset race — defend against a stale callback firing with an identity/generation check, or model the signal as a buffered channel the way controlHandle does.
+      source: copilot:PR#709
+      added: "2026-07-13"
+      paths:
+        - '**/*.go'
+    - id: guard-type-assertions-in-registries
+      category: error-handling
+      pattern: >-
+        An unchecked type assertion (e.g. v.(*T)) on values retrieved from a shared map, registry, or interface{} store — especially one reachable from IPC or external input
+      check: >-
+        Verify the type assertion uses the comma-ok form (val, ok := v.(*T)) and handles the failure by treating unexpected or nil values as 'not found' rather than letting the assertion panic; consider deleting the bad entry
+      source: copilot:PR#709
+      added: "2026-07-13"
+      paths:
+        - '**/*.go'
+    - id: overstated-guarantee-comment
+      category: concurrency
+      pattern: >-
+        Code comments describing concurrency guarantees around interrupt/cancellation cleanup, especially near operations like clearing an interrupt handler after a call returns
+      check: >-
+        Verify the comment accurately reflects the remaining race window — it should say the code *minimizes* or *reduces* the window rather than claiming the race cannot happen, since a gap between the operation returning and the cleanup executing still allows interference
+      source: copilot:PR#709
+      added: "2026-07-13"
+      paths:
+        - '**/*.go'
+    - id: prefer-done-over-steer-in-select
+      category: concurrency
+      pattern: >-
+        A select statement that waits on a process/completion channel (e.g. proc.Done()) alongside a control/steer channel, where both cases may become ready simultaneously
+      check: >-
+        Verify the select explicitly prioritizes the completion/Done channel when it's already closed before consuming a control message (e.g. non-blocking check of Done() first), and defensively handles a closed control channel, so a normally-completed spawn isn't misinterpreted as needing interrupt/resume
+      source: copilot:PR#710
+      added: "2026-07-13"
+      paths:
+        - '**/*.go'
+    - id: closed-channel-buffered-recv
+      category: concurrency
+      pattern: >-
+        A doc comment or code assumes receiving from a closed Go channel immediately returns the zero value / a not-ok sentinel
+      check: >-
+        Verify the description accounts for buffered messages still being delivered with ok==true after close — the not-ok signal only occurs once the channel is both closed AND drained empty
+      source: copilot:PR#711
+      added: "2026-07-13"
+      paths:
+        - '**/*.go'
+    - id: capture-provider-with-session-id
+      category: concurrency
+      pattern: >-
+        Resuming a saved session (e.g. lastSessionID) while selecting the provider separately from the current active provider index, in code where the active provider can advance/fall back independently of the saved session
+      check: >-
+        Verify the provider (or provider index) is captured and stored alongside the session ID when it is recorded, and that the resume uses that captured provider — not the current activeProviderIdx — so a session is never resumed against a provider that didn't create it
+      source: copilot:PR#711
+      added: "2026-07-13"
+      paths:
+        - '**/*.go'
+    - id: ignore-empty-steer-payload
+      category: error-handling
+      pattern: >-
+        Draining or reading an operator/steer message payload and treating any dequeued value (including empty or whitespace-only strings) as a valid message with ok==true
+      check: >-
+        Verify the drain point trims the payload and ignores empty/whitespace-only messages so they don't trigger a spurious resume, extra iteration, or noisy event-log entry with no real operator intent
+      source: copilot:PR#711
+      added: "2026-07-13"
+      paths:
+        - '**/*.go'
+    - id: generic-feedback-source-label
+      category: other
+      pattern: >-
+        Prompt/label text that names a specific source (e.g. "automated review") for feedback that is actually aggregated from multiple pipeline stages (Warden, Temper, other gates)
+      check: >-
+        Verify labels applied to combined PriorFeedback use a source-neutral term rather than attributing it to one stage, so the resume prompt isn't misleading when feedback originates from build/test or other automated gates
+      source: copilot:PR#711
+      added: "2026-07-13"
+      paths:
+        - '**/*.go'
+    - id: sanitize-path-from-db-id
+      category: security
+      pattern: >-
+        Constructing a filesystem path by joining a directory root with an identifier read from the database (e.g. filepath.Join(logsRoot, beadID, ...))
+      check: >-
+        Verify the identifier is sanitized the same way it was when the directory/file was originally created, so the path resolves to the real on-disk name and cannot escape the intended root via '/', '\', or '..' components
+      source: copilot:PR#704
+      added: "2026-07-13"
+      paths:
+        - '**/*.go'
+    - id: scope-sql-query-to-contract
+      category: performance
+      pattern: >-
+        A repair/backfill function scans a broad SQL result set (e.g. all rows with a non-empty column) and then filters or acts in application code based on a narrower contract (e.g. only paths containing .forge-logs)
+      check: >-
+        Verify the SQL query itself is filtered to the function's documented contract so it avoids acting on unrelated rows and avoids unnecessary per-row filesystem/IO work on every run
+      source: copilot:PR#704
+      added: "2026-07-13"
+      paths:
+        - '**/*.go'
+    - id: cross-platform-path-glob
+      category: other
+      pattern: >-
+        SQL LIKE or string matching against file paths using a hardcoded forward-slash separator (e.g. '%/.forge-logs/%'), when those paths are constructed via filepath.Join
+      check: >-
+        Verify path matching handles both separators — filepath.Join yields backslashes on Windows, so a forward-slash-only pattern will never match Windows paths; normalize separators or match both '/' and '\'
+      source: copilot:PR#704
+      added: "2026-07-13"
+      paths:
+        - '**/*.go'
+    - id: regular-file-only-copy
+      category: security
+      pattern: >-
+        Filtering directory entries before copying/serving files using only !IsDir(), then copying with a symlink-following helper (e.g. copyFile)
+      check: >-
+        Verify the filter uses Mode().IsRegular() to exclude symlinks and other non-regular entries, so a crafted symlink cannot cause an arbitrary file to be copied into a served location
+      source: copilot:PR#704
+      added: "2026-07-13"
+      paths:
+        - '**/*.go'
+    - id: portable-base-cross-os-paths
+      category: other
+      pattern: >-
+        Deriving a path basename with filepath.Base on values that may contain Windows-style backslash separators (e.g. log_path from a migrated state.db)
+      check: >-
+        Verify the code uses portableBase (not filepath.Base) so basenames split correctly on both forward slashes and backslashes regardless of the host OS
+      source: copilot:PR#704
+      added: "2026-07-13"
+      paths:
+        - '**/*.go'
+    - id: batch-writes-in-transaction
+      category: performance
+      pattern: >-
+        A loop that issues individual database writes (Exec/INSERT/UPDATE) per row, each in its own implicit transaction
+      check: >-
+        Verify bulk row updates are wrapped in a single explicit transaction (optionally with a prepared statement) for atomicity and to avoid per-row transaction overhead that slows startup and leaves partial progress on mid-loop failure
+      source: copilot:PR#704
+      added: "2026-07-13"
+      paths:
+        - '**/*.go'
+    - id: test-worktree-symlink-skip
+      category: testing
+      pattern: >-
+        New file-handling logic that intentionally skips or filters certain filesystem entries (e.g., symlinks) during copy/preserve operations
+      check: >-
+        Verify a test covers the skip/filter behavior — e.g., creates a symlink in the source dir and asserts it is not copied — and gracefully skips on platforms lacking symlink support
+      source: copilot:PR#704
+      added: "2026-07-13"
+      paths:
+        - '**/*.go'
+    - id: validate-portablebase-basename
+      category: error-handling
+      pattern: >-
+        Deriving a log file target by joining a directory with portableBase(logPath) when claiming/updating a worker row or backfilling dangling log paths
+      check: >-
+        Verify the code computes the basename once and rejects empty, ".", or ".." results before joining, so a malformed log_path ending in a separator can't repoint log_path to a directory or other invalid target
+      source: copilot:PR#704
+      added: "2026-07-13"
+      paths:
+        - '**/*.go'
+    - id: persist-write-error-handling
+      category: error-handling
+      pattern: >-
+        IPC command handler persists state to the DB (e.g. writing dispatch_paused to daemon_settings) after mutating an in-memory flag, but ignores the error returned by the write
+      check: >-
+        Verify that a failed critical persistence write returns an IPC error and reverts the in-memory flag (so the daemon doesn't silently diverge on restart), and that non-critical timestamp/event writes at least log a warning on failure
+      source: copilot:PR#706
+      added: "2026-07-13"
+      paths:
+        - '**/*.go'
+    - id: log-swallowed-errors
+      category: error-handling
+      pattern: >-
+        A function reads a value (e.g. a persisted timestamp or secondary flag) and ignores the returned error, proceeding to parse or use the value only on the happy path
+      check: >-
+        Verify that errors from every read/lookup are captured and at least logged as a warning, not silently dropped, and that dependent parsing only runs when the read succeeded
+      source: copilot:PR#706
+      added: "2026-07-13"
+      paths:
+        - '**/*.go'
+    - id: atomic-value-load-before-store
+      category: concurrency
+      pattern: >-
+        A sync/atomic.Value (or similar lazily-initialized field) whose Load() is reached on some code path — e.g. status/resume handlers or restore-from-persistence logic — before a guaranteed Store()
+      check: >-
+        Verify every path that can call Load() first performs a Store() (including error/fallback branches such as missing, empty, or unparseable persisted values); initialize the atomic to a zero/default value whenever restoring or entering the state so no reader can Load() an unset value and panic
+      source: copilot:PR#706
+      added: "2026-07-13"
+      paths:
+        - '**/*.go'
+    - id: guard-flag-persist-ordering
+      category: concurrency
+      pattern: >-
+        A command handler both flips an in-memory guard flag (e.g. the dispatchPaused atomic) and persists the same state to the DB, as two separate steps
+      check: >-
+        Verify the ordering is fail-safe and matches the daemon convention. When tightening a guard (pause), flip the in-memory flag first so concurrent poll cycles observe the restriction immediately, then persist and revert the flag if the write fails. When relaxing it (resume), persist first and clear the in-memory flag only after the write succeeds, so a failed write can't leave a window where workers act on un-persisted permissive state. Both directions must hold the same mutex for the whole transition.
+      source: copilot:PR#706
+      added: "2026-07-13"
+      paths:
+        - '**/*.go'
+    - id: date-parse-fallback
+      category: error-handling
+      pattern: >-
+        Rendering a backend-provided date string via `new Date(value).toLocaleString()` (or similar) without validating that it parses
+      check: >-
+        Verify the code guards against parse failures (e.g. checks `Date.parse()`/`isNaN`) and falls back to the raw string instead of displaying "Invalid Date", consistent with sibling components
+      source: copilot:PR#706
+      added: "2026-07-13"
+      paths:
+        - '**/*.ts'
+        - '**/*.tsx'
+    - id: logevent-error-ignored
+      category: error-handling
+      pattern: >-
+        A call to LogEvent (or similar event-log recording) whose returned error is ignored, especially where sibling code paths already warn on such failures
+      check: >-
+        Verify the LogEvent error is checked and at least logged as a warning, consistent with other event-logging call sites, so event-log recording failures are observable
+      source: copilot:PR#706
+      added: "2026-07-13"
+      paths:
+        - '**/*.go'
+    - id: jsx-punctuation-whitespace
+      category: ui
+      pattern: >-
+        JSX where punctuation or short text (e.g. a period) follows a closing tag like </strong> on a new line with indentation
+      check: >-
+        Verify that punctuation is kept adjacent to the preceding element/text so JSX whitespace collapsing does not insert an unwanted space before it in the rendered output
+      source: copilot:PR#706
+      added: "2026-07-13"
+      paths:
+        - '**/*.tsx'
+    - id: restore-persisted-state-before-ipc
+      category: concurrency
+      pattern: >-
+        Daemon startup restores persisted state (e.g. dispatch pause) after starting the IPC/web server, or mutates shared state flags without holding a lock
+      check: >-
+        Verify persisted state is restored before IPC/web handlers accept commands so early client requests observe the restored state, and that restore/pause/resume all guard the shared flag with the same lock
+      source: copilot:PR#706
+      added: "2026-07-13"
+      paths:
+        - '**/*.go'
+    - id: async-goroutine-race-in-tests
+      category: testing
+      pattern: >-
+        A test triggers a code path that spawns a background goroutine (e.g. resuming dispatch starts an async pollAndDispatch) on a lightweight or partially-initialized struct, relying on a cancelled context to make the goroutine exit before the deferred db.Close()
+      check: >-
+        Verify the goroutine actually checks ctx.Done() before it touches shared fields or the DB — a cancelled context is not enough when the goroutine does work first. Block it deterministically instead (e.g. pre-set the try-lock/pollRunning guard flag) or wait for it to finish, so the test cannot race with teardown and flake on "sql: database is closed".
+      source: copilot:PR#706
+      added: "2026-07-13"
+      paths:
+        - '**/*.go'
+    - id: hold-lock-until-event-logged
+      category: concurrency
+      pattern: >-
+        A mutex serializing paired state transitions (e.g. pauseMu guarding pause/resume settings and atomics) is released before the corresponding event/history row and persisted flag are written
+      check: >-
+        Verify the lock is held until after the state-change event is logged and any persisted flag is updated, so concurrent opposite transitions cannot interleave and record events out of order relative to the serialized state changes.
+      source: copilot:PR#706
+      added: "2026-07-13"
+      paths:
+        - '**/*.go'
+    - id: steer-persistence-test-coverage
+      category: testing
+      pattern: >-
+        A code path that persists state via a side-effecting call (e.g. recordSteer() writing a bead_steered event and appending notes) but whose test only asserts observable behavior like prompt content
+      check: >-
+        Verify a test asserts the persistence contract on that path — exactly one bead_steered event and exactly one notes append — so regressions in the persistence wiring are caught, not just the resume/prompt behavior
+      source: copilot:PR#712
+      added: "2026-07-13"
+      paths:
+        - '**/*.go'
