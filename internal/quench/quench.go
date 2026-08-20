@@ -45,6 +45,10 @@ type FixParams struct {
 	PRNumber int
 	// Branch name for the PR.
 	Branch string
+	// BaseBranch is the branch the PR merges into. It is the base of the
+	// diff Temper gates its steps on; empty means "auto-detect"
+	// (origin/main, then origin/master).
+	BaseBranch string
 	// DB for state tracking.
 	DB *state.DB
 	// WorkerID is the state DB worker ID, used to update the log path
@@ -278,6 +282,39 @@ var temperRunFn = func(ctx context.Context, worktreePath string, cfg temper.Conf
 	return temper.Run(ctx, worktreePath, cfg, db, beadID, anvil)
 }
 
+// changedFilesFn computes the changed-file list Temper gates its steps on.
+// Package-level so tests can substitute a stub.
+var changedFilesFn = temper.ChangedFilesForBase
+
+// resolveChangedFiles returns the files this PR branch changed against its
+// base, or nil when they cannot be computed.
+//
+// Nil means "unknown" to Temper, which runs every step — so this fails OPEN,
+// exactly as the pipeline does. A git failure says nothing about the diff, and
+// gating on a list that could not be read would skip steps that should have
+// run; running everything only costs time.
+func resolveChangedFiles(ctx context.Context, p FixParams) []string {
+	files, err := changedFilesFn(ctx, p.WorktreePath, p.BaseBranch)
+	if err != nil {
+		log.Printf("[quench] PR #%d: WARN could not compute changed files for Temper gating (%v) — running all steps",
+			p.PRNumber, err)
+		return nil
+	}
+	return files
+}
+
+// logSkippedSteps names the steps changed-file gating skipped, so a skip is
+// distinguishable from a pass in the quench log rather than reading as a
+// Temper run that covered more than it did.
+func logSkippedSteps(p FixParams, r *temper.Result) {
+	skipped := temper.SkippedStepNames(r)
+	if len(skipped) == 0 {
+		return
+	}
+	log.Printf("[quench] PR #%d: %d step(s) skipped by changed-file gating: %s",
+		p.PRNumber, len(skipped), strings.Join(skipped, ", "))
+}
+
 // smithSpawnFn is the function used to spawn Smith. Package-level variable for test stubbing.
 var smithSpawnFn = func(ctx context.Context, worktreePath, prompt, logDir string, pv provider.Provider, extraFlags []string) (*smith.Process, error) {
 	return smith.SpawnWithOptions(ctx, worktreePath, prompt, logDir, pv, extraFlags, smith.SpawnOptions{LogPrefix: "quench"})
@@ -320,11 +357,22 @@ func Fix(ctx context.Context, p FixParams) *FixResult {
 		}
 
 		// Step 2: Run Temper to reproduce failures locally.
-		temperCfg := p.TemperConfig
-		if temperCfg == nil {
-			detected := temper.DefaultConfigWithRace(p.WorktreePath, p.DetectOptions, p.GoRaceDetection)
-			temperCfg = &detected
+		//
+		// Copy the resolved config rather than mutating it: p.TemperConfig is
+		// the anvil's shared config, and the changed-file list stamped below
+		// belongs to this PR alone.
+		var temperCfg temper.Config
+		if p.TemperConfig != nil {
+			temperCfg = *p.TemperConfig
+		} else {
+			temperCfg = temper.DefaultConfigWithRace(p.WorktreePath, p.DetectOptions, p.GoRaceDetection)
 		}
+		// Gate the steps on what this PR branch actually changed. A nil list
+		// means "unknown" to Temper and disables path filtering entirely, so
+		// without this even steps that DO declare `paths` ran unconditionally
+		// — the whole backend suite re-run for a frontend-only CI failure.
+		// Recomputed per attempt because Smith rewrites files between them.
+		temperCfg.ChangedFiles = resolveChangedFiles(ctx, p)
 
 		hEnv := hooks.HookEnv{
 			BeadID:       p.BeadID,
@@ -340,10 +388,11 @@ func Fix(ctx context.Context, p FixParams) *FixResult {
 			result.Duration = time.Since(start)
 			return result
 		}
-		temperResult := temperRunFn(ctx, p.WorktreePath, *temperCfg, p.DB, p.BeadID, p.AnvilName)
+		temperResult := temperRunFn(ctx, p.WorktreePath, temperCfg, p.DB, p.BeadID, p.AnvilName)
 		if err := hookRunFn(ctx, p.WorkerID, "after_temper", hooks.HookCmd(p.Hooks, "after_temper"), hEnv); err != nil {
 			log.Printf("[quench] PR #%d: after_temper hook failed (non-fatal): %v", p.PRNumber, err)
 		}
+		logSkippedSteps(p, temperResult)
 		result.LastTemperResult = temperResult
 
 		if temperResult.Passed {
@@ -483,10 +532,15 @@ func Fix(ctx context.Context, p FixParams) *FixResult {
 			result.Duration = time.Since(start)
 			return result
 		}
-		verifyResult := temperRunFn(ctx, p.WorktreePath, *temperCfg, p.DB, p.BeadID, p.AnvilName)
+		// Re-derive the changed-file list: Smith committed a fix between the
+		// reproduce run above and this one, and a file it ADDED must not be
+		// missed by the path filters that decide which steps verify it.
+		temperCfg.ChangedFiles = resolveChangedFiles(ctx, p)
+		verifyResult := temperRunFn(ctx, p.WorktreePath, temperCfg, p.DB, p.BeadID, p.AnvilName)
 		if err := hookRunFn(ctx, p.WorkerID, "after_temper", hooks.HookCmd(p.Hooks, "after_temper"), verifyEnv); err != nil {
 			log.Printf("[quench] PR #%d: after_temper hook failed (non-fatal): %v", p.PRNumber, err)
 		}
+		logSkippedSteps(p, verifyResult)
 		result.LastTemperResult = verifyResult
 
 		if verifyResult.Passed {

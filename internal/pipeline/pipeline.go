@@ -2367,16 +2367,15 @@ func Run(ctx context.Context, p Params) *Outcome {
 
 		// Recompute the changed-file list every iteration so that files added
 		// by Smith in later iterations are not silently missed by path filters.
-		// Resolve the base ref the same way as the worktree manager: try
-		// origin/main first, then fall back to origin/master.
-		baseRef := resolveTemperBaseRef(ctx, wt.Path, wt.BaseBranch)
-		if baseRef != "" {
-			changed, err := temper.ChangedFilesFromGit(ctx, wt.Path, baseRef)
-			if err != nil {
-				log.Printf("[pipeline:%s] Warning: could not compute changed files for path filtering: %v", workerID, err)
-			} else {
-				iterTemperCfg.ChangedFiles = changed
-			}
+		// temper.ChangedFilesForBase resolves the base ref the same way as the
+		// worktree manager (origin/main, then origin/master) — and the same way
+		// burnish and quench resolve it, so one diff is never gated two ways.
+		// On any failure the list stays nil, which runs every step.
+		changed, err := temper.ChangedFilesForBase(ctx, wt.Path, wt.BaseBranch)
+		if err != nil {
+			log.Printf("[pipeline:%s] Warning: could not compute changed files for path filtering: %v", workerID, err)
+		} else {
+			iterTemperCfg.ChangedFiles = changed
 		}
 
 		temperResult := runTemper(ctx, wt.Path, iterTemperCfg, p.DB, p.Bead.ID, p.AnvilName)
@@ -2794,41 +2793,15 @@ func gitRevParseHEAD(worktreePath string) string {
 	return strings.TrimSpace(string(out))
 }
 
-// resolveTemperBaseRef returns the git ref to use as the base for computing
-// changed files for Temper path filtering. When baseBranch is set explicitly
-// it is used directly (as "origin/<baseBranch>"). Otherwise it mirrors the
-// worktree manager's auto-detection: try origin/main, then origin/master.
-// Returns an empty string if no valid ref is found.
-//
-// The candidate probes run with the git repo-location env vars stripped (see
-// executil.CleanGitEnv) so a daemon that itself lives in a git worktree cannot
-// have its own repository answer for the anvil's — an inherited GIT_DIR makes
-// `git -C <worktree> rev-parse` resolve origin/main from the ambient repo, and
-// Temper would then filter paths against a base ref belonging to a different
-// repository.
-func resolveTemperBaseRef(ctx context.Context, worktreePath, baseBranch string) string {
-	if baseBranch != "" {
-		return "origin/" + baseBranch
-	}
-	for _, candidate := range []string{"origin/main", "origin/master"} {
-		cmd := executil.HideWindow(exec.CommandContext(ctx, "git", "-C", worktreePath, "rev-parse", "--verify", candidate))
-		cmd.Env = executil.CleanGitEnv()
-		if err := cmd.Run(); err == nil {
-			return candidate
-		}
-	}
-	return ""
-}
-
 // resolveBaseRef returns the remote-tracking ref the worktree's branch will be
 // merged into: "origin/<baseBranch>" when a base branch is known (e.g. a
 // Crucible child targeting its epic branch), otherwise origin/main or
 // origin/master, whichever exists. Returns an empty string when none resolves.
 //
-// Like resolveTemperBaseRef this runs with the git repo-location env vars
+// Like temper.ResolveBaseRef this runs with the git repo-location env vars
 // stripped, so a daemon that itself lives in a git worktree cannot have its own
-// repository answer for the anvil's. Unlike resolveTemperBaseRef it also verifies an
-// explicitly configured base branch instead of trusting it.
+// repository answer for the anvil's. Unlike temper.ResolveBaseRef it also verifies
+// an explicitly configured base branch instead of trusting it.
 func resolveBaseRef(ctx context.Context, worktreePath, baseBranch string) string {
 	verify := func(ref string) bool {
 		cmd := executil.HideWindow(exec.CommandContext(ctx, "git", "-C", worktreePath, "rev-parse", "--verify", ref))

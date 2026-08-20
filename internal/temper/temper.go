@@ -90,13 +90,27 @@ type StepResult struct {
 	// Optional mirrors the Step.Optional flag — failure here does not fail
 	// the overall check. Surfaced so summaries can render it distinctly.
 	Optional bool
-	// Skipped is true when the step was skipped because no changed files
-	// matched its Paths globs.
+	// Skipped is true when the step did not run at all — either because no
+	// changed file matched its Paths globs or because Temper blocked it.
 	Skipped bool
+	// SkipReason names why a skipped step did not run, so a caller reading
+	// the result can tell a path-gated skip from a blocked one. Empty for
+	// steps that ran.
+	SkipReason string
 	// Classification categorises a failure (test_failure/build_error/timeout/
 	// infra). Empty for passed or skipped steps.
 	Classification Classification
 }
+
+// Skip reasons recorded on a StepResult that did not run.
+const (
+	// SkipReasonPathFilter means no changed file matched the step's Paths
+	// globs, so running it could not have told the caller anything.
+	SkipReasonPathFilter = "changed-file gating"
+	// SkipReasonBlockedInstall means Temper refused to run a destructive
+	// npm install against a linked node_modules.
+	SkipReasonBlockedInstall = "blocked destructive npm install"
+)
 
 // Result is the overall Temper verification result.
 type Result struct {
@@ -115,6 +129,23 @@ type Result struct {
 	Classification Classification
 	// Summary is a human-readable summary of the verification.
 	Summary string
+}
+
+// SkippedStepNames returns the names of the steps that were skipped because
+// no changed file matched their Paths globs. Callers that run Temper outside
+// the pipeline (burnish, quench) log these so a skip reads as a skip in their
+// own logs rather than as a step that quietly passed.
+func SkippedStepNames(r *Result) []string {
+	if r == nil {
+		return nil
+	}
+	var names []string
+	for _, s := range r.Steps {
+		if s.Skipped && s.SkipReason == SkipReasonPathFilter {
+			names = append(names, s.Name)
+		}
+	}
+	return names
 }
 
 // Step defines a verification step to run.
@@ -421,6 +452,14 @@ func verifyCleanCheck(ctx context.Context, worktreePath string, pathspecs []stri
 // It returns an error if git fails or times out, so callers can log a warning
 // and distinguish "no changes" from "couldn't compute changes".
 //
+// Deletions and renames are both represented by their old path as well as
+// their new one, because a step is gated on the files the diff TOUCHES, not on
+// the files that survive it: deleting the last .cs file in a project, or moving
+// a Go file out of the tree, changes what builds just as much as editing it
+// does. A deletion already names its (only) path, but rename detection would
+// otherwise report a move as the destination alone — so --no-renames is passed
+// and a move is reported as a delete plus an add, naming both sides.
+//
 // Like verifyCleanCheck it runs with the git repo-location env vars stripped:
 // an inherited GIT_DIR would otherwise make the diff describe the ambient
 // repository's files instead of the worktree's.
@@ -428,11 +467,11 @@ func ChangedFilesFromGit(ctx context.Context, worktreePath, baseBranch string) (
 	if baseBranch == "" {
 		return nil, nil
 	}
-	cmd := executil.HideWindow(exec.CommandContext(ctx, "git", "-C", worktreePath, "diff", "--name-only", baseBranch+"..HEAD"))
+	cmd := executil.HideWindow(exec.CommandContext(ctx, "git", "-C", worktreePath, "diff", "--name-only", "--no-renames", baseBranch+"..HEAD"))
 	cmd.Env = executil.CleanGitEnv()
 	out, err := cmd.Output()
 	if err != nil {
-		return nil, fmt.Errorf("git diff --name-only %s..HEAD: %w", baseBranch, err)
+		return nil, fmt.Errorf("git diff --name-only --no-renames %s..HEAD: %w", baseBranch, err)
 	}
 	var files []string
 	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
@@ -489,11 +528,12 @@ func Run(ctx context.Context, worktreePath string, cfg Config, db *state.DB, bea
 		if len(step.Paths) > 0 && cfg.ChangedFiles != nil && !matchesChangedFiles(step.Paths, cfg.ChangedFiles) {
 			log.Printf("[temper] Skipping step %q: no changed files match paths %v", step.Name, step.Paths)
 			result.Steps = append(result.Steps, StepResult{
-				Name:     step.Name,
-				Command:  fmt.Sprintf("%s %s", step.Command, strings.Join(step.Args, " ")),
-				Passed:   true,
-				Skipped:  true,
-				Optional: step.Optional,
+				Name:       step.Name,
+				Command:    fmt.Sprintf("%s %s", step.Command, strings.Join(step.Args, " ")),
+				Passed:     true,
+				Skipped:    true,
+				SkipReason: SkipReasonPathFilter,
+				Optional:   step.Optional,
 			})
 			continue
 		}
@@ -506,13 +546,14 @@ func Run(ctx context.Context, worktreePath string, cfg Config, db *state.DB, bea
 			if isNodeModulesLinked(stepDir) {
 				log.Printf("[temper] Blocking step %q: node_modules is a symlink/junction and %s %s would destroy the linked target", step.Name, step.Command, strings.Join(step.Args, " "))
 				result.Steps = append(result.Steps, StepResult{
-					Name:     step.Name,
-					Command:  fmt.Sprintf("%s %s", step.Command, strings.Join(step.Args, " ")),
-					ExitCode: -1,
-					Output:   fmt.Sprintf("Blocked: node_modules in %s is a symlink or junction pointing to the main checkout. Running %q would destroy the shared node_modules. Remove this step from your temper configuration — dependencies are already available via the junction.", stepDir, step.Command+" "+strings.Join(step.Args, " ")),
-					Passed:   true,
-					Skipped:  true,
-					Optional: step.Optional,
+					Name:       step.Name,
+					Command:    fmt.Sprintf("%s %s", step.Command, strings.Join(step.Args, " ")),
+					ExitCode:   -1,
+					Output:     fmt.Sprintf("Blocked: node_modules in %s is a symlink or junction pointing to the main checkout. Running %q would destroy the shared node_modules. Remove this step from your temper configuration — dependencies are already available via the junction.", stepDir, step.Command+" "+strings.Join(step.Args, " ")),
+					Passed:     true,
+					Skipped:    true,
+					SkipReason: SkipReasonBlockedInstall,
+					Optional:   step.Optional,
 				})
 				continue
 			}
@@ -816,6 +857,79 @@ func dotnetTestHostCrashTolerable(output string) bool {
 	return dotnetTestPassedSummaryRE.MatchString(output)
 }
 
+// Default `paths` globs attached to auto-detected steps so changed-file gating
+// works on an anvil that has configured nothing. They are deliberately WIDER
+// than the files a compiler reads: the cost of a false match is one step that
+// runs unnecessarily, and the cost of a miss is a verification that reports
+// PASS over code it never looked at. So each set covers sources, the manifests
+// that pin their dependencies, and the fixture trees their tests read.
+//
+// Explicit `temper.steps` from an anvil's config never pass through here — a
+// step that declares no `paths` there still runs unconditionally, as before.
+var (
+	// defaultGoPaths gates the Go build/vet/lint/test steps. `**/go.mod`
+	// (not just the root one) covers multi-module repos, testdata is in
+	// because Go tests read fixtures from it, and the cgo/assembly
+	// extensions are in because `go build` compiles them.
+	defaultGoPaths = []string{
+		"**/*.go",
+		"**/go.mod",
+		"**/go.sum",
+		"go.work",
+		"go.work.sum",
+		"**/testdata/**",
+		"**/*.s",
+		"**/*.c",
+		"**/*.h",
+	}
+	// defaultDotnetPaths gates the `dotnet build` / `dotnet test` steps.
+	// Beyond C# sources it covers the project/solution files, the MSBuild
+	// fragments they import (Directory.Build.props/targets and friends),
+	// the Razor/Blazor view formats that compile into the assembly, the
+	// settings files a test host loads, and the resource files the
+	// compiler embeds.
+	defaultDotnetPaths = []string{
+		"**/*.cs",
+		"**/*.csproj",
+		"**/*.vb",
+		"**/*.vbproj",
+		"**/*.fs",
+		"**/*.fsproj",
+		"*.sln",
+		"**/*.sln",
+		"**/*.slnx",
+		"**/*.props",
+		"**/*.targets",
+		"**/appsettings*.json",
+		"**/*.razor",
+		"**/*.cshtml",
+		"**/*.resx",
+		"**/nuget.config",
+		"**/NuGet.config",
+		"**/packages.lock.json",
+	}
+)
+
+// nodeDirPaths returns the default `paths` globs for a detected Node project
+// rooted at dir.
+//
+// A project in a SUBDIRECTORY is gated on that whole subtree: everything the
+// build and test scripts read lives under it, and gating on the directory
+// rather than on a file-extension list means a config format nobody enumerated
+// still triggers the step.
+//
+// A project at the repository ROOT is left ungated (nil). "Everything under
+// the root" is every file in the repo, so the glob would be pure overhead —
+// and, more importantly, a root-level Node project has no directory boundary
+// separating its inputs from anything else in the repo, so there is no
+// conservative subset to gate on.
+func nodeDirPaths(dir string) []string {
+	if dir == "" {
+		return nil
+	}
+	return []string{dir + "/**"}
+}
+
 // detectSteps auto-detects project type and returns appropriate steps.
 func detectSteps(worktreePath string, opts *DetectOptions, goRace bool) []Step {
 	var steps []Step
@@ -827,12 +941,14 @@ func detectSteps(worktreePath string, opts *DetectOptions, goRace bool) []Step {
 			Command: "go",
 			Args:    []string{"build", "./..."},
 			Timeout: 3 * time.Minute,
+			Paths:   defaultGoPaths,
 		})
 		steps = append(steps, Step{
 			Name:    "vet",
 			Command: "go",
 			Args:    []string{"vet", "./..."},
 			Timeout: 2 * time.Minute,
+			Paths:   defaultGoPaths,
 		})
 
 		// golangci-lint: optional step, skipped if binary not found or disabled
@@ -845,6 +961,7 @@ func detectSteps(worktreePath string, opts *DetectOptions, goRace bool) []Step {
 					Args:     []string{"run", "./..."},
 					Timeout:  3 * time.Minute,
 					Optional: true,
+					Paths:    defaultGoPaths,
 				})
 			}
 		}
@@ -854,6 +971,7 @@ func detectSteps(worktreePath string, opts *DetectOptions, goRace bool) []Step {
 			Command: "go",
 			Args:    []string{"test", "-short", "./..."},
 			Timeout: 5 * time.Minute,
+			Paths:   defaultGoPaths,
 		})
 		if goRace {
 			steps = append(steps, Step{
@@ -861,6 +979,7 @@ func detectSteps(worktreePath string, opts *DetectOptions, goRace bool) []Step {
 				Command: "go",
 				Args:    []string{"test", "-race", "-short", "./..."},
 				Timeout: 10 * time.Minute,
+				Paths:   defaultGoPaths,
 			})
 		}
 	}
@@ -872,12 +991,14 @@ func detectSteps(worktreePath string, opts *DetectOptions, goRace bool) []Step {
 			Command: "dotnet",
 			Args:    []string{"build", "--no-restore"},
 			Timeout: 3 * time.Minute,
+			Paths:   defaultDotnetPaths,
 		})
 		steps = append(steps, Step{
 			Name:    "test",
 			Command: "dotnet",
 			Args:    []string{"test", "--no-build"},
 			Timeout: 5 * time.Minute,
+			Paths:   defaultDotnetPaths,
 		})
 	}
 
@@ -896,6 +1017,7 @@ func detectSteps(worktreePath string, opts *DetectOptions, goRace bool) []Step {
 			Dir:      dir,
 			Timeout:  2 * time.Minute,
 			Optional: true, // lint might not be configured
+			Paths:    nodeDirPaths(nodeDir),
 		})
 		// When the test:run script invokes Vitest, pass through worker-cap
 		// flags via `npm run ... --` so the pool stays single-threaded. See
@@ -912,6 +1034,7 @@ func detectSteps(worktreePath string, opts *DetectOptions, goRace bool) []Step {
 			Dir:      dir,
 			Timeout:  5 * time.Minute,
 			Optional: true, // test script might not exist
+			Paths:    nodeDirPaths(nodeDir),
 		})
 	}
 

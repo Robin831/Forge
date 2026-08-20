@@ -82,6 +82,10 @@ type FixParams struct {
 	PRNumber int
 	// Branch name for the PR.
 	Branch string
+	// BaseBranch is the branch the PR merges into. It is the base of the
+	// diff verification gates its steps on; empty means "auto-detect"
+	// (origin/main, then origin/master).
+	BaseBranch string
 	// DB for state tracking.
 	DB *state.DB
 	// WorkerID is the state DB worker ID, used to update the log path
@@ -164,6 +168,10 @@ type BatchFixParams struct {
 	PRNumber int
 	// Branch name for the PR.
 	Branch string
+	// BaseBranch is the branch the PR merges into. It is the base of the
+	// diff verification gates its steps on; empty means "auto-detect"
+	// (origin/main, then origin/master).
+	BaseBranch string
 	// DB for state tracking.
 	DB *state.DB
 	// WorkerID is the state DB worker ID.
@@ -325,6 +333,7 @@ func BatchFix(ctx context.Context, p BatchFixParams) *FixResult {
 		beadID:       p.BeadID,
 		anvilName:    p.AnvilName,
 		branch:       p.Branch,
+		baseBranch:   p.BaseBranch,
 		worktreePath: p.WorktreePath,
 		workerID:     p.WorkerID,
 		db:           p.DB,
@@ -680,6 +689,7 @@ func Fix(ctx context.Context, p FixParams) *FixResult {
 			beadID:       p.BeadID,
 			anvilName:    p.AnvilName,
 			branch:       p.Branch,
+			baseBranch:   p.BaseBranch,
 			worktreePath: p.WorktreePath,
 			workerID:     p.WorkerID,
 			db:           p.DB,
@@ -916,6 +926,7 @@ type verifyParams struct {
 	beadID       string
 	anvilName    string
 	branch       string
+	baseBranch   string
 	worktreePath string
 	workerID     string
 	db           *state.DB
@@ -932,6 +943,16 @@ type verifyParams struct {
 // — and doing so before falling back to an unverified push means the fallback
 // stays rare enough to be worth escalating when it happens.
 func runVerifyRetrying(ctx context.Context, vp verifyParams, cfg temper.Config) (verifyOutcome, int) {
+	// Gate the steps on what this PR branch actually changed. Without this the
+	// config carries a nil ChangedFiles, which Temper reads as "unknown" and
+	// which disables path filtering outright — so a one-line frontend fix on a
+	// mixed-stack anvil ran the whole backend suite and spent the verification
+	// budget on code the diff never touched. Recomputed here rather than once
+	// per burnish run because Smith rewrites files between attempts, and the
+	// timeout retries below reuse the same list because they re-verify the
+	// same tree.
+	cfg.ChangedFiles = resolveChangedFiles(ctx, vp)
+
 	runs := 0
 	var outc verifyOutcome
 	for attempt := 0; attempt <= vp.retries; attempt++ {
@@ -948,6 +969,7 @@ func runVerifyRetrying(ctx context.Context, vp verifyParams, cfg temper.Config) 
 		outc = runVerifyWithTimeout(ctx, vp.prNumber, vp.beadID, vp.anvilName, vp.worktreePath, cfg, vp.db, vp.timeout)
 		runs++
 		if !outc.timedOut {
+			logSkippedSteps(vp, outc.result)
 			return outc, runs
 		}
 		// An outer cancellation will never produce a different answer, and
@@ -957,6 +979,39 @@ func runVerifyRetrying(ctx context.Context, vp verifyParams, cfg temper.Config) 
 		}
 	}
 	return outc, runs
+}
+
+// changedFilesFn computes the changed-file list verification gates its steps
+// on. Package-level so tests can substitute a stub.
+var changedFilesFn = temper.ChangedFilesForBase
+
+// resolveChangedFiles returns the files this PR branch changed against its
+// base, or nil when they cannot be computed.
+//
+// Nil means "unknown" to Temper, which runs every step — so this fails OPEN,
+// exactly as the pipeline does. A git failure says nothing about the diff, and
+// gating on a list that could not be read would skip steps that should have
+// run; running everything only costs time.
+func resolveChangedFiles(ctx context.Context, vp verifyParams) []string {
+	files, err := changedFilesFn(ctx, vp.worktreePath, vp.baseBranch)
+	if err != nil {
+		log.Printf("[burnish] PR #%d bead=%s: WARN could not compute changed files for verification gating (%v) — running all steps",
+			vp.prNumber, vp.beadID, err)
+		return nil
+	}
+	return files
+}
+
+// logSkippedSteps names the steps changed-file gating skipped, so a skip is
+// distinguishable from a pass in the burnish log rather than reading as a
+// verification that covered more than it did.
+func logSkippedSteps(vp verifyParams, r *temper.Result) {
+	skipped := temper.SkippedStepNames(r)
+	if len(skipped) == 0 {
+		return
+	}
+	log.Printf("[burnish] PR #%d bead=%s: %d step(s) skipped by changed-file gating: %s",
+		vp.prNumber, vp.beadID, len(skipped), strings.Join(skipped, ", "))
 }
 
 // resolveVerifyTimeoutOutcome decides what happens to a finished fix commit
