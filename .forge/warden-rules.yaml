@@ -7666,7 +7666,7 @@ rules:
       source: copilot:PR#709
       added: "2026-07-13"
       paths:
-        - 'changelog.d/**'
+        - changelog.d/**
     - id: misleading-atomicity-comment
       category: concurrency
       pattern: >-
@@ -7988,3 +7988,53 @@ rules:
       added: "2026-07-13"
       paths:
         - '**/*.go'
+    - id: warden-rule-paths-match-check-scope
+      category: style
+      pattern: >-
+        A warden rule in .forge/warden-rules.yaml whose `paths` globs include file types (e.g. **/*.css, **/*.html, **/*.js) that cannot contain the code its `check` text is about (e.g. Go-only dispatch/claim logic)
+      check: >-
+        Verify each rule's `paths` are constrained to the languages/file types where the checked code can actually appear (e.g. Go plus optionally markdown for backend rules); since rule filtering combines `paths` with a category+pattern grep heuristic, over-broad paths let backend-only rules fire on unrelated frontend diffs that merely contain common words like "status".
+      source: copilot:PR#682
+      added: "2026-08-20"
+      paths:
+        - '**/*.yaml'
+    - id: warden-rule-path-scope-matches-check
+      category: other
+      pattern: >-
+        A warden rule in .forge/warden-rules.yaml whose `paths` globs include file types (e.g. Go `**/*.mod`, `**/*.sum`) that the rule's `check` text does not actually address (e.g. a Node package.json/lockfile check)
+      check: >-
+        Verify every `paths` glob on a review rule corresponds to the ecosystem and file types the rule text describes; either narrow the paths to the relevant file types only, or broaden the rule text to explicitly cover the semantics of each matched ecosystem so the rule never fires as irrelevant noise
+      source: copilot:PR#682
+      added: "2026-08-20"
+      paths:
+        - '**/*.yaml'
+    - id: pr-description-matches-diff
+      category: other
+      pattern: >-
+        Auto-generated or templated PR descriptions that summarize counts or categories of changes (e.g. 'N new rules', 'M entries backfilled') alongside a diff, especially for generated files like .forge/warden-rules.yaml
+      check: >-
+        Verify the PR description's stated counts and claimed change types match what the diff actually contains; if they diverge, either the description must be corrected or the missing changes included so reviewers can trust the summary
+      source: copilot:PR#682
+      added: "2026-08-20"
+      paths:
+        - '**/*.yaml'
+    - id: warden-rule-pattern-filter-keywords
+      category: other
+      pattern: >-
+        Adding or editing a rule in .forge/warden-rules.yaml whose pattern text targets dependency manifest changes (package.json, go.mod, *.csproj, package-lock.json) or other diffs with specific file types
+      check: >-
+        Verify the rule's `pattern` field contains at least one concrete ≥4-character keyword that will literally appear in the target diff (e.g. `dependencies`, `require`, `PackageReference`, `go.mod`), so FilterPatternGrep does not silently drop the rule at review time; abstract descriptions without diff-local tokens will be filtered out
+      source: copilot:PR#682
+      added: "2026-08-20"
+      paths:
+        - '**/*.yaml'
+    - id: warden-rule-pattern-diff-keywords
+      category: other
+      pattern: >-
+        Adding or editing a rule in .forge/warden-rules.yaml whose pattern field contains only abstract descriptive words (e.g. dependency, upgrade, bump) rather than tokens that literally appear in the diffs it targets (e.g. require, dependencies, go.mod, package.json)
+      check: >-
+        Verify the rule's pattern includes ≥4-character words that will actually appear as substrings in the target diff text (FilterPatternGrep does a word-substring filter), e.g. require/dependencies for go.mod bumps; otherwise the rule is silently filtered out and never applied
+      source: copilot:PR#682
+      added: "2026-08-20"
+      paths:
+        - '**/*.yaml'
