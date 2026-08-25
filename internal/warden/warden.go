@@ -22,6 +22,7 @@ import (
 	"github.com/Robin831/Forge/internal/provider"
 	"github.com/Robin831/Forge/internal/smith"
 	"github.com/Robin831/Forge/internal/state"
+	"github.com/Robin831/Forge/internal/textfmt"
 )
 
 // Verdict represents the Warden's review decision.
@@ -359,9 +360,20 @@ func buildReviewPrompt(beadID, beadTitle, beadDescription, diff, anvilPath, prio
 	filteredDiff = diffpkg.Truncate(filteredDiff, diffpkg.MaxBytes)
 	var diffBuilder strings.Builder
 	if len(elided) > 0 {
+		// These paths come out of the diff headers of the branch under review,
+		// so they are chosen by whoever wrote the code — and they are named
+		// here in a sentence the Warden reads as Forge's own, immediately
+		// above the fence the diff is wrapped in. diffpkg.SafePathList is the
+		// same treatment Assay gives the same list, both halves of it: a
+		// filename is not trusted markdown on either side of the shared
+		// filter, and the list is capped, because a branch that regenerates
+		// every lockfile in the repo would otherwise put the elided bulk back
+		// as filenames — into this prompt, ahead of a diff already truncated
+		// to diffpkg.MaxBytes, which is the one the filter was protecting. The
+		// count below is the full one either way.
 		fmt.Fprintf(&diffBuilder,
-			"_Note: the following auto-generated files were omitted from the diff (not scope drift, not truncation): %s._\n\n",
-			strings.Join(elided, ", "))
+			"_Note: %s omitted from the diff (not scope drift, not truncation): %s._\n\n",
+			textfmt.Count(len(elided), "auto-generated file"), diffpkg.SafePathList(elided))
 	}
 	diffBuilder.WriteString("```diff\n")
 	diffBuilder.WriteString(filteredDiff)

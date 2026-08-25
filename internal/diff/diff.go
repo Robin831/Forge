@@ -94,6 +94,67 @@ func ParseGitPath(header string) string {
 	return rest[idx+len(" b/"):]
 }
 
+// maxPromptPathLen bounds one rendered path. The elided-file note is a
+// sentence beside a diff, not a manifest: a path longer than this teaches a
+// reader nothing further and is exactly the shape a payload takes.
+const maxPromptPathLen = 120
+
+// SafePath renders a path taken off a diff header as an inert label for a
+// prompt or a PR comment.
+//
+// ParseGitPath returns everything after the last " b/" in a header, unvalidated
+// — so every path this package hands back is a string the author of the pull
+// request under review chose, byte for byte. Both consumers of the elided list
+// (Assay's prompt head, the Warden's diff note) then name those paths inside a
+// sentence Forge wrote itself, which is the one place in either prompt where an
+// attacker's bytes can be read as Forge's own words rather than as data under
+// review. Neutralising the fence is not enough there: the injection does not
+// need to break out of anything, only to be read as prose.
+//
+// So the alphabet is closed rather than the dangerous characters blocked:
+// letters, digits, '.', '_', '-' and '/' survive, and every run of anything
+// else — spaces, punctuation, backticks, newlines, control bytes, the whole of
+// non-ASCII — collapses to a single "?". A sentence needs spaces; what comes
+// out of this cannot form one. The "?" is deliberate rather than a silent drop:
+// a name that was scrubbed should read as scrubbed, not as a real filename.
+func SafePath(path string) string {
+	var b strings.Builder
+	dropped := false
+	for _, r := range path {
+		if !safePathRune(r) {
+			dropped = true
+			continue
+		}
+		if dropped {
+			b.WriteByte('?')
+			dropped = false
+		}
+		b.WriteRune(r)
+	}
+	if dropped {
+		b.WriteByte('?')
+	}
+	// Every rune kept above is one ASCII byte, so this cut cannot split one.
+	out := b.String()
+	if len(out) > maxPromptPathLen {
+		out = out[:maxPromptPathLen] + "..."
+	}
+	if out == "" {
+		return "?"
+	}
+	return out
+}
+
+func safePathRune(r rune) bool {
+	switch {
+	case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+		return true
+	case r == '.', r == '_', r == '-', r == '/':
+		return true
+	}
+	return false
+}
+
 // ChangedFiles extracts the b-side file paths from a unified diff. Returns nil
 // when the diff has no "diff --git" headers. ParseGitPath is reused so renames
 // and a/ b/ paths with spaces behave the same here as in the diff-filter
