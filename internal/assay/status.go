@@ -82,10 +82,10 @@ func RenderStatusText(status RunStatus, completed, total int, failed []PassFailu
 	return base + fmt.Sprintf(" (failed: %s)", formatFailedPasses(failed, reasonDash))
 }
 
-// RenderPassTelemetry renders the per-pass turn telemetry of a run as one
-// line:
+// RenderPassTelemetry renders the per-pass turn and prompt-cache telemetry of a
+// run as one line:
 //
-//	pass=triage turns=3 term=success, pass=logic turns=12 term=error_max_turns retry=1
+//	pass=triage turns=3 term=success cache_w=41200 cache_r=0, pass=logic turns=12 term=success cache_w=41500 cache_r=0 primer=1, pass=security turns=6 term=success cache_w=900 cache_r=41500
 //
 // It is additive — a separate field on the Assay log line, never a change to
 // the coverage status text — so nothing that reads the existing line breaks.
@@ -93,6 +93,15 @@ func RenderStatusText(status RunStatus, completed, total int, failed []PassFailu
 // reports "success", which is the same word the provider uses for the
 // termination it names. retry is only present when a pass was actually re-run,
 // since that is the rare case worth spotting.
+//
+// cache_w/cache_r are the pass's prompt-cache write and read token counts, and
+// are omitted together when the provider reported neither — a backend with no
+// cache accounting renders exactly the line it always did. They are here
+// because the quantity they measure is otherwise invisible: the per-run
+// redundant cache write (the sum of cache_w minus the largest single cache_w)
+// is what a fan-out pays twice for, and at 76% of Assay's cache-write spend it
+// showed up nowhere but the bill. primer=1 marks the one pass whose large
+// cache_w is the intended one — it writes the prefix the others read.
 //
 // Returns "" when there is nothing to report.
 func RenderPassTelemetry(passes []PassReport) string {
@@ -108,6 +117,12 @@ func RenderPassTelemetry(passes []PassReport) string {
 		s := fmt.Sprintf("pass=%s turns=%d term=%s", p.Name, p.Turns, term)
 		if p.Retried {
 			s += fmt.Sprintf(" retry=%d", p.Attempts-1)
+		}
+		if p.CacheCreationTokens > 0 || p.CacheReadTokens > 0 {
+			s += fmt.Sprintf(" cache_w=%d cache_r=%d", p.CacheCreationTokens, p.CacheReadTokens)
+		}
+		if p.Primer {
+			s += " primer=1"
 		}
 		parts = append(parts, s)
 	}

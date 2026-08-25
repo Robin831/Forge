@@ -177,6 +177,28 @@ type PassReport struct {
 	// Retried reports whether the pass was re-run in a fresh session after
 	// hitting error_max_turns.
 	Retried bool
+	// CacheCreationTokens is how many input tokens the pass paid to write into
+	// the provider's prompt cache, and CacheReadTokens how many it served from
+	// a prefix already there. Both are summed over every provider session the
+	// pass made, like CostUSD.
+	//
+	// This pair is the only in-band evidence that the shared-prefix prompt
+	// ordering and the staggered fan-out are still working. When they are, one
+	// deep pass reports a large creation and the other four report a large read
+	// with a small creation of their own instruction block. When they are not —
+	// somebody moves a pass-specific string above the shared head, or the
+	// stagger is removed — every pass reports a large creation again, and the
+	// per-run redundancy (the sum of CacheCreationTokens minus the largest one)
+	// goes straight back to the 76% it was. Nothing branches on these; they
+	// exist so the regression is visible in the daemon's log line rather than
+	// only in a monthly bill.
+	CacheCreationTokens int
+	CacheReadTokens     int
+	// Primer reports whether this was the pass run alone ahead of the fan-out
+	// to write the shared prefix. Exactly one deep pass carries it, and it is
+	// the pass whose large CacheCreationTokens is expected rather than a
+	// regression.
+	Primer bool
 }
 
 // ReviewResult is the outcome of a Review.
@@ -345,31 +367,70 @@ func Review(ctx context.Context, req ReviewRequest, db *state.DB, cfg Config) (*
 	// before the error check: runTriage reports what its sessions cost whether
 	// or not they answered, and a triage failure aborts the run, so this is the
 	// only place that spend can be attributed.
-	triage, triageCost, triageTurns, err := runTriage(ctx, runner, cfg, req, filtered)
-	totalCost += triageCost
+	triageRes, err := runTriage(ctx, runner, cfg, req, filtered)
+	totalCost += triageRes.cost
 	if err != nil {
 		return fail(err)
 	}
+	triage := triageRes.result
 	// Always one attempt: triage gets no turn-budget retry (see runTriage). Its
 	// strict-JSON re-prompt, when it needs one, is a second session inside that
 	// single attempt — counted in CostUSD, not here.
 	passes = append(passes, PassReport{
-		Name:     passTriage.Name,
-		Findings: 0,
-		CostUSD:  triageCost,
-		Turns:    triageTurns,
-		Attempts: 1,
+		Name:                passTriage.Name,
+		Findings:            0,
+		CostUSD:             triageRes.cost,
+		Turns:               triageRes.turns,
+		Attempts:            1,
+		CacheCreationTokens: triageRes.cacheCreation,
+		CacheReadTokens:     triageRes.cacheRead,
 	})
 
 	scoped := scopeDiffToFiles(filtered, triage.ReviewFiles)
 
-	// 2. Deep passes — run concurrently (Smith-style fan-out). A pass that
-	// exhausts its turn budget is re-run once inside runDeepPass; only the
-	// final attempt's outcome reaches this loop, so a pass that recovers on
-	// its retry is an ordinary success here and never reaches PassErrors.
+	// 2. Deep passes — a staggered fan-out. A pass that exhausts its turn
+	// budget is re-run once inside runDeepPass; only the final attempt's
+	// outcome reaches this loop, so a pass that recovers on its retry is an
+	// ordinary success here and never reaches PassErrors.
+	//
+	// The stagger is the scheduling half of the shared-prefix work
+	// buildPassPrompt does. All five prompts now open with the same bytes —
+	// guidance, context, prior findings and the whole scoped diff — but a
+	// simultaneous launch turns that into five simultaneous cache MISSES: on
+	// one observed PR all five passes started in the same millisecond and every
+	// one of them paid to write the identical prefix. So one primer pass runs
+	// alone until the provider starts answering it, by which point the prefix
+	// is in the cache, and only then are the other four released together.
+	//
+	// The primer is a deep pass and not triage on purpose: triage is fed the
+	// FILTERED diff while these get the SCOPED one, so priming from triage
+	// would silently stop working the moment triage narrowed anything — the
+	// runs where it was working hardest.
+	//
+	// The wait costs the run the primer's time to first token and no more. The
+	// four released passes still run concurrently with each other AND with the
+	// rest of the primer's session, so wall-clock stays bounded by the slowest
+	// single pass rather than by any serialisation.
 	outcomes := make([]passResult, len(deepPasses))
 	var wg sync.WaitGroup
+	primed := newGate()
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		// Open the gate unconditionally when the primer returns, not only on
+		// its first token: a primer that fails to spawn, is refused as rate
+		// limited, or runs behind a provider that streams no structured events
+		// has no token to signal with, and must not hold the other four for the
+		// whole fallback wait.
+		defer primed.open()
+		p := deepPasses[primerPass]
+		outcomes[primerPass] = runDeepPass(withFirstOutput(ctx, primed.open), runner, cfg, req, scoped, triage.Notes, p)
+	}()
+	primed.wait(ctx, cfg.primerWait())
 	for i, p := range deepPasses {
+		if i == primerPass {
+			continue
+		}
 		wg.Add(1)
 		go func(i int, p passDef) {
 			defer wg.Done()
@@ -386,13 +447,16 @@ func Review(ctx context.Context, req ReviewRequest, db *state.DB, cfg Config) (*
 		// retried pass ran twice.
 		totalCost += o.cost
 		passes = append(passes, PassReport{
-			Name:              deepPasses[i].Name,
-			Findings:          len(o.findings),
-			CostUSD:           o.cost,
-			Turns:             o.turns,
-			TerminationReason: o.failure.Reason,
-			Attempts:          o.attempts,
-			Retried:           o.retried,
+			Name:                deepPasses[i].Name,
+			Findings:            len(o.findings),
+			CostUSD:             o.cost,
+			Turns:               o.turns,
+			TerminationReason:   o.failure.Reason,
+			Attempts:            o.attempts,
+			Retried:             o.retried,
+			CacheCreationTokens: o.cacheCreation,
+			CacheReadTokens:     o.cacheRead,
+			Primer:              i == primerPass,
 		})
 		if o.err != nil {
 			passErrors = append(passErrors, o.err.Error())
