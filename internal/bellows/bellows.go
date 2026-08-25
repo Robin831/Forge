@@ -78,6 +78,14 @@ type AssayGateConfig struct {
 	// (anvil, PR). Values <= 0 fall back to defaultAssayDebounceSeconds.
 	DebounceSeconds int
 	// DailyCostLimitUSD caps total Assay spend per day; 0 means no limit.
+	//
+	// This is a sub-budget and is measured against assay_runs alone
+	// (state.AssayCostUSDSince), never daily_costs: it answers "how much have
+	// reviews cost today", which the main ledger's blended total cannot. The
+	// same spend also reaches daily_costs and provider_daily_costs, but not
+	// from here — bellows decides whether a review runs and never learns what
+	// one cost; the daemon's recordAssayCost folds the engine's usage in, from
+	// the one site allowed to. Recording it here as well would double-count.
 	DailyCostLimitUSD float64
 	// MaxRuns caps the number of executed Assay reviews per PR; once reached the
 	// trigger never fires again for that PR, stopping the Assay→Burnish→new-head
