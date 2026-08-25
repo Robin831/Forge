@@ -87,6 +87,12 @@ type AssayGateConfig struct {
 	// one cost; the daemon's recordAssayCost folds the engine's usage in, from
 	// the one site allowed to. Recording it here as well would double-count.
 	DailyCostLimitUSD float64
+	// RunCostEstimateUSD is the floor under the estimate held for a review that
+	// has been admitted but has not yet recorded its cost. The effective
+	// estimate is the larger of it and the rolling mean of recorded runs. It
+	// only has meaning alongside DailyCostLimitUSD; with no cap nothing is
+	// reserved and nothing is projected.
+	RunCostEstimateUSD float64
 	// MaxRuns caps the number of executed Assay reviews per PR; once reached the
 	// trigger never fires again for that PR, stopping the Assay→Burnish→new-head
 	// loop. Values <= 0 mean no cap.
@@ -131,6 +137,20 @@ type Monitor struct {
 	// budget-suppressed Assay review (daily cost cap, per-PR run cap) is
 	// surfaced once per head instead of on every poll. Guarded by mu.
 	assaySuppressNotified map[string]string
+
+	// In-flight reservations against the Assay daily cost cap, plus the rolling
+	// mean of recorded run cost that sizes them. Recorded Assay spend only
+	// counts runs that have FINISHED, so without these the gate is blind to
+	// every review currently running and N concurrent reviews carry the day
+	// past the cap. See assaybudget.go. All four fields are guarded by
+	// assayBudgetMu — its own lock rather than mu, because the daemon releases
+	// a reservation from the run goroutine while a poll cycle may be reading
+	// the total.
+	assayBudgetMu     sync.Mutex
+	assayReservations map[string]assayReservation
+	avgAssayRunCost   float64 // rolling mean of recorded per-run cost
+	avgAssayRunCostN  int     // samples folded into avgAssayRunCost
+	assayCostSeeded   bool    // rolling mean primed from recorded history
 
 	// now returns the current time for CI age evaluation. nil selects
 	// time.Now; tests set it to pin the stuck threshold.
@@ -439,19 +459,38 @@ func (m *Monitor) assayUpToDate(pr *state.PR, headSHA string, dailyAssayCost *fl
 	// rest of the day — invisible in both the Ready-to-Merge and Needs-Attention
 	// panels. Treat the budget-exhausted head as "Assay done" for the day, same
 	// rationale as the run cap; readiness is still gated by has_unresolved_threads.
-	if dailyAssayCost != nil && cfg.DailyCostLimitUSD > 0 && *dailyAssayCost >= cfg.DailyCostLimitUSD {
+	//
+	// Two conditions release the head, and they are exactly the two
+	// shouldEmitReviewNeeded refuses under assaySuppressedDailyCost: the
+	// recorded spend has reached the cap, or what is left of it is less than
+	// one review is estimated to cost, so no review will be dispatched however
+	// long the PR waits. They are written here as one expression against the
+	// same helper for that reason — a gate that refuses on headroom while this
+	// one releases only on exhaustion would strand every green PR for the rest
+	// of the day, which is the deadlock the run-cap comment above describes.
+	//
+	// What is deliberately NOT read here is the in-flight reservation total.
+	// A reservation-deferred review waits minutes, until the runs holding the
+	// budget finish; releasing the head on it would hand a PR a clean bill of
+	// health over a queue rather than over a budget.
+	if dailyAssayCost != nil && cfg.DailyCostLimitUSD > 0 &&
+		(*dailyAssayCost >= cfg.DailyCostLimitUSD ||
+			!assayBudgetAdmits(*dailyAssayCost, 0, m.assayRunCostEstimate(cfg.RunCostEstimateUSD), cfg.DailyCostLimitUSD)) {
 		return true
 	}
 	return false
 }
 
 // noteAssaySuppressed surfaces a budget-suppressed Assay review — once per
-// (PR, head, reason) — in the daemon log and the events feed. Both budget
-// gates also release the head to merge readiness via assayUpToDate, so without
-// this note the operator gets no signal at all that a PR is about to merge
-// without an Assay review (2026-08-09: the default daily cost cap silently
-// swallowed every review after the day's first; 2026-08-07: twenty PRs
-// auto-merged unreviewed the same way).
+// (PR, head, reason) — in the daemon log and the events feed. The
+// exhausted-budget gates also release the head to merge readiness via
+// assayUpToDate, so without this note the operator gets no signal at all that
+// a PR is about to merge without an Assay review (2026-08-09: the default
+// daily cost cap silently swallowed every review after the day's first;
+// 2026-08-07: twenty PRs auto-merged unreviewed the same way). The in-flight
+// deferral does not release readiness, and says so in its own words: it is
+// reported for the opposite reason — a review that is due, is not running and
+// has no visible cause is the shape of a wedged gate.
 func (m *Monitor) noteAssaySuppressed(pr *state.PR, headSHA, reason string, in reviewGateInputs) {
 	if m.db == nil {
 		return
@@ -469,9 +508,23 @@ func (m *Monitor) noteAssaySuppressed(pr *state.PR, headSHA, reason string, in r
 	var detail string
 	switch reason {
 	case assaySuppressedDailyCost:
+		// Two shapes of the same refusal: the budget is spent, or what is left
+		// of it will not cover one review. Both last until UTC midnight and
+		// both release the head to merge readiness, so both are reported with
+		// the number that explains which one fired.
+		if in.dailyCostUSD >= in.dailyCostLimit {
+			detail = fmt.Sprintf(
+				"PR #%d: Assay review skipped — daily Assay budget exhausted ($%.2f spent >= $%.2f limit, resets at UTC midnight); head %s will count as reviewed for merge readiness",
+				pr.Number, in.dailyCostUSD, in.dailyCostLimit, shortSHA(headSHA))
+		} else {
+			detail = fmt.Sprintf(
+				"PR #%d: Assay review skipped — $%.2f left of the $%.2f daily Assay budget will not cover a review estimated at $%.2f (resets at UTC midnight); head %s will count as reviewed for merge readiness",
+				pr.Number, in.dailyCostLimit-in.dailyCostUSD, in.dailyCostLimit, in.estimateUSD, shortSHA(headSHA))
+		}
+	case assaySuppressedInFlightBudget:
 		detail = fmt.Sprintf(
-			"PR #%d: Assay review skipped — daily Assay budget exhausted ($%.2f spent >= $%.2f limit, resets at UTC midnight); head %s will count as reviewed for merge readiness",
-			pr.Number, in.dailyCostUSD, in.dailyCostLimit, shortSHA(headSHA))
+			"PR #%d: Assay review deferred — the reviews already running would carry the day past the Assay budget ($%.2f spent + $%.2f reserved for in-flight runs + $%.2f estimated for this one > $%.2f limit); head %s stays unreviewed and is NOT released to merge readiness",
+			pr.Number, in.dailyCostUSD, in.reservedUSD, in.estimateUSD, in.dailyCostLimit, shortSHA(headSHA))
 	case assaySuppressedMaxRuns:
 		detail = fmt.Sprintf(
 			"PR #%d: Assay review skipped — per-PR run cap reached (%d/%d); head %s will count as reviewed for merge readiness",
@@ -1641,8 +1694,18 @@ type reviewGateInputs struct {
 	debounceSeconds int
 	dailyCostUSD    float64
 	dailyCostLimit  float64 // 0 = no limit
-	runCount        int     // executed Assay reviews so far for this PR
-	maxRuns         int     // 0 = no cap
+	// reservedUSD is the estimated spend of Assay reviews already admitted but
+	// not yet recorded, and estimateUSD what this one is assumed to cost. They
+	// are what makes the cap account for work in flight: recorded spend alone
+	// only sees reviews that have already finished. The authoritative
+	// check-and-reserve is Monitor.admitAssayRun, which redoes this arithmetic
+	// under the ledger lock; these two carry the same decision into the pure
+	// gate so its outcome — and the suppression reason it names — stays
+	// testable in isolation, like every other condition here.
+	reservedUSD float64
+	estimateUSD float64
+	runCount    int // executed Assay reviews so far for this PR
+	maxRuns     int // 0 = no cap
 	// assayInFlight is true when an Assay worker is already pending/running for
 	// this PR. We suppress a fresh dispatch so a review that outlasts the
 	// debounce window is not re-queued for the same head (wasting an Assay run).
@@ -1665,6 +1728,15 @@ type reviewGateInputs struct {
 const (
 	assaySuppressedDailyCost = "daily_cost_limit"
 	assaySuppressedMaxRuns   = "max_runs"
+	// assaySuppressedInFlightBudget is the daily cap refusing a review because
+	// the reviews already running would carry the day past it. It is kept
+	// apart from assaySuppressedDailyCost because the two mean opposite things
+	// to a waiting PR: the recorded spend being exhausted lasts until UTC
+	// midnight and releases the head to merge readiness, while this one lasts
+	// until the in-flight reviews finish — minutes — and so must NOT release
+	// it. assayUpToDate deliberately reads only the recorded figure for that
+	// reason.
+	assaySuppressedInFlightBudget = "in_flight_budget"
 )
 
 // shouldEmitReviewNeeded returns true when EventPRReviewNeeded should fire for a
@@ -1722,8 +1794,23 @@ func shouldEmitReviewNeeded(in reviewGateInputs) (bool, string) {
 	if !in.lastAssayRun.IsZero() && in.now.Sub(in.lastAssayRun) < time.Duration(debounce)*time.Second {
 		return false, ""
 	}
-	if in.dailyCostLimit > 0 && in.dailyCostUSD >= in.dailyCostLimit {
-		return false, assaySuppressedDailyCost
+	if in.dailyCostLimit > 0 {
+		// The day has no room for another review at all: either the recorded
+		// spend has reached the cap, or what is left of it is less than one
+		// review is estimated to cost. Neither can change before the budget
+		// resets at UTC midnight, so both are the exhausted-for-the-day case
+		// that assayUpToDate releases to merge readiness — on exactly this
+		// condition, so the two cannot disagree and strand a PR.
+		if in.dailyCostUSD >= in.dailyCostLimit ||
+			!assayBudgetAdmits(in.dailyCostUSD, 0, in.estimateUSD, in.dailyCostLimit) {
+			return false, assaySuppressedDailyCost
+		}
+		// Room remains for a review, but not once the reviews already running
+		// are counted. Deferred, not cancelled: this clears in minutes, as
+		// they finish and record what they actually cost.
+		if !assayBudgetAdmits(in.dailyCostUSD, in.reservedUSD, in.estimateUSD, in.dailyCostLimit) {
+			return false, assaySuppressedInFlightBudget
+		}
 	}
 	// Per-PR run cap: once a PR has been reviewed maxRuns times, stop re-firing
 	// so the Assay→Burnish→new-head loop terminates instead of running until a
@@ -1775,12 +1862,23 @@ func (m *Monitor) maybeEmitReviewNeeded(ctx context.Context, pr *state.PR, statu
 		debounceSeconds:     cfg.DebounceSeconds,
 		dailyCostUSD:        *dailyAssayCost,
 		dailyCostLimit:      cfg.DailyCostLimitUSD,
+		reservedUSD:         m.reservedAssayCostUSD(),
+		estimateUSD:         m.assayRunCostEstimate(cfg.RunCostEstimateUSD),
 		runCount:            runCount,
 		maxRuns:             cfg.MaxRuns,
 		assayInFlight:       m.assayWorkerInFlight(pr.Anvil, pr.Number),
 		beadFixWorkerActive: m.beadFixWorkerActive(pr.Anvil, pr.BeadID),
 	}
 	emit, suppressedBy := shouldEmitReviewNeeded(in)
+	// Reserve this review's estimated cost against the cap, atomically with a
+	// re-check of the projection. The gate above already evaluated it, but from
+	// a snapshot: bellows walks its PRs in one pass and a review it admits does
+	// not reach the ledger until the daemon starts it, several goroutines
+	// later, so without an atomic claim here two PRs in the same cycle would
+	// both be admitted against the last of the budget.
+	if emit && !m.admitAssayRun(assayRunKey(pr.Anvil, pr.Number, status.HeadSHA), in.estimateUSD, in.dailyCostUSD, in.dailyCostLimit) {
+		emit, suppressedBy = false, assaySuppressedInFlightBudget
+	}
 	if !emit {
 		if suppressedBy != "" {
 			m.noteAssaySuppressed(pr, status.HeadSHA, suppressedBy, in)

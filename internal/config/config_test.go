@@ -1860,3 +1860,52 @@ func TestValidate_AssayMaxTurnsPerPass(t *testing.T) {
 			`anvil "test": assay.max_turns_per_pass must not be negative (omit it to use the engine default)`)
 	})
 }
+
+func TestAssayConfig_RunCostEstimateUSD(t *testing.T) {
+	var a AssayConfig
+	assert.Equal(t, defaultAssayRunCostEstimateUSD, a.GetRunCostEstimateUSD())
+
+	// Zero is legitimate: no floor, estimate from recorded runs alone.
+	zero := 0.0
+	a.RunCostEstimateUSD = &zero
+	assert.Equal(t, 0.0, a.GetRunCostEstimateUSD())
+
+	set := 7.25
+	a.RunCostEstimateUSD = &set
+	assert.Equal(t, 7.25, a.GetRunCostEstimateUSD())
+}
+
+func TestResolvedAssay_RunCostEstimateUSD_AnvilOverlay(t *testing.T) {
+	global, anvil := 5.0, 9.0
+	cfg := &Config{
+		Assay: AssayConfig{RunCostEstimateUSD: &global},
+		Anvils: map[string]AnvilConfig{
+			"api":   {Path: "/repos/api", Assay: &AssayConfig{RunCostEstimateUSD: &anvil}},
+			"plain": {Path: "/repos/plain"},
+		},
+	}
+	assert.Equal(t, 9.0, cfg.ResolvedAssay("api").GetRunCostEstimateUSD())
+	assert.Equal(t, 5.0, cfg.ResolvedAssay("plain").GetRunCostEstimateUSD())
+}
+
+func TestValidate_AssayRunCostEstimateUSD(t *testing.T) {
+	const msg = "assay.run_cost_estimate_usd must be a non-negative finite number (set 0 to estimate from recorded runs alone)"
+
+	cfg := Defaults()
+	zero := 0.0
+	cfg.Assay.RunCostEstimateUSD = &zero
+	for _, e := range cfg.Validate() {
+		assert.NotContains(t, e, "run_cost_estimate_usd")
+	}
+
+	// A negative floor would subtract from an in-flight reservation, widening
+	// the very overrun it exists to close.
+	neg := -1.0
+	cfg.Assay.RunCostEstimateUSD = &neg
+	assert.Contains(t, cfg.Validate(), msg)
+
+	bad := -2.0
+	cfg = Defaults()
+	cfg.Anvils["test"] = AnvilConfig{Path: "/repos/test", Assay: &AssayConfig{RunCostEstimateUSD: &bad}}
+	assert.Contains(t, cfg.Validate(), `anvil "test": `+msg)
+}

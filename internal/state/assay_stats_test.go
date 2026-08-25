@@ -75,3 +75,47 @@ func TestAssayRunSamplesSinceEmpty(t *testing.T) {
 		t.Fatalf("expected no samples on a fresh db, got %d", len(samples))
 	}
 }
+
+func TestRecentAssayRunCostsUSD(t *testing.T) {
+	db := openAssayStatsTestDB(t)
+	base := time.Date(2026, 8, 19, 9, 0, 0, 0, time.UTC)
+
+	runs := []*AssayRun{
+		{Anvil: "forge", PRNumber: 1, StartedAt: base, CostUSD: 1.00, Status: AssayStatusComplete},
+		{Anvil: "forge", PRNumber: 2, StartedAt: base.Add(time.Hour), CostUSD: 2.00, Status: AssayStatusComplete},
+		// A failure is not a refund: its spend belongs in the sample set.
+		{Anvil: "forge", PRNumber: 3, StartedAt: base.Add(2 * time.Hour), CostUSD: 3.00, Status: AssayStatusFailed},
+		// Skipped: reviewed nothing, spent nothing — excluded, since it would
+		// drag toward zero the mean that sizes an in-flight cost reservation.
+		{Anvil: "forge", PRNumber: 4, StartedAt: base.Add(3 * time.Hour), SkippedReason: "no reviewable changes"},
+	}
+	for _, r := range runs {
+		if err := db.RecordAssayRun(r); err != nil {
+			t.Fatalf("record run PR#%d: %v", r.PRNumber, err)
+		}
+	}
+
+	costs, err := db.RecentAssayRunCostsUSD(2)
+	if err != nil {
+		t.Fatalf("RecentAssayRunCostsUSD: %v", err)
+	}
+	if len(costs) != 2 {
+		t.Fatalf("got %d costs, want the 2 most recent executed runs: %v", len(costs), costs)
+	}
+	if costs[0] != 3.00 || costs[1] != 2.00 {
+		t.Errorf("costs = %v, want newest first [3 2]", costs)
+	}
+
+	all, err := db.RecentAssayRunCostsUSD(50)
+	if err != nil {
+		t.Fatalf("RecentAssayRunCostsUSD: %v", err)
+	}
+	if len(all) != 3 {
+		t.Errorf("got %d costs, want 3 (the skipped run excluded): %v", len(all), all)
+	}
+
+	none, err := db.RecentAssayRunCostsUSD(0)
+	if err != nil || none != nil {
+		t.Errorf("RecentAssayRunCostsUSD(0) = %v, %v; want nil, nil", none, err)
+	}
+}
