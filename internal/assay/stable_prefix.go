@@ -87,21 +87,30 @@ func stablePrefix(req ReviewRequest) string {
 // deep passes building their prompts concurrently, and its PriorFindings slice
 // with them.
 func sortedPriorFindings(list []PriorFinding) []PriorFinding {
+	// keyedPriorFinding is a prior finding decorated with the derived halves of
+	// its sort key, so neither is re-derived per comparison. The anchor is kept
+	// in the package's own parsed shape rather than flattened into fields of
+	// this type: a shape parseAnchor grows a field for (it already discards a
+	// range's end line) is then carried here too, instead of this decoration
+	// silently keeping the older one.
+	type keyedPriorFinding struct {
+		finding PriorFinding
+		parsed  anchorParts
+		digest  string
+	}
 	keyed := make([]keyedPriorFinding, len(list))
 	for i, p := range list {
-		parts := parseAnchor(p.Anchor)
 		keyed[i] = keyedPriorFinding{
 			finding: p,
-			file:    parts.file,
-			line:    parts.line,
+			parsed:  parseAnchor(p.Anchor),
 			digest:  priorFindingDigest(p),
 		}
 	}
 	slices.SortFunc(keyed, func(a, b keyedPriorFinding) int {
-		if c := strings.Compare(a.file, b.file); c != 0 {
+		if c := strings.Compare(a.parsed.file, b.parsed.file); c != 0 {
 			return c
 		}
-		if c := cmp.Compare(a.line, b.line); c != 0 {
+		if c := cmp.Compare(a.parsed.line, b.parsed.line); c != 0 {
 			return c
 		}
 		if c := strings.Compare(a.finding.Severity, b.finding.Severity); c != 0 {
@@ -117,15 +126,6 @@ func sortedPriorFindings(list []PriorFinding) []PriorFinding {
 		out[i] = k.finding
 	}
 	return out
-}
-
-// keyedPriorFinding is a prior finding decorated with the derived halves of its
-// sort key, so neither is re-derived per comparison.
-type keyedPriorFinding struct {
-	finding PriorFinding
-	file    string
-	line    int
-	digest  string
 }
 
 // priorFindingDigest hashes a prior finding's whole record. It is the last
