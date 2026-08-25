@@ -111,6 +111,15 @@ type RunRecord struct {
 	// Options.IncludeSkipped.
 	SkippedReason string `json:"skipped_reason,omitempty"`
 	ShadowMode    bool   `json:"shadow_mode,omitempty"`
+	// Status is the run's coverage outcome as persisted ("complete",
+	// "partial", "failed", or empty on rows written before the column
+	// existed), and Error is the cause a run that died carries. Neither
+	// affects the first-vs-repeat split — a failure is not a refund, so its
+	// spend counts exactly like any other run's — but together they are the
+	// only way to tell a run that read the diff and found nothing from one
+	// that reported zero findings because no pass ever ran. See NoCoverage.
+	Status string `json:"status,omitempty"`
+	Error  string `json:"error,omitempty"`
 	// CacheCreationTokens / CacheReadTokens are the run's prompt-cache
 	// accounting summed over its sessions. Both zero means "not knowable",
 	// not "no cache traffic" — see the package note above.
@@ -127,6 +136,38 @@ func (r RunRecord) PRKey() string {
 
 // Skipped reports whether the run dispatched no passes.
 func (r RunRecord) Skipped() bool { return strings.TrimSpace(r.SkippedReason) != "" }
+
+// runStatusFailed is the persisted coverage outcome for a run no deep pass
+// reviewed the head on. It is spelled out here rather than imported from
+// internal/assay because cost is deliberately a leaf package; the value is
+// pinned by TestNoCoverageMatchesPersistedFailedStatus.
+const runStatusFailed = "failed"
+
+// NoCoverage reports whether this run's zero findings mean "no pass ever ran"
+// rather than "a review read the diff and found nothing".
+//
+// The distinction only matters to an analysis of the zero-finding tail, and
+// there it matters completely: a rate-limited run that died at triage reports
+// findings_count = 0 exactly as a clean review does, so counting it as a clean
+// review inflates the very cell a skip heuristic would claim to recover. Its
+// spend is still counted everywhere — a failure is not a refund — it is only
+// annotated so a reader is not told a review happened that did not.
+//
+// Two shapes qualify. A persisted "failed" status is the direct signal. A row
+// written before that column existed carries no status at all, so the fallback
+// is an error with no recorded spend: a run that was billed for something did
+// reach the model, whatever it then failed at, while one that was billed for
+// nothing and carries an error never got that far. The fallback is deliberately
+// narrow — a partly-successful older run reporting an error and real spend is
+// NOT claimed as no-coverage, because over-claiming here would shrink the
+// zero-finding population on a guess.
+func (r RunRecord) NoCoverage() bool {
+	status := strings.ToLower(strings.TrimSpace(r.Status))
+	if status == runStatusFailed {
+		return true
+	}
+	return status == "" && strings.TrimSpace(r.Error) != "" && r.CostUSD == 0
+}
 
 // HasCacheAccounting reports whether this row carries usable prompt-cache
 // token counts. Both counters at zero is the ambiguous case and counts as no
@@ -395,19 +436,8 @@ func BuildReport(runs []RunRecord, since, until time.Time, opts Options) *CostRe
 		RepeatRun:      RunGroup{Label: GroupRepeatRun},
 	}
 
-	eligible := make([]RunRecord, 0, len(runs))
-	for _, r := range runs {
-		if opts.Anvil != "" && r.Anvil != opts.Anvil {
-			continue
-		}
-		if r.Skipped() && !opts.IncludeSkipped {
-			if inWindow(r.StartedAt, since, until) {
-				report.SkippedRunsExcluded++
-			}
-			continue
-		}
-		eligible = append(eligible, r)
-	}
+	eligible, skippedInWindow := eligibleRuns(runs, since, until, opts)
+	report.SkippedRunsExcluded = skippedInWindow
 
 	ordered := DeriveRunOrdinals(eligible)
 
@@ -461,6 +491,36 @@ func BuildReport(runs []RunRecord, since, until time.Time, opts Options) *CostRe
 	report.ByTokenClass = total.tokenClasses(pricing)
 
 	return report
+}
+
+// eligibleRuns applies the two filters that decide which rows a report in this
+// package is built from — the anvil restriction and the skipped-run exclusion —
+// and returns how many of the rows it dropped fell inside the window, which is
+// the figure a report prints so a default run says what it left out.
+//
+// It is one function rather than one copy per report because both filters are
+// part of the METHODOLOGY: a zero-finding analysis that counted skipped runs
+// while the attribution report excluded them would assign the same run two
+// different ordinals and the two reports could not be quoted side by side.
+// Filtering happens before ordinals are derived for the same reason it does in
+// BuildReport: a skipped run occupying ordinal 1 pushes a PR's genuine first
+// review to ordinal 2.
+func eligibleRuns(runs []RunRecord, since, until time.Time, opts Options) ([]RunRecord, int) {
+	eligible := make([]RunRecord, 0, len(runs))
+	skippedInWindow := 0
+	for _, r := range runs {
+		if opts.Anvil != "" && r.Anvil != opts.Anvil {
+			continue
+		}
+		if r.Skipped() && !opts.IncludeSkipped {
+			if inWindow(r.StartedAt, since, until) {
+				skippedInWindow++
+			}
+			continue
+		}
+		eligible = append(eligible, r)
+	}
+	return eligible, skippedInWindow
 }
 
 // inWindow reports whether t falls in [since, until). A zero bound is open on

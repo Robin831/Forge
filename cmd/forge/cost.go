@@ -198,6 +198,8 @@ func (s assayRunSource) AssayRunHistory(since, until time.Time) ([]cost.RunRecor
 			FindingsCount:       r.FindingsCount,
 			SkippedReason:       r.SkippedReason,
 			ShadowMode:          r.ShadowMode,
+			Status:              r.Status,
+			Error:               r.Error,
 			CacheCreationTokens: r.CacheCreationTokens,
 			CacheReadTokens:     r.CacheReadTokens,
 		})
