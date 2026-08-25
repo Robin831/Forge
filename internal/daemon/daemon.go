@@ -2007,7 +2007,10 @@ func (d *Daemon) runAssayReview(ctx context.Context, anvil, anvilPath, beadID st
 			// the prefixes they wrote, and a failed run left at zero would read
 			// back as one that shared everything.
 			run.CacheCreationTokens, run.CacheReadTokens = assay.RunCacheTokens(rerr)
-			d.recordStageCost("assay", engineCfg.ReviewProviderKind(), beadID, anvil, assay.RunUsage(rerr))
+			// Into the main ledger as well as assay_runs, from the one site
+			// that may do it — see recordAssayCost, which also carries why
+			// neither the pipeline nor bellows may record a review.
+			d.recordAssayCost(engineCfg.ReviewProviderKind(), beadID, anvil, assay.RunUsage(rerr))
 			d.logger.Error("Assay review failed", "pr", prNumber, "bead", beadID, "error", rerr,
 				"cost_usd", run.CostUSD,
 				"cache_w", run.CacheCreationTokens, "cache_r", run.CacheReadTokens)
@@ -2019,8 +2022,11 @@ func (d *Daemon) runAssayReview(ctx context.Context, anvil, anvilPath, beadID st
 			run.CacheReadTokens = result.CacheReadTokens
 			// A review is as much this bead's spend as its Smith run: recorded
 			// on the success and the partial path alike, since a partial run
-			// paid for every pass that did complete.
-			d.recordStageCost("assay", engineCfg.ReviewProviderKind(), beadID, anvil, result.Usage)
+			// paid for every pass that did complete. The same usage reaches
+			// assay_runs.cost_usd above and daily_costs/provider_daily_costs
+			// here, from the one site allowed to fold it in — see
+			// recordAssayCost.
+			d.recordAssayCost(engineCfg.ReviewProviderKind(), beadID, anvil, result.Usage)
 			run.FindingsCount = len(result.Findings)
 			// Coverage is recorded on the run, not re-derived: the status,
 			// the pass tally and the named failed passes all come from the

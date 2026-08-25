@@ -890,6 +890,13 @@ func recordIngotTemperResults(db *state.DB, workerID, beadID, anvil string, temp
 // reported real prompt-cache accounting. Temper spawns no session and records
 // nothing.
 //
+// Assay is deliberately not one of them and must never be added here: a review
+// runs after the pipeline has finished, dispatched by Bellows against the open
+// PR, and the daemon's recordAssayCost already folds its usage into these same
+// three tables. A stage entry for it here would be a second write of one run's
+// spend, double-counting into daily_costs and provider_daily_costs while
+// assay_runs stayed correct.
+//
 // stage names the caller in the failure log. A zero usage (a rate-limited
 // spawn, or a stage that never reached a session) writes nothing.
 func (p *Params) recordStageCost(workerID, stage, provName string, u cost.Usage) {
