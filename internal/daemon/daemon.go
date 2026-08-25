@@ -1957,6 +1957,7 @@ func (d *Daemon) runAssayReview(ctx context.Context, anvil, anvilPath, beadID st
 			// the prefixes they wrote, and a failed run left at zero would read
 			// back as one that shared everything.
 			run.CacheCreationTokens, run.CacheReadTokens = assay.RunCacheTokens(rerr)
+			d.recordStageCost("assay", engineCfg.ReviewProviderKind(), beadID, anvil, assay.RunUsage(rerr))
 			d.logger.Error("Assay review failed", "pr", prNumber, "bead", beadID, "error", rerr,
 				"cost_usd", run.CostUSD,
 				"cache_w", run.CacheCreationTokens, "cache_r", run.CacheReadTokens)
@@ -1966,6 +1967,10 @@ func (d *Daemon) runAssayReview(ctx context.Context, anvil, anvilPath, beadID st
 			run.CostUSD = result.CostUSD
 			run.CacheCreationTokens = result.CacheCreationTokens
 			run.CacheReadTokens = result.CacheReadTokens
+			// A review is as much this bead's spend as its Smith run: recorded
+			// on the success and the partial path alike, since a partial run
+			// paid for every pass that did complete.
+			d.recordStageCost("assay", engineCfg.ReviewProviderKind(), beadID, anvil, result.Usage)
 			run.FindingsCount = len(result.Findings)
 			// Coverage is recorded on the run, not re-derived: the status,
 			// the pass tally and the named failed passes all come from the
@@ -4341,6 +4346,11 @@ func (d *Daemon) dispatchBead(ctx context.Context, bead poller.Bead, anvilCfg co
 					d.logger.Warn("failed to update provider quota from crucible check", "error", err)
 				}
 			}
+
+			// The check is a full model session, billed whichever way it
+			// decides — so it is recorded before the decline branch below
+			// returns.
+			d.recordStageCost("schematic", string(providers[0].Kind), bead.ID, bead.Anvil, checkResult.Usage)
 
 			_ = d.db.LogEvent(state.EventSchematicDone,
 				fmt.Sprintf("Crucible check: %s → needs_crucible=%v (%s)",

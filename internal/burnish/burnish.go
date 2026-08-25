@@ -271,6 +271,9 @@ func BatchFix(ctx context.Context, p BatchFixParams) *FixResult {
 				_ = p.DB.AddCopilotRequest(cost.Today(), m)
 			}
 		}
+		if p.DB != nil {
+			cost.RecordSession(p.DB, "burnish", string(pv.Kind), p.BeadID, p.AnvilName, smithResult.Usage())
+		}
 		if !smithResult.RateLimited {
 			break
 		}
@@ -622,6 +625,9 @@ func Fix(ctx context.Context, p FixParams) *FixResult {
 				if m := cost.CopilotPremiumMultiplier(pv.Model); m > 0 {
 					_ = p.DB.AddCopilotRequest(cost.Today(), m)
 				}
+			}
+			if p.DB != nil {
+				cost.RecordSession(p.DB, "burnish", string(pv.Kind), p.BeadID, p.AnvilName, smithResult.Usage())
 			}
 			if !smithResult.RateLimited {
 				activeProviderIdx = pi

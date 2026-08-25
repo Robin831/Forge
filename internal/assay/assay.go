@@ -28,6 +28,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Robin831/Forge/internal/cost"
 	"github.com/Robin831/Forge/internal/diff"
 	"github.com/Robin831/Forge/internal/state"
 )
@@ -245,6 +246,13 @@ type ReviewResult struct {
 	// the trend is a query rather than a re-reading of old log lines.
 	CacheCreationTokens int
 	CacheReadTokens     int
+	// Usage is the run's whole token accounting — input, output and the
+	// provider's prompt-cache read/write counts, summed over every session of
+	// every pass, failed sessions included. It is what the daily and per-bead
+	// cost tables record. Its cost half is the same number as CostUSD and its
+	// cache halves the same as the pair above, which stay their own fields
+	// because callers render and persist them directly.
+	Usage cost.Usage
 	// Duration is the wall-clock time spent in Review.
 	Duration time.Duration
 	// Passes holds per-pass metadata.
@@ -333,8 +341,8 @@ func (r *ReviewResult) RedundantCacheWriteTokens() int {
 // the cost billed up to the point the run failed, so a run that produces no
 // result still reaches cost tracking.
 //
-// This is the run-level counterpart of PassError.CostUSD, and it exists for the
-// same reason: a failure is not a refund. The provider bills a triage session
+// This is the run-level counterpart of PassError's own telemetry, and it exists
+// for the same reason: a failure is not a refund. The provider bills a triage session
 // that ended on error_max_turns — the subtype that by definition burned the
 // whole turn budget — exactly like one that answered, and a run whose every
 // deep pass failed has paid for six full sessions. Without this the daemon's
@@ -344,16 +352,14 @@ func (r *ReviewResult) RedundantCacheWriteTokens() int {
 // Error() reproduces the wrapped message verbatim and Unwrap exposes the cause,
 // so callers that only log or errors.As on the underlying error are unaffected.
 type RunError struct {
-	// CostUSD is what the run had been billed when it failed.
-	CostUSD float64
-	// CacheCreationTokens and CacheReadTokens are the prompt-cache accounting
-	// of the sessions the run made before it died, carried for the same reason
-	// as CostUSD: a failed session was billed for the prefix it wrote, and a
-	// run recorded with zero cache tokens reads as one that shared nothing.
-	// The failures that reach here are not rare enough to leave out — a triage
-	// pass that exhausts its turn budget wrote the whole prefix first.
-	CacheCreationTokens int
-	CacheReadTokens     int
+	// Usage is everything the run had been billed when it failed — tokens,
+	// prompt-cache counts and the dollars behind them — so a run that dies
+	// still records its cache columns and not just its cost. It is the one
+	// field: a separate CostUSD would be a second copy of
+	// Usage.EstimatedCostUSD that has to be kept in step with it, and RunCost
+	// and RunCacheTokens read it back through RunUsage rather than from fields
+	// of their own.
+	Usage cost.Usage
 	// Err is the underlying failure.
 	Err error
 }
@@ -362,29 +368,32 @@ func (e *RunError) Error() string { return e.Err.Error() }
 
 func (e *RunError) Unwrap() error { return e.Err }
 
-// RunCost reports the cost carried by an error from Review. An error raised
-// before any provider session ran (a malformed request, an unbuildable prompt)
-// carries none and reports 0, as does any error this package did not build —
-// an undercount is the safe direction for a number feeding a spend limit, a
+// RunUsage reports the accounting carried by an error from Review: the tokens,
+// prompt-cache counts and dollars a failed run had been billed, for the cost
+// tables that record all of them together. An error raised before any provider
+// session ran (a malformed request, an unbuildable prompt) carries none and
+// reports the zero usage, as does any error this package did not build — an
+// undercount is the safe direction for numbers feeding a spend limit, a
 // fabricated one is not.
-func RunCost(err error) float64 {
+func RunUsage(err error) cost.Usage {
 	var re *RunError
 	if errors.As(err, &re) {
-		return re.CostUSD
+		return re.Usage
 	}
-	return 0
+	return cost.Usage{}
 }
 
-// RunCacheTokens reports the prompt-cache accounting carried by an error from
-// Review — the cache counterpart of RunCost, with the same undercount-rather-
-// than-fabricate rule: an error raised before any session ran, or one this
-// package did not build, reports zeros.
+// RunCost is the dollars half of RunUsage, for the callers that record only the
+// figure. It delegates rather than reading a field of its own, so the two can
+// never report different things for the same error.
+func RunCost(err error) float64 { return RunUsage(err).EstimatedCostUSD }
+
+// RunCacheTokens is the prompt-cache half of RunUsage, for the callers that
+// persist the two columns. It delegates for the same reason RunCost does: one
+// reading of the error, so the accessors cannot disagree about it.
 func RunCacheTokens(err error) (creation, read int) {
-	var re *RunError
-	if errors.As(err, &re) {
-		return re.CacheCreationTokens, re.CacheReadTokens
-	}
-	return 0, 0
+	u := RunUsage(err)
+	return u.CacheWriteTokens, u.CacheReadTokens
 }
 
 // Review runs the multi-pass Assay review for req and returns the aggregated
@@ -460,24 +469,20 @@ func Review(ctx context.Context, req ReviewRequest, db *state.DB, cfg Config) (*
 	}
 
 	var (
-		passes    []PassReport
-		totalCost float64
-		// Banked alongside totalCost and by the same rule: every session's
-		// cache accounting, answered or not. A pass that wrote the prefix and
-		// then died was billed for the write.
-		cacheCreation int
-		cacheRead     int
+		passes []PassReport
+		// totalUsage is the run's whole token accounting — every session of
+		// every pass, failed ones included, banked as each pass reports. It is
+		// what reaches the daily and per-bead cost tables, and it is the one
+		// accumulator the run-level cost and cache-token fields are both read
+		// off, so they cannot drift apart. A pass that wrote the prefix and
+		// then died was billed for the write, so its usage is banked too.
+		totalUsage cost.Usage
 	)
 
 	// fail wraps an error raised after sessions have run so the run's spend to
 	// that point survives the nil result — see RunError.
 	fail := func(err error) (*ReviewResult, error) {
-		return nil, &RunError{
-			CostUSD:             totalCost,
-			CacheCreationTokens: cacheCreation,
-			CacheReadTokens:     cacheRead,
-			Err:                 err,
-		}
+		return nil, &RunError{Usage: totalUsage, Err: err}
 	}
 
 	// 1. Triage — scope which files warrant deeper review. Its cost is banked
@@ -485,9 +490,7 @@ func Review(ctx context.Context, req ReviewRequest, db *state.DB, cfg Config) (*
 	// or not they answered, and a triage failure aborts the run, so this is the
 	// only place that spend can be attributed.
 	triageRes, err := runTriage(ctx, runner, cfg, req, filtered)
-	totalCost += triageRes.cost
-	cacheCreation += triageRes.cacheCreation
-	cacheRead += triageRes.cacheRead
+	totalUsage.Add(triageRes.usage)
 	if err != nil {
 		return fail(err)
 	}
@@ -498,11 +501,11 @@ func Review(ctx context.Context, req ReviewRequest, db *state.DB, cfg Config) (*
 	passes = append(passes, PassReport{
 		Name:                passTriage.Name,
 		Findings:            0,
-		CostUSD:             triageRes.cost,
+		CostUSD:             triageRes.usage.EstimatedCostUSD,
 		Turns:               triageRes.turns,
 		Attempts:            1,
-		CacheCreationTokens: triageRes.cacheCreation,
-		CacheReadTokens:     triageRes.cacheRead,
+		CacheCreationTokens: triageRes.usage.CacheWriteTokens,
+		CacheReadTokens:     triageRes.usage.CacheReadTokens,
 	})
 
 	scoped := scopeDiffToFiles(filtered, triage.ReviewFiles)
@@ -565,20 +568,18 @@ func Review(ctx context.Context, req ReviewRequest, db *state.DB, cfg Config) (*
 		// Count cost regardless of success — the model ran either way, and a
 		// retried pass ran twice. Its cache accounting is banked on the same
 		// terms.
-		totalCost += o.cost
-		cacheCreation += o.cacheCreation
-		cacheRead += o.cacheRead
+		totalUsage.Add(o.usage)
 		passes = append(passes, PassReport{
 			Name:                deepPasses[i].Name,
 			Findings:            len(o.findings),
-			CostUSD:             o.cost,
+			CostUSD:             o.usage.EstimatedCostUSD,
 			Turns:               o.turns,
 			TerminationReason:   o.failure.Reason,
 			Attempts:            o.attempts,
 			Retried:             o.retried,
 			RetrySkipped:        o.retrySkipped,
-			CacheCreationTokens: o.cacheCreation,
-			CacheReadTokens:     o.cacheRead,
+			CacheCreationTokens: o.usage.CacheWriteTokens,
+			CacheReadTokens:     o.usage.CacheReadTokens,
 			Primer:              i == primerPass,
 		})
 		if o.err != nil {
@@ -665,9 +666,10 @@ func Review(ctx context.Context, req ReviewRequest, db *state.DB, cfg Config) (*
 		Findings:            capped,
 		HeadSHA:             req.HeadSHA,
 		ShadowMode:          cfg.ShadowMode,
-		CostUSD:             totalCost,
-		CacheCreationTokens: cacheCreation,
-		CacheReadTokens:     cacheRead,
+		CostUSD:             totalUsage.EstimatedCostUSD,
+		CacheCreationTokens: totalUsage.CacheWriteTokens,
+		CacheReadTokens:     totalUsage.CacheReadTokens,
+		Usage:               totalUsage,
 		Duration:            time.Since(start),
 		Passes:              passes,
 		NitsCapped:          nCapped,

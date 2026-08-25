@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/Robin831/Forge/internal/cost"
 	"github.com/Robin831/Forge/internal/diff"
 )
 
@@ -26,15 +27,12 @@ type triageResult struct {
 type triageRun struct {
 	// result is the scoping decision. Zero-valued when the pass failed.
 	result triageResult
-	// cost is cumulative across every session the pass made, reported on the
-	// error paths too.
-	cost float64
+	// usage is cumulative across every session the pass made — tokens, the
+	// prompt-cache halves and the cost alike — and is reported on the error
+	// paths too.
+	usage cost.Usage
 	// turns is the recorded (final) session's turn count.
 	turns int
-	// cacheCreation and cacheRead are the pass's prompt-cache accounting,
-	// summed over its sessions like cost.
-	cacheCreation int
-	cacheRead     int
 }
 
 // runTriage runs the scoping pass. Like the deep passes it parses strict JSON
@@ -62,30 +60,24 @@ func runTriage(ctx context.Context, runner PassRunner, cfg Config, req ReviewReq
 
 	out, err := runner(ctx, passTriage.Name, passTriage.Tier, prompt)
 	if err != nil {
-		cost, turns, cc, cr := passErrorTelemetry(err)
-		return triageRun{cost: cost, turns: turns, cacheCreation: cc, cacheRead: cr}, err
+		u, turns := passErrorTelemetry(err)
+		return triageRun{usage: u, turns: turns}, err
 	}
 	run := triageRun{
-		cost:          out.CostUSD,
-		turns:         out.Turns,
-		cacheCreation: out.CacheCreationTokens,
-		cacheRead:     out.CacheReadTokens,
+		usage: out.usage(),
+		turns: out.Turns,
 	}
 
 	res, perr := parseTriage(out.Text)
 	if perr != nil {
 		out2, err2 := runner(ctx, passTriage.Name, passTriage.Tier, prompt+"\n\n"+strictJSONReminder)
 		if err2 != nil {
-			cost2, turns2, cc, cr := passErrorTelemetry(err2)
-			run.cost += cost2
-			run.cacheCreation += cc
-			run.cacheRead += cr
+			u2, turns2 := passErrorTelemetry(err2)
+			run.usage.Add(u2)
 			run.turns = turns2
 			return run, err2
 		}
-		run.cost += out2.CostUSD
-		run.cacheCreation += out2.CacheCreationTokens
-		run.cacheRead += out2.CacheReadTokens
+		run.usage.Add(out2.usage())
 		run.turns = out2.Turns
 		res, perr = parseTriage(out2.Text)
 		if perr != nil {

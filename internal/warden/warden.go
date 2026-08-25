@@ -17,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Robin831/Forge/internal/cost"
 	diffpkg "github.com/Robin831/Forge/internal/diff"
 	"github.com/Robin831/Forge/internal/executil"
 	"github.com/Robin831/Forge/internal/provider"
@@ -76,6 +77,19 @@ type ReviewResult struct {
 	Duration time.Duration
 	// CostUSD is the cost of the review session.
 	CostUSD float64
+	// Usage is the review's full token accounting — input, output and the
+	// provider's prompt-cache read/write counts — summed over every session the
+	// review made, the verdict follow-up turn included. It is what the cost
+	// sinks record.
+	//
+	// Usage.EstimatedCostUSD is normally the same number CostUSD carries, but
+	// the two can differ: CostUSD takes whatever the provider reported on each
+	// session, while Usage takes smith.Result.Usage, which is the zero value
+	// for a session the provider refused (a rate-limited verdict follow-up
+	// adds to CostUSD and contributes nothing here). A refused request is not a
+	// completion, so it stays out of the persisted accounting — read CostUSD
+	// for what to render and Usage for what to record, not one for the other.
+	Usage cost.Usage
 	// NoDiff is true when the rejection was because Smith produced no diff.
 	NoDiff bool
 }
@@ -191,6 +205,7 @@ func Review(ctx context.Context, worktreePath, beadID, beadTitle, beadDescriptio
 		RawOutput:    smithResult.Output,
 		Duration:     time.Since(start),
 		CostUSD:      smithResult.CostUSD,
+		Usage:        smithResult.Usage(),
 		UsedProvider: &usedProvider,
 	}
 
@@ -225,6 +240,7 @@ func Review(ctx context.Context, worktreePath, beadID, beadTitle, beadDescriptio
 			}
 			followRes := followUp.Wait()
 			result.CostUSD += followRes.CostUSD
+			result.Usage.Add(followRes.Usage())
 			if smith.ResumeUnavailable(followRes) {
 				log.Printf("[warden:%s] verdict follow-up could not resume session %s; keeping default verdict", beadID, smithResult.SessionID)
 			} else {

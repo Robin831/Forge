@@ -12,9 +12,17 @@ import (
 	"testing"
 
 	"github.com/Robin831/Forge/internal/config"
+	"github.com/Robin831/Forge/internal/cost"
 	"github.com/Robin831/Forge/internal/provider"
 	"github.com/Robin831/Forge/internal/smith"
 )
+
+// turnOf is one billed message's usage as the tracker takes it: a priced cost
+// and the prompt-cache halves behind it. The tests drive the tracker with the
+// same shape turnCostUSD hands it.
+func turnOf(usd float64, cacheCreation, cacheRead int) cost.Usage {
+	return cost.Usage{EstimatedCostUSD: usd, CacheWriteTokens: cacheCreation, CacheReadTokens: cacheRead}
+}
 
 func TestCostTrackerDisabled(t *testing.T) {
 	for _, limit := range []float64{0, -1, math.NaN(), math.Inf(1)} {
@@ -22,7 +30,7 @@ func TestCostTrackerDisabled(t *testing.T) {
 		if tr.enabled() {
 			t.Errorf("limit %v: enabled = true; want a disabled tracker", limit)
 		}
-		if tr.AddTurnCost("msg_1", 1000, 10, 10) {
+		if tr.AddTurnCost("msg_1", turnOf(1000, 10, 10)) {
 			t.Errorf("limit %v: AddTurnCost reported the ceiling reached on a disabled tracker", limit)
 		}
 		if tr.Exceeded() {
@@ -42,19 +50,20 @@ func TestCostTrackerDisabled(t *testing.T) {
 
 func TestCostTrackerAccumulatesAcrossTurns(t *testing.T) {
 	tr := newCostTracker(1.00)
-	if tr.AddTurnCost("msg_1", 0.30, 100, 0) {
+	if tr.AddTurnCost("msg_1", turnOf(0.30, 100, 0)) {
 		t.Error("ceiling reported reached after $0.30 of a $1.00 budget")
 	}
-	if tr.AddTurnCost("msg_2", 0.30, 0, 200) {
+	if tr.AddTurnCost("msg_2", turnOf(0.30, 0, 200)) {
 		t.Error("ceiling reported reached after $0.60 of a $1.00 budget")
 	}
-	if !tr.AddTurnCost("msg_3", 0.40, 50, 300) {
+	if !tr.AddTurnCost("msg_3", turnOf(0.40, 50, 300)) {
 		t.Error("ceiling not reported reached at exactly the $1.00 budget")
 	}
 	if !tr.Exceeded() {
 		t.Error("Exceeded = false at exactly the limit; the boundary spends the budget")
 	}
-	usd, turns, cc, cr := tr.Snapshot()
+	snap, turns := tr.Snapshot()
+	usd, cc, cr := snap.EstimatedCostUSD, snap.CacheWriteTokens, snap.CacheReadTokens
 	if math.Abs(usd-1.00) > 1e-9 {
 		t.Errorf("total = %v; want 1.00", usd)
 	}
@@ -71,11 +80,12 @@ func TestCostTrackerAccumulatesAcrossTurns(t *testing.T) {
 func TestCostTrackerIgnoresUnusableTurnCosts(t *testing.T) {
 	tr := newCostTracker(1.00)
 	for i, usd := range []float64{-5, math.NaN(), math.Inf(1), math.Inf(-1)} {
-		if tr.AddTurnCost(fmt.Sprintf("msg_%d", i), usd, -1, -1) {
+		if tr.AddTurnCost(fmt.Sprintf("msg_%d", i), turnOf(usd, -1, -1)) {
 			t.Errorf("turn cost %v tripped the ceiling", usd)
 		}
 	}
-	usd, turns, cc, cr := tr.Snapshot()
+	snap, turns := tr.Snapshot()
+	usd, cc, cr := snap.EstimatedCostUSD, snap.CacheWriteTokens, snap.CacheReadTokens
 	if usd != 0 {
 		t.Errorf("total = %v; want 0 — an unusable per-turn cost must not move the total in either direction", usd)
 	}
@@ -112,14 +122,20 @@ func assistantEvent(t *testing.T, id, model string, in, out, cacheW, cacheR int)
 func TestTurnCostUSDPricesAnsweredTurns(t *testing.T) {
 	pv := provider.Provider{Kind: provider.Claude}
 	ev := assistantEvent(t, "msg_a", "claude-sonnet", 1_000_000, 0, 0, 0)
-	id, usd, cc, cr, ok := turnCostUSD(ev, pv)
+	id, u, ok := turnCostUSD(ev, pv)
 	if !ok {
 		t.Fatal("an assistant event carrying usage must yield a turn cost")
 	}
+	usd, cc, cr := u.EstimatedCostUSD, u.CacheWriteTokens, u.CacheReadTokens
 	// The id rides out so the tracker can bill the message once however many
 	// content-block events carry it.
 	if id != "msg_a" {
 		t.Errorf("id = %q; want msg_a", id)
+	}
+	// The input and output counts ride out with it: a session stopped at the
+	// ceiling reports these instead of the result event it never emitted.
+	if u.InputTokens != 1_000_000 {
+		t.Errorf("input tokens = %d; want 1000000", u.InputTokens)
 	}
 	// 1M input tokens at the claude-sonnet row ($3.00/M).
 	if math.Abs(usd-3.00) > 1e-9 {
@@ -132,7 +148,8 @@ func TestTurnCostUSDPricesAnsweredTurns(t *testing.T) {
 	// The model named on the turn wins over the configured hint: the hint is
 	// routinely empty ("let the provider pick") and the turn says what it did.
 	ev = assistantEvent(t, "msg_b", "claude-opus-4-8", 1_000_000, 0, 500, 900)
-	_, usd, cc, cr, _ = turnCostUSD(ev, pv)
+	_, u, _ = turnCostUSD(ev, pv)
+	usd, cc, cr = u.EstimatedCostUSD, u.CacheWriteTokens, u.CacheReadTokens
 	// 1M input at $5.00/M + 500 cache-write at $6.25/M + 900 cache-read at
 	// $0.50/M — the cache lines are priced too, since they are billed too.
 	want := 5.00 + 500*6.25/1e6 + 900*0.50/1e6
@@ -163,8 +180,8 @@ func TestTurnCostUSDIgnoresNonTurnEvents(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if _, usd, _, _, ok := turnCostUSD(tc.ev, pv); ok || usd != 0 {
-				t.Errorf("turnCostUSD = (%v, ok=%v); want (0, false)", usd, ok)
+			if _, u, ok := turnCostUSD(tc.ev, pv); ok || !u.IsZero() {
+				t.Errorf("turnCostUSD = (%+v, ok=%v); want (the zero usage, false)", u, ok)
 			}
 		})
 	}
@@ -222,7 +239,7 @@ func TestCostStopExceptionUsesSmithAnswered(t *testing.T) {
 			// A crossed ceiling is a stop for exactly the sessions that did not
 			// answer, which is the whole of the exception.
 			tr := newCostTracker(1.00)
-			tr.AddTurnCost("msg_1", 2.00, 0, 0)
+			tr.AddTurnCost("msg_1", turnOf(2.00, 0, 0))
 			perr := costStopError("logic", tr, tc.res)
 			if (perr == nil) != tc.want {
 				t.Errorf("costStopError = %v for Answered=%v; a stop is reported only for a session that did not answer", perr, tc.want)
@@ -238,13 +255,13 @@ func TestCostStopError(t *testing.T) {
 	}
 	// Nothing to report when the budget is intact.
 	tr := newCostTracker(1.50)
-	tr.AddTurnCost("msg_1", 0.20, 0, 0)
+	tr.AddTurnCost("msg_1", turnOf(0.20, 0, 0))
 	if perr := costStopError("logic", tr, &smith.Result{ExitCode: -1}); perr != nil {
 		t.Errorf("costStopError under the ceiling = %v; want nil", perr)
 	}
 
 	// Crossed, and the session died with it: a stop, named as one.
-	tr.AddTurnCost("msg_2", 1.31, 900, 41500)
+	tr.AddTurnCost("msg_2", turnOf(1.31, 900, 41500))
 	perr := costStopError("logic", tr, &smith.Result{ExitCode: -1})
 	if perr == nil {
 		t.Fatal("costStopError = nil for a session killed past its ceiling")
@@ -275,13 +292,57 @@ func TestCostStopError(t *testing.T) {
 	}
 }
 
+// TestCostStopErrorCarriesEveryTokenColumn is the regression for a stopped pass
+// recording dollars and cache tokens beside input=0/output=0. Those counters
+// reach daily_costs, provider_daily_costs and bead_costs together, so a row
+// with real money and empty token columns is internally inconsistent in exactly
+// the tables this accounting exists to make trustworthy. Every counter
+// therefore comes out of the one tracker snapshot.
+func TestCostStopErrorCarriesEveryTokenColumn(t *testing.T) {
+	pv := provider.Provider{Kind: provider.Claude}
+	tr := newCostTracker(1.00)
+	for _, ev := range []smith.StreamEvent{
+		assistantEvent(t, "msg_1", "claude-sonnet", 400_000, 7, 900, 41500),
+		assistantEvent(t, "msg_2", "claude-sonnet", 400_000, 5, 0, 20000),
+	} {
+		id, u, ok := turnCostUSD(ev, pv)
+		if !ok {
+			t.Fatalf("event %s carries no usage", id)
+		}
+		tr.AddTurnCost(id, u)
+	}
+	perr := costStopError("logic", tr, &smith.Result{ExitCode: -1})
+	if perr == nil {
+		t.Fatal("costStopError = nil for a session killed past its ceiling")
+	}
+	if perr.TokensIn != 800_000 || perr.TokensOut != 12 {
+		t.Errorf("token telemetry = {in:%d out:%d}; want {800000 12} — the same snapshot the dollars came from",
+			perr.TokensIn, perr.TokensOut)
+	}
+	if perr.CacheCreationTokens != 900 || perr.CacheReadTokens != 61500 {
+		t.Errorf("cache telemetry = {w:%d r:%d}; want {900 61500}", perr.CacheCreationTokens, perr.CacheReadTokens)
+	}
+	if perr.CostUSD <= 0 {
+		t.Fatalf("CostUSD = %v; want the spend that crossed the ceiling", perr.CostUSD)
+	}
+	// And it survives the projection every cost sink reads it through, so the
+	// row that lands is the whole session, not its dollars alone.
+	u, turns := passErrorTelemetry(perr)
+	if u.InputTokens != 800_000 || u.OutputTokens != 12 || u.CacheWriteTokens != 900 || u.CacheReadTokens != 61500 || turns != 2 {
+		t.Errorf("passErrorTelemetry = {%+v turns:%d}; want the tracker's whole accounting", u, turns)
+	}
+	if math.Abs(u.EstimatedCostUSD-perr.CostUSD) > 1e-9 {
+		t.Errorf("usage cost %v disagrees with the error's %v", u.EstimatedCostUSD, perr.CostUSD)
+	}
+}
+
 // maxCostErr is the error the runner produces for a session stopped at its
 // spend ceiling. It is built by the production path so the scripted stub and
 // the real runner cannot report the stop differently.
 func maxCostErr(pass string, turns int, usd float64) *PassError {
 	tr := newCostTracker(1.50)
 	for i := 0; i < turns; i++ {
-		tr.AddTurnCost(fmt.Sprintf("msg_%d", i), usd/float64(turns), 0, 0)
+		tr.AddTurnCost(fmt.Sprintf("msg_%d", i), turnOf(usd/float64(turns), 0, 0))
 	}
 	return costStopError(pass, tr, &smith.Result{ExitCode: -1})
 }
@@ -390,10 +451,11 @@ func TestCostTrackerBillsOneMessageOnce(t *testing.T) {
 	// The fixture is one message: same id, same usage, three events.
 	var firstID string
 	for i, ev := range evs {
-		id, usd, cc, cr, ok := turnCostUSD(ev, pv)
+		id, u, ok := turnCostUSD(ev, pv)
 		if !ok {
 			t.Fatalf("event %d: carries no usage", i)
 		}
+		usd, cc, cr := u.EstimatedCostUSD, u.CacheWriteTokens, u.CacheReadTokens
 		if i == 0 {
 			firstID = id
 		} else if id != firstID {
@@ -410,36 +472,38 @@ func TestCostTrackerBillsOneMessageOnce(t *testing.T) {
 	// Billed through the tracker, the three events cost what one message costs.
 	tr := newCostTracker(1000)
 	for _, ev := range evs {
-		id, usd, cc, cr, _ := turnCostUSD(ev, pv)
-		tr.AddTurnCost(id, usd, cc, cr)
+		id, u, _ := turnCostUSD(ev, pv)
+		tr.AddTurnCost(id, u)
 	}
-	usd, turns, cc, cr := tr.Snapshot()
+	snap, turns := tr.Snapshot()
+	usd, cc, cr := snap.EstimatedCostUSD, snap.CacheWriteTokens, snap.CacheReadTokens
 	if turns != 1 {
 		t.Errorf("turns = %d; want 1 — three content blocks are one billed message (the provider's own num_turns counts it once)", turns)
 	}
 	if cc != 41895 || cr != 19553 {
 		t.Errorf("cache accounting = {w:%d r:%d}; want {41895 19553} counted once, not tripled", cc, cr)
 	}
-	_, one, _, _, _ := turnCostUSD(evs[0], pv)
+	_, oneTurn, _ := turnCostUSD(evs[0], pv)
+	one := oneTurn.EstimatedCostUSD
 	if math.Abs(usd-one) > 1e-9 {
 		t.Errorf("total = %v; want %v — one message's cost, not three", usd, one)
 	}
 
 	// A second, distinct message is new spend and is added.
 	next := assistantEvent(t, "msg_second", "claude-fable-5", 1_000_000, 0, 0, 0)
-	nid, nusd, ncc, ncr, _ := turnCostUSD(next, pv)
-	tr.AddTurnCost(nid, nusd, ncc, ncr)
-	if _, turns, _, _ := tr.Snapshot(); turns != 2 {
+	nid, nu, _ := turnCostUSD(next, pv)
+	tr.AddTurnCost(nid, nu)
+	if _, turns := tr.Snapshot(); turns != 2 {
 		t.Errorf("turns = %d after a second message id; want 2", turns)
 	}
 
 	// A repeat that arrives after the ceiling was already reached still reports
 	// it as reached — a duplicate does not un-cross the line.
 	tight := newCostTracker(0.01)
-	if !tight.AddTurnCost("msg_x", 5, 0, 0) {
+	if !tight.AddTurnCost("msg_x", turnOf(5, 0, 0)) {
 		t.Fatal("a $5 turn against a $0.01 ceiling must report it reached")
 	}
-	if !tight.AddTurnCost("msg_x", 5, 0, 0) {
+	if !tight.AddTurnCost("msg_x", turnOf(5, 0, 0)) {
 		t.Error("a repeat of an already-billed message must still report the ceiling reached")
 	}
 	if got := tight.TotalUSD(); got != 5 {
@@ -449,10 +513,10 @@ func TestCostTrackerBillsOneMessageOnce(t *testing.T) {
 	// An empty id cannot be deduplicated, so it keeps the historical per-event
 	// accounting rather than collapsing every unlabelled turn into one.
 	anon := newCostTracker(1000)
-	anon.AddTurnCost("", 0.25, 0, 0)
-	anon.AddTurnCost("", 0.25, 0, 0)
-	if got, turns, _, _ := anon.Snapshot(); got != 0.50 || turns != 2 {
-		t.Errorf("unlabelled turns = {usd:%v turns:%d}; want {0.5 2}", got, turns)
+	anon.AddTurnCost("", turnOf(0.25, 0, 0))
+	anon.AddTurnCost("", turnOf(0.25, 0, 0))
+	if got, turns := anon.Snapshot(); got.EstimatedCostUSD != 0.50 || turns != 2 {
+		t.Errorf("unlabelled turns = {usd:%v turns:%d}; want {0.5 2}", got.EstimatedCostUSD, turns)
 	}
 }
 
@@ -498,8 +562,8 @@ func TestCostStopCallbackStopsAtTheCrossing(t *testing.T) {
 		if stops != 0 {
 			t.Errorf("stops = %d; want 0 — only a billed message may trip the ceiling", stops)
 		}
-		if usd, turns, _, _ := tr.Snapshot(); usd != 0 || turns != 0 {
-			t.Errorf("tracker = {usd:%v turns:%d}; want {0 0}", usd, turns)
+		if snap, turns := tr.Snapshot(); snap.EstimatedCostUSD != 0 || turns != 0 {
+			t.Errorf("tracker = {usd:%v turns:%d}; want {0 0}", snap.EstimatedCostUSD, turns)
 		}
 	})
 
@@ -583,8 +647,8 @@ func TestCostStopCallbackStopsAtTheCrossing(t *testing.T) {
 		for _, ev := range realToolUseTurn(t) {
 			cb(ev)
 		}
-		if _, turns, cc, cr := tr.Snapshot(); turns != 1 || cc != 41895 || cr != 19553 {
-			t.Errorf("tracker = {turns:%d w:%d r:%d}; want {1 41895 19553}", turns, cc, cr)
+		if snap, turns := tr.Snapshot(); turns != 1 || snap.CacheWriteTokens != 41895 || snap.CacheReadTokens != 19553 {
+			t.Errorf("tracker = {turns:%d w:%d r:%d}; want {1 41895 19553}", turns, snap.CacheWriteTokens, snap.CacheReadTokens)
 		}
 	})
 }
@@ -598,7 +662,7 @@ func TestSessionOutcomeAsksTheCeilingFirst(t *testing.T) {
 	pv := provider.Provider{Kind: provider.Claude}
 	stopped := func() *costTracker {
 		tr := newCostTracker(1.50)
-		tr.AddTurnCost("msg_1", 1.60, 900, 41500)
+		tr.AddTurnCost("msg_1", turnOf(1.60, 900, 41500))
 		return tr
 	}
 

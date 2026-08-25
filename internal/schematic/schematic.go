@@ -20,6 +20,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Robin831/Forge/internal/cost"
 	"github.com/Robin831/Forge/internal/executil"
 	"github.com/Robin831/Forge/internal/poller"
 	"github.com/Robin831/Forge/internal/provider"
@@ -108,6 +109,17 @@ type Result struct {
 	Duration time.Duration
 	// CostUSD is the estimated cost of the AI session.
 	CostUSD float64
+	// Usage is the session's full token accounting — input, output and the
+	// provider's prompt-cache read/write counts — for the cost sinks. CostUSD
+	// stays its own field because callers render it directly.
+	//
+	// Usage.EstimatedCostUSD is normally the same number, but the two can
+	// differ: CostUSD is whatever the provider reported, while Usage comes from
+	// smith.Result.Usage, which is the zero value for a session the provider
+	// refused — a rate-limited analysis returns a CostUSD the provider stamped
+	// on the refusal next to an empty Usage. A refused request is not a
+	// completion, so it stays out of the persisted accounting.
+	Usage cost.Usage
 	// Quota holds rate-limit quota data from the AI session, if available.
 	Quota *provider.Quota
 	// Error is set if the schematic failed.
@@ -126,6 +138,8 @@ type CrucibleCheckResult struct {
 	Duration time.Duration
 	// CostUSD is the estimated cost of the AI session.
 	CostUSD float64
+	// Usage is the session's full token accounting, as on Result.
+	Usage cost.Usage
 	// Quota holds rate-limit quota data from the AI session, if available.
 	Quota *provider.Quota
 }
@@ -322,6 +336,7 @@ func Run(ctx context.Context, cfg Config, bead poller.Bead, anvilPath string, pv
 	result := &Result{
 		Duration: time.Since(start),
 		CostUSD:  smithResult.CostUSD,
+		Usage:    smithResult.Usage(),
 		Quota:    smithResult.Quota,
 	}
 
@@ -1100,6 +1115,7 @@ func RunCrucibleCheck(ctx context.Context, cfg Config, parent poller.Bead, child
 	result := &CrucibleCheckResult{
 		Duration: time.Since(start),
 		CostUSD:  smithResult.CostUSD,
+		Usage:    smithResult.Usage(),
 		Quota:    smithResult.Quota,
 	}
 

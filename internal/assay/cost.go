@@ -35,11 +35,14 @@ type costTracker struct {
 	// every unusable limit to — disables the tracker entirely.
 	limitUSD float64
 
-	mu            sync.Mutex
-	totalUSD      float64
-	turns         int
-	cacheCreation int
-	cacheRead     int
+	// mu guards the running accounting. usage carries the whole per-message
+	// tally — input, output and both prompt-cache halves — with
+	// EstimatedCostUSD as the running spend the ceiling is compared against,
+	// so a stopped session reports the same shape of accounting a completed
+	// one does rather than dollars next to zeroed token columns.
+	mu    sync.Mutex
+	usage cost.Usage
+	turns int
 	// seen holds the message ids already billed. Claude emits one assistant
 	// stream event per content block of a single API message — thinking, text
 	// and tool_use arrive as three events sharing one message id and one
@@ -64,9 +67,16 @@ func newCostTracker(limitUSD float64) *costTracker {
 // callers never have to nil-check before asking.
 func (t *costTracker) enabled() bool { return t != nil && t.limitUSD > 0 }
 
-// AddTurnCost records one API message: its estimated cost in USD and the
-// prompt-cache tokens it wrote and read. It reports whether the session has now
-// reached the ceiling.
+// AddTurnCost records one API message: its estimated cost in USD and the tokens
+// behind it — input, output and both prompt-cache halves. It reports whether
+// the session has now reached the ceiling.
+//
+// The output side of what it sums is understated for the same reason the
+// ceiling reads low: Claude stamps a message's usage block when the message
+// starts, so output_tokens counts a handful of tokens however much the model
+// then writes (see turnEnvelope). An understated output column is still the
+// session's own accounting, and it is the only accounting a stopped session
+// has.
 //
 // id is the provider's message id, and a message is billed once however many
 // stream events carry it. Claude splits one API turn across an assistant event
@@ -88,29 +98,31 @@ func (t *costTracker) enabled() bool { return t != nil && t.limitUSD > 0 }
 // running total in either direction — inflating it stops a healthy pass, and
 // letting it go negative buys a runaway unlimited budget. The turn itself is
 // still counted, since it happened.
-func (t *costTracker) AddTurnCost(id string, usd float64, cacheCreation, cacheRead int) bool {
+func (t *costTracker) AddTurnCost(id string, u cost.Usage) bool {
 	if !t.enabled() {
 		return false
 	}
-	if usd < 0 || math.IsNaN(usd) || math.IsInf(usd, 0) {
-		usd = 0
+	if u.EstimatedCostUSD < 0 || math.IsNaN(u.EstimatedCostUSD) || math.IsInf(u.EstimatedCostUSD, 0) {
+		u.EstimatedCostUSD = 0
 	}
+	u.InputTokens = max(u.InputTokens, 0)
+	u.OutputTokens = max(u.OutputTokens, 0)
+	u.CacheWriteTokens = max(u.CacheWriteTokens, 0)
+	u.CacheReadTokens = max(u.CacheReadTokens, 0)
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if id != "" {
 		if _, dup := t.seen[id]; dup {
-			return t.totalUSD >= t.limitUSD
+			return t.usage.EstimatedCostUSD >= t.limitUSD
 		}
 		if t.seen == nil {
 			t.seen = make(map[string]struct{})
 		}
 		t.seen[id] = struct{}{}
 	}
-	t.totalUSD += usd
+	t.usage.Add(u)
 	t.turns++
-	t.cacheCreation += max(cacheCreation, 0)
-	t.cacheRead += max(cacheRead, 0)
-	return t.totalUSD >= t.limitUSD
+	return t.usage.EstimatedCostUSD >= t.limitUSD
 }
 
 // Exceeded reports whether the accumulated spend has reached the ceiling. The
@@ -123,7 +135,7 @@ func (t *costTracker) Exceeded() bool {
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	return t.totalUSD >= t.limitUSD
+	return t.usage.EstimatedCostUSD >= t.limitUSD
 }
 
 // TotalUSD returns the spend accumulated so far.
@@ -133,7 +145,7 @@ func (t *costTracker) TotalUSD() float64 {
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	return t.totalUSD
+	return t.usage.EstimatedCostUSD
 }
 
 // LimitUSD returns the ceiling in force, or 0 when there is none.
@@ -144,17 +156,17 @@ func (t *costTracker) LimitUSD() float64 {
 	return t.limitUSD
 }
 
-// Snapshot returns everything the tracker counted: the spend, the number of
-// distinct messages it billed, and the prompt-cache write/read totals. It is
-// what a stopped session reports instead of the result event it never got to
-// emit.
-func (t *costTracker) Snapshot() (usd float64, turns, cacheCreation, cacheRead int) {
+// Snapshot returns everything the tracker counted: the full usage — tokens,
+// both prompt-cache halves and the spend behind them — plus the number of
+// distinct messages it billed. It is what a stopped session reports instead of
+// the result event it never got to emit.
+func (t *costTracker) Snapshot() (u cost.Usage, turns int) {
 	if t == nil {
-		return 0, 0, 0, 0
+		return cost.Usage{}, 0
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	return t.totalUSD, t.turns, t.cacheCreation, t.cacheRead
+	return t.usage, t.turns
 }
 
 // turnEnvelope is the per-turn accounting an assistant stream event carries on
@@ -217,24 +229,25 @@ func turnUsage(ev smith.StreamEvent) (u cost.Usage, id, model string, ok bool) {
 }
 
 // turnCostUSD estimates what one message of a session cost, from the usage the
-// provider reported for it and the pricing table for the model that served it.
-// It returns the message id alongside, which is what the tracker bills against.
+// provider reported for it and the pricing table for the model that served it,
+// and returns that usage with the estimate filled in. It returns the message id
+// alongside, which is what the tracker bills against.
 //
 // The estimate is unavoidable: the provider prices a session only in its final
 // result event, so a ceiling that must act mid-session has nothing but tokens
 // and the configured pricing to work from. The model named on the turn itself
 // wins over the configured hint — the hint is often empty ("let the provider
 // pick"), and the turn says what it actually picked.
-func turnCostUSD(ev smith.StreamEvent, pv provider.Provider) (id string, usd float64, cacheCreation, cacheRead int, ok bool) {
+func turnCostUSD(ev smith.StreamEvent, pv provider.Provider) (id string, u cost.Usage, ok bool) {
 	u, id, model, ok := turnUsage(ev)
 	if !ok {
-		return "", 0, 0, 0, false
+		return "", cost.Usage{}, false
 	}
 	if model == "" {
 		model = pv.Model
 	}
 	u.Calculate(cost.EstimatePricing(pv.Kind, model))
-	return id, u.EstimatedCostUSD, u.CacheWriteTokens, u.CacheReadTokens, true
+	return id, u, true
 }
 
 // costStopCallback builds the stream-event callback a pass session runs on the
@@ -269,7 +282,7 @@ func costStopCallback(tracker *costTracker, pv provider.Provider, signal func(),
 		if !tracker.enabled() || stop == nil {
 			return
 		}
-		if id, usd, cc, cr, ok := turnCostUSD(ev, pv); ok && tracker.AddTurnCost(id, usd, cc, cr) {
+		if id, u, ok := turnCostUSD(ev, pv); ok && tracker.AddTurnCost(id, u) {
 			stopOnce.Do(stop)
 		}
 	}
@@ -290,18 +303,23 @@ func costStopCallback(tracker *costTracker, pv provider.Provider, signal func(),
 // The error carries the tracker's accounting rather than the result's, because
 // a stopped session never emitted a result event: what the tracker summed on
 // the way is the only record of what the provider already billed. A stop is
-// not a refund.
+// not a refund. All five counters come from that one snapshot — dollars beside
+// zeroed token columns would be an internally inconsistent row in exactly the
+// tables this accounting exists to make trustworthy — with the output side
+// understated as AddTurnCost describes.
 func costStopError(pass string, tracker *costTracker, res *smith.Result) *PassError {
 	if !tracker.Exceeded() || res.Answered() {
 		return nil
 	}
-	usd, turns, cacheCreation, cacheRead := tracker.Snapshot()
+	u, turns := tracker.Snapshot()
 	perr := newPassError(pass, ReasonMaxCost,
 		fmt.Sprintf("stopped after %s: estimated session cost $%.2f reached the $%.2f per-pass ceiling (assay.max_cost_per_pass_usd)",
-			textfmt.Count(turns, "turn"), usd, tracker.LimitUSD()), nil)
+			textfmt.Count(turns, "turn"), u.EstimatedCostUSD, tracker.LimitUSD()), nil)
 	perr.Turns = turns
-	perr.CostUSD = usd
-	perr.CacheCreationTokens = cacheCreation
-	perr.CacheReadTokens = cacheRead
+	perr.CostUSD = u.EstimatedCostUSD
+	perr.TokensIn = u.InputTokens
+	perr.TokensOut = u.OutputTokens
+	perr.CacheCreationTokens = u.CacheWriteTokens
+	perr.CacheReadTokens = u.CacheReadTokens
 	return perr
 }

@@ -12,6 +12,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/Robin831/Forge/internal/cost"
 	"github.com/Robin831/Forge/internal/diff"
 	"github.com/Robin831/Forge/internal/provider"
 	"github.com/Robin831/Forge/internal/smith"
@@ -96,6 +97,12 @@ type PassOutput struct {
 	// the provider. Zero when the backend reports none — it is telemetry, and
 	// nothing branches on it.
 	Turns int
+	// TokensIn and TokensOut are the session's input and output token counts as
+	// the provider reported them. They are what the per-bead and daily cost
+	// tables record alongside the cache columns; zero for a backend that
+	// reports neither.
+	TokensIn  int
+	TokensOut int
 	// CacheCreationTokens and CacheReadTokens are the provider's prompt-cache
 	// accounting for the session: what it paid to write a prefix, and what it
 	// served from one already there. Zero for a backend that reports neither.
@@ -114,6 +121,19 @@ type PassOutput struct {
 	// and they are what scopes a retry's diff (see buildRetryMods). Nothing
 	// branches on them on the success path.
 	OpenedFiles []string
+}
+
+// usage projects the session's counters onto the cost.Usage every cost sink
+// takes, so a pass's spend is assembled the same way whether it answered or
+// failed (see passErrorTelemetry for the failure side).
+func (o PassOutput) usage() cost.Usage {
+	return cost.Usage{
+		InputTokens:      o.TokensIn,
+		OutputTokens:     o.TokensOut,
+		CacheReadTokens:  o.CacheReadTokens,
+		CacheWriteTokens: o.CacheCreationTokens,
+		EstimatedCostUSD: o.CostUSD,
+	}
 }
 
 // PassRunner invokes a model for one pass and returns its output. It is the
@@ -262,6 +282,10 @@ type PassError struct {
 	// it here would make every retried pass under-report by roughly a full
 	// session, and with it the daily cost tracking Review's total feeds.
 	CostUSD float64
+	// TokensIn and TokensOut are the failed session's token counts, carried for
+	// the same reason CostUSD is — the provider billed them.
+	TokensIn  int
+	TokensOut int
 	// CacheCreationTokens and CacheReadTokens are the failed session's
 	// prompt-cache accounting, carried for the same reason CostUSD is: the
 	// provider charged for the cache write whether or not the session went on
@@ -464,6 +488,8 @@ func sessionOutcome(pass string, tracker *costTracker, res *smith.Result, pv pro
 		Text:                text,
 		CostUSD:             res.CostUSD,
 		Turns:               res.NumTurns,
+		TokensIn:            res.TokensIn,
+		TokensOut:           res.TokensOut,
 		CacheCreationTokens: res.CacheCreationTokens,
 		CacheReadTokens:     res.CacheReadTokens,
 	}, nil
@@ -477,6 +503,8 @@ func sessionOutcome(pass string, tracker *costTracker, res *smith.Result, pv pro
 func withResultTelemetry(perr *PassError, res *smith.Result) {
 	perr.Turns = res.NumTurns
 	perr.CostUSD = res.CostUSD
+	perr.TokensIn = res.TokensIn
+	perr.TokensOut = res.TokensOut
 	perr.CacheCreationTokens = res.CacheCreationTokens
 	perr.CacheReadTokens = res.CacheReadTokens
 }
@@ -809,18 +837,13 @@ func sanitize(s string) string {
 type passResult struct {
 	// findings is what the pass produced (nil when it failed).
 	findings []Finding
-	// cost is the cumulative model cost across every provider session the pass
-	// made — the strict-JSON re-prompt and any turn-budget retry included, and
-	// failed sessions along with successful ones, since the provider bills all
-	// of them.
-	cost float64
-	// cacheCreation and cacheRead are the pass's prompt-cache accounting,
-	// summed over every provider session it made — for the same reason cost is
-	// summed: the provider bills each session's cache write separately, and a
-	// pass that took a strict-JSON re-prompt or a turn-budget retry really did
+	// usage is the cumulative token accounting across every provider session
+	// the pass made — the strict-JSON re-prompt and any turn-budget retry
+	// included, and failed sessions along with successful ones, since the
+	// provider bills all of them. The cache halves are summed for the same
+	// reason the cost is: a pass that took a re-prompt or a retry really did
 	// write the prefix more than once.
-	cacheCreation int
-	cacheRead     int
+	usage cost.Usage
 	// turns is the turn count of the session whose output the pass recorded,
 	// i.e. the final one. Cumulating turns across sessions would say nothing
 	// about how close any single session came to the --max-turns budget, which
@@ -897,9 +920,7 @@ func runDeepPass(ctx context.Context, runner PassRunner, cfg Config, req ReviewR
 
 	for attempt := 1; attempt <= 1+maxTurnsRetries; attempt++ {
 		a := runPassAttempt(ctx, runner, req, p, in)
-		res.cost += a.cost
-		res.cacheCreation += a.cacheCreation
-		res.cacheRead += a.cacheRead
+		res.usage.Add(a.usage)
 		res.turns = a.turns
 		res.attempts = attempt
 		res.findings = a.findings
@@ -946,12 +967,12 @@ func runDeepPass(ctx context.Context, runner PassRunner, cfg Config, req ReviewR
 // turn-budget failure of the base prompt from one of the strict-JSON
 // re-prompt, which are not the same case for retry purposes.
 type attemptResult struct {
-	findings      []Finding
-	cost          float64
-	cacheCreation int
-	cacheRead     int
-	turns         int
-	sessions      int
+	findings []Finding
+	// usage is the cumulative token accounting across every session the attempt
+	// made, failed ones included — the provider bills each of them.
+	usage    cost.Usage
+	turns    int
+	sessions int
 	// openedFiles are the files the attempt's sessions read, as the provider
 	// reported them. On a turn-budget failure they are what scopes the retry's
 	// diff; empty otherwise, and empty for any backend that streams no tool
@@ -977,24 +998,20 @@ func runPassAttempt(ctx context.Context, runner PassRunner, req ReviewRequest, p
 
 	out, err := runner(ctx, p.Name, p.Tier, prompt)
 	if err != nil {
-		cost, turns, cc, cr := passErrorTelemetry(err)
+		u, turns := passErrorTelemetry(err)
 		return attemptResult{
-			cost:          cost,
-			cacheCreation: cc,
-			cacheRead:     cr,
-			turns:         turns,
-			sessions:      1,
-			openedFiles:   passErrorFiles(err),
-			err:           err,
+			usage:       u,
+			turns:       turns,
+			sessions:    1,
+			openedFiles: passErrorFiles(err),
+			err:         err,
 		}
 	}
 	res := attemptResult{
-		cost:          out.CostUSD,
-		cacheCreation: out.CacheCreationTokens,
-		cacheRead:     out.CacheReadTokens,
-		turns:         out.Turns,
-		sessions:      1,
-		openedFiles:   out.OpenedFiles,
+		usage:       out.usage(),
+		turns:       out.Turns,
+		sessions:    1,
+		openedFiles: out.OpenedFiles,
 	}
 
 	findings, perr := parseFindings(out.Text)
@@ -1003,18 +1020,14 @@ func runPassAttempt(ctx context.Context, runner PassRunner, req ReviewRequest, p
 		out2, err2 := runner(ctx, p.Name, p.Tier, prompt+"\n\n"+strictJSONReminder)
 		res.sessions = 2
 		if err2 != nil {
-			cost2, turns2, cc, cr := passErrorTelemetry(err2)
-			res.cost += cost2
-			res.cacheCreation += cc
-			res.cacheRead += cr
+			u2, turns2 := passErrorTelemetry(err2)
+			res.usage.Add(u2)
 			res.turns = turns2
 			res.openedFiles = mergeOpenedFiles(res.openedFiles, passErrorFiles(err2))
 			res.err = err2
 			return res
 		}
-		res.cost += out2.CostUSD
-		res.cacheCreation += out2.CacheCreationTokens
-		res.cacheRead += out2.CacheReadTokens
+		res.usage.Add(out2.usage())
 		res.turns = out2.Turns
 		res.openedFiles = mergeOpenedFiles(res.openedFiles, out2.OpenedFiles)
 		findings, perr = parseFindings(out2.Text)
@@ -1031,8 +1044,8 @@ func runPassAttempt(ctx context.Context, runner PassRunner, req ReviewRequest, p
 }
 
 // passErrorTelemetry reports what a failed session burned, where the error
-// carries it: the cost the provider billed, the turns it got through, and its
-// prompt-cache write/read accounting.
+// carries it: the tokens and cost the provider billed (including its
+// prompt-cache write/read accounting) and the turns it got through.
 //
 // It is one function rather than one per field group because every error path
 // wants all of it — an error either is a *PassError carrying the lot or is not
@@ -1043,12 +1056,18 @@ func runPassAttempt(ctx context.Context, runner PassRunner, req ReviewRequest, p
 // undercount is the safe direction for numbers feeding a spend limit's
 // denominator and a cache-redundancy measurement; a fabricated one would make
 // either say whatever the fabrication said.
-func passErrorTelemetry(err error) (cost float64, turns, cacheCreation, cacheRead int) {
+func passErrorTelemetry(err error) (u cost.Usage, turns int) {
 	var pe *PassError
 	if errors.As(err, &pe) {
-		return pe.CostUSD, pe.Turns, pe.CacheCreationTokens, pe.CacheReadTokens
+		return cost.Usage{
+			InputTokens:      pe.TokensIn,
+			OutputTokens:     pe.TokensOut,
+			CacheReadTokens:  pe.CacheReadTokens,
+			CacheWriteTokens: pe.CacheCreationTokens,
+			EstimatedCostUSD: pe.CostUSD,
+		}, pe.Turns
 	}
-	return 0, 0, 0, 0
+	return cost.Usage{}, 0
 }
 
 // passErrorFiles reports the files a failed session opened, where the error

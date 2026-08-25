@@ -140,6 +140,9 @@ func (p *Params) rebaseWithSmith(ctx context.Context, providers []provider.Provi
 				_ = p.DB.AddCopilotRequest(cost.Today(), m)
 			}
 		}
+		if p.DB != nil {
+			cost.RecordSession(p.DB, "rebase", string(pv.Kind), p.BeadID, p.AnvilName, result.Usage())
+		}
 		if result.ExitCode != 0 || result.IsError {
 			return fmt.Errorf("Smith (%s) exited %d (subtype=%s)", pv.Label(), result.ExitCode, result.ResultSubtype)
 		}
