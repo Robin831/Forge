@@ -58,7 +58,7 @@ func TestRecordSpawnCost_PersistsCacheTokens(t *testing.T) {
 	db := newTestDB(t)
 	today := cost.Today()
 
-	recordSpawnCost(db, "Forge-wvb6", "forge", "claude", &smith.Result{
+	recordSpawnCost(db, "forge-Forge-wvb6-1", "Forge-wvb6", "forge", "claude", &smith.Result{
 		TokensIn:            100,
 		TokensOut:           50,
 		CacheReadTokens:     41500,
@@ -81,8 +81,8 @@ func TestRecordSpawnCost_AccumulatesCacheTokens(t *testing.T) {
 	today := cost.Today()
 
 	r := &smith.Result{TokensIn: 10, TokensOut: 5, CacheReadTokens: 700, CacheCreationTokens: 30}
-	recordSpawnCost(db, "Forge-wvb6", "forge", "claude", r)
-	recordSpawnCost(db, "Forge-wvb6", "forge", "claude", r)
+	recordSpawnCost(db, "forge-Forge-wvb6-1", "Forge-wvb6", "forge", "claude", r)
+	recordSpawnCost(db, "forge-Forge-wvb6-1", "Forge-wvb6", "forge", "claude", r)
 
 	want := costColumns{input: 20, output: 10, cacheRead: 1400, cacheWrite: 60}
 	assert.Equal(t, want, readDailyCost(t, db, today), "daily_costs")
@@ -97,7 +97,7 @@ func TestRecordSpawnCost_AccumulatesCacheTokens(t *testing.T) {
 func TestRecordSpawnCost_CacheOnlySessionRecorded(t *testing.T) {
 	db := newTestDB(t)
 
-	recordSpawnCost(db, "Forge-wvb6", "forge", "claude", &smith.Result{CacheReadTokens: 32000})
+	recordSpawnCost(db, "forge-Forge-wvb6-1", "Forge-wvb6", "forge", "claude", &smith.Result{CacheReadTokens: 32000})
 
 	got := readBeadCost(t, db, "Forge-wvb6", "forge")
 	assert.Equal(t, costColumns{cacheRead: 32000}, got)
@@ -108,7 +108,7 @@ func TestRecordSpawnCost_CacheOnlySessionRecorded(t *testing.T) {
 func TestRecordSpawnCost_SkipsRateLimited(t *testing.T) {
 	db := newTestDB(t)
 
-	recordSpawnCost(db, "Forge-wvb6", "forge", "claude", &smith.Result{
+	recordSpawnCost(db, "forge-Forge-wvb6-1", "Forge-wvb6", "forge", "claude", &smith.Result{
 		TokensIn:        100,
 		CacheReadTokens: 5000,
 		RateLimited:     true,
