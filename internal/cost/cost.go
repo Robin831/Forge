@@ -1,10 +1,16 @@
 // Package cost tracks token usage and estimated costs from AI CLI output.
 //
 // Claude self-reports total_cost_usd in its stream-json result event, so its
-// cost is exact. Other providers (Copilot, Gemini, OpenAI/Codex) usually emit
-// zero or no cost, so this package estimates their spend from token counts and
-// a configurable per-model pricing table (see DefaultPricingTable). The
-// estimate is a fallback only — Claude's self-reported figure always wins.
+// recorded cost is exact. Other providers (Copilot, Gemini, OpenAI/Codex)
+// usually emit zero or no cost, so this package estimates their spend from
+// token counts and a configurable per-model pricing table (see
+// DefaultPricingTable). For a finished session the estimate is a fallback only
+// — Claude's self-reported figure always wins. The one place the table prices
+// Claude itself is in flight: the Assay per-pass cost ceiling adds up each
+// turn's usage as it streams, because the provider's own figure arrives only
+// with the final result event, after the money is spent. That is why the
+// Claude rows must track list price too — a stale row there is not a wrong
+// number in a report, it is a pass killed on its first turn.
 //
 // Default token pricing (Claude Sonnet 4-class, USD per 1M tokens):
 //
@@ -12,6 +18,13 @@
 //	Output:      $15.00
 //	Cache read:  $0.30
 //	Cache write: $3.75
+//
+// Cache-write rates are the 5-minute-TTL figure (1.25x input). Claude Code
+// writes 1-hour entries (2x input), so a cache-write-heavy turn estimates
+// about 20% low against the bill. That is the intended failure direction for
+// the ceiling — an estimate that reads low delays a stop; one that reads high
+// kills a healthy pass — and an operator who wants the 1-hour figure sets
+// cache_write_per_m in settings.pricing.
 //
 // Operators can override any model's rates via settings.pricing and the
 // Copilot premium multipliers via settings.copilot_premium_multipliers; the
@@ -33,6 +46,7 @@ const (
 	ModelClaudeSonnet = "claude-sonnet"
 	ModelClaudeHaiku  = "claude-haiku"
 	ModelClaudeOpus   = "claude-opus"
+	ModelClaudeFable  = "claude-fable"
 	ModelGemini       = "gemini"
 	ModelOpenAI       = "openai"
 )
@@ -56,7 +70,18 @@ func DefaultPricingTable() map[string]Pricing {
 		// Copilot runs Claude models under the hood).
 		ModelClaudeSonnet: {InputPerM: 3.00, OutputPerM: 15.00, CacheReadPerM: 0.30, CacheWritePerM: 3.75},
 		ModelClaudeHaiku:  {InputPerM: 1.00, OutputPerM: 5.00, CacheReadPerM: 0.10, CacheWritePerM: 1.25},
-		ModelClaudeOpus:   {InputPerM: 15.00, OutputPerM: 75.00, CacheReadPerM: 1.50, CacheWritePerM: 18.75},
+		// Opus 4.5 and later, Opus 5 included. Opus 4.1 and earlier were
+		// $15/$75 — three times this — and that row survived here long after
+		// every anvil had moved on: a 165K-token cache write on Opus 5 was
+		// estimated at $3.13 against a real $1.04 and tripped a $1.50 per-pass
+		// ceiling on the first turn. An anvil still pinned to an old Opus
+		// overrides this row in settings.pricing.
+		ModelClaudeOpus: {InputPerM: 5.00, OutputPerM: 25.00, CacheReadPerM: 0.50, CacheWritePerM: 6.25},
+		// Claude Fable 5 / Mythos 5 — twice Opus. Before this row existed a
+		// "fable" model matched no family and priced at the Sonnet row, five
+		// times under, which is why the ceiling never fired while Assay was
+		// running on it and fired at once when it moved to Opus.
+		ModelClaudeFable: {InputPerM: 10.00, OutputPerM: 50.00, CacheReadPerM: 1.00, CacheWritePerM: 12.50},
 		// Gemini 1.5 Pro-class. Gemini caching pricing differs and is not
 		// modelled here.
 		ModelGemini: {InputPerM: 3.50, OutputPerM: 10.50},
@@ -116,7 +141,7 @@ func OpenAIPricing() Pricing { return lookupPricing(ModelOpenAI) }
 
 // PricingForTier returns the Assay stage cost classification for a given model
 // tier. Assay estimates its review cost from the model_tier configured in its
-// settings ("haiku", "sonnet", or "opus"); the tier string is matched
+// settings ("haiku", "sonnet", "opus" or "fable"); the tier string is matched
 // case-insensitively after trimming surrounding whitespace. Unknown or empty
 // tiers fall back to the Claude Sonnet defaults.
 func PricingForTier(tier string) Pricing {
@@ -125,6 +150,8 @@ func PricingForTier(tier string) Pricing {
 		return lookupPricing(ModelClaudeHaiku)
 	case "opus":
 		return lookupPricing(ModelClaudeOpus)
+	case "fable":
+		return lookupPricing(ModelClaudeFable)
 	case "sonnet":
 		return lookupPricing(ModelClaudeSonnet)
 	default:
@@ -174,6 +201,12 @@ func resolvePricing(kind provider.Kind, model string) Pricing {
 		// ids (e.g. "claude-opus-4.6") resolve to the right row.
 		lower := strings.ToLower(model)
 		switch {
+		// Fable/Mythos first: it shares no substring with the other families
+		// today, but it is the row a miss would misprice by the most.
+		case strings.Contains(lower, "fable"), strings.Contains(lower, "mythos"):
+			if p, ok := activePricing[ModelClaudeFable]; ok {
+				return p
+			}
 		case strings.Contains(lower, "opus"):
 			if p, ok := activePricing[ModelClaudeOpus]; ok {
 				return p
