@@ -1,0 +1,2 @@
+category: Added
+- **Weekly Assay cost report** - Assay runs are aggregated by ISO week into run count, mean cost and mean duration, split by coverage outcome (complete vs partial), so a step change in what a review costs is visible in the week it happens instead of in a month-end total. The daemon writes the report to its log once a day, with a WARN when the current week's mean cost per run exceeds the trailing four weeks' pooled mean by more than 1.5x; `forge assay stats [--weeks N] [--json]` is the same report on demand. (Forge-5bki)
