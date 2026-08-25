@@ -108,6 +108,23 @@ Run-ordinal distribution (before): ordinal 1 — 44 runs / $309.22; ordinal 2 �
 Re-review depth on this instance is shallow: a PR reviewed a second time is the
 common repeat case and a third review is a single run in the whole history.
 
+Per-run spread, which is what says how much weight a mean over this many runs
+can carry. These are per-window and not interchangeable — the wrong window's
+spread understates how far an individual run can sit from the mean:
+
+| Window | runs | min $/run | max $/run | mean $/run |
+|---|---|---|---|---|
+| before | 76 | 0.0000 | 16.6664 | 7.0190 |
+| transition | 11 | 3.1325 | 11.8670 | 7.2947 |
+
+The before window's `$0.00` minimum is three failed runs (`status = failed`,
+provider rate-limited or refused) that were billed nothing; the cheapest run
+that actually reviewed anything cost `$1.199`. They are kept in — a failure is
+not a refund, and the report counts them — but a reader comparing the *cheapest
+review* across windows wants `$1.199`, not `$0.00`. Derived directly from
+`assay_runs` (`cost_usd`, windowed on `started_at`, `skipped_reason = ''`), the
+same rows the committed reports are folded from.
+
 ## After window: why it is empty
 
 The `after` report is committed showing 0 runs. That is the measured state, not
@@ -148,8 +165,9 @@ that half of the comparison will be genuinely two-sided.
 1. Wait until `forge cost assay --since 2026-08-26` reports a run count
    approaching the before window's 76. Fewer than ~30 runs is not worth reading:
    at n runs a single outlier moves the mean by roughly its own size over n, and
-   the before window's own per-run spread is wide (individual runs $3.13–$12.26).
-2. Re-run the three AFTER invocations above **verbatim**, overwriting
+   the before window's own per-run spread is wide ($0.0000–$16.6664 across its
+   76 runs — see the per-run spread table above).
+2. Re-run the two AFTER invocations above **verbatim**, overwriting
    `after-20260826-open.{txt,json}`.
 3. Fill the `after`, `delta` and `% delta` columns in the table above from the
    JSON, and confirm `cache_creation`/`cache_read` are non-zero in the after
