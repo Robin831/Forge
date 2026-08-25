@@ -14,6 +14,7 @@ import (
 
 	"github.com/Robin831/Forge/internal/provider"
 	"github.com/Robin831/Forge/internal/smith"
+	"github.com/Robin831/Forge/internal/textfmt"
 )
 
 // Model tiers. The deep passes use the "review" tier (stronger model hint); the
@@ -504,7 +505,7 @@ const sharedPromptPreamble = "# Assay Pull-Request Review\n\n" +
 // writeSharedPromptHead writes the part of a prompt that must be byte-identical
 // across passes: the preamble, the repository guidance, the untrusted bead/PR
 // context, the incremental-review framing, the already-reported findings, the
-// triage notes and the diff.
+// elided-file note, the triage notes and the diff.
 //
 // It is one function rather than a copy per prompt builder because "identical"
 // is the whole contract — two builders assembling the same sections in the same
@@ -535,6 +536,7 @@ func writeSharedPromptHead(b *strings.Builder, req ReviewRequest, unifiedDiff, t
 	b.WriteString(contextSection(req))
 	b.WriteString(incrementalSection(req))
 	b.WriteString(priorFindingsSection(req))
+	b.WriteString(elidedFilesSection(req))
 	if strings.TrimSpace(triageNotes) != "" {
 		b.WriteString("\n## Triage Notes\n\n")
 		b.WriteString(sanitize(triageNotes))
@@ -637,6 +639,51 @@ func priorFindingsSection(req ReviewRequest) string {
 	if extra > 0 {
 		fmt.Fprintf(&b, "- …and %d more not listed; the same rule applies.\n", extra)
 	}
+	return b.String()
+}
+
+// maxElidedFilesListed bounds the elided-file list named in the prompt. The
+// point of the note is that the passes and the operator know the filter fired
+// and roughly on what; a repo-wide regeneration naming two hundred files would
+// re-introduce, in filenames, exactly the bloat the filter just removed.
+const maxElidedFilesListed = 10
+
+// elidedFilesSection tells every pass which files were dropped from the diff
+// before it got there, and why.
+//
+// Without it the filter is invisible in both directions. A pass handed a PR
+// that is nothing but a lockfile bump sees an empty diff and has no way to
+// tell "nothing changed" from "everything that changed was elided" — the first
+// is a finding, the second is the filter working. And an operator reading the
+// prompt has no way to confirm the globs still match anything at all, which is
+// how "**/*.lock" went on not matching package-lock.json for as long as it did.
+//
+// Paths come off diff headers in a PR, so they are attacker-controllable and
+// go through sanitize like every other untrusted ingredient of the head.
+func elidedFilesSection(req ReviewRequest) string {
+	if len(req.ElidedFiles) == 0 {
+		return ""
+	}
+	list := req.ElidedFiles
+	extra := 0
+	if len(list) > maxElidedFilesListed {
+		extra = len(list) - maxElidedFilesListed
+		list = list[:maxElidedFilesListed]
+	}
+	names := make([]string, 0, len(list))
+	for _, f := range list {
+		names = append(names, sanitize(f))
+	}
+
+	var b strings.Builder
+	b.WriteString("\n## Elided Files\n\n")
+	fmt.Fprintf(&b, "%s elided as generated (lockfiles, machine-written snapshots) and absent from the diff below: %s",
+		textfmt.Count(len(req.ElidedFiles), "file"), strings.Join(names, ", "))
+	if extra > 0 {
+		fmt.Fprintf(&b, ", and %d more", extra)
+	}
+	b.WriteString(".\n\nThis is a deliberate filter, not truncation and not scope drift. ")
+	b.WriteString("Do not report their absence, do not ask for them, and do not treat a diff whose every change was elided as an empty or no-op PR.\n")
 	return b.String()
 }
 

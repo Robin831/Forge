@@ -1,0 +1,3 @@
+category: Fixed
+- **Lockfiles are elided from Assay and Warden diffs** - The built-in generated-file filter now covers `package-lock.json`, `npm-shrinkwrap.json`, `pnpm-lock.yaml`, `yarn.lock` and `bun.lockb` alongside `**/*.lock`, which reached `yarn.lock` but none of the npm-family names. A PR whose diff was 94.9% npm lockfiles was being reviewed in full by all six passes at $8.75 a run. (Forge-96t4)
+- **Assay prompts say what was elided** - Every pass prompt now carries an `N files elided as generated: …` line, so a lockfile-only PR no longer reads to a pass as an empty one, and the `Assay review completed` log line reports `elided_files`/`elided_bytes`. (Forge-96t4)

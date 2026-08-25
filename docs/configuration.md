@@ -954,8 +954,8 @@ assay:
   model_tier: default        # semantic label recorded for observability
   triage_model: ""           # model hint for triage (empty = provider default)
   review_model: ""           # model hint for the deep passes (empty = provider default)
-  skip_paths:                # doublestar globs excluded from review
-    - "**/*.pb.go"
+  skip_paths:                # doublestar globs excluded from review, on top of
+    - "**/*.pb.go"           # the built-in generated-file list (see below)
     - "web/dist/**"
 
 anvils:
@@ -986,7 +986,33 @@ anvils:
 | `model_tier` | string | `"default"` | Semantic label describing desired model strength (e.g. `default`, `fast`). Recorded for observability; the concrete model always comes from the model hints below, never a baked-in ID. |
 | `triage_model` | string | `""` | Model hint for the triage pass. Empty means "let the provider pick its default model". |
 | `review_model` | string | `""` | Model hint for the deep passes. Empty means "let the provider pick its default model". |
-| `skip_paths` | []string | `[]` | Doublestar globs whose files are excluded from review (their hunks are dropped before the diff reaches any pass). |
+| `skip_paths` | []string | `[]` | Doublestar globs whose files are excluded from review (their hunks are dropped before the diff reaches any pass), **in addition to** the built-in generated-file list below. Use it for repo-specific noise, not for restating what "generated" means. |
+
+**Built-in generated-file filter.** Before `skip_paths` is consulted, Assay (and
+the Warden) drop the hunks of files Forge already knows are machine-written:
+
+| Glob | Covers |
+|------|--------|
+| `**/Migrations/*.Designer.cs` | EF Core migration designer files |
+| `**/Migrations/*ModelSnapshot.cs` | EF Core model snapshots |
+| `**/package-lock.json` | npm |
+| `**/npm-shrinkwrap.json` | npm |
+| `**/pnpm-lock.yaml` | pnpm |
+| `**/yarn.lock` | Yarn (also matched by `**/*.lock`) |
+| `**/bun.lockb` | Bun (binary lockfile) |
+| `**/*.lock` | Cargo, Bundler, Composer, pipenv, poetry, `bun.lock`, `yarn.lock` |
+
+Note that `**/*.lock` on its own misses `package-lock.json`,
+`pnpm-lock.yaml` and `npm-shrinkwrap.json` — they do not end in `.lock`, which
+is why they are named individually. It *does* match `yarn.lock`, which is what
+made the glob look like it worked while the largest lockfiles in a repo went
+through unfiltered. A `skip_paths` list written as `**/*.lock` alone silently
+reviews every npm lockfile in full.
+
+Whatever the filter drops is named in every pass prompt as an
+`N files elided as generated: …` line, so a pass cannot mistake a lockfile-only
+PR for an empty one, and the daemon's `Assay review completed` log line carries
+`elided_files` and `elided_bytes` so the filter is visible to an operator.
 
 **Per-anvil overlay:** each anvil may set an `assay` block whose non-zero fields
 override the corresponding global values (pointer fields override when non-nil;

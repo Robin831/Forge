@@ -1989,6 +1989,8 @@ func (d *Daemon) runAssayReview(ctx context.Context, anvil, anvilPath, beadID st
 				"passes", result.PassTelemetryText(),
 				"incremental", incremental,
 				"total_capped", result.TotalCapped,
+				"elided_files", len(result.ElidedFiles),
+				"elided_bytes", result.ElidedBytes,
 				"shadow", engineCfg.ShadowMode, "cost_usd", run.CostUSD,
 				"duration_ms", result.Duration.Milliseconds(),
 			)
