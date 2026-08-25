@@ -882,6 +882,41 @@ func recordIngotTemperResults(db *state.DB, workerID, beadID, anvil string, temp
 	}
 }
 
+// logCostErr logs a cost write error without propagating it. Like the ingot
+// writes, cost accounting is best-effort — but a silently broken cost table is
+// exactly the failure this accounting exists to make visible, so it is logged
+// rather than dropped.
+func logCostErr(workerID, table string, err error) {
+	if err != nil {
+		log.Printf("[pipeline:%s] cost write failed table=%s: %v", workerID, table, err)
+	}
+}
+
+// recordSpawnCost persists one completed Smith spawn's token usage into the
+// three cost tables — the daily aggregate, the per-provider daily aggregate and
+// the bead's cumulative row — from the single set of counters the provider
+// reported. The cache columns take the session's own prompt-cache accounting:
+// cache_read from CacheReadTokens, cache_write from CacheCreationTokens.
+//
+// A rate-limited spawn is not a completion and records nothing. Cache tokens
+// count toward "did this session use anything", since a session served almost
+// entirely from cache reports large cache reads next to negligible input.
+func recordSpawnCost(db *state.DB, workerID, beadID, anvil, provName string, r *smith.Result) {
+	if db == nil || r == nil || r.RateLimited {
+		return
+	}
+	if r.TokensIn == 0 && r.TokensOut == 0 && r.CacheReadTokens == 0 && r.CacheCreationTokens == 0 && r.CostUSD == 0 {
+		return
+	}
+	today := cost.Today()
+	logCostErr(workerID, "daily_costs",
+		db.AddDailyCost(today, r.TokensIn, r.TokensOut, r.CacheReadTokens, r.CacheCreationTokens, r.CostUSD))
+	logCostErr(workerID, "provider_daily_costs",
+		db.AddProviderDailyCost(today, provName, r.TokensIn, r.TokensOut, r.CacheReadTokens, r.CacheCreationTokens, r.CostUSD))
+	logCostErr(workerID, "bead_costs",
+		db.AddBeadCost(beadID, anvil, r.TokensIn, r.TokensOut, r.CacheReadTokens, r.CacheCreationTokens, r.CostUSD))
+}
+
 // Run executes the full Smith → Temper → Warden pipeline for a bead.
 func Run(ctx context.Context, p Params) *Outcome {
 	start := time.Now()
@@ -1083,13 +1118,7 @@ func Run(ctx context.Context, p Params) *Outcome {
 		}
 
 		// Record per-provider and aggregate daily costs for non-rate-limited completions.
-		if !smithResult.RateLimited && (smithResult.TokensIn > 0 || smithResult.TokensOut > 0 || smithResult.CostUSD > 0) {
-			today := cost.Today()
-			pvName := string(pv.Kind)
-			_ = p.DB.AddDailyCost(today, smithResult.TokensIn, smithResult.TokensOut, 0, 0, smithResult.CostUSD)
-			_ = p.DB.AddProviderDailyCost(today, pvName, smithResult.TokensIn, smithResult.TokensOut, 0, 0, smithResult.CostUSD)
-			_ = p.DB.AddBeadCost(p.Bead.ID, p.AnvilName, smithResult.TokensIn, smithResult.TokensOut, 0, 0, smithResult.CostUSD)
-		}
+		recordSpawnCost(p.DB, workerID, p.Bead.ID, p.AnvilName, string(pv.Kind), smithResult)
 	}
 
 	// Step 1: Create worktree
