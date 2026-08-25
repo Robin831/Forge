@@ -430,7 +430,10 @@ func newSmithRunner(cfg Config, req ReviewRequest) PassRunner {
 			defer stopSession()
 		}
 
-		opts := smith.SpawnOptions{LogPrefix: "assay"}
+		// The pass name (and the run's key) go into the filename: a run writes
+		// one log per session, and six files all called "assay" read in the
+		// bead Logs panel as six runs whose costs add up rather than as one.
+		opts := smith.SpawnOptions{LogPrefix: PassLogPrefix(req.LogKey, pass)}
 		// The staggered fan-out waits on the primer pass reaching its first
 		// answered token — the point at which the provider has read (and
 		// cached) the shared prefix the other four passes are about to send.

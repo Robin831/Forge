@@ -358,6 +358,12 @@ export function fetchBeadDeps(
 // parsed from the filename prefix (smith/warden/temper/…, or "other"). `live`
 // is true for the file an active worker is currently writing; `worker_id` is
 // set only in that case so the client can stream /api/worker/{id}/stream.
+//
+// An Assay session additionally carries `pass` (the pass it ran) and `run_key`
+// (the run it belongs to); `findings` is how many findings that pass
+// contributed, absent when the run did not record a breakdown. All three are
+// absent for logs written before Assay named its sessions, which is why they
+// are optional rather than defaulted.
 export interface BeadLogFile {
   filename: string
   stage: string
@@ -365,11 +371,37 @@ export interface BeadLogFile {
   mtime: string
   live: boolean
   worker_id?: string
+  pass?: string
+  run_key?: string
+  findings?: number
+}
+
+// BeadLogRun folds one Assay run's session logs into a single entry. A run
+// writes one log per pass, so without this a single review renders as six rows
+// all labelled "assay" — which reads as six runs, and therefore as six times
+// the spend. `has_summary` is false when no run record was found (still in
+// flight, or lost): the totals are then unknown, not zero.
+export interface BeadLogRun {
+  run_key: string
+  run_id?: number
+  has_summary: boolean
+  started_at: string
+  status?: string
+  completed_passes: number
+  total_passes: number
+  findings_count: number
+  cost_usd: number
+  duration_ms: number
+  pr_number?: number
+  head_sha?: string
+  shadow_mode?: boolean
+  files: string[]
 }
 
 export interface BeadLogsResponse {
   bead_id: string
   files: BeadLogFile[]
+  runs?: BeadLogRun[]
 }
 
 // beadLogs wraps the per-bead transcript endpoints: list the preserved + live
