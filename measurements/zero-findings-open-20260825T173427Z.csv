@@ -1,0 +1,39 @@
+section,key,runs,prs,cost_usd,detail
+window,all_runs,87,0,613.6845,
+window,zero_finding_runs,20,19,84.0318,
+cell,first_or_no_prior,9,9,29.3982,
+cell_prev_clean,first_or_no_prior,0,0,0.0000,
+cell_prev_with_findings,first_or_no_prior,0,0,0.0000,
+cell_no_coverage,first_or_no_prior,2,0,3.1325,
+cell,repeat_clean_unchanged,1,1,0.0000,
+cell_prev_clean,repeat_clean_unchanged,1,0,0.0000,
+cell_prev_with_findings,repeat_clean_unchanged,0,0,0.0000,
+cell_no_coverage,repeat_clean_unchanged,1,0,0.0000,
+cell,repeat_clean_changed,10,10,54.6336,
+cell_prev_clean,repeat_clean_changed,0,0,0.0000,
+cell_prev_with_findings,repeat_clean_changed,10,0,54.6336,
+cell_no_coverage,repeat_clean_changed,1,0,0.0000,
+cell,repeat_clean_unknown,0,0,0.0000,
+cell_prev_clean,repeat_clean_unknown,0,0,0.0000,
+cell_prev_with_findings,repeat_clean_unknown,0,0,0.0000,
+cell_no_coverage,repeat_clean_unknown,0,0,0.0000,
+run,forge#715/run-6,1,0,0.0000,ordinal=2 cell=repeat_clean_changed substance=changed prev_run=5 prev_findings=5 no_coverage=true
+run,forge#798/run-24,1,0,4.0490,ordinal=1 cell=first_or_no_prior substance=unknown prev_run=0 prev_findings=0 no_coverage=false
+run,forge#826/run-37,1,0,4.6262,ordinal=1 cell=first_or_no_prior substance=unknown prev_run=0 prev_findings=0 no_coverage=false
+run,forge#827/run-44,1,0,7.9346,ordinal=2 cell=repeat_clean_changed substance=changed prev_run=42 prev_findings=7 no_coverage=false
+run,forge#828/run-41,1,0,4.8574,ordinal=1 cell=first_or_no_prior substance=unknown prev_run=0 prev_findings=0 no_coverage=false
+run,forge#829/run-48,1,0,4.0463,ordinal=2 cell=repeat_clean_changed substance=changed prev_run=47 prev_findings=1 no_coverage=false
+run,forge#832/run-54,1,0,8.4422,ordinal=2 cell=repeat_clean_changed substance=changed prev_run=53 prev_findings=3 no_coverage=false
+run,forge#833/run-56,1,0,8.3706,ordinal=2 cell=repeat_clean_changed substance=changed prev_run=55 prev_findings=6 no_coverage=false
+run,forge#834/run-65,1,0,6.2025,ordinal=3 cell=repeat_clean_changed substance=changed prev_run=59 prev_findings=4 no_coverage=false
+run,forge#837/run-61,1,0,0.0000,ordinal=1 cell=first_or_no_prior substance=unknown prev_run=0 prev_findings=0 no_coverage=true
+run,forge#837/run-62,1,0,0.0000,ordinal=2 cell=repeat_clean_unchanged substance=unchanged prev_run=61 prev_findings=0 no_coverage=true
+run,forge#838/run-64,1,0,4.8585,ordinal=2 cell=repeat_clean_changed substance=changed prev_run=63 prev_findings=1 no_coverage=false
+run,forge#841/run-68,1,0,5.2143,ordinal=1 cell=first_or_no_prior substance=unknown prev_run=0 prev_findings=0 no_coverage=false
+run,forge#849/run-78,1,0,5.9658,ordinal=2 cell=repeat_clean_changed substance=changed prev_run=77 prev_findings=2 no_coverage=false
+run,forge#854/run-87,1,0,3.1325,ordinal=1 cell=first_or_no_prior substance=unknown prev_run=0 prev_findings=0 no_coverage=true
+run,hytte#859/run-72,1,0,5.0231,ordinal=2 cell=repeat_clean_changed substance=changed prev_run=70 prev_findings=4 no_coverage=false
+run,hytte#924/run-12,1,0,1.2250,ordinal=1 cell=first_or_no_prior substance=unknown prev_run=0 prev_findings=0 no_coverage=false
+run,hytte#925/run-15,1,0,2.5023,ordinal=1 cell=first_or_no_prior substance=unknown prev_run=0 prev_findings=0 no_coverage=false
+run,hytte#966/run-40,1,0,3.7915,ordinal=1 cell=first_or_no_prior substance=unknown prev_run=0 prev_findings=0 no_coverage=false
+run,hytte#967/run-46,1,0,3.7899,ordinal=2 cell=repeat_clean_changed substance=changed prev_run=45 prev_findings=6 no_coverage=false

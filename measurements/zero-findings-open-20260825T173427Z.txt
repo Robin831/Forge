@@ -1,0 +1,68 @@
+Assay zero-finding run analysis
+  window            (open) .. (open)
+  substance axis    head_sha (recorded)
+  runs in window    87 ($613.68 recorded)
+  zero-finding      20 run(s) over 19 PR(s) ($84.03, 13.7% of window spend)
+
+CELL                    RUNS  PRS  COST $  % RUNS  % ZERO-FIND $  % WINDOW $  PREV CLEAN  PREV HAD FINDINGS  NO COVERAGE
+first_or_no_prior       9     9    29.40   45.0%   35.0%          4.8%        0 ($0.00)   0 ($0.00)          2 ($3.13)
+repeat_clean_unchanged  1     1    0.00    5.0%    0.0%           0.0%        1 ($0.00)   0 ($0.00)          1 ($0.00)
+repeat_clean_changed    10    10   54.63   50.0%   65.0%          8.9%        0 ($0.00)   10 ($54.63)        1 ($0.00)
+repeat_clean_unknown    0     0    0.00    0.0%    0.0%           0.0%        0 ($0.00)   0 ($0.00)          0 ($0.00)
+TOTAL                   20    19   84.03   100.0%  100.0%         13.7%                                      4 ($3.13)
+
+Headline: repeat clean reviews of UNCHANGED substance are 1 run(s), $0.00 — 0.0% of
+  zero-finding spend and 0.0% of all Assay spend in the window. That is the ONLY cell a
+  skip/short-circuit heuristic could recover; every other cell reviewed content that had
+  not been reviewed before.
+  Excluding runs that never reviewed anything, that cell is 0 run(s), $0.00.
+
+Notes:
+  - The substance axis is head_sha and nothing else: assay_runs records no diff hash, no
+    changed-file set, no diff size and no base SHA. 'unchanged' means the previous run of
+    the same PR reviewed the same head commit — the same key Assay's own re-dispatch gate
+    (LastReviewedSHA) uses.
+  - 'changed' is a proxy, not a proof: a push touching only a generated file moves the head
+    while leaving the reviewable diff identical. It errs towards NOT claiming recoverable
+    spend, which is the safe direction for a build/don't-build decision.
+  - The base branch a diff is taken against is not recorded, so two runs over one head SHA
+    whose base moved between them are counted 'unchanged' here. That over-states the
+    recoverable cell rather than under-stating it.
+  - NO COVERAGE counts the 4 run(s) ($3.13) in this population that reported zero findings
+    because no pass ever ran (a failed run), not because a review read the diff and found
+    nothing. Their spend still counts — a failure is not a refund — but a skip heuristic
+    could not recover it: there was no review to skip.
+  - PREV CLEAN / PREV HAD FINDINGS split each repeat cell by what the PRECEDING run
+    reported, since a skip heuristic would key on 'the last review of this head was clean'
+    rather than on 'this is a repeat'.
+  - Ordinals and predecessors are derived over each PR's full review history, then
+    restricted to the window (cost.DeriveRunOrdinals — the same definition forge cost assay
+    uses).
+
+Per-run detail
+  forge#715 run 6  ordinal 2  $0.00  head 31a45bb3  prev run 5 (a2f9b5f2, 5 finding(s))  -> repeat_clean_changed (changed)  [no coverage — no pass ran]
+  forge#798 run 24  ordinal 1  $4.05  head 73c4b79d  prev none  -> first_or_no_prior (unknown)
+  forge#826 run 37  ordinal 1  $4.63  head aec90e0f  prev none  -> first_or_no_prior (unknown)
+  forge#827 run 44  ordinal 2  $7.93  head db281f42  prev run 42 (86901e02, 7 finding(s))  -> repeat_clean_changed (changed)
+  forge#828 run 41  ordinal 1  $4.86  head edfad425  prev none  -> first_or_no_prior (unknown)
+  forge#829 run 48  ordinal 2  $4.05  head cf69d407  prev run 47 (15dae04f, 1 finding(s))  -> repeat_clean_changed (changed)
+  forge#832 run 54  ordinal 2  $8.44  head 4cc1683a  prev run 53 (85d74a8a, 3 finding(s))  -> repeat_clean_changed (changed)
+  forge#833 run 56  ordinal 2  $8.37  head 3740d0bd  prev run 55 (338bc6d5, 6 finding(s))  -> repeat_clean_changed (changed)
+  forge#834 run 65  ordinal 3  $6.20  head cfd4f82a  prev run 59 (c61d99bb, 4 finding(s))  -> repeat_clean_changed (changed)
+  forge#837 run 61  ordinal 1  $0.00  head 2703506d  prev none  -> first_or_no_prior (unknown)  [no coverage — no pass ran]
+  forge#837 run 62  ordinal 2  $0.00  head 2703506d  prev run 61 (2703506d, 0 finding(s))  -> repeat_clean_unchanged (unchanged)  [no coverage — no pass ran]
+  forge#838 run 64  ordinal 2  $4.86  head 2df60a87  prev run 63 (96525455, 1 finding(s))  -> repeat_clean_changed (changed)
+  forge#841 run 68  ordinal 1  $5.21  head cbde1246  prev none  -> first_or_no_prior (unknown)
+  forge#849 run 78  ordinal 2  $5.97  head 172d0deb  prev run 77 (6ac259ab, 2 finding(s))  -> repeat_clean_changed (changed)
+  forge#854 run 87  ordinal 1  $3.13  head 38721a6a  prev none  -> first_or_no_prior (unknown)  [no coverage — no pass ran]
+  hytte#859 run 72  ordinal 2  $5.02  head 5c6d32d0  prev run 70 (0a12f8d9, 4 finding(s))  -> repeat_clean_changed (changed)
+  hytte#924 run 12  ordinal 1  $1.23  head 9d274ae4  prev none  -> first_or_no_prior (unknown)
+  hytte#925 run 15  ordinal 1  $2.50  head 477d856e  prev none  -> first_or_no_prior (unknown)
+  hytte#966 run 40  ordinal 1  $3.79  head 287e91bb  prev none  -> first_or_no_prior (unknown)
+  hytte#967 run 46  ordinal 2  $3.79  head bdd52fea  prev run 45 (f7ada6f6, 6 finding(s))  -> repeat_clean_changed (changed)
+
+Baseline reconciliation
+  expected  208 zero-finding run(s), $429.95
+  actual    20 zero-finding run(s), $84.03
+  delta     -188 run(s), -345.92 USD
+  result    NOT reproduced — see docs/assay-zero-finding-analysis.md

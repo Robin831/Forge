@@ -296,6 +296,8 @@ forge cost assay --format json --out before.json
 
 See [docs/assay-cost-attribution.md](docs/assay-cost-attribution.md) for the methodology (what counts as a repeat run, why recorded and priced figures are never summed, and how rows predating cache instrumentation are reported).
 
+`forge cost zero-findings` is the companion analysis: it isolates the runs that reported no findings and classifies each as a PR's first review, an nth review over an unchanged head commit, or an nth review over a head that moved — the split that says whether skipping a re-review could recover anything. It is read-only and gates nothing; see [docs/assay-zero-finding-analysis.md](docs/assay-zero-finding-analysis.md) for the methodology and the measured finding.
+
 ### Notifications
 
 Forge supports two webhook notification styles:

@@ -155,6 +155,14 @@ of this PR". Anything else asking that question — a zero-finding-tail
 investigation, a re-review trigger gate — should read it from there rather than
 deriving a second answer that can disagree.
 
+The zero-finding-tail investigation is
+[docs/assay-zero-finding-analysis.md](assay-zero-finding-analysis.md) /
+`forge cost zero-findings`, and it does exactly that: it reuses
+`DeriveRunOrdinals`, the same `RunSource` and the same eligibility filter
+(`cost.eligibleRuns`), so a run cannot be at ordinal 2 in one report and ordinal
+3 in the other. Its `ZERO-FIND RUNS` / `ZERO-FIND $` columns are the same
+population this report breaks out per group.
+
 ## Captured measurements
 
 Before/after snapshots taken with this tool are committed under
