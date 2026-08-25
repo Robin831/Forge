@@ -1,0 +1,176 @@
+{
+  "until": "2026-08-25T11:45:54Z",
+  "generated_at": "2026-08-25T18:37:33.075124303+02:00",
+  "include_skipped": false,
+  "pricing": {
+    "input_per_m": 3,
+    "output_per_m": 15,
+    "cache_read_per_m": 0.3,
+    "cache_write_per_m": 3.75
+  },
+  "total_runs": 76,
+  "total_prs": 44,
+  "total_cost_usd": 533.4431664999998,
+  "skipped_runs_excluded": 0,
+  "history_runs_outside_window": 0,
+  "first_run": {
+    "label": "first_run",
+    "runs": 44,
+    "prs": 44,
+    "cost_usd": 309.2170179999999,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 0,
+    "attributed_cost_usd": 0,
+    "runs_without_cache_accounting": 44,
+    "cost_without_accounting_usd": 309.2170179999999,
+    "findings": 220,
+    "zero_finding_runs": 8,
+    "zero_finding_cost_usd": 26.265629,
+    "by_token_class": [
+      {
+        "class": "cache_creation",
+        "runs": 0,
+        "tokens": 0,
+        "cost_usd": 0,
+        "basis": "priced",
+        "rate_per_m": 3.75
+      },
+      {
+        "class": "cache_read",
+        "runs": 0,
+        "tokens": 0,
+        "cost_usd": 0,
+        "basis": "priced",
+        "rate_per_m": 0.3
+      },
+      {
+        "class": "unknown",
+        "runs": 44,
+        "tokens": 0,
+        "cost_usd": 309.2170179999999,
+        "basis": "recorded"
+      }
+    ]
+  },
+  "repeat_run": {
+    "label": "repeat_run",
+    "runs": 32,
+    "prs": 31,
+    "cost_usd": 224.2261485,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 0,
+    "attributed_cost_usd": 0,
+    "runs_without_cache_accounting": 32,
+    "cost_without_accounting_usd": 224.2261485,
+    "findings": 91,
+    "zero_finding_runs": 10,
+    "zero_finding_cost_usd": 48.6678,
+    "by_token_class": [
+      {
+        "class": "cache_creation",
+        "runs": 0,
+        "tokens": 0,
+        "cost_usd": 0,
+        "basis": "priced",
+        "rate_per_m": 3.75
+      },
+      {
+        "class": "cache_read",
+        "runs": 0,
+        "tokens": 0,
+        "cost_usd": 0,
+        "basis": "priced",
+        "rate_per_m": 0.3
+      },
+      {
+        "class": "unknown",
+        "runs": 32,
+        "tokens": 0,
+        "cost_usd": 224.2261485,
+        "basis": "recorded"
+      }
+    ]
+  },
+  "by_token_class": [
+    {
+      "class": "cache_creation",
+      "runs": 0,
+      "tokens": 0,
+      "cost_usd": 0,
+      "basis": "priced",
+      "rate_per_m": 3.75
+    },
+    {
+      "class": "cache_read",
+      "runs": 0,
+      "tokens": 0,
+      "cost_usd": 0,
+      "basis": "priced",
+      "rate_per_m": 0.3
+    },
+    {
+      "class": "unknown",
+      "runs": 76,
+      "tokens": 0,
+      "cost_usd": 533.4431664999998,
+      "basis": "recorded"
+    }
+  ],
+  "by_ordinal": [
+    {
+      "label": "1",
+      "min_ordinal": 1,
+      "max_ordinal": 1,
+      "runs": 44,
+      "cost_usd": 309.2170179999999,
+      "cache_creation_tokens": 0,
+      "cache_read_tokens": 0
+    },
+    {
+      "label": "2",
+      "min_ordinal": 2,
+      "max_ordinal": 2,
+      "runs": 31,
+      "cost_usd": 218.0236285,
+      "cache_creation_tokens": 0,
+      "cache_read_tokens": 0
+    },
+    {
+      "label": "3",
+      "min_ordinal": 3,
+      "max_ordinal": 3,
+      "runs": 1,
+      "cost_usd": 6.20252,
+      "cache_creation_tokens": 0,
+      "cache_read_tokens": 0
+    },
+    {
+      "label": "4",
+      "min_ordinal": 4,
+      "max_ordinal": 4,
+      "runs": 0,
+      "cost_usd": 0,
+      "cache_creation_tokens": 0,
+      "cache_read_tokens": 0
+    },
+    {
+      "label": "5",
+      "min_ordinal": 5,
+      "max_ordinal": 5,
+      "runs": 0,
+      "cost_usd": 0,
+      "cache_creation_tokens": 0,
+      "cache_read_tokens": 0
+    },
+    {
+      "label": "6+",
+      "min_ordinal": 6,
+      "runs": 0,
+      "cost_usd": 0,
+      "cache_creation_tokens": 0,
+      "cache_read_tokens": 0
+    }
+  ],
+  "runs_without_cache_accounting": 76,
+  "cost_without_cache_accounting_usd": 533.4431664999998
+}

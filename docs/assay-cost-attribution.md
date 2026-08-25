@@ -154,3 +154,12 @@ traffic".
 of this PR". Anything else asking that question — a zero-finding-tail
 investigation, a re-review trigger gate — should read it from there rather than
 deriving a second answer that can disagree.
+
+## Captured measurements
+
+Before/after snapshots taken with this tool are committed under
+[`measurements/`](../measurements/) as raw, unedited tool output, with
+[`measurements/comparison.md`](../measurements/comparison.md) holding the
+windows, the exact invocations, the normalised comparison and the caveats. A
+figure quoted from a bead comment is unreproducible once the window has scrolled
+past; a committed artifact plus the invocation that produced it is not.

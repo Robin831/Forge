@@ -1,0 +1,28 @@
+Assay repeat-review cost attribution
+  window            2026-08-26T00:00:00Z .. (open)
+  pricing           sonnet (default) — cache write $3.75/M, cache read $0.30/M
+  runs              0 over 0 PRs ($0.00 recorded)
+
+GROUP       RUNS  PRS  RECORDED $  SHARE  CACHE-W TOK  CACHE-R TOK  PRICED CACHE $  ZERO-FIND RUNS  ZERO-FIND $
+first_run   0     0    0.00        -      0            0            0.00            0               0.00
+repeat_run  0     0    0.00        -      0            0            0.00            0               0.00
+TOTAL       0     0    0.00        -      0            0            0.00            0               0.00
+
+TOKEN CLASS     RUNS  TOKENS  RATE $/M  COST $  BASIS
+cache_creation  0     0       3.75      0.00    priced
+cache_read      0     0       0.30      0.00    priced
+unknown         0     0       -         0.00    recorded
+
+ORDINAL  RUNS  RECORDED $  SHARE  CACHE-W TOK  CACHE-R TOK
+1        0     0.00        -      0            0
+2        0     0.00        -      0            0
+3        0     0.00        -      0            0
+4        0     0.00        -      0            0
+5        0     0.00        -      0            0
+6+       0     0.00        -      0            0
+
+Notes:
+  - RECORDED $ is the provider's own cost_usd. PRICED CACHE $ is cache tokens x their
+    own rates and is a SUBSET of it: assay_runs stores no plain input/output token
+    counts, so the two cache classes can never sum to the recorded total.
+  - Ordinals are derived over each PR's full review history, then restricted to the window.
