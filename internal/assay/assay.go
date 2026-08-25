@@ -229,6 +229,22 @@ type ReviewResult struct {
 	ShadowMode bool
 	// CostUSD is the total model cost across all passes.
 	CostUSD float64
+	// CacheCreationTokens and CacheReadTokens are the run's prompt-cache
+	// accounting: what every pass together paid to write prefixes into the
+	// provider's cache, and what they served from prefixes already there.
+	// They are accumulated exactly like CostUSD — over every provider session
+	// the run made, failed sessions included, since a session that died after
+	// writing its prefix was still billed for it.
+	//
+	// The run-level pair is what makes the saving measurable ACROSS runs,
+	// which the per-pass pair in Passes cannot show: the shared-prefix
+	// ordering means one pass writes the prefix and the other four read it
+	// within a run, and the stable-prefix ordering (see stablePrefix) means a
+	// SECOND run of the same PR finds that opening already cached and reads it
+	// rather than writing it again. Persisted on assay_runs by the daemon, so
+	// the trend is a query rather than a re-reading of old log lines.
+	CacheCreationTokens int
+	CacheReadTokens     int
 	// Duration is the wall-clock time spent in Review.
 	Duration time.Duration
 	// Passes holds per-pass metadata.
@@ -289,6 +305,30 @@ func (r *ReviewResult) PassTelemetryText() string {
 	return RenderPassTelemetry(r.Passes)
 }
 
+// RedundantCacheWriteTokens is the headline number the shared-prefix ordering
+// and the staggered fan-out are measured by: the cache-write tokens this run
+// paid for MORE THAN ONCE.
+//
+// One write of the shared prefix is the intended cost — somebody has to put it
+// in the cache — so the redundancy is the sum of every pass's write minus the
+// largest single one. When the ordering and the stagger are both working, that
+// is the sum of four small per-pass instruction blocks. When either breaks,
+// every pass writes the whole diff again and this jumps by roughly (n-1) diffs,
+// which is the 75.6%-of-all-write-tokens state buildPassPrompt measured.
+//
+// Returns 0 for a backend that reports no cache accounting at all, which is
+// indistinguishable here from a perfectly shared run — the honest reading is
+// "nothing to report", and RenderPassTelemetry omits the per-pass fields in
+// exactly the same case.
+func (r *ReviewResult) RedundantCacheWriteTokens() int {
+	total, largest := 0, 0
+	for _, p := range r.Passes {
+		total += p.CacheCreationTokens
+		largest = max(largest, p.CacheCreationTokens)
+	}
+	return total - largest
+}
+
 // RunError is the error Review returns once a run has spent money: it carries
 // the cost billed up to the point the run failed, so a run that produces no
 // result still reaches cost tracking.
@@ -306,6 +346,14 @@ func (r *ReviewResult) PassTelemetryText() string {
 type RunError struct {
 	// CostUSD is what the run had been billed when it failed.
 	CostUSD float64
+	// CacheCreationTokens and CacheReadTokens are the prompt-cache accounting
+	// of the sessions the run made before it died, carried for the same reason
+	// as CostUSD: a failed session was billed for the prefix it wrote, and a
+	// run recorded with zero cache tokens reads as one that shared nothing.
+	// The failures that reach here are not rare enough to leave out — a triage
+	// pass that exhausts its turn budget wrote the whole prefix first.
+	CacheCreationTokens int
+	CacheReadTokens     int
 	// Err is the underlying failure.
 	Err error
 }
@@ -325,6 +373,18 @@ func RunCost(err error) float64 {
 		return re.CostUSD
 	}
 	return 0
+}
+
+// RunCacheTokens reports the prompt-cache accounting carried by an error from
+// Review — the cache counterpart of RunCost, with the same undercount-rather-
+// than-fabricate rule: an error raised before any session ran, or one this
+// package did not build, reports zeros.
+func RunCacheTokens(err error) (creation, read int) {
+	var re *RunError
+	if errors.As(err, &re) {
+		return re.CacheCreationTokens, re.CacheReadTokens
+	}
+	return 0, 0
 }
 
 // Review runs the multi-pass Assay review for req and returns the aggregated
@@ -402,12 +462,22 @@ func Review(ctx context.Context, req ReviewRequest, db *state.DB, cfg Config) (*
 	var (
 		passes    []PassReport
 		totalCost float64
+		// Banked alongside totalCost and by the same rule: every session's
+		// cache accounting, answered or not. A pass that wrote the prefix and
+		// then died was billed for the write.
+		cacheCreation int
+		cacheRead     int
 	)
 
 	// fail wraps an error raised after sessions have run so the run's spend to
 	// that point survives the nil result — see RunError.
 	fail := func(err error) (*ReviewResult, error) {
-		return nil, &RunError{CostUSD: totalCost, Err: err}
+		return nil, &RunError{
+			CostUSD:             totalCost,
+			CacheCreationTokens: cacheCreation,
+			CacheReadTokens:     cacheRead,
+			Err:                 err,
+		}
 	}
 
 	// 1. Triage — scope which files warrant deeper review. Its cost is banked
@@ -416,6 +486,8 @@ func Review(ctx context.Context, req ReviewRequest, db *state.DB, cfg Config) (*
 	// only place that spend can be attributed.
 	triageRes, err := runTriage(ctx, runner, cfg, req, filtered)
 	totalCost += triageRes.cost
+	cacheCreation += triageRes.cacheCreation
+	cacheRead += triageRes.cacheRead
 	if err != nil {
 		return fail(err)
 	}
@@ -491,8 +563,11 @@ func Review(ctx context.Context, req ReviewRequest, db *state.DB, cfg Config) (*
 	var failedPasses []PassFailure
 	for i, o := range outcomes {
 		// Count cost regardless of success — the model ran either way, and a
-		// retried pass ran twice.
+		// retried pass ran twice. Its cache accounting is banked on the same
+		// terms.
 		totalCost += o.cost
+		cacheCreation += o.cacheCreation
+		cacheRead += o.cacheRead
 		passes = append(passes, PassReport{
 			Name:                deepPasses[i].Name,
 			Findings:            len(o.findings),
@@ -587,24 +662,26 @@ func Review(ctx context.Context, req ReviewRequest, db *state.DB, cfg Config) (*
 	}
 
 	return &ReviewResult{
-		Findings:        capped,
-		HeadSHA:         req.HeadSHA,
-		ShadowMode:      cfg.ShadowMode,
-		CostUSD:         totalCost,
-		Duration:        time.Since(start),
-		Passes:          passes,
-		NitsCapped:      nCapped,
-		NitsSuppressed:  nSuppressed,
-		TotalCapped:     nTotalCapped,
-		PassErrors:      passErrors,
-		FailedPasses:    failedPasses,
-		TotalPasses:     len(deepPasses),
-		CompletedPasses: completedPasses,
-		Status:          status,
-		ElidedFiles:     elided,
-		ElidedBytes:     elidedBytes,
-		SkippedFiles:    skipped,
-		SkippedBytes:    skippedBytes,
+		Findings:            capped,
+		HeadSHA:             req.HeadSHA,
+		ShadowMode:          cfg.ShadowMode,
+		CostUSD:             totalCost,
+		CacheCreationTokens: cacheCreation,
+		CacheReadTokens:     cacheRead,
+		Duration:            time.Since(start),
+		Passes:              passes,
+		NitsCapped:          nCapped,
+		NitsSuppressed:      nSuppressed,
+		TotalCapped:         nTotalCapped,
+		PassErrors:          passErrors,
+		FailedPasses:        failedPasses,
+		TotalPasses:         len(deepPasses),
+		CompletedPasses:     completedPasses,
+		Status:              status,
+		ElidedFiles:         elided,
+		ElidedBytes:         elidedBytes,
+		SkippedFiles:        skipped,
+		SkippedBytes:        skippedBytes,
 	}, nil
 }
 

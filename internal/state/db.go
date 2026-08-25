@@ -203,6 +203,13 @@ func (db *DB) migrate() error {
 		{"assay_runs", "completed_passes", `ALTER TABLE assay_runs ADD COLUMN completed_passes INTEGER NOT NULL DEFAULT 0`},
 		{"assay_runs", "total_passes", `ALTER TABLE assay_runs ADD COLUMN total_passes INTEGER NOT NULL DEFAULT 0`},
 		{"assay_runs", "failed_passes", `ALTER TABLE assay_runs ADD COLUMN failed_passes TEXT NOT NULL DEFAULT ''`},
+		// Prompt-cache accounting per run. Rows written before it default to 0,
+		// which reads as "not recorded" rather than "shared nothing" — the two
+		// are indistinguishable in the column, so a reader comparing runs must
+		// bound the comparison by the columns' introduction, exactly as it must
+		// for a provider that reports no cache accounting at all.
+		{"assay_runs", "cache_creation_tokens", `ALTER TABLE assay_runs ADD COLUMN cache_creation_tokens INTEGER NOT NULL DEFAULT 0`},
+		{"assay_runs", "cache_read_tokens", `ALTER TABLE assay_runs ADD COLUMN cache_read_tokens INTEGER NOT NULL DEFAULT 0`},
 		// bellows_detached mutes Bellows for one PR ("managed but muted"). It is
 		// deliberately separate from bellows_managed / bellows_manually_assigned:
 		// reconcile rewrites those on every cycle, so a detach recorded there
@@ -570,6 +577,11 @@ CREATE INDEX IF NOT EXISTS idx_pr_findings_anvil_pr_sha ON pr_findings(anvil, pr
 -- where some passes reviewed the head and others did not is 'partial', and
 -- failed_passes (JSON [{name, reason}]) names the ones that did not, so the
 -- worker status text and the PR summary comment read the same source.
+-- cache_creation_tokens/cache_read_tokens are the run's prompt-cache
+-- accounting, summed over every provider session it made. They are persisted
+-- rather than only logged because the question they answer is a trend across
+-- runs of one PR — a second run of an unchanged head should read the prefix the
+-- first one wrote — and a trend is a query, not a re-reading of old log lines.
 CREATE TABLE IF NOT EXISTS assay_runs (
     id               INTEGER PRIMARY KEY AUTOINCREMENT,
     anvil            TEXT NOT NULL,
@@ -587,7 +599,9 @@ CREATE TABLE IF NOT EXISTS assay_runs (
     status           TEXT NOT NULL DEFAULT '',
     completed_passes INTEGER NOT NULL DEFAULT 0,
     total_passes     INTEGER NOT NULL DEFAULT 0,
-    failed_passes    TEXT NOT NULL DEFAULT ''
+    failed_passes    TEXT NOT NULL DEFAULT '',
+    cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
+    cache_read_tokens     INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE INDEX IF NOT EXISTS idx_assay_runs_anvil_pr ON assay_runs(anvil, pr_number);
@@ -5030,6 +5044,16 @@ type AssayRun struct {
 	TotalPasses     int
 	// FailedPasses names the passes that did not review this head.
 	FailedPasses []AssayPassFailure
+	// CacheCreationTokens / CacheReadTokens are the run's prompt-cache
+	// accounting: input tokens paid to write a prefix into the provider's
+	// cache, and tokens served from a prefix already there. Summed over every
+	// provider session the run made — including the sessions of a run that
+	// then failed, which were billed for their writes all the same.
+	//
+	// Zero on rows written before the columns existed, and on any run behind a
+	// backend that reports no cache accounting.
+	CacheCreationTokens int
+	CacheReadTokens     int
 }
 
 // EncodeAssayPassFailures marshals a failed-pass list for the failed_passes
@@ -5408,8 +5432,9 @@ func (db *DB) RecordAssayRun(r *AssayRun) error {
 		`INSERT INTO assay_runs
 		     (anvil, pr_number, head_sha, started_at, finished_at, duration_ms,
 		      cost_usd, findings_count, skipped_reason, shadow_mode, posted_count, error,
-		      status, completed_passes, total_passes, failed_passes)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		      status, completed_passes, total_passes, failed_passes,
+		      cache_creation_tokens, cache_read_tokens)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		r.Anvil,
 		r.PRNumber,
 		r.HeadSHA,
@@ -5426,6 +5451,8 @@ func (db *DB) RecordAssayRun(r *AssayRun) error {
 		r.CompletedPasses,
 		r.TotalPasses,
 		EncodeAssayPassFailures(r.FailedPasses),
+		r.CacheCreationTokens,
+		r.CacheReadTokens,
 	)
 	if err != nil {
 		return err

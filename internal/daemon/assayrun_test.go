@@ -193,3 +193,69 @@ func TestRunAssayReviewEmitsOncePerInvocation(t *testing.T) {
 	}
 	require.Len(t, assayEvents(t, db), 2)
 }
+
+// TestRunAssayReviewRecordsCacheTokens: the prompt-cache accounting the engine
+// reports reaches the assay_runs row on BOTH terminal paths.
+//
+// The failure path is the one worth pinning. A run whose passes died still paid
+// to write their prefixes — the provider bills a max-turns session for its
+// cache write exactly like one that answered — so a failed run recorded with
+// zeros reads back as a run that shared everything, which is the opposite of
+// what happened and the direction that hides a regression rather than
+// surfacing one. It is the same argument that already puts RunCost on this
+// path, and the two travel together.
+func TestRunAssayReviewRecordsCacheTokens(t *testing.T) {
+	readCache := func(t *testing.T, db *state.DB, runID int) (creation, read int) {
+		t.Helper()
+		require.NoError(t, db.Conn().QueryRow(
+			`SELECT cache_creation_tokens, cache_read_tokens FROM assay_runs WHERE id = ?`, runID,
+		).Scan(&creation, &read))
+		return creation, read
+	}
+
+	t.Run("completed run", func(t *testing.T) {
+		d, db := newAssayRunDaemon(t)
+		d.assayReview = func(context.Context, assay.ReviewRequest, *state.DB, assay.Config) (*assay.ReviewResult, error) {
+			return &assay.ReviewResult{
+				Status: assay.RunStatusComplete, CompletedPasses: 5, TotalPasses: 5,
+				CostUSD: 2.8, CacheCreationTokens: 44200, CacheReadTokens: 166000,
+				Passes: []assay.PassReport{
+					{Name: "logic", CacheCreationTokens: 41500, Primer: true},
+					{Name: "security", CacheCreationTokens: 900, CacheReadTokens: 41500},
+				},
+			}, nil
+		}
+
+		run, err := runTestAssayReview(t, d)
+		require.NoError(t, err)
+		require.Equal(t, 44200, run.CacheCreationTokens)
+		require.Equal(t, 166000, run.CacheReadTokens)
+
+		creation, read := readCache(t, db, run.ID)
+		require.Equal(t, 44200, creation)
+		require.Equal(t, 166000, read)
+	})
+
+	t.Run("failed run", func(t *testing.T) {
+		d, db := newAssayRunDaemon(t)
+		d.assayReview = func(context.Context, assay.ReviewRequest, *state.DB, assay.Config) (*assay.ReviewResult, error) {
+			return nil, &assay.RunError{
+				CostUSD:             1.75,
+				CacheCreationTokens: 41500,
+				CacheReadTokens:     900,
+				Err:                 errors.New("all assay deep passes failed"),
+			}
+		}
+
+		run, err := runTestAssayReview(t, d)
+		require.NoError(t, err)
+		require.Equal(t, state.AssayStatusFailed, run.Status)
+		require.Equal(t, 1.75, run.CostUSD)
+		require.Equal(t, 41500, run.CacheCreationTokens)
+		require.Equal(t, 900, run.CacheReadTokens)
+
+		creation, read := readCache(t, db, run.ID)
+		require.Equal(t, 41500, creation)
+		require.Equal(t, 900, read)
+	})
+}
