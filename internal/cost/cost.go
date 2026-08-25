@@ -148,6 +148,18 @@ func FallbackPricing(kind provider.Kind, model string) Pricing {
 	return p
 }
 
+// EstimatePricing returns the active pricing for a provider/model pair without
+// FallbackPricing's once-a-day log line. It is for in-flight estimates — a
+// running session's spend, priced turn by turn from streamed token counts
+// before the provider has reported anything — where the log FallbackPricing
+// emits would be wrong twice over: it is not a fallback (the provider will
+// report its own cost when the session ends, and that is what gets recorded),
+// and it would fire on every healthy run rather than on the drift it exists to
+// make visible.
+func EstimatePricing(kind provider.Kind, model string) Pricing {
+	return resolvePricing(kind, model)
+}
+
 // resolvePricing looks up the active pricing for a provider/model pair without
 // any logging side effect.
 func resolvePricing(kind provider.Kind, model string) Pricing {

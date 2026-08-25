@@ -138,6 +138,19 @@ const (
 	// it is the one failure Assay re-runs in a fresh session (see
 	// maxTurnsRetries).
 	ReasonMaxTurns = "error_max_turns"
+	// ReasonMaxCost — the session's accumulated spend reached the per-pass
+	// ceiling (assay.max_cost_per_pass_usd) and Assay stopped it. It is
+	// deliberately its own label rather than a flavour of ReasonProviderFailed:
+	// the provider did nothing wrong, the stop was Forge's decision, and the
+	// operator's action ("raise the ceiling, or find why this pass is looping")
+	// is not the one any provider failure calls for.
+	//
+	// Nothing retries it. A max-turns failure is re-run because a fresh session
+	// often finds a shorter path to the same answer; a cost stop re-run would
+	// buy the identical runaway a second time at full price. That is what makes
+	// this the reason a retry policy branches on rather than a message it has
+	// to parse.
+	ReasonMaxCost = "error_max_cost"
 )
 
 // maxTurnsRetries is how many extra attempts a pass gets after exhausting its
@@ -325,22 +338,49 @@ func newSmithRunner(cfg Config, req ReviewRequest) PassRunner {
 		}
 		flags := []string{"--max-turns", strconv.Itoa(maxTurns)}
 
+		// This session's spend ceiling. A disabled tracker accumulates nothing
+		// and never fires, so an anvil with no ceiling configured runs exactly
+		// the session it always did.
+		tracker := newCostTracker(cfg.costCeilingUSD())
+		// The stop is a context cancellation rather than a kill on the returned
+		// handle: the callback that trips the ceiling runs inside the provider's
+		// stdout reader, which is started before SpawnWithOptions returns, so
+		// there is a window in which no handle exists yet to kill.
+		// exec.CommandContext already owns terminating the child on
+		// cancellation and has no such window.
+		sessionCtx := ctx
+		var stopSession context.CancelFunc
+		if tracker.enabled() {
+			sessionCtx, stopSession = context.WithCancel(ctx)
+			defer stopSession()
+		}
+
 		opts := smith.SpawnOptions{LogPrefix: "assay"}
 		// The staggered fan-out waits on the primer pass reaching its first
 		// answered token — the point at which the provider has read (and
 		// cached) the shared prefix the other four passes are about to send.
 		// Only the primer's context carries the callback; every other session
 		// spawns with the historical options.
-		if signal := firstOutputFn(ctx); signal != nil {
+		signal := firstOutputFn(ctx)
+		if signal != nil || tracker.enabled() {
 			var once sync.Once
 			opts.OnStreamEvent = func(ev smith.StreamEvent) {
-				if isModelOutput(ev) {
+				if signal != nil && isModelOutput(ev) {
 					once.Do(signal)
+				}
+				// Bill the turn and stop the session the moment it has spent
+				// its budget. This runs on the reader goroutine, so it does no
+				// waiting: cancelling is what ends the process, and Wait()
+				// below is what reaps it.
+				if tracker.enabled() {
+					if usd, cc, cr, ok := turnCostUSD(ev, pv); ok && tracker.AddTurnCost(usd, cc, cr) {
+						stopSession()
+					}
 				}
 			}
 		}
 
-		proc, err := smith.SpawnWithOptions(ctx, workDir, prompt, logDir, pv, flags, opts)
+		proc, err := smith.SpawnWithOptions(sessionCtx, workDir, prompt, logDir, pv, flags, opts)
 		if err != nil {
 			return PassOutput{}, newPassError(pass, ReasonSpawnFailed,
 				fmt.Sprintf("spawning %s: %v", pv.Label(), err), err)
@@ -349,6 +389,13 @@ func newSmithRunner(cfg Config, req ReviewRequest) PassRunner {
 			req.OnPassLog(proc.LogPath)
 		}
 		res := proc.Wait()
+		// The ceiling is checked before every other outcome, because a session
+		// stopped for spend reports its own death in whatever shape the kill
+		// produced — a non-zero exit, no result event, sometimes a rate-limit
+		// flag from the truncated stream — and none of those name the cause.
+		if perr := costStopError(pass, tracker, res); perr != nil {
+			return PassOutput{}, perr
+		}
 		if res.RateLimited {
 			perr := newPassError(pass, ReasonRateLimited,
 				fmt.Sprintf("provider %s rate limited", pv.Label()), nil)

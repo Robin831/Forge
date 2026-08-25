@@ -940,6 +940,8 @@ assay:
   debounce_seconds: 300      # coalesce rapid pushes before reviewing (default 300)
   daily_cost_limit_usd: 5.0  # per-day USD cap for Assay reviews (default 5.0)
   max_runs: 2                # executed reviews per PR; <=0 = no cap (default 2)
+  max_cost_per_pass_usd: 1.5 # stop a single review pass session once its estimated
+                             # spend reaches this; 0 = no ceiling (default 1.5)
   max_diff_bytes: 250000     # cap on the diff embedded in pass prompts (default 250000)
   max_base_file_bytes: 100000 # cap on base-file context bytes (default 100000)
   nit_cap: 5                 # cumulative per-PR Nit budget; <=0 = no cap (default 5)
@@ -975,6 +977,7 @@ anvils:
 | `max_diff_bytes` | int\|null | `250000` | Caps the size of the diff embedded in pass prompts. `<= 0` falls back to the shared `diff.MaxBytes` default. |
 | `max_base_file_bytes` | int\|null | `100000` | Caps the base-file context bytes included with the diff. |
 | `max_turns_per_pass` | int | `0` (engine default, 12) | | Agent turn budget for each review pass (every file read costs a turn). Raise for repos whose rules file and layout need more reading than the default — the telltale is passes failing `error_max_turns` at exactly the cap on modest diffs. |
+| `max_cost_per_pass_usd` | float\|null | `1.5` | USD ceiling on a single review pass **session**. Assay prices each turn from the usage the provider streams and stops the session the moment the running total reaches this value, reporting the pass as failed with `error_max_cost` — never as a short but successful review. `0` disables the ceiling. It bounds a session, not a run: a pass that takes a strict-JSON re-prompt or a turn-budget retry starts each of those with a fresh budget, and a stopped pass costs the run its coverage (the run comes back `partial`, naming the pass) rather than the run itself. It is a runaway brake and should sit well above a normal pass — raise it on deployments running a premium model over large diffs rather than have ordinary passes clipped. The ceiling only applies where the provider streams per-turn usage (Claude); backends that do not are never stopped on cost. |
 | `nit_cap` | int\|null | `5` | Cumulative per-PR budget for Nit-severity findings. Nits still open from earlier reviews count against it, so a repeat review cannot add another `nit_cap` on top of the last run's. `<= 0` means no cap. |
 | `incremental` | bool\|null | `true` | On a repeat review, feed the passes only the changes pushed since the last successfully reviewed commit (the delta), with the prior findings listed in the prompt as already-reported. Falls back to a full review automatically when the last reviewed commit is no longer an ancestor of the head (force-push/rebase). A repeat push whose delta touches nothing in the net PR diff (upstream merge, revert) is recorded as a skipped run instead of re-reviewing the whole PR. |
 | `max_findings_per_pr` | int\|null | `30` | Cumulative cap on the findings a PR may accumulate across all of its reviews — every severity, Important included. Open findings from earlier runs count against it. The hard brake on total comment volume; `<= 0` means no cap. |
