@@ -91,6 +91,10 @@ func assayRunEventMessage(run *state.AssayRun) string {
 		Duration:        time.Duration(run.DurationMs) * time.Millisecond,
 		ShadowMode:      run.ShadowMode,
 		Reason:          reason,
+		// Carried separately from Reason, which the message renders only for a
+		// failed run: a skipped run is complete, and without this its row would
+		// close out the review as "0 findings".
+		SkippedReason: run.SkippedReason,
 	}.Message()
 }
 

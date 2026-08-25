@@ -257,10 +257,15 @@ func TestElidedBytesExcludesTruncation(t *testing.T) {
 	}
 }
 
-// The lockfile-only PR is the case the note was written for: nothing survives
-// the filter, so a pass handed the empty diff has only the note to tell it the
-// PR was not empty. Every pass must still run, and every prompt must carry it.
-func TestLockfileOnlyPRStillRunsEveryPassWithTheNote(t *testing.T) {
+// The lockfile-only PR is the case the elision note was originally written for
+// — and it is now the case the run never reaches a pass at all. Nothing
+// survives the filter, so there is no diff to review and no reason to buy six
+// sessions asking five models to say so: the run reports the skip, names the
+// files it elided, and dispatches nothing.
+//
+// The note itself is unaffected and still reaches every pass on the partly
+// elided diffs it exists for (TestElidedNoteReachesEveryPassPrompt).
+func TestLockfileOnlyPRSkipsTheRunEntirely(t *testing.T) {
 	req := testRequest()
 	lock := lockfileBody()
 	req.Diff = diffBlock("client/package-lock.json", lock) +
@@ -276,23 +281,15 @@ func TestLockfileOnlyPRStillRunsEveryPassWithTheNote(t *testing.T) {
 	if len(res.ElidedFiles) != 2 {
 		t.Fatalf("expected both lockfiles elided, got %v", res.ElidedFiles)
 	}
+	if res.SkippedReason != SkipReasonNoReviewableChanges {
+		t.Errorf("SkippedReason = %q, want %q", res.SkippedReason, SkipReasonNoReviewableChanges)
+	}
 
 	runner.mu.Lock()
 	calls := append([]stubCall(nil), runner.calls...)
 	runner.mu.Unlock()
-	if len(calls) != 1+len(deepPasses) {
-		t.Fatalf("a fully elided diff must still run triage and every deep pass; got %d sessions", len(calls))
-	}
-	for _, c := range calls {
-		if !strings.Contains(c.prompt, "2 files elided as generated") {
-			t.Errorf("pass %q was handed an empty diff with no note explaining it:\n%s", c.pass, c.prompt)
-		}
-		if !strings.Contains(c.prompt, "do not treat a diff whose every change was elided as an empty or no-op PR") {
-			t.Errorf("pass %q must be told an empty diff here is the filter working:\n%s", c.pass, c.prompt)
-		}
-		if strings.Contains(c.prompt, "registry.npmjs.org") {
-			t.Errorf("pass %q prompt still carries lockfile hunks", c.pass)
-		}
+	if len(calls) != 0 {
+		t.Fatalf("a fully elided diff must dispatch no sessions; got %d", len(calls))
 	}
 }
 

@@ -233,6 +233,12 @@ func (s *stagger) awaitStart() string {
 	}
 }
 
+// staggerDiff is the smallest diff the stagger tests can use: one file with
+// one hunk. The hunk header is load-bearing — a diff with no "@@" in it carries
+// nothing to review, so Review skips it before any pass is dispatched and the
+// stagger these tests exist for never runs.
+const staggerDiff = "diff --git a/x b/x\n@@ -1 +1,2 @@\n+x\n"
+
 // TestReviewHoldsFanOutUntilPrimerAnswers asserts the scheduling half of the
 // shared-prefix change: the primer pass runs alone until the provider starts
 // answering it (which is when the prefix lands in the cache), and only then are
@@ -253,7 +259,7 @@ func TestReviewHoldsFanOutUntilPrimerAnswers(t *testing.T) {
 
 	done := make(chan *ReviewResult, 1)
 	go func() {
-		res, err := Review(context.Background(), ReviewRequest{Anvil: "munin", PRNumber: 1, Diff: "diff --git a/x b/x\n+x\n"}, nil, cfg)
+		res, err := Review(context.Background(), ReviewRequest{Anvil: "munin", PRNumber: 1, Diff: staggerDiff}, nil, cfg)
 		if err != nil {
 			t.Errorf("Review: %v", err)
 			done <- nil
@@ -340,7 +346,7 @@ func TestReviewReleasesFanOutWhenPrimerNeverSignals(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		if _, err := Review(context.Background(), ReviewRequest{Anvil: "munin", PRNumber: 2, Diff: "diff --git a/x b/x\n+x\n"}, nil, cfg); err != nil {
+		if _, err := Review(context.Background(), ReviewRequest{Anvil: "munin", PRNumber: 2, Diff: staggerDiff}, nil, cfg); err != nil {
 			t.Errorf("Review: %v", err)
 		}
 	}()
@@ -384,7 +390,7 @@ func TestPassReportCarriesCacheTelemetry(t *testing.T) {
 		}
 	}()
 
-	res, err := Review(context.Background(), ReviewRequest{Anvil: "munin", PRNumber: 3, Diff: "diff --git a/x b/x\n+x\n"}, nil, cfg)
+	res, err := Review(context.Background(), ReviewRequest{Anvil: "munin", PRNumber: 3, Diff: staggerDiff}, nil, cfg)
 	if err != nil {
 		t.Fatalf("Review: %v", err)
 	}

@@ -293,6 +293,16 @@ type ReviewResult struct {
 	// head), partial (some did), failed (none did — in which case Review
 	// returns an error rather than a result).
 	Status RunStatus
+	// SkippedReason is non-empty on a run that dispatched no passes at all
+	// because the filtered diff had nothing to review (see shouldSkip). Such a
+	// run is Complete rather than Failed on purpose: nothing went wrong, the
+	// head has been considered and does not need reviewing again, and the run
+	// must not be retried — which is what Failed would mean to the daemon's
+	// LastReviewedSHA gate. This field is the whole difference between such a
+	// run and one that reviewed the diff and found nothing, so every surface
+	// that reports a run reads it: the assay_runs row, the PR summary line and
+	// the activity feed's terminal event.
+	SkippedReason string
 	// ElidedFiles names the files the built-in generated-file filter dropped
 	// before the diff reached any pass, and ElidedBytes is what they weighed in
 	// the unfiltered diff. Reported so an operator can see that filter working
@@ -311,7 +321,14 @@ type ReviewResult struct {
 
 // StatusText renders the run's one-line status, e.g.
 // "partial: 3 of 5 passes completed (failed: logic — error_max_turns)".
+//
+// A skipped run reports the skip instead of its pass tally: rendering it
+// through the tally would read "complete: 0 of 0 passes completed", which is
+// the one description of a skip that sounds like a review.
 func (r *ReviewResult) StatusText() string {
+	if r.SkippedReason != "" {
+		return "skipped: " + r.SkippedReason
+	}
 	return RenderStatusText(r.Status, r.CompletedPasses, r.TotalPasses, r.FailedPasses)
 }
 
@@ -451,6 +468,28 @@ func Review(ctx context.Context, req ReviewRequest, db *state.DB, cfg Config) (*
 	skippedBytes := beforeSkip - len(filtered)
 	req.elided = elidedFiles{generated: elided, skipped: skipped}
 	filtered = diff.Truncate(filtered, cfg.maxDiffBytes())
+
+	// Nothing left to review — return before a single session is spawned.
+	//
+	// This is the cheapest possible outcome and the one the old code paid the
+	// most for: a push of nothing but lockfiles arrived here as a diff whose
+	// every block the filter had just removed, and the run went on to spend a
+	// triage session and five deep sessions asking five models to review it.
+	// The result still carries the elision counts, so the log line says what
+	// the diff consisted of rather than merely that it was empty.
+	if reason, skip := shouldSkip(filtered); skip {
+		return &ReviewResult{
+			HeadSHA:       req.HeadSHA,
+			ShadowMode:    cfg.ShadowMode,
+			Status:        RunStatusComplete,
+			SkippedReason: reason,
+			Duration:      time.Since(start),
+			ElidedFiles:   elided,
+			ElidedBytes:   elidedBytes,
+			SkippedFiles:  skipped,
+			SkippedBytes:  skippedBytes,
+		}, nil
+	}
 
 	// Prior findings from earlier reviews of this PR — resolved ones included —
 	// feed three things: the already-reported list every pass prompt carries,
