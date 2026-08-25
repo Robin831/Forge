@@ -62,8 +62,8 @@ func runTriage(ctx context.Context, runner PassRunner, cfg Config, req ReviewReq
 
 	out, err := runner(ctx, passTriage.Name, passTriage.Tier, prompt)
 	if err != nil {
-		cc, cr := passErrorCacheTokens(err)
-		return triageRun{cost: passErrorCost(err), turns: passErrorTurns(err), cacheCreation: cc, cacheRead: cr}, err
+		cost, turns, cc, cr := passErrorTelemetry(err)
+		return triageRun{cost: cost, turns: turns, cacheCreation: cc, cacheRead: cr}, err
 	}
 	run := triageRun{
 		cost:          out.CostUSD,
@@ -76,11 +76,11 @@ func runTriage(ctx context.Context, runner PassRunner, cfg Config, req ReviewReq
 	if perr != nil {
 		out2, err2 := runner(ctx, passTriage.Name, passTriage.Tier, prompt+"\n\n"+strictJSONReminder)
 		if err2 != nil {
-			cc, cr := passErrorCacheTokens(err2)
-			run.cost += passErrorCost(err2)
+			cost2, turns2, cc, cr := passErrorTelemetry(err2)
+			run.cost += cost2
 			run.cacheCreation += cc
 			run.cacheRead += cr
-			run.turns = passErrorTurns(err2)
+			run.turns = turns2
 			return run, err2
 		}
 		run.cost += out2.CostUSD

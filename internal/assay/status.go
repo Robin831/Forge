@@ -99,8 +99,8 @@ func RenderStatusText(status RunStatus, completed, total int, failed []PassFailu
 // cache accounting renders exactly the line it always did. They are here
 // because the quantity they measure is otherwise invisible: the per-run
 // redundant cache write (the sum of cache_w minus the largest single cache_w)
-// is what a fan-out pays twice for, and at 76% of Assay's cache-write spend it
-// showed up nowhere but the bill. primer=1 marks the one pass whose large
+// is what a fan-out pays twice for, and it showed up nowhere but the bill (see
+// assay.buildPassPrompt for what it measured). primer=1 marks the one pass whose large
 // cache_w is the intended one — it writes the prefix the others read.
 //
 // Returns "" when there is nothing to report.

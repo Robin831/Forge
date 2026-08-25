@@ -24,6 +24,11 @@ type stubResp struct {
 	err   error
 	turns int
 	cost  float64
+	// cacheW and cacheR are the session's prompt-cache write/read accounting,
+	// which the pass telemetry sums over every session a pass made — unlike
+	// turns, which records the final session only.
+	cacheW int
+	cacheR int
 }
 
 // stubCall records one invocation of the scripted runner, so a test can assert
@@ -67,7 +72,13 @@ func (r *scriptRunner) run(_ context.Context, pass, _, prompt string) (PassOutpu
 		// like any other, so resp.cost has no separate channel here.
 		return PassOutput{}, resp.err
 	}
-	return PassOutput{Text: resp.text, Turns: resp.turns, CostUSD: resp.cost}, nil
+	return PassOutput{
+		Text:                resp.text,
+		Turns:               resp.turns,
+		CostUSD:             resp.cost,
+		CacheCreationTokens: resp.cacheW,
+		CacheReadTokens:     resp.cacheR,
+	}, nil
 }
 
 // callsFor returns the recorded invocations for one pass, in order.
@@ -868,7 +879,10 @@ func TestReviewRetrySucceedsOnSecondAttempt(t *testing.T) {
 	})
 	script := map[string][]stubResp{
 		passTriage.Name: {{text: triageJSON(t, nil, "")}},
-		"logic":         {{text: "garbage", turns: 9, cost: 0.02}, {text: good, turns: 4, cost: 0.03}},
+		"logic": {
+			{text: "garbage", turns: 9, cost: 0.02, cacheW: 41500},
+			{text: good, turns: 4, cost: 0.03, cacheW: 700, cacheR: 41500},
+		},
 	}
 	cfg := DefaultConfig().WithRunner(newScriptRunner(script).run)
 
@@ -895,6 +909,12 @@ func TestReviewRetrySucceedsOnSecondAttempt(t *testing.T) {
 	if math.Abs(rep.CostUSD-0.05) > 1e-9 {
 		t.Errorf("CostUSD = %v; want 0.05 (both sessions)", rep.CostUSD)
 	}
+	// Cache accounting is cumulative for the same reason cost is — the
+	// unparseable session paid to write the prefix before it answered badly.
+	if rep.CacheCreationTokens != 42200 || rep.CacheReadTokens != 41500 {
+		t.Errorf("logic cache telemetry = {w:%d r:%d}; want {42200 41500} (both sessions summed)",
+			rep.CacheCreationTokens, rep.CacheReadTokens)
+	}
 	// A strict-JSON re-prompt is not a turn-budget attempt.
 	if rep.Retried || rep.Attempts != 1 {
 		t.Errorf("telemetry = {Retried:%v Attempts:%d}; want {false 1}", rep.Retried, rep.Attempts)
@@ -905,7 +925,7 @@ func TestReviewRetrySucceedsOnSecondAttempt(t *testing.T) {
 // spent its turn budget without answering. It carries a cost because the real
 // one does: the result event reports total_cost_usd on error subtypes too, and
 // a session that burned the whole budget is the most expensive kind there is.
-func maxTurnsErr(pass string, turns int, cost float64) error {
+func maxTurnsErr(pass string, turns int, cost float64) *PassError {
 	return &PassError{
 		Pass:    pass,
 		Reason:  ReasonMaxTurns,
@@ -913,6 +933,19 @@ func maxTurnsErr(pass string, turns int, cost float64) error {
 		Turns:   turns,
 		CostUSD: cost,
 	}
+}
+
+// maxTurnsErrCached is maxTurnsErr carrying the failed session's prompt-cache
+// accounting too. A failure is not a refund for the cache write any more than
+// it is for the tokens: the provider wrote the prefix before the session ran
+// out of turns and billed for it, so the numbers a retried pass reports have to
+// include it or the redundancy metric under-reports exactly the runs that cost
+// the most.
+func maxTurnsErrCached(pass string, turns int, cost float64, cacheW, cacheR int) *PassError {
+	e := maxTurnsErr(pass, turns, cost)
+	e.CacheCreationTokens = cacheW
+	e.CacheReadTokens = cacheR
+	return e
 }
 
 // TestReviewRetriesMaxTurnsPassInFreshSession pins the recovery case: a pass
@@ -928,7 +961,10 @@ func TestReviewRetriesMaxTurnsPassInFreshSession(t *testing.T) {
 	for _, p := range deepPasses {
 		script[p.Name] = []stubResp{{text: findingsJSON(t, nil), turns: 4, cost: 0.02}}
 	}
-	script["logic"] = []stubResp{{err: maxTurnsErr("logic", 12, 0.25)}, {text: good, turns: 7, cost: 0.05}}
+	script["logic"] = []stubResp{
+		{err: maxTurnsErrCached("logic", 12, 0.25, 41500, 0)},
+		{text: good, turns: 7, cost: 0.05, cacheW: 800, cacheR: 41500},
+	}
 
 	runner := newScriptRunner(script)
 	res, err := Review(context.Background(), testRequest(), openTestDB(t), DefaultConfig().WithRunner(runner.run))
@@ -989,6 +1025,16 @@ func TestReviewRetriesMaxTurnsPassInFreshSession(t *testing.T) {
 	if math.Abs(res.CostUSD-0.39) > 1e-9 {
 		t.Errorf("ReviewResult.CostUSD = %v; want 0.39", res.CostUSD)
 	}
+	// Cache accounting follows cost, not turns: the exhausted session wrote the
+	// whole prefix and was billed for it, so both sessions' numbers are summed.
+	// Recording the retry's alone would report a 800-token write for a pass
+	// that really wrote 42300 — and the redundancy metric (sum minus max) is
+	// computed from exactly these numbers, so the under-report lands on the
+	// most expensive runs there are.
+	if rep.CacheCreationTokens != 42300 || rep.CacheReadTokens != 41500 {
+		t.Errorf("logic cache telemetry = {w:%d r:%d}; want {42300 41500} (both sessions summed)",
+			rep.CacheCreationTokens, rep.CacheReadTokens)
+	}
 	if got := res.PassTelemetryText(); !strings.Contains(got, "pass=logic turns=7 term=success retry=1") {
 		t.Errorf("PassTelemetryText() = %q; want it to report the logic retry", got)
 	}
@@ -1005,7 +1051,10 @@ func TestReviewDoesNotRetryMaxTurnsFromStrictJSONSession(t *testing.T) {
 	for _, p := range deepPasses {
 		script[p.Name] = []stubResp{{text: findingsJSON(t, nil), turns: 4}}
 	}
-	script["logic"] = []stubResp{{text: "not json", turns: 3, cost: 0.02}, {err: maxTurnsErr("logic", 12, 0.25)}}
+	script["logic"] = []stubResp{
+		{text: "not json", turns: 3, cost: 0.02, cacheW: 41500},
+		{err: maxTurnsErrCached("logic", 12, 0.25, 600, 41500)},
+	}
 
 	runner := newScriptRunner(script)
 	res, err := Review(context.Background(), testRequest(), openTestDB(t), DefaultConfig().WithRunner(runner.run))
@@ -1029,6 +1078,14 @@ func TestReviewDoesNotRetryMaxTurnsFromStrictJSONSession(t *testing.T) {
 	// measure different things and this is the case that separates them.
 	if math.Abs(rep.CostUSD-0.27) > 1e-9 {
 		t.Errorf("logic CostUSD = %v; want 0.27 (both sessions of the single attempt)", rep.CostUSD)
+	}
+	// The failing re-prompt's own cache accounting rides on its PassError and
+	// is summed in like a successful session's: this is the error branch of the
+	// same accumulation, and the one an `=` in place of a `+=` would silently
+	// truncate to the failure's numbers alone.
+	if rep.CacheCreationTokens != 42100 || rep.CacheReadTokens != 41500 {
+		t.Errorf("logic cache telemetry = {w:%d r:%d}; want {42100 41500} (both sessions of the single attempt)",
+			rep.CacheCreationTokens, rep.CacheReadTokens)
 	}
 }
 
@@ -1077,8 +1134,8 @@ func TestReviewDoesNotRetryTriageMaxTurns(t *testing.T) {
 // the discarded session's count.
 func TestReviewCountsTriageStrictJSONRetryCost(t *testing.T) {
 	script := map[string][]stubResp{passTriage.Name: {
-		{text: "not json at all", turns: 9, cost: 0.04},
-		{text: triageJSON(t, nil, ""), turns: 2, cost: 0.01},
+		{text: "not json at all", turns: 9, cost: 0.04, cacheW: 30000},
+		{text: triageJSON(t, nil, ""), turns: 2, cost: 0.01, cacheW: 500, cacheR: 30000},
 	}}
 	for _, p := range deepPasses {
 		script[p.Name] = []stubResp{{text: findingsJSON(t, nil), turns: 4, cost: 0.02}}
@@ -1106,6 +1163,11 @@ func TestReviewCountsTriageStrictJSONRetryCost(t *testing.T) {
 	}
 	if math.Abs(rep.CostUSD-0.05) > 1e-9 {
 		t.Errorf("triage CostUSD = %v; want 0.05 (0.04 unparseable session + 0.01 re-prompt)", rep.CostUSD)
+	}
+	// Triage's cache accounting is summed over both sessions, like its cost.
+	if rep.CacheCreationTokens != 30500 || rep.CacheReadTokens != 30000 {
+		t.Errorf("triage cache telemetry = {w:%d r:%d}; want {30500 30000} (both sessions summed)",
+			rep.CacheCreationTokens, rep.CacheReadTokens)
 	}
 	// triage 0.05 + five deep passes at 0.02.
 	if math.Abs(res.CostUSD-0.15) > 1e-9 {
@@ -1136,6 +1198,31 @@ func TestReviewCarriesCostWhenTriageStrictRetryFails(t *testing.T) {
 	}
 	if got := RunCost(err); math.Abs(got-0.29) > 1e-9 {
 		t.Errorf("RunCost(err) = %v; want 0.29 (0.04 unparseable session + 0.25 failed re-prompt)", got)
+	}
+}
+
+// TestRunTriageSumsCacheTokensWhenStrictRetryFails is the last of the four
+// accumulation branches, and the only one Review cannot show: a triage failure
+// aborts the run, and RunError carries the spend but not the cache accounting,
+// so the numbers are asserted on runTriage directly. Both sessions wrote the
+// prefix — the unparseable one and the one that ran out of turns — and both
+// were billed for it.
+func TestRunTriageSumsCacheTokensWhenStrictRetryFails(t *testing.T) {
+	runner := newScriptRunner(map[string][]stubResp{passTriage.Name: {
+		{text: "not json at all", turns: 9, cost: 0.04, cacheW: 30000},
+		{err: maxTurnsErrCached(passTriage.Name, 12, 0.25, 700, 30000)},
+	}})
+
+	run, err := runTriage(context.Background(), runner.run, DefaultConfig(), testRequest(), "diff --git a/x b/x\n+x\n")
+	if err == nil {
+		t.Fatalf("runTriage succeeded; want the re-prompt's failure (run %+v)", run)
+	}
+	if run.cacheCreation != 30700 || run.cacheRead != 30000 {
+		t.Errorf("triage cache telemetry = {w:%d r:%d}; want {30700 30000} (both sessions summed)",
+			run.cacheCreation, run.cacheRead)
+	}
+	if math.Abs(run.cost-0.29) > 1e-9 {
+		t.Errorf("triage cost = %v; want 0.29 (both sessions)", run.cost)
 	}
 }
 

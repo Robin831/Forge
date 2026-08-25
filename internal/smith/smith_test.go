@@ -143,7 +143,14 @@ func TestReadStreamJSON_NilCallbackUnchanged(t *testing.T) {
 }
 
 func TestReadStreamJSON_ResultEvent(t *testing.T) {
-	input := `{"type":"result","subtype":"success","result":"All done.","total_cost_usd":0.0123,"num_turns":4,"usage":{"input_tokens":100,"output_tokens":50}}`
+	// The usage object carries the provider's prompt-cache accounting under
+	// cache_creation_input_tokens/cache_read_input_tokens. Those two field
+	// names are the origin of every cache number Forge reports, and getting
+	// them wrong fails silently — the telemetry line omits cache_w/cache_r
+	// when both are zero, so a typo reverts the log to its old shape rather
+	// than to anything that looks broken.
+	input := `{"type":"result","subtype":"success","result":"All done.","total_cost_usd":0.0123,"num_turns":4,` +
+		`"usage":{"input_tokens":100,"output_tokens":50,"cache_creation_input_tokens":41500,"cache_read_input_tokens":900}}`
 
 	var buf strings.Builder
 	result := &Result{}
@@ -154,8 +161,25 @@ func TestReadStreamJSON_ResultEvent(t *testing.T) {
 	assert.InDelta(t, 0.0123, result.CostUSD, 1e-6)
 	assert.Equal(t, 100, result.TokensIn)
 	assert.Equal(t, 50, result.TokensOut)
+	assert.Equal(t, 41500, result.CacheCreationTokens)
+	assert.Equal(t, 900, result.CacheReadTokens)
 	assert.Equal(t, "All done.", result.FullOutput)
 	assert.False(t, result.RateLimited)
+}
+
+// TestReadStreamJSON_ResultEvent_NoCacheUsage pins the other half: a provider
+// whose usage object reports no cache accounting leaves both counters at zero,
+// which is what every downstream surface reads as "this backend reports none"
+// and renders as the line it always did.
+func TestReadStreamJSON_ResultEvent_NoCacheUsage(t *testing.T) {
+	input := `{"type":"result","subtype":"success","result":"All done.","usage":{"input_tokens":100,"output_tokens":50}}`
+
+	var buf strings.Builder
+	result := &Result{}
+	readStreamJSON(strings.NewReader(input), &buf, newTestLogFile(t), result)
+
+	assert.Equal(t, 0, result.CacheCreationTokens)
+	assert.Equal(t, 0, result.CacheReadTokens)
 }
 
 func TestReadStreamJSON_ResultEvent_ErrorSubtype(t *testing.T) {

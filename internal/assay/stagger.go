@@ -65,10 +65,21 @@ func firstOutputFn(ctx context.Context) func() {
 // other four passes straight back into the simultaneous-miss race the stagger
 // exists to break. A `result` event counts too: a session short enough to
 // answer in one shot is finished, and there is nothing left to wait for.
+//
+// `message` is the Gemini-style delta event readStreamJSONEvents accumulates
+// into FullOutput, and it is model output only for role "assistant" — the same
+// filter that reader applies. Gemini also emits a role "user" message echoing
+// the prompt back, which is emitted before the model request is made and is
+// therefore exactly the bookkeeping-not-an-answer case above. A message with no
+// role at all is taken as output: an unknown backend that streams deltas
+// without labelling them should lose the wait, not sit through it, and the
+// primer's own return opens the gate regardless.
 func isModelOutput(ev smith.StreamEvent) bool {
 	switch ev.Type {
-	case "assistant", "message", "result":
+	case "assistant", "result":
 		return true
+	case "message":
+		return ev.Role != "user"
 	default:
 		return false
 	}

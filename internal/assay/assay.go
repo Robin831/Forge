@@ -189,9 +189,9 @@ type PassReport struct {
 	// somebody moves a pass-specific string above the shared head, or the
 	// stagger is removed — every pass reports a large creation again, and the
 	// per-run redundancy (the sum of CacheCreationTokens minus the largest one)
-	// goes straight back to the 76% it was. Nothing branches on these; they
-	// exist so the regression is visible in the daemon's log line rather than
-	// only in a monthly bill.
+	// goes straight back to what buildPassPrompt measured before the ordering
+	// change. Nothing branches on these; they exist so the regression is
+	// visible in the daemon's log line rather than only in a monthly bill.
 	CacheCreationTokens int
 	CacheReadTokens     int
 	// Primer reports whether this was the pass run alone ahead of the fan-out

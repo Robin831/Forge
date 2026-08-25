@@ -54,8 +54,9 @@ type Result struct {
 	// total_cost_usd. What they measure is whether a set of sessions sharing a
 	// prompt prefix is actually sharing it — a fan-out that writes the same
 	// prefix N times reports N large CacheCreationTokens and no reads, which is
-	// invisible in a per-session cost number and was 75.6% of Assay's
-	// cache-write spend before the pass prompts were ordered to share one.
+	// invisible in a per-session cost number and was the bulk of Assay's
+	// cache-write spend before its pass prompts were ordered to share one (the
+	// measurement lives on assay.buildPassPrompt).
 	CacheCreationTokens int
 	CacheReadTokens     int
 	// RateLimited is true when the provider refused the request due to quota.

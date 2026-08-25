@@ -7,6 +7,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/Robin831/Forge/internal/smith"
 )
 
 // prefixFixture is a review request with every optional shared section
@@ -157,11 +159,21 @@ func TestTriagePromptSharesHeadWithDeepPasses(t *testing.T) {
 // --- staggered fan-out ----------------------------------------------------
 
 // stagger stubs a PassRunner that reports every session start on a channel and
-// holds the primer pass open until the test lets it answer.
+// holds the primer pass at two separate points: primerSignal gates its first
+// token (the first-output callback) and primerReturn gates its return.
+//
+// The two gates are what make the barrier's release condition observable. With
+// one gate the callback and the primer's own unconditional defer primed.open()
+// fire in the same instant, so a wiring regression — a runner that ignored the
+// callback, a gate only ever opened by the defer — would still let the other
+// four passes start and every assertion would still pass, while the fan-out had
+// silently degraded from "wait for the primer's first token" to "wait for the
+// whole primer session".
 type stagger struct {
 	t             *testing.T
 	started       chan string
 	primerSignal  chan struct{}
+	primerReturn  chan struct{}
 	primerHasSeam chan bool
 	cache         map[string][2]int
 	mu            sync.Mutex
@@ -172,6 +184,7 @@ func newStagger(t *testing.T) *stagger {
 		t:             t,
 		started:       make(chan string, 16),
 		primerSignal:  make(chan struct{}),
+		primerReturn:  make(chan struct{}),
 		primerHasSeam: make(chan bool, 1),
 		cache:         map[string][2]int{},
 	}
@@ -189,11 +202,22 @@ func (s *stagger) run(ctx context.Context, pass, _, _ string) (PassOutput, error
 		if fn != nil {
 			fn()
 		}
+		// Still "streaming": the session has emitted its first token but has
+		// not finished, so anything that starts now was released by the
+		// callback and not by this pass returning.
+		<-s.primerReturn
 	}
 	s.mu.Lock()
 	tok := s.cache[pass]
 	s.mu.Unlock()
 	return PassOutput{Text: `{"findings": []}`, CacheCreationTokens: tok[0], CacheReadTokens: tok[1]}, nil
+}
+
+// releasePrimer lets the primer emit its first token and then finish, for the
+// tests whose subject is not the barrier itself.
+func (s *stagger) releasePrimer() {
+	close(s.primerSignal)
+	close(s.primerReturn)
 }
 
 // awaitStart returns the next pass to start, failing the test on timeout.
@@ -214,6 +238,12 @@ func (s *stagger) awaitStart() string {
 // the other four released. Launched together they would all miss the cache and
 // all pay to write the identical prefix — the state PR #5261 was observed in,
 // with all five passes starting in the same millisecond.
+//
+// The release is pinned to the primer's FIRST TOKEN specifically: the stub
+// holds the primer's session open after signalling, so the four passes start
+// while it is still running. "Released when the primer returns" — the
+// degradation a broken first-output wiring falls back to, which serialises the
+// run behind a whole session — fails here rather than passing quietly.
 func TestReviewHoldsFanOutUntilPrimerAnswers(t *testing.T) {
 	s := newStagger(t)
 	cfg := DefaultConfig()
@@ -254,6 +284,10 @@ func TestReviewHoldsFanOutUntilPrimerAnswers(t *testing.T) {
 	case <-time.After(150 * time.Millisecond):
 	}
 
+	// Let the primer emit its first token — and nothing else. Its session is
+	// still open (it blocks on primerReturn), so the four passes below can only
+	// have been released by the first-output callback, never by the primer's
+	// unconditional open-on-return.
 	close(s.primerSignal)
 
 	rest := map[string]bool{}
@@ -268,6 +302,8 @@ func TestReviewHoldsFanOutUntilPrimerAnswers(t *testing.T) {
 			t.Errorf("pass %q never ran after the primer answered", p.Name)
 		}
 	}
+
+	close(s.primerReturn)
 
 	res := <-done
 	if res == nil {
@@ -322,7 +358,7 @@ func TestReviewReleasesFanOutWhenPrimerNeverSignals(t *testing.T) {
 		}
 	}
 
-	close(s.primerSignal)
+	s.releasePrimer()
 	select {
 	case <-done:
 	case <-time.After(5 * time.Second):
@@ -341,7 +377,7 @@ func TestPassReportCarriesCacheTelemetry(t *testing.T) {
 	cfg := DefaultConfig().WithRunner(s.run)
 	cfg.primerWaitOverride = 20 * time.Millisecond
 
-	go func() { <-s.primerHasSeam; close(s.primerSignal) }()
+	go func() { <-s.primerHasSeam; s.releasePrimer() }()
 	go func() {
 		for range s.started {
 		}
@@ -371,5 +407,43 @@ func TestPassReportCarriesCacheTelemetry(t *testing.T) {
 	// did, with no zero-valued noise.
 	if strings.Contains(line, "cache_w=0 cache_r=0") {
 		t.Errorf("telemetry line renders empty cache accounting:\n%s", line)
+	}
+}
+
+// TestIsModelOutputReleasesOnlyOnModelOutput pins the barrier's release
+// condition — the one decision the real smith runner makes on every streamed
+// event, and the one the assay tests otherwise never reach (they inject a stub
+// runner and call the gate function directly).
+//
+// The `system`/init event is the case the whole switch exists for: Claude emits
+// it before the model request is made at all, so releasing on it would put all
+// five passes back into the simultaneous-miss race. Adding an event type here
+// without meaning to — or renaming one out from under it — would restore that
+// silently, since the only symptom is a cache_w number in a log line.
+func TestIsModelOutputReleasesOnlyOnModelOutput(t *testing.T) {
+	cases := []struct {
+		name string
+		ev   smith.StreamEvent
+		want bool
+	}{
+		{"claude init", smith.StreamEvent{Type: "system", Subtype: "init"}, false},
+		{"claude assistant", smith.StreamEvent{Type: "assistant"}, true},
+		{"claude tool result", smith.StreamEvent{Type: "user"}, false},
+		{"result", smith.StreamEvent{Type: "result", Subtype: "success"}, true},
+		{"rate limit", smith.StreamEvent{Type: "rate_limit_event"}, false},
+		// Gemini deltas: the reader accumulates role "assistant" and ignores
+		// role "user", which is the provider echoing the prompt back before the
+		// model has been asked anything.
+		{"gemini assistant delta", smith.StreamEvent{Type: "message", Role: "assistant", Content: "th"}, true},
+		{"gemini prompt echo", smith.StreamEvent{Type: "message", Role: "user", Content: "review this"}, false},
+		{"unlabelled delta", smith.StreamEvent{Type: "message", Content: "th"}, true},
+		{"unknown type", smith.StreamEvent{Type: "tool_use"}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isModelOutput(tc.ev); got != tc.want {
+				t.Errorf("isModelOutput(%+v) = %v; want %v", tc.ev, got, tc.want)
+			}
+		})
 	}
 }
