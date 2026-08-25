@@ -33,14 +33,16 @@ import (
 //     (sortedPriorFindings) rather than left in whatever order the DB happened
 //     to return, since pr_findings is queried without an ORDER BY.
 //
-// Deliberately NOT here, and written below it instead:
+// Deliberately NOT here, and written below it instead (by headStablePrefix):
 //
 //   - The incremental framing and its baseline SHA — per push, and adjacent to
 //     the diff it describes, so a new push invalidates the cache at the diff
 //     rather than several kilobytes above it.
-//   - The triage notes — model-authored, so they differ between two runs of the
-//     same head even when nothing else does.
-//   - The diff, the pass instructions and the JSON contract.
+//   - The elided-file note and the diff — per head.
+//
+// And below THAT, by writeSharedPromptHead: the triage notes, which are
+// model-authored and so differ between two runs of the same head even when
+// nothing else does; then the pass instructions and the JSON contract.
 //
 // TestStablePrefixIsByteStableAcrossRuns is the guard: two runs of the same PR
 // differing only in run metadata must produce byte-identical output here.
@@ -50,6 +52,38 @@ func stablePrefix(req ReviewRequest) string {
 	b.WriteString(repoGuidanceSection(req))
 	b.WriteString(contextSection(req))
 	b.WriteString(priorFindingsSection(req))
+	return b.String()
+}
+
+// headStablePrefix is the second stability tier: stablePrefix plus everything
+// that depends on the HEAD under review but not on which run is reviewing it —
+// the incremental framing and its baseline SHA, the elided-file note, and the
+// diff itself.
+//
+// The two tiers answer two different questions, which is why they are two
+// functions rather than one. stablePrefix is what survives a PUSH: a new head
+// changes the framing and the diff, and everything above them still matches, so
+// the next review of the PR opens on a hit. headStablePrefix is what survives a
+// RE-REVIEW of the same head — `forge assay rerun`, a re-dispatch, the five
+// deep passes of one run reading what the primer wrote — and it is the tier the
+// money is in: the diff is the bulk of every Assay prompt, and it lives here.
+//
+// It is stable only because the triage notes are written BELOW it. They are
+// model-authored, so two runs of one head produce different notes; while they
+// sat between the framing and the diff they were the ceiling on this tier, and
+// every repeat review paid full write price for a byte-identical diff. Nothing
+// model-authored, per-run or per-session may be added above the diff for that
+// reason — TestSameHeadRerunReadsTheDiffFromCache is the guard.
+//
+// The diff it is handed is the caller's: triage gets the FILTERED diff and the
+// deep passes get the SCOPED one, so the two tiers coincide for both only while
+// triage has not narrowed the file set.
+func headStablePrefix(req ReviewRequest, unifiedDiff string) string {
+	var b strings.Builder
+	b.WriteString(stablePrefix(req))
+	b.WriteString(incrementalSection(req))
+	b.WriteString(elidedFilesSection(req.elided))
+	b.WriteString(diffSection(unifiedDiff))
 	return b.String()
 }
 

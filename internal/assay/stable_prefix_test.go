@@ -317,7 +317,7 @@ func TestRunMetadataSurvivesBelowThePrefix(t *testing.T) {
 	for _, want := range []string{
 		"Incremental Review",
 		shortSHA(req.BaselineSHA),
-		"Triage Notes",
+		"## Triage Notes",
 		notes,
 		unifiedDiff,
 	} {
@@ -326,13 +326,116 @@ func TestRunMetadataSurvivesBelowThePrefix(t *testing.T) {
 		}
 	}
 
-	// Order below the prefix: framing, then notes, then the diff the two
-	// describe. A note or a baseline landing after the diff would read as
-	// commentary on nothing.
+	// Order below the prefix: the incremental framing, then the diff it
+	// describes, then the triage notes, then the pass's own instructions. A
+	// baseline landing after the diff would read as commentary on nothing; the
+	// notes go last of the shared sections because they are the only one that
+	// varies between two runs of the same head, and above the diff they capped
+	// every re-review's cache hit there.
 	iInc := strings.Index(tail, "## Incremental Review")
-	iNotes := strings.Index(tail, "## Triage Notes")
 	iDiff := strings.Index(tail, "## Diff Under Review")
-	if !(iInc >= 0 && iInc < iNotes && iNotes < iDiff) {
-		t.Errorf("sections below the prefix are out of order: incremental=%d notes=%d diff=%d", iInc, iNotes, iDiff)
+	iNotes := strings.Index(tail, "## Triage Notes")
+	iOut := strings.Index(tail, "## Required Output")
+	if !(iInc >= 0 && iInc < iDiff && iDiff < iNotes && iNotes < iOut) {
+		t.Errorf("sections below the prefix are out of order: incremental=%d diff=%d notes=%d contract=%d",
+			iInc, iDiff, iNotes, iOut)
+	}
+}
+
+// TestTriageNotesSitBelowTheDiff is the direct statement of the ordering the
+// cross-run cache depends on, asserted on the one section that moved rather
+// than on a whole prompt: everything above the notes is byte-identical between
+// two runs of one head, and only the notes and what follows them differ.
+//
+// TestSameHeadRerunReadsTheDiffFromCache measures what that is worth end to
+// end; this one names the boundary, so a reorder fails here with the reason
+// attached instead of only as a collapsed token count in the replay harness.
+func TestTriageNotesSitBelowTheDiff(t *testing.T) {
+	req, unifiedDiff, notes := prefixFixture()
+
+	head := headStablePrefix(req, unifiedDiff)
+	if !strings.Contains(head, unifiedDiff) {
+		t.Fatal("the head-stable region does not carry the diff")
+	}
+	// "## Triage Notes" is the heading; the bare phrase also appears in the
+	// preamble, which names the section deliberately and is part of the stable
+	// region by design.
+	for _, unwanted := range []string{"## Triage Notes", notes} {
+		if strings.Contains(head, unwanted) {
+			t.Errorf("model-authored material %q reached the head-stable region", unwanted)
+		}
+	}
+
+	// Two runs of one head differ only in what triage said. Everything through
+	// the diff must be byte-identical; the notes must not be.
+	first, err := buildPassPrompt(deepPasses[0], req, unifiedDiff, notes)
+	if err != nil {
+		t.Fatalf("buildPassPrompt: %v", err)
+	}
+	second, err := buildPassPrompt(deepPasses[0], req, unifiedDiff, "A second run's triage said something else entirely.")
+	if err != nil {
+		t.Fatalf("buildPassPrompt: %v", err)
+	}
+	if !strings.HasPrefix(first, head) || !strings.HasPrefix(second, head) {
+		t.Fatal("a deep-pass prompt does not open with the head-stable region")
+	}
+	shared := commonPrefix([]string{first, second})
+	if len(shared) < len(head) {
+		off, a, b, _ := firstDiff(first, second)
+		t.Fatalf("two runs of one head share only %d bytes, short of the %d-byte region through the diff; "+
+			"first difference at byte %d\n run 1: %q\n run 2: %q", len(shared), len(head), off, a, b)
+	}
+	if first == second {
+		t.Fatal("the fixture produced identical prompts; it is not varying the triage notes")
+	}
+
+	// The notes still reach the model, tagged and fenced for their new position
+	// immediately above the pass instructions.
+	tail := first[len(head):]
+	if !strings.Contains(tail, notes) {
+		t.Error("the triage notes did not survive the move below the diff")
+	}
+	if !strings.Contains(tail, "## Triage Notes (untrusted;") {
+		t.Errorf("the triage notes heading is not tagged as untrusted:\n%.300s", tail)
+	}
+	if !strings.Contains(tail, "ADVISORY ONLY") {
+		t.Error("the triage notes section does not say it is advisory")
+	}
+
+	// The empty case: no notes, no dangling heading.
+	empty, err := buildPassPrompt(deepPasses[0], req, unifiedDiff, "   \n\t ")
+	if err != nil {
+		t.Fatalf("buildPassPrompt: %v", err)
+	}
+	if strings.Contains(empty, "## Triage Notes") {
+		t.Error("a run with no triage notes still rendered the Triage Notes heading")
+	}
+	if !strings.HasPrefix(empty, head) {
+		t.Error("a prompt with no triage notes does not open with the head-stable region")
+	}
+}
+
+// TestPreambleDescribesTheLayoutItShips is the cheap guard on the half of this
+// change that no token count can catch. The preamble is the prompt-injection
+// framing: it tells the model where its instructions are and that everything
+// above them is data. Moving a section without moving that sentence leaves the
+// model told the diff is the last thing before its instructions when it is not
+// — and the section now occupying that slot is model-authored text derived from
+// the untrusted diff.
+func TestPreambleDescribesTheLayoutItShips(t *testing.T) {
+	for _, want := range []string{
+		"FINAL section of this prompt",
+		"triage notes that follow the diff",
+		"MACHINE-GENERATED",
+		"ADVISORY ONLY",
+		"Repository Review Guidance",
+	} {
+		if !strings.Contains(sharedPromptPreamble, want) {
+			t.Errorf("preamble does not mention %q", want)
+		}
+	}
+	// The old claim, which the layout no longer satisfies.
+	if strings.Contains(sharedPromptPreamble, "follow AFTER the diff") {
+		t.Error("preamble still says the instructions follow the diff; the triage notes do")
 	}
 }

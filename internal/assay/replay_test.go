@@ -2,6 +2,7 @@ package assay
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"sync"
@@ -92,6 +93,16 @@ func (c *promptCache) send(pass, prompt string) (creation, read int) {
 // the cache at the moment the other four are released, exactly as it is when a
 // real provider has started answering.
 func (c *promptCache) runner(findings string) PassRunner {
+	return c.runnerWithNotes(findings, "")
+}
+
+// runnerWithNotes is runner with control over what the triage pass answers in
+// its `notes` field. Those notes are model-authored, so two runs of the very
+// same head legitimately produce different ones — which is the whole reason
+// they are written BELOW the diff rather than above it, and the only way a test
+// can tell a genuine cross-run diff hit from a fixture that happened to make
+// every prompt identical.
+func (c *promptCache) runnerWithNotes(findings, triageNotes string) PassRunner {
 	return func(ctx context.Context, pass, _, prompt string) (PassOutput, error) {
 		creation, read := c.send(pass, prompt)
 		if fn := firstOutputFn(ctx); fn != nil {
@@ -99,7 +110,11 @@ func (c *promptCache) runner(findings string) PassRunner {
 		}
 		out := PassOutput{CacheCreationTokens: creation, CacheReadTokens: read}
 		if pass == passTriage.Name {
-			out.Text = `{"review_files": [], "notes": ""}`
+			notes, err := json.Marshal(triageNotes)
+			if err != nil {
+				return PassOutput{}, err
+			}
+			out.Text = `{"review_files": [], "notes": ` + string(notes) + `}`
 			return out, nil
 		}
 		out.Text = `{"findings": []}`
@@ -177,7 +192,11 @@ func replayRequest(head, baseline, unifiedDiff string, prior []PriorFinding) Rev
 }
 
 func replayConfig(c *promptCache, findings string) Config {
-	cfg := DefaultConfig().WithRunner(c.runner(findings))
+	return replayConfigNotes(c, findings, "")
+}
+
+func replayConfigNotes(c *promptCache, findings, triageNotes string) Config {
+	cfg := DefaultConfig().WithRunner(c.runnerWithNotes(findings, triageNotes))
 	cfg.primerWaitOverride = 5 * time.Second
 	return cfg
 }
@@ -298,6 +317,129 @@ func TestConsecutiveRunsReadTheStablePrefixFromCache(t *testing.T) {
 	if saved < wantRead {
 		t.Errorf("the warm run saved %d write tokens over the identical cold run; want at least %d "+
 			"(the stable prefix it should not have re-written)", saved, wantRead)
+	}
+}
+
+// TestSameHeadRerunReadsTheDiffFromCache is the acceptance test for putting
+// the triage notes BELOW the diff. Its subject is the other repeat: not a push,
+// but a second review of the SAME head — `forge assay rerun`, a re-dispatch
+// after a partial run, a manual re-review. Nothing about the prompt is entitled
+// to change there except the triage notes, which are model-authored and so
+// differ every time.
+//
+// While those notes sat between the incremental framing and the diff they were
+// the ceiling on the cross-run hit: run 2's deep passes matched run 1's only as
+// far as the notes, and then paid full write price for a byte-identical diff —
+// which is the bulk of every Assay prompt. Below the diff they cost only
+// themselves.
+//
+// Every session of run 2 is asserted, not just the opening one. The opening
+// session here is triage, whose prompt carries no notes at all and was
+// therefore already a full cross-run hit before this change: asserting on it
+// alone would pass just as well with the notes back above the diff. It is the
+// DEEP passes that regress, so the floor is applied to all six.
+//
+// What the relocation was worth, measured through this harness on the fixture
+// below (a 12 KB diff, ~20 KB prompts) with the notes above the diff and then
+// below it — the canonical figure for this change, restated nowhere else:
+//
+//	                            notes above   notes below
+//	run 2 cache-write tokens          6,068         2,743   (-55%)
+//	run 2 cache-read tokens          24,832        29,440
+//	run 2 primer pass (w / r)   3,645 / 1,536   548 / 4,864
+//	warm-vs-cold write saving         4,864         5,120
+//
+// The primer row is the whole story: above the diff the notes left run 2's
+// first deep pass re-writing the diff at full price (3,645 written, 1,536
+// read); below it the same session reads what run 1 wrote and writes only its
+// own notes and instructions. Run 1 improves too (10,928 -> 7,858 write
+// tokens), because triage and the deep passes now share the diff as well.
+// Against that, every prompt grew ~500 bytes: the preamble and the notes
+// section both had to say more about what the notes are now that they sit
+// where a reader is primed to expect instructions.
+func TestSameHeadRerunReadsTheDiffFromCache(t *testing.T) {
+	const (
+		notes1 = "Run one: the retry loop around the ledger write is new; check its ordering."
+		notes2 = "Run two: focus on the charge guard and the error path near the ledger."
+	)
+
+	cache := &promptCache{}
+	unifiedDiff := replayDiff("internal/pay/charge.go", 200)
+	// One head, reviewed twice. Same PR, same push, same already-reported list
+	// — the request is literally the same value both times.
+	req := replayRequest("cafe0002", "cafe0001", unifiedDiff, nil)
+
+	mark1 := cache.mark()
+	res1, err := Review(context.Background(), req, nil, replayConfigNotes(cache, "", notes1))
+	if err != nil {
+		t.Fatalf("run 1: %v", err)
+	}
+	run1 := cache.since(mark1)
+
+	mark2 := cache.mark()
+	res2, err := Review(context.Background(), req, nil, replayConfigNotes(cache, "", notes2))
+	if err != nil {
+		t.Fatalf("run 2: %v", err)
+	}
+	run2 := cache.since(mark2)
+	if len(run2) != len(deepPasses)+1 {
+		t.Fatalf("run 2 made %d sessions, want triage plus %d deep passes", len(run2), len(deepPasses))
+	}
+
+	// The fixture has to actually produce different notes, or the whole thing
+	// collapses into "two identical prompts match", which proves nothing.
+	if !strings.Contains(run2[1].prompt, notes2) {
+		t.Fatalf("run 2's first deep pass did not carry the run's own triage notes:\n%.400s", run2[1].prompt)
+	}
+	if strings.Contains(run2[1].prompt, notes1) {
+		t.Fatal("run 2's deep pass carried run 1's triage notes; the fixture is not varying them")
+	}
+
+	// The floor: the head-stable region — everything through the diff — minus
+	// one block of emulator slack. Triage is fed the filtered diff and the deep
+	// passes the scoped one; with review_files empty they are the same bytes,
+	// which is what lets one floor cover all six sessions.
+	head := headStablePrefix(req, unifiedDiff)
+	if len(head)-len(stablePrefix(req)) <= cacheBlockBytes {
+		t.Fatalf("the region between the two stability tiers is only %d bytes; too small to tell them apart",
+			len(head)-len(stablePrefix(req)))
+	}
+	wantRead := cacheTokens(len(head) - cacheBlockBytes)
+	for _, s := range run2 {
+		if s.read < wantRead {
+			t.Errorf("run 2 pass %s read %d cached tokens; want at least %d (the %d-byte region through the diff)",
+				s.pass, s.read, wantRead, len(head))
+		}
+	}
+
+	// And the notes themselves must still be a miss, or the emulator — not the
+	// ordering — is doing the work.
+	for _, s := range run2[1:] {
+		if s.creation == 0 {
+			t.Errorf("run 2 pass %s wrote nothing; its own triage notes and instructions must be a miss", s.pass)
+		}
+	}
+
+	// What the relocation is worth, measured without the confound of run 1
+	// having primed the cache: the identical run 2 replayed against an empty
+	// cache. The difference is the write it did not have to pay for.
+	cold := &promptCache{}
+	coldRes, err := Review(context.Background(), req, nil, replayConfigNotes(cold, "", notes2))
+	if err != nil {
+		t.Fatalf("cold replay of run 2: %v", err)
+	}
+	saved := coldRes.CacheCreationTokens - res2.CacheCreationTokens
+	if saved < wantRead {
+		t.Errorf("the warm re-review saved %d write tokens over the identical cold run; want at least %d "+
+			"(the head-stable region it should not have re-written)", saved, wantRead)
+	}
+
+	run1Creation, run1Read := totals(run1)
+	t.Logf("run 1: cache_w=%d cache_r=%d over %d sessions", run1Creation, run1Read, len(run1))
+	t.Logf("run 2 (same head, different triage notes): cache_w=%d cache_r=%d; cold replay cache_w=%d; saved %d write tokens",
+		res2.CacheCreationTokens, res2.CacheReadTokens, coldRes.CacheCreationTokens, saved)
+	if res1.CacheCreationTokens <= 0 {
+		t.Errorf("run 1 wrote %d cache tokens; the cache was empty", res1.CacheCreationTokens)
 	}
 }
 
