@@ -189,6 +189,12 @@ type PassReport struct {
 	// Retried reports whether the pass was re-run in a fresh session after
 	// hitting error_max_turns.
 	Retried bool
+	// RetrySkipped reports that the pass hit error_max_turns, was eligible for
+	// that re-run, and did not get one because no modified inputs could be
+	// constructed — so the run reports partial coverage instead of paying a
+	// second full price for a request already asked (see runDeepPass). It is
+	// never true alongside Retried.
+	RetrySkipped bool
 	// CacheCreationTokens is how many input tokens the pass paid to write into
 	// the provider's prompt cache, and CacheReadTokens how many it served from
 	// a prefix already there. Both are summed over every provider session the
@@ -495,6 +501,7 @@ func Review(ctx context.Context, req ReviewRequest, db *state.DB, cfg Config) (*
 			TerminationReason:   o.failure.Reason,
 			Attempts:            o.attempts,
 			Retried:             o.retried,
+			RetrySkipped:        o.retrySkipped,
 			CacheCreationTokens: o.cacheCreation,
 			CacheReadTokens:     o.cacheRead,
 			Primer:              i == primerPass,
