@@ -541,6 +541,34 @@ func TestCostStopCallbackStopsAtTheCrossing(t *testing.T) {
 		}
 	})
 
+	t.Run("the stagger signal fires with the ceiling disabled", func(t *testing.T) {
+		// The configuration of an anvil that set max_cost_per_pass_usd: 0.
+		// The release must happen BEFORE the callback's cost guard returns —
+		// hoisting `!tracker.enabled()` above the signal block (the natural
+		// simplification, since everything else here is cost work) would leave
+		// those anvils' passes waiting out primerWaitDefault and then fanning
+		// out simultaneously: the all-miss cache write the stagger exists to
+		// prevent, and nothing would fail, so only this test holds it.
+		var signals, stops int
+		cb := costStopCallback(newCostTracker(0), pv, func() { signals++ }, func() { stops++ })
+
+		cb(smith.StreamEvent{Type: "system", Subtype: "init"})
+		if signals != 0 {
+			t.Fatal("the fan-out was released on the init event, restoring the simultaneous-miss race the stagger exists to break")
+		}
+		cb(assistantEvent(t, "msg_1", "claude-opus-4-8", 5_000_000, 0, 0, 0))
+		if signals != 1 {
+			t.Fatalf("signals = %d after the first model output with the ceiling off; want 1", signals)
+		}
+		cb(assistantEvent(t, "msg_2", "claude-opus-4-8", 5_000_000, 0, 0, 0))
+		if signals != 1 {
+			t.Errorf("signals = %d; want 1 — the barrier releases once", signals)
+		}
+		if stops != 0 {
+			t.Errorf("stops = %d with no ceiling configured; want 0", stops)
+		}
+	})
+
 	t.Run("a real tool-using turn is billed once through the callback", func(t *testing.T) {
 		// One message, three content-block events: the ceiling must be reached
 		// on the session's real spend, not on three times it.
