@@ -77,6 +77,14 @@ type ReviewRequest struct {
 	// WorkDir is the directory the default Smith-based runner executes in
 	// (typically the PR worktree). Ignored when a custom runner is installed.
 	WorkDir string
+	// LogKey ties every session log this run writes back to the run record:
+	// each pass writes assay-<LogKey>-<pass>-<ts>-<seq>.log, and the caller
+	// persists the same key on the assay_runs row. It is what lets the bead
+	// Logs panel render one run as one row rather than six loose sessions.
+	// Optional and all-digits by convention (see PassLogPrefix); empty means
+	// the sessions are still named by pass but are not grouped into a run.
+	// Ignored when a custom runner is installed.
+	LogKey string
 	// Incremental marks a delta review: Diff carries only the changes pushed
 	// since the last reviewed commit (BaselineSHA), not the whole base..head
 	// diff. Every pass prompt then says so explicitly — the model on a repeat

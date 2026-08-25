@@ -210,6 +210,14 @@ func (db *DB) migrate() error {
 		// for a provider that reports no cache accounting at all.
 		{"assay_runs", "cache_creation_tokens", `ALTER TABLE assay_runs ADD COLUMN cache_creation_tokens INTEGER NOT NULL DEFAULT 0`},
 		{"assay_runs", "cache_read_tokens", `ALTER TABLE assay_runs ADD COLUMN cache_read_tokens INTEGER NOT NULL DEFAULT 0`},
+		// log_key ties a run to the per-pass session log files it wrote, so the
+		// bead Logs panel can render one run as one row instead of six loose
+		// "assay" files. pass_findings records how many findings each pass
+		// contributed, so the expensive pass and the useful pass are
+		// distinguishable inside that row. Existing rows default to '' — no key
+		// and no per-pass breakdown — and their logs stay ungrouped.
+		{"assay_runs", "log_key", `ALTER TABLE assay_runs ADD COLUMN log_key TEXT NOT NULL DEFAULT ''`},
+		{"assay_runs", "pass_findings", `ALTER TABLE assay_runs ADD COLUMN pass_findings TEXT NOT NULL DEFAULT ''`},
 		// bellows_detached mutes Bellows for one PR ("managed but muted"). It is
 		// deliberately separate from bellows_managed / bellows_manually_assigned:
 		// reconcile rewrites those on every cycle, so a detach recorded there
@@ -244,6 +252,13 @@ func (db *DB) migrate() error {
 	// bellows orphan sweep JOIN and GetPRByNumber.
 	if _, err := db.conn.Exec(`CREATE INDEX IF NOT EXISTS idx_prs_anvil_number ON prs(anvil, number)`); err != nil {
 		return fmt.Errorf("creating prs anvil+number index: %w", err)
+	}
+	// Index for AssayRunsByLogKeys, which the bead Logs panel calls with the
+	// run keys parsed off a bead's assay log filenames. Created here rather
+	// than in the schema const because log_key arrives via the additive
+	// migration above, which runs after the schema is executed.
+	if _, err := db.conn.Exec(`CREATE INDEX IF NOT EXISTS idx_assay_runs_log_key ON assay_runs(log_key)`); err != nil {
+		return fmt.Errorf("creating assay_runs log_key index: %w", err)
 	}
 	return nil
 }
@@ -582,6 +597,10 @@ CREATE INDEX IF NOT EXISTS idx_pr_findings_anvil_pr_sha ON pr_findings(anvil, pr
 -- rather than only logged because the question they answer is a trend across
 -- runs of one PR — a second run of an unchanged head should read the prefix the
 -- first one wrote — and a trend is a query, not a re-reading of old log lines.
+-- log_key is the token stamped into every session log filename the run wrote
+-- (assay-<log_key>-<pass>-<ts>-<seq>.log), which is what lets the bead Logs
+-- panel fold a run's six sessions into one row; pass_findings (JSON
+-- [{name, findings}]) is how many findings each of them contributed.
 CREATE TABLE IF NOT EXISTS assay_runs (
     id               INTEGER PRIMARY KEY AUTOINCREMENT,
     anvil            TEXT NOT NULL,
@@ -601,7 +620,9 @@ CREATE TABLE IF NOT EXISTS assay_runs (
     total_passes     INTEGER NOT NULL DEFAULT 0,
     failed_passes    TEXT NOT NULL DEFAULT '',
     cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
-    cache_read_tokens     INTEGER NOT NULL DEFAULT 0
+    cache_read_tokens     INTEGER NOT NULL DEFAULT 0,
+    log_key          TEXT NOT NULL DEFAULT '',
+    pass_findings    TEXT NOT NULL DEFAULT ''
 );
 
 CREATE INDEX IF NOT EXISTS idx_assay_runs_anvil_pr ON assay_runs(anvil, pr_number);
@@ -5054,6 +5075,56 @@ type AssayRun struct {
 	// backend that reports no cache accounting.
 	CacheCreationTokens int
 	CacheReadTokens     int
+	// LogKey ties this run to the per-pass session log files it wrote: every
+	// one of them is named assay-<LogKey>-<pass>-<ts>-<seq>.log. It is what
+	// lets the bead Logs panel render one run as one row instead of six
+	// indistinguishable "assay" files. Empty on rows written before the key
+	// existed, and on runs that never spawned a session.
+	LogKey string
+	// PassFindings is how many findings each pass contributed before
+	// aggregation — triage included, which contributes none by design. It
+	// answers the question the panel's expanded run row exists for: which of
+	// the six sessions actually mattered. Nil on rows written before it was
+	// recorded.
+	PassFindings []AssayPassFindings
+}
+
+// AssayPassFindings is one pass's contribution to a run: its name and the
+// number of findings it produced before dedupe/capping. Persisted as JSON on
+// the run record so the bead Logs panel can label each session in a run
+// without re-deriving it from pr_findings, whose category is the model's to
+// override and so does not reliably name the emitting pass.
+type AssayPassFindings struct {
+	Name     string `json:"name"`
+	Findings int    `json:"findings"`
+}
+
+// EncodeAssayPassFindings marshals a per-pass findings breakdown for the
+// pass_findings column. An empty list stores "" rather than "null" so old and
+// new empty rows read identically.
+func EncodeAssayPassFindings(passes []AssayPassFindings) string {
+	if len(passes) == 0 {
+		return ""
+	}
+	b, err := json.Marshal(passes)
+	if err != nil {
+		return ""
+	}
+	return string(b)
+}
+
+// DecodeAssayPassFindings parses a pass_findings column value. An empty or
+// unparseable value yields no breakdown — a row that predates the column reads
+// as "not recorded", never as a run in which every pass found nothing.
+func DecodeAssayPassFindings(raw string) []AssayPassFindings {
+	if strings.TrimSpace(raw) == "" {
+		return nil
+	}
+	var out []AssayPassFindings
+	if err := json.Unmarshal([]byte(raw), &out); err != nil {
+		return nil
+	}
+	return out
 }
 
 // EncodeAssayPassFailures marshals a failed-pass list for the failed_passes
@@ -5433,8 +5504,8 @@ func (db *DB) RecordAssayRun(r *AssayRun) error {
 		     (anvil, pr_number, head_sha, started_at, finished_at, duration_ms,
 		      cost_usd, findings_count, skipped_reason, shadow_mode, posted_count, error,
 		      status, completed_passes, total_passes, failed_passes,
-		      cache_creation_tokens, cache_read_tokens)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		      cache_creation_tokens, cache_read_tokens, log_key, pass_findings)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		r.Anvil,
 		r.PRNumber,
 		r.HeadSHA,
@@ -5453,6 +5524,8 @@ func (db *DB) RecordAssayRun(r *AssayRun) error {
 		EncodeAssayPassFailures(r.FailedPasses),
 		r.CacheCreationTokens,
 		r.CacheReadTokens,
+		r.LogKey,
+		EncodeAssayPassFindings(r.PassFindings),
 	)
 	if err != nil {
 		return err
@@ -5486,6 +5559,75 @@ func (db *DB) publishFindingsChanged(anvil string, prNumber int) {
 			Anvil: anvil,
 		},
 	})
+}
+
+// maxAssayRunLogKeys bounds AssayRunsByLogKeys. A bead's log directory holds
+// one key per Assay run over its PR, and a PR that has been re-reviewed a
+// hundred times is already pathological; the cap keeps a poisoned or runaway
+// directory from building an unbounded IN clause.
+const maxAssayRunLogKeys = 200
+
+// AssayRunsByLogKeys returns the assay_runs rows whose log_key is in keys,
+// indexed by log key. Keys with no row are simply absent from the map: a run
+// whose record was lost (or which is still in flight — the row is written when
+// the run ends) is not an error, it is a group of session logs the panel
+// renders without run-level totals. Duplicate keys resolve to the most recent
+// row.
+func (db *DB) AssayRunsByLogKeys(keys []string) (map[string]AssayRun, error) {
+	if len(keys) == 0 {
+		return map[string]AssayRun{}, nil
+	}
+	if len(keys) > maxAssayRunLogKeys {
+		keys = keys[:maxAssayRunLogKeys]
+	}
+	placeholders := make([]string, len(keys))
+	args := make([]any, len(keys))
+	for i, k := range keys {
+		placeholders[i] = "?"
+		args[i] = k
+	}
+	rows, err := db.conn.Query(
+		`SELECT id, anvil, pr_number, head_sha, started_at, finished_at, duration_ms,
+		        cost_usd, findings_count, skipped_reason, shadow_mode, posted_count, error,
+		        status, completed_passes, total_passes, failed_passes, log_key, pass_findings
+		 FROM assay_runs
+		 WHERE log_key IN (`+strings.Join(placeholders, ",")+`)
+		 ORDER BY id ASC`,
+		args...,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make(map[string]AssayRun, len(keys))
+	for rows.Next() {
+		var (
+			r            AssayRun
+			startedAt    string
+			finishedAt   sql.NullString
+			shadow       int
+			failedPasses string
+			passFindings string
+		)
+		if err := rows.Scan(
+			&r.ID, &r.Anvil, &r.PRNumber, &r.HeadSHA, &startedAt, &finishedAt, &r.DurationMs,
+			&r.CostUSD, &r.FindingsCount, &r.SkippedReason, &shadow, &r.PostedCount, &r.Error,
+			&r.Status, &r.CompletedPasses, &r.TotalPasses, &failedPasses, &r.LogKey, &passFindings,
+		); err != nil {
+			return nil, err
+		}
+		r.StartedAt = parseTime(startedAt)
+		if finishedAt.Valid && finishedAt.String != "" {
+			t := parseTime(finishedAt.String)
+			r.FinishedAt = &t
+		}
+		r.ShadowMode = shadow != 0
+		r.FailedPasses = DecodeAssayPassFailures(failedPasses)
+		r.PassFindings = DecodeAssayPassFindings(passFindings)
+		out[r.LogKey] = r
+	}
+	return out, rows.Err()
 }
 
 // LastAssayRunAt returns the started_at timestamp of the most recent assay_runs

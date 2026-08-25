@@ -19,6 +19,20 @@ type beadLogFile struct {
 	Stage     string `json:"stage"`
 	SizeBytes int64  `json:"size_bytes"`
 	MTime     string `json:"mtime"`
+	// Pass names the Assay pass this session ran ("triage", "logic",
+	// "tests-missing", …), parsed from the filename. Empty for every other
+	// stage and for assay logs written before the pass was in the name — the
+	// point of the field is that a run's sessions are no longer six rows all
+	// reading "assay".
+	Pass string `json:"pass,omitempty"`
+	// RunKey groups the sessions of one Assay run; see beadLogRun. Empty
+	// leaves the file listed on its own, which is what old assay logs do.
+	RunKey string `json:"run_key,omitempty"`
+	// Findings is how many findings this session's pass contributed, from the
+	// run record. Nil means not recorded (an old run, or one still in flight),
+	// which must not render as the zero a pass that genuinely found nothing
+	// reports.
+	Findings *int `json:"findings,omitempty"`
 	// Live is true for the file an active worker is currently writing to; the
 	// frontend subscribes to that worker's SSE stream instead of a one-shot
 	// tail. WorkerID is set only for live files so the client can build the
@@ -31,6 +45,10 @@ type beadLogFile struct {
 type beadLogsResponse struct {
 	BeadID string        `json:"bead_id"`
 	Files  []beadLogFile `json:"files"`
+	// Runs folds the Assay sessions in Files into one entry per review run.
+	// Files stays the complete flat list either way, so a client that ignores
+	// Runs renders exactly what it always did.
+	Runs []beadLogRun `json:"runs,omitempty"`
 }
 
 // knownLogStages maps a log-file name prefix to the stage label rendered in the
@@ -72,12 +90,34 @@ const maxWorkersPerBeadScan = 200
 // beadLogFileFromEntry builds a beadLogFile from a directory entry and its
 // FileInfo. Callers set Live/WorkerID on the returned value when appropriate.
 func beadLogFileFromEntry(name string, info os.FileInfo) beadLogFile {
+	parsed := parseLogFilename(name)
 	return beadLogFile{
 		Filename:  name,
-		Stage:     stageFromFilename(name),
+		Stage:     parsed.stage,
+		Pass:      parsed.pass,
+		RunKey:    parsed.runKey,
 		SizeBytes: info.Size(),
 		MTime:     info.ModTime().UTC().Format(time.RFC3339),
 	}
+}
+
+// assayRunKeys returns the distinct Assay run keys present in files, in first
+// -seen order. Files with no key (every other stage, and assay logs predating
+// the key) contribute none.
+func assayRunKeys(files []beadLogFile) []string {
+	seen := map[string]struct{}{}
+	var keys []string
+	for _, f := range files {
+		if f.RunKey == "" {
+			continue
+		}
+		if _, ok := seen[f.RunKey]; ok {
+			continue
+		}
+		seen[f.RunKey] = struct{}{}
+		keys = append(keys, f.RunKey)
+	}
+	return keys
 }
 
 // isTerminalWorkerStatus reports whether a worker has finished and its worktree
@@ -195,7 +235,20 @@ func (s *Server) handleBeadLogs(w http.ResponseWriter, r *http.Request) {
 		return files[i].Filename < files[j].Filename
 	})
 
-	writeJSON(w, http.StatusOK, beadLogsResponse{BeadID: beadID, Files: files})
+	// Fold the Assay sessions into their runs. The lookup is one query for the
+	// whole page; a DB error costs the run-level totals and nothing else, since
+	// the flat file list is already complete.
+	var runRecords map[string]state.AssayRun
+	if keys := assayRunKeys(files); len(keys) > 0 {
+		var rerr error
+		runRecords, rerr = s.db.AssayRunsByLogKeys(keys)
+		if rerr != nil {
+			runRecords = nil
+		}
+	}
+	runs := groupAssayRuns(files, runRecords)
+
+	writeJSON(w, http.StatusOK, beadLogsResponse{BeadID: beadID, Files: files, Runs: runs})
 }
 
 // handleBeadLogFile serves GET /api/bead/{bead_id}/logs/{filename}?tail=N. It

@@ -1701,6 +1701,33 @@ func statePassFailures(failed []assay.PassFailure) []state.AssayPassFailure {
 	return out
 }
 
+// statePassFindings projects the engine's per-pass reports onto the run
+// record's persisted breakdown: pass name and findings contributed, nothing
+// else. The rest of a PassReport (turns, cost, cache accounting) is telemetry
+// for the daemon log line; this is the half the bead Logs panel renders, so a
+// session that found the PR's one real problem is distinguishable from the
+// four that found nothing and from triage, which produces none by design.
+func statePassFindings(passes []assay.PassReport) []state.AssayPassFindings {
+	if len(passes) == 0 {
+		return nil
+	}
+	out := make([]state.AssayPassFindings, 0, len(passes))
+	for _, p := range passes {
+		out = append(out, state.AssayPassFindings{Name: p.Name, Findings: p.Findings})
+	}
+	return out
+}
+
+// assayLogKey is the token that ties an Assay run to the session logs its
+// passes write. It is the run's start time in milliseconds: all-digits (which
+// is what keeps the filename parse unambiguous against a pass name) and
+// unique per run in practice — a run takes minutes and Bellows dispatches at
+// most one Assay worker per PR, so two runs for one bead cannot start in the
+// same millisecond.
+func assayLogKey(started time.Time) string {
+	return strconv.FormatInt(started.UnixMilli(), 10)
+}
+
 // assayWorkerStatus maps a finished Assay run onto the worker row's terminal
 // status. A partial run gets its own status rather than being flattened into
 // failed: findings were produced and posted, so the row must not read as a run
@@ -1890,12 +1917,19 @@ func (d *Daemon) runAssayReview(ctx context.Context, anvil, anvilPath, beadID st
 	engineCfg := assay.FromAssayConfig(resolved)
 
 	started := time.Now()
+	// The key is minted here, before the engine runs, because both halves need
+	// it: the passes stamp it into their log filenames and the run record
+	// persists it, which is the join the bead Logs panel groups on. The
+	// assay_runs id would be the authoritative key, but it does not exist
+	// until the row is written — after every session has already been named.
+	logKey := assayLogKey(started)
 	run := &state.AssayRun{
 		Anvil:      anvil,
 		PRNumber:   prNumber,
 		HeadSHA:    headSHA,
 		StartedAt:  started,
 		ShadowMode: engineCfg.ShadowMode,
+		LogKey:     logKey,
 	}
 
 	// Fetch the PR diff — the full net diff base..head, i.e. the cumulative
@@ -1944,6 +1978,7 @@ func (d *Daemon) runAssayReview(ctx context.Context, anvil, anvilPath, beadID st
 			BeadID:      beadID,
 			Title:       d.db.BeadTitle(beadID, anvil),
 			WorkDir:     worktreePath,
+			LogKey:      logKey,
 			OnPassLog:   d.assayLogPathRecorder(workerID),
 		}, d.db, engineCfg)
 		if rerr != nil {
@@ -1982,6 +2017,7 @@ func (d *Daemon) runAssayReview(ctx context.Context, anvil, anvilPath, beadID st
 			run.CompletedPasses = result.CompletedPasses
 			run.TotalPasses = result.TotalPasses
 			run.FailedPasses = statePassFailures(result.FailedPasses)
+			run.PassFindings = statePassFindings(result.Passes)
 			statusText := result.StatusText()
 			if len(result.PassErrors) > 0 {
 				for _, pe := range result.PassErrors {
