@@ -882,6 +882,31 @@ func recordIngotTemperResults(db *state.DB, workerID, beadID, anvil string, temp
 	}
 }
 
+// recordSpawnCost persists one completed Smith spawn's token usage into the
+// three cost tables — the daily aggregate, the per-provider daily aggregate and
+// the bead's cumulative row — from the single set of counters the provider
+// reported. The cache columns take the session's own prompt-cache accounting
+// (cache_read from CacheReadTokens, cache_write from CacheCreationTokens)
+// rather than the zeros they carried before: the same numbers already ride the
+// Assay pass telemetry, and a log line and a table that disagree about one
+// measurement is worse than either alone.
+//
+// A rate-limited spawn is not a completion and records nothing. Cache tokens
+// count toward "did this session use anything", since a session served almost
+// entirely from cache reports large cache reads next to negligible input.
+func recordSpawnCost(db *state.DB, beadID, anvil, provName string, r *smith.Result) {
+	if db == nil || r == nil || r.RateLimited {
+		return
+	}
+	if r.TokensIn == 0 && r.TokensOut == 0 && r.CacheReadTokens == 0 && r.CacheCreationTokens == 0 && r.CostUSD == 0 {
+		return
+	}
+	today := cost.Today()
+	_ = db.AddDailyCost(today, r.TokensIn, r.TokensOut, r.CacheReadTokens, r.CacheCreationTokens, r.CostUSD)
+	_ = db.AddProviderDailyCost(today, provName, r.TokensIn, r.TokensOut, r.CacheReadTokens, r.CacheCreationTokens, r.CostUSD)
+	_ = db.AddBeadCost(beadID, anvil, r.TokensIn, r.TokensOut, r.CacheReadTokens, r.CacheCreationTokens, r.CostUSD)
+}
+
 // Run executes the full Smith → Temper → Warden pipeline for a bead.
 func Run(ctx context.Context, p Params) *Outcome {
 	start := time.Now()
@@ -1083,13 +1108,7 @@ func Run(ctx context.Context, p Params) *Outcome {
 		}
 
 		// Record per-provider and aggregate daily costs for non-rate-limited completions.
-		if !smithResult.RateLimited && (smithResult.TokensIn > 0 || smithResult.TokensOut > 0 || smithResult.CostUSD > 0) {
-			today := cost.Today()
-			pvName := string(pv.Kind)
-			_ = p.DB.AddDailyCost(today, smithResult.TokensIn, smithResult.TokensOut, 0, 0, smithResult.CostUSD)
-			_ = p.DB.AddProviderDailyCost(today, pvName, smithResult.TokensIn, smithResult.TokensOut, 0, 0, smithResult.CostUSD)
-			_ = p.DB.AddBeadCost(p.Bead.ID, p.AnvilName, smithResult.TokensIn, smithResult.TokensOut, 0, 0, smithResult.CostUSD)
-		}
+		recordSpawnCost(p.DB, p.Bead.ID, p.AnvilName, string(pv.Kind), smithResult)
 	}
 
 	// Step 1: Create worktree
