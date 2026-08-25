@@ -489,6 +489,40 @@ forge history events -n 100
 
 Output columns: TIME, TYPE, MESSAGE, BEAD, ANVIL.
 
+## Cost Reporting
+
+### `forge cost assay`
+
+Report what Assay spent over a window, split by first-review vs re-review of a PR
+and by prompt-cache token class. See
+[assay-cost-attribution.md](assay-cost-attribution.md) for the methodology and
+the baseline reconciliation.
+
+```bash
+forge cost assay
+forge cost assay --since 2026-06-01 --until 2026-07-01
+forge cost assay --format json --out before.json
+forge cost assay --expect-repeat-cost 2326.54 --expect-repeat-runs 780
+```
+
+| Flag | Description |
+|------|-------------|
+| `--since` | Start of the window, inclusive (`YYYY-MM-DD` or RFC3339; default: no lower bound) |
+| `--until` | End of the window, exclusive (`YYYY-MM-DD` or RFC3339; default: no upper bound) |
+| `--format` | `table` (default), `json` or `csv` |
+| `--out` | Write the report to this file instead of stdout |
+| `--anvil` | Restrict the report to one anvil |
+| `--include-skipped` | Count runs that dispatched no passes (default: excluded, matching the per-PR run cap) |
+| `--model-tier` | Pricing row for token classes: `haiku`, `sonnet` (default), `opus`, `fable` |
+| `--expect-repeat-cost` | Reconcile the repeat-run total against a published baseline figure (USD) |
+| `--expect-repeat-runs` | Reconcile the repeat-run count against a published baseline figure |
+
+Recorded spend (the provider's own `cost_usd`) and priced cache attribution are
+reported separately and never summed: `assay_runs` stores no plain input/output
+token counts, so the cache classes are a subset of the recorded total. Runs
+predating cache instrumentation report token class `unknown` rather than a
+misleading zero. `forge cost` with no subcommand runs this report.
+
 ## Configuration (Windows)
 
 ### `forge autostart install`
