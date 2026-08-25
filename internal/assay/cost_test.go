@@ -133,9 +133,9 @@ func TestTurnCostUSDPricesAnsweredTurns(t *testing.T) {
 	// routinely empty ("let the provider pick") and the turn says what it did.
 	ev = assistantEvent(t, "msg_b", "claude-opus-4-8", 1_000_000, 0, 500, 900)
 	_, usd, cc, cr, _ = turnCostUSD(ev, pv)
-	// 1M input at $15.00/M + 500 cache-write at $18.75/M + 900 cache-read at
-	// $1.50/M — the cache lines are priced too, since they are billed too.
-	want := 15.00 + 500*18.75/1e6 + 900*1.50/1e6
+	// 1M input at $5.00/M + 500 cache-write at $6.25/M + 900 cache-read at
+	// $0.50/M — the cache lines are priced too, since they are billed too.
+	want := 5.00 + 500*6.25/1e6 + 900*0.50/1e6
 	if math.Abs(usd-want) > 1e-9 {
 		t.Errorf("usd = %v; want %v (opus rate inferred from the turn's own model)", usd, want)
 	}

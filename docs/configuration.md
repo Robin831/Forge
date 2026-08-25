@@ -1032,9 +1032,17 @@ string fields when non-empty; `skip_paths` when non-empty). Anvils without an
 ## Pricing Tables
 
 Forge tracks token spend per bead and per day. **Claude self-reports an exact
-`total_cost_usd`** in its stream output, so Claude cost is never estimated. For
-providers that do not report a cost (Copilot, Gemini, OpenAI/Codex), Forge
-estimates spend from token counts and a configurable per-model pricing table.
+`total_cost_usd`** in its stream output, so a finished Claude session is never
+estimated. For providers that do not report a cost (Copilot, Gemini,
+OpenAI/Codex), Forge estimates spend from token counts and a configurable
+per-model pricing table.
+
+The table prices Claude in one place: **in flight**. The Assay per-pass cost
+ceiling (`assay.max_cost_per_pass_usd`) adds up each turn's usage as it streams,
+because the provider's own figure arrives only with the final result event —
+after the money is spent. A stale Claude row there does not produce a wrong
+number in a report; it stops a healthy pass on its first turn. Keep the
+`claude-*` rows at list price.
 
 Because these are estimates, Forge logs an info line the first time a fallback
 price is applied for a given provider/model each day
@@ -1050,14 +1058,23 @@ of the built-in defaults, so you only need to list the models you want to change
 |-----------|-------|--------|------------|-------------|
 | `claude-sonnet` (also the Copilot fallback) | `3.00` | `15.00` | `0.30` | `3.75` |
 | `claude-haiku` | `1.00` | `5.00` | `0.10` | `1.25` |
-| `claude-opus` | `15.00` | `75.00` | `1.50` | `18.75` |
+| `claude-opus` (Opus 4.5 and later, incl. Opus 5) | `5.00` | `25.00` | `0.50` | `6.25` |
+| `claude-fable` (Fable 5 / Mythos 5) | `10.00` | `50.00` | `1.00` | `12.50` |
 | `gemini` | `3.50` | `10.50` | `0.00` | `0.00` |
 | `openai` | `2.50` | `10.00` | `0.00` | `0.00` |
 
-When a fallback estimate runs, Forge first looks for an exact model-key match,
-then infers a family from the model name (e.g. a Copilot `claude-opus-4.6`
-resolves to the `claude-opus` row), then falls back to the provider's default
-key. So you can add rows keyed by a specific model id if you need finer control.
+Cache-write rates are the 5-minute-TTL figure (1.25x input). Claude Code
+writes 1-hour cache entries (2x input), so a cache-write-heavy turn is
+estimated about 20% under the bill — the ceiling errs toward late rather than
+early. Set `cache_write_per_m` to the 1-hour figure (`10.00` for Opus, `20.00`
+for Fable) if you want the estimate to match the bill.
+
+When an estimate runs, Forge first looks for an exact model-key match, then
+infers a family from the model name (`claude-opus-5`, a Copilot
+`claude-opus-4.6` → `claude-opus`; `claude-fable-5`, `claude-mythos-5` →
+`claude-fable`), then falls back to the provider's default key. So you can add
+rows keyed by a specific model id if you need finer control — for example an
+anvil still pinned to Opus 4.1, which was priced at three times Opus 5:
 
 ```yaml
 settings:
@@ -1065,7 +1082,7 @@ settings:
     gemini:
       input_per_m: 4.00
       output_per_m: 12.00
-    claude-opus:
+    claude-opus-4-1:
       input_per_m: 15.00
       output_per_m: 75.00
       cache_read_per_m: 1.50

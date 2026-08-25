@@ -15,8 +15,9 @@ func TestPricingForTier(t *testing.T) {
 		{"haiku", 1.00, 5.00},
 		{"HAIKU", 1.00, 5.00},
 		{"  sonnet  ", 3.00, 15.00},
-		{"opus", 15.00, 75.00},
-		{"Opus", 15.00, 75.00},
+		{"opus", 5.00, 25.00},
+		{"Opus", 5.00, 25.00},
+		{"fable", 10.00, 50.00},
 	}
 	for _, tt := range tests {
 		got := PricingForTier(tt.tier)
@@ -53,7 +54,8 @@ func TestDefaultsMatchPreviousConstants(t *testing.T) {
 		{"GeminiPricing", GeminiPricing(), Pricing{3.50, 10.50, 0.00, 0.00}},
 		{"OpenAIPricing", OpenAIPricing(), Pricing{2.50, 10.00, 0.00, 0.00}},
 		{"tier haiku", PricingForTier("haiku"), Pricing{1.00, 5.00, 0.10, 1.25}},
-		{"tier opus", PricingForTier("opus"), Pricing{15.00, 75.00, 1.50, 18.75}},
+		{"tier opus", PricingForTier("opus"), Pricing{5.00, 25.00, 0.50, 6.25}},
+		{"tier fable", PricingForTier("fable"), Pricing{10.00, 50.00, 1.00, 12.50}},
 		{"tier sonnet", PricingForTier("sonnet"), Pricing{3.00, 15.00, 0.30, 3.75}},
 	}
 	for _, tc := range cases {
@@ -97,9 +99,23 @@ func TestFallbackPricingFamilyInference(t *testing.T) {
 	t.Cleanup(func() { SetPricingTable(nil) })
 	SetPricingTable(nil)
 
-	// A Copilot opus model should price at the opus row (3x sonnet output).
-	if got := FallbackPricing(provider.Copilot, "claude-opus-4.6"); got.OutputPerM != 75.00 {
-		t.Errorf("FallbackPricing(copilot, claude-opus-4.6).OutputPerM = %v, want 75.00", got.OutputPerM)
+	// A Copilot opus model should price at the opus row.
+	if got := FallbackPricing(provider.Copilot, "claude-opus-4.6"); got.OutputPerM != 25.00 {
+		t.Errorf("FallbackPricing(copilot, claude-opus-4.6).OutputPerM = %v, want 25.00", got.OutputPerM)
+	}
+	// The Claude CLI's own model ids resolve the same way, and a Fable or
+	// Mythos id must reach the fable row rather than fall through to Sonnet.
+	for model, wantOut := range map[string]float64{
+		"claude-opus-5":    25.00,
+		"claude-opus-4-8":  25.00,
+		"claude-fable-5":   50.00,
+		"claude-mythos-5":  50.00,
+		"claude-sonnet-5":  15.00,
+		"claude-haiku-4-5": 5.00,
+	} {
+		if got := EstimatePricing(provider.Claude, model); got.OutputPerM != wantOut {
+			t.Errorf("EstimatePricing(claude, %s).OutputPerM = %v, want %v", model, got.OutputPerM, wantOut)
+		}
 	}
 	// An unknown Copilot model falls back to the Claude Sonnet default.
 	if got := FallbackPricing(provider.Copilot, ""); got.OutputPerM != 15.00 {
@@ -130,5 +146,25 @@ func TestFirstFallbackTodayGuard(t *testing.T) {
 	// A different model on an already-seen date is independent.
 	if !firstFallbackToday("openai/gpt-5.1", "2026-07-14") {
 		t.Error("a different model key should log independently")
+	}
+}
+
+// TestOpus5FirstTurnEstimateIsBelowDefaultCeiling is the regression for the
+// stale opus row. It is the exact usage block off the first turn of an Assay
+// triage pass on Opus 5 — the whole prompt written to the cache in one go —
+// which the Opus 4.1-era row ($18.75/M cache write) priced at $3.13 and so
+// stopped against a $1.50 per-pass ceiling before the pass had read anything.
+// At list price the turn is about $1.04.
+func TestOpus5FirstTurnEstimateIsBelowDefaultCeiling(t *testing.T) {
+	t.Cleanup(func() { SetPricingTable(nil) })
+	SetPricingTable(nil)
+
+	u := Usage{InputTokens: 2, CacheReadTokens: 19224, CacheWriteTokens: 165521}
+	u.Calculate(EstimatePricing(provider.Claude, "claude-opus-5"))
+	if u.EstimatedCostUSD < 1.00 || u.EstimatedCostUSD > 1.10 {
+		t.Errorf("Opus 5 first-turn estimate = $%.4f, want about $1.04 (list price)", u.EstimatedCostUSD)
+	}
+	if u.EstimatedCostUSD >= 1.50 {
+		t.Errorf("Opus 5 first-turn estimate $%.2f would trip the $1.50 default per-pass ceiling", u.EstimatedCostUSD)
 	}
 }
