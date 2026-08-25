@@ -97,6 +97,11 @@ type PostRequest struct {
 	// otherwise); findings outside the diff are listed in the summary instead.
 	// When empty, all findings are attempted inline (legacy behaviour).
 	Diff string
+	// SkippedReason is set when the run reviewed nothing at all (see
+	// assay.shouldSkip). Such a run still posts its summary — that is where the
+	// PR is told the review was skipped rather than clean — but posts nothing
+	// else and touches no existing thread.
+	SkippedReason string
 }
 
 // PostResult summarizes a posting run.
@@ -200,6 +205,14 @@ func (p *Poster) Post(ctx context.Context, cfg Config, req PostRequest) (*PostRe
 		}
 		res.SummaryPosted = created || updated
 		res.SummaryUpdated = updated
+	}
+
+	// A skipped run stops at the summary. It read no code, so its empty
+	// finding set is not evidence that anything has gone away: counting a
+	// previously posted finding as missing here would let two consecutive
+	// unreviewable pushes auto-resolve a live thread nobody has addressed.
+	if req.SkippedReason != "" {
+		return res, nil
 	}
 
 	// Findings already posted (and still open) on this PR. Used to avoid

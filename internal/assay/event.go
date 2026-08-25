@@ -44,6 +44,11 @@ type RunEvent struct {
 	ShadowMode bool
 	// Reason is the failure cause, rendered for failed runs only.
 	Reason string
+	// SkippedReason names why a run that did not fail nonetheless reviewed
+	// nothing — an unreviewable diff, or a repeat push with no reviewable
+	// delta. It is rendered in place of the findings count, because "0
+	// findings" is precisely how a skip would otherwise read.
+	SkippedReason string
 }
 
 // Message renders the one-line terminal event message for a finished run:
@@ -73,11 +78,17 @@ func (e RunEvent) Message() string {
 		}
 		details = append(details, tally)
 	}
-	if e.Status == RunStatusFailed {
+	switch {
+	case e.Status == RunStatusFailed:
 		if reason := trimEventReason(e.Reason); reason != "" {
 			details = append(details, reason)
 		}
-	} else {
+	case e.SkippedReason != "":
+		// A skipped run is complete and reviewed nothing. Reporting its empty
+		// finding set as "0 findings" is the one rendering that reads like a
+		// clean review, so the row names the skip instead.
+		details = append(details, "skipped: "+trimEventReason(e.SkippedReason))
+	default:
 		details = append(details, fmt.Sprintf("%d findings", e.Findings))
 	}
 	if len(details) > 0 {
@@ -85,7 +96,10 @@ func (e RunEvent) Message() string {
 	}
 
 	fmt.Fprintf(&b, " ($%.2f, %ds)", e.CostUSD, int(e.Duration.Round(time.Second).Seconds()))
-	if e.ShadowMode && e.Status != RunStatusFailed {
+	// The shadow clause explains an absent PR comment on a run that produced
+	// coverage. A skipped run produced none, so the clause would only offer a
+	// second explanation for the same silence.
+	if e.ShadowMode && e.Status != RunStatusFailed && e.SkippedReason == "" {
 		b.WriteString(" (shadow — findings in panel only)")
 	}
 	return b.String()

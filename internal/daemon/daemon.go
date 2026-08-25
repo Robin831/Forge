@@ -1643,9 +1643,19 @@ func (d *Daemon) Run(ctx context.Context) error {
 // Assay's top-level review comment, e.g. "Assay (AI review): 2 important, 4 nit".
 // Returns a "no issues" line when the finding set is empty so the summary review
 // still reads cleanly on a clean PR.
-func assaySummaryLine(findings []assay.Finding) string {
+//
+// A run that dispatched no passes at all gets the skip line instead. It has the
+// same empty finding set as a clean review and means the opposite thing, and
+// this is the one place the PR is told which of the two it is looking at.
+func assaySummaryLine(result *assay.ReviewResult) string {
+	if result == nil {
+		return "Assay (AI review): no issues found."
+	}
+	if result.SkippedReason != "" {
+		return assay.SkippedSummaryLine(result.SkippedReason)
+	}
 	var imp, nit, pre int
-	for _, f := range findings {
+	for _, f := range result.Findings {
 		switch f.Severity {
 		case assay.SeverityImportant:
 			imp++
@@ -2014,6 +2024,11 @@ func (d *Daemon) runAssayReview(ctx context.Context, anvil, anvilPath, beadID st
 			// rendered from this record below), the PR findings panel and the
 			// PR summary comment cannot disagree.
 			run.Status = stateAssayStatus(result.Status)
+			// A run the engine skipped is recorded as a skip: complete (the
+			// head has been considered and needs no retry) but carrying the
+			// reason, which is what keeps it out of CountAssayRuns' per-PR run
+			// cap and what every surface renders instead of a finding count.
+			run.SkippedReason = result.SkippedReason
 			run.CompletedPasses = result.CompletedPasses
 			run.TotalPasses = result.TotalPasses
 			run.FailedPasses = statePassFailures(result.FailedPasses)
@@ -2032,7 +2047,16 @@ func (d *Daemon) runAssayReview(ctx context.Context, anvil, anvilPath, beadID st
 			// counts and termination reasons are what the assay turn budget
 			// has to be tuned against, and a budget guessed at without them
 			// is what produced max-turns failures on nine-line diffs.
-			d.logger.Info("Assay review completed",
+			//
+			// A skipped run logs under its own message rather than as a
+			// completed review with an empty tally: it is the line an operator
+			// greps for to see the filter earning its keep, and the elided and
+			// skipped counts beside it say what the diff had consisted of.
+			msg := "Assay review completed"
+			if result.SkippedReason != "" {
+				msg = "Assay review skipped"
+			}
+			d.logger.Info(msg,
 				"pr", prNumber, "bead", beadID, "head", headSHA,
 				"findings", run.FindingsCount, "pass_errors", len(result.PassErrors),
 				"status", statusText,
@@ -2073,10 +2097,14 @@ func (d *Daemon) runAssayReview(ctx context.Context, anvil, anvilPath, beadID st
 					PRNumber:     prNumber,
 					HeadSHA:      headSHA,
 					WorktreePath: worktreePath,
-					SummaryLine:  assaySummaryLine(result.Findings),
+					SummaryLine:  assaySummaryLine(result),
 					FailedPasses: result.FailedPasses,
 					Findings:     result.Findings,
 					Diff:         string(diffBytes),
+					// A skipped run posts its summary and nothing else: the PR
+					// is told the review was skipped, and no existing thread is
+					// touched on the strength of a review that never ran.
+					SkippedReason: result.SkippedReason,
 				})
 				if perr != nil {
 					d.logger.Error("Assay posting failed", "pr", prNumber, "bead", beadID, "error", perr)
