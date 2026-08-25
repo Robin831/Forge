@@ -104,9 +104,9 @@ func TestDeepPassPromptsShareCachePrefix(t *testing.T) {
 		"cafebabecafe",
 		"Already-Reported Findings",
 		"unchecked error",
-		"Triage Notes",
-		"the retry loop is new",
 		unifiedDiff,
+		"## Triage Notes",
+		"the retry loop is new",
 	} {
 		if !strings.Contains(lcp, want) {
 			t.Errorf("shared prefix is missing %q", want)
