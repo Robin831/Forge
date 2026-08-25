@@ -359,9 +359,19 @@ func buildReviewPrompt(beadID, beadTitle, beadDescription, diff, anvilPath, prio
 	filteredDiff = diffpkg.Truncate(filteredDiff, diffpkg.MaxBytes)
 	var diffBuilder strings.Builder
 	if len(elided) > 0 {
+		// These paths come out of the diff headers of the branch under review,
+		// so they are chosen by whoever wrote the code — and they are named
+		// here in a sentence the Warden reads as Forge's own, immediately
+		// above the fence the diff is wrapped in. diffpkg.SafePath is the same
+		// treatment Assay gives the same list; a filename is not trusted
+		// markdown on either side of the shared filter.
+		names := make([]string, 0, len(elided))
+		for _, f := range elided {
+			names = append(names, "`"+diffpkg.SafePath(f)+"`")
+		}
 		fmt.Fprintf(&diffBuilder,
 			"_Note: the following auto-generated files were omitted from the diff (not scope drift, not truncation): %s._\n\n",
-			strings.Join(elided, ", "))
+			strings.Join(names, ", "))
 	}
 	diffBuilder.WriteString("```diff\n")
 	diffBuilder.WriteString(filteredDiff)

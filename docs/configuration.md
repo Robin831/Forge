@@ -1014,6 +1014,13 @@ Whatever the filter drops is named in every pass prompt as an
 PR for an empty one, and the daemon's `Assay review completed` log line carries
 `elided_files` and `elided_bytes` so the filter is visible to an operator.
 
+`skip_paths` drops are reported separately, as `N files excluded by this
+repository's own review configuration` in the prompt and `skipped_files` /
+`skipped_bytes` in the log line. The two are kept apart deliberately: a file you
+chose not to have reviewed is not a claim that no human wrote it, and folding
+the counts together would hide the one number that says whether the built-in
+lockfile globs are still matching anything.
+
 **Per-anvil overlay:** each anvil may set an `assay` block whose non-zero fields
 override the corresponding global values (pointer fields override when non-nil;
 string fields when non-empty; `skip_paths` when non-empty). Anvils without an

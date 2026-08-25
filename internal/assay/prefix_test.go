@@ -33,7 +33,7 @@ func prefixFixture() (ReviewRequest, string, string) {
 			{Anchor: "internal/pay/charge.go:12", Severity: "Nit", Title: "name the constant"},
 			{Anchor: "internal/pay/ledger.go:88", Severity: "Important", Title: "unchecked error", Resolved: true},
 		},
-		ElidedFiles: []string{"client/package-lock.json", "web/yarn.lock"},
+		elided: elidedFiles{generated: []string{"client/package-lock.json", "web/yarn.lock"}},
 	}
 	return req, d.String(), "Focus on the ledger boundary; the retry loop is new."
 }

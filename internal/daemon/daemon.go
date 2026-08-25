@@ -1991,6 +1991,8 @@ func (d *Daemon) runAssayReview(ctx context.Context, anvil, anvilPath, beadID st
 				"total_capped", result.TotalCapped,
 				"elided_files", len(result.ElidedFiles),
 				"elided_bytes", result.ElidedBytes,
+				"skipped_files", len(result.SkippedFiles),
+				"skipped_bytes", result.SkippedBytes,
 				"shadow", engineCfg.ShadowMode, "cost_usd", run.CostUSD,
 				"duration_ms", result.Duration.Milliseconds(),
 			)
