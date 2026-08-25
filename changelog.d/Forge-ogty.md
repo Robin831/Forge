@@ -1,0 +1,3 @@
+category: Changed
+- **Every AI stage now records its own cost** - Schematic, Warden, Assay and the quench/burnish/rebase fix workers persist their token usage into the daily, per-provider and per-bead cost tables through one shared `cost.Record` fan-out, instead of only Smith doing so. A PR worked by the fix loop or reviewed by Assay no longer looks free, and `daily_cost_limit` counts it. (Forge-ogty)
+- **Real prompt-cache tokens on every cost row** - Each stage carries the provider's `cache_read_input_tokens`/`cache_creation_input_tokens` through to the `cache_read`/`cache_write` columns, replacing the hardcoded zeros that made cache spend invisible outside Assay's per-pass telemetry. (Forge-ogty)

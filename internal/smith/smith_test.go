@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Robin831/Forge/internal/cost"
 	"github.com/Robin831/Forge/internal/provider"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -675,4 +676,36 @@ func TestResultAnswered(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestResultUsage_MapsProviderCacheColumns pins the seam between the stream
+// parser and the cost tables: the provider's cache_creation_input_tokens is a
+// cache WRITE and cache_read_input_tokens a cache READ, and every stage now
+// records through this one projection. A swap here would put a session's write
+// spend in the read column on every surface at once, which no per-stage test
+// would catch — the numbers are deliberately distinct so it cannot pass.
+func TestResultUsage_MapsProviderCacheColumns(t *testing.T) {
+	input := `{"type":"result","subtype":"success","result":"All done.","total_cost_usd":0.25,` +
+		`"usage":{"input_tokens":100,"output_tokens":50,"cache_creation_input_tokens":41500,"cache_read_input_tokens":900}}`
+
+	var buf strings.Builder
+	result := &Result{}
+	readStreamJSON(strings.NewReader(input), &buf, newTestLogFile(t), result)
+
+	assert.Equal(t, cost.Usage{
+		InputTokens:      100,
+		OutputTokens:     50,
+		CacheWriteTokens: 41500,
+		CacheReadTokens:  900,
+		EstimatedCostUSD: 0.25,
+	}, result.Usage())
+}
+
+// TestResultUsage_RateLimitedIsZero keeps a refused request off the books: the
+// provider never ran the session, so whatever counters rode along with the
+// refusal are not the bead's spend. cost.Record writes nothing for a zero
+// usage, which is how every stage inherits this rule from one place.
+func TestResultUsage_RateLimitedIsZero(t *testing.T) {
+	r := &Result{TokensIn: 100, CacheReadTokens: 5000, CostUSD: 0.1, RateLimited: true}
+	assert.True(t, r.Usage().IsZero())
 }

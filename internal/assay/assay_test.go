@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/Robin831/Forge/internal/config"
+	"github.com/Robin831/Forge/internal/cost"
 	"github.com/Robin831/Forge/internal/state"
 )
 
@@ -34,6 +35,10 @@ type stubResp struct {
 	// it is what scopes the retry's diff; set it on err responses via
 	// PassError.OpenedFiles instead, which is the carrier a failed session has.
 	opened []string
+	// tokensIn and tokensOut are the session's plain token counts, summed the
+	// same way — they are what the run's usage carries to the cost tables.
+	tokensIn  int
+	tokensOut int
 }
 
 // stubCall records one invocation of the scripted runner, so a test can assert
@@ -88,6 +93,8 @@ func (r *scriptRunner) run(ctx context.Context, pass, _, prompt string) (PassOut
 		Text:                resp.text,
 		Turns:               resp.turns,
 		CostUSD:             resp.cost,
+		TokensIn:            resp.tokensIn,
+		TokensOut:           resp.tokensOut,
 		CacheCreationTokens: resp.cacheW,
 		CacheReadTokens:     resp.cacheR,
 		OpenedFiles:         resp.opened,
@@ -1246,12 +1253,12 @@ func TestRunTriageSumsCacheTokensWhenStrictRetryFails(t *testing.T) {
 	if err == nil {
 		t.Fatalf("runTriage succeeded; want the re-prompt's failure (run %+v)", run)
 	}
-	if run.cacheCreation != 30700 || run.cacheRead != 30000 {
+	if run.usage.CacheWriteTokens != 30700 || run.usage.CacheReadTokens != 30000 {
 		t.Errorf("triage cache telemetry = {w:%d r:%d}; want {30700 30000} (both sessions summed)",
-			run.cacheCreation, run.cacheRead)
+			run.usage.CacheWriteTokens, run.usage.CacheReadTokens)
 	}
-	if math.Abs(run.cost-0.29) > 1e-9 {
-		t.Errorf("triage cost = %v; want 0.29 (both sessions)", run.cost)
+	if math.Abs(run.usage.EstimatedCostUSD-0.29) > 1e-9 {
+		t.Errorf("triage cost = %v; want 0.29 (both sessions)", run.usage.EstimatedCostUSD)
 	}
 }
 
@@ -1516,5 +1523,92 @@ func TestProviderForUsesConfiguredModelHintsOnly(t *testing.T) {
 	empty := Config{}
 	if pv := empty.providerFor(tierReview); pv.Model != "" {
 		t.Errorf("expected empty model with no hints, got %q", pv.Model)
+	}
+}
+
+// TestReviewUsageSumsEveryPass pins the run-level accounting the daemon hands
+// to the cost tables: a run's usage is every session of every pass added up —
+// triage included — with the provider's cache halves kept apart from the plain
+// token counts. Recording a run's dollars while dropping its cache columns is
+// the failure this exists to catch, so every pass reports a distinct set of
+// numbers and none of them can be missing from the total by coincidence.
+func TestReviewUsageSumsEveryPass(t *testing.T) {
+	script := map[string][]stubResp{passTriage.Name: {
+		{text: triageJSON(t, nil, ""), turns: 2, cost: 0.01, tokensIn: 100, tokensOut: 10, cacheW: 30000, cacheR: 0},
+	}}
+	for i, p := range deepPasses {
+		script[p.Name] = []stubResp{{
+			text:      `{"findings": []}`,
+			turns:     3,
+			cost:      0.02,
+			tokensIn:  200 + i,
+			tokensOut: 20 + i,
+			cacheW:    500 + i,
+			cacheR:    30000 + i,
+		}}
+	}
+
+	res, err := Review(context.Background(), testRequest(), openTestDB(t), DefaultConfig().WithRunner(newScriptRunner(script).run))
+	if err != nil {
+		t.Fatalf("Review: %v", err)
+	}
+
+	want := cost.Usage{InputTokens: 100, OutputTokens: 10, CacheWriteTokens: 30000, EstimatedCostUSD: 0.01}
+	for i := range deepPasses {
+		want.Add(cost.Usage{
+			InputTokens:      200 + i,
+			OutputTokens:     20 + i,
+			CacheWriteTokens: 500 + i,
+			CacheReadTokens:  30000 + i,
+			EstimatedCostUSD: 0.02,
+		})
+	}
+	if res.Usage.InputTokens != want.InputTokens || res.Usage.OutputTokens != want.OutputTokens ||
+		res.Usage.CacheWriteTokens != want.CacheWriteTokens || res.Usage.CacheReadTokens != want.CacheReadTokens {
+		t.Errorf("result usage tokens = %+v; want %+v", res.Usage, want)
+	}
+	if math.Abs(res.Usage.EstimatedCostUSD-want.EstimatedCostUSD) > 1e-9 {
+		t.Errorf("result usage cost = %v; want %v", res.Usage.EstimatedCostUSD, want.EstimatedCostUSD)
+	}
+	// CostUSD is the same number under its historical name — nothing that
+	// renders it had to change.
+	if math.Abs(res.CostUSD-res.Usage.EstimatedCostUSD) > 1e-9 {
+		t.Errorf("CostUSD = %v; want the usage's cost %v", res.CostUSD, res.Usage.EstimatedCostUSD)
+	}
+}
+
+// TestRunUsageCarriesFailedRunAccounting is RunCost's twin on the error path: a
+// run that dies still paid for the sessions it made, cache writes included, and
+// the daemon has nothing but the error to read them from.
+func TestRunUsageCarriesFailedRunAccounting(t *testing.T) {
+	script := map[string][]stubResp{passTriage.Name: {
+		{text: triageJSON(t, nil, ""), turns: 2, cost: 0.01, tokensIn: 100, tokensOut: 10, cacheW: 30000},
+	}}
+	for _, p := range deepPasses {
+		script[p.Name] = []stubResp{{err: &PassError{
+			Pass:                p.Name,
+			Reason:              ReasonRateLimited,
+			Message:             "assay pass " + p.Name + ": provider claude rate limited",
+			CostUSD:             0.02,
+			TokensIn:            50,
+			TokensOut:           5,
+			CacheCreationTokens: 400,
+		}}}
+	}
+
+	res, err := Review(context.Background(), testRequest(), openTestDB(t), DefaultConfig().WithRunner(newScriptRunner(script).run))
+	if err == nil {
+		t.Fatalf("Review succeeded; want a run error when every deep pass fails (result %+v)", res)
+	}
+	got := RunUsage(err)
+	if got.InputTokens != 100+5*50 || got.OutputTokens != 10+5*5 || got.CacheWriteTokens != 30000+5*400 {
+		t.Errorf("RunUsage(err) = %+v; want triage plus every failed deep pass", got)
+	}
+	if math.Abs(got.EstimatedCostUSD-RunCost(err)) > 1e-9 {
+		t.Errorf("RunUsage cost %v disagrees with RunCost %v", got.EstimatedCostUSD, RunCost(err))
+	}
+	// A foreign error fabricates nothing.
+	if !RunUsage(errors.New("something else")).IsZero() {
+		t.Error("RunUsage(foreign) should be zero")
 	}
 }

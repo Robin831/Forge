@@ -882,39 +882,23 @@ func recordIngotTemperResults(db *state.DB, workerID, beadID, anvil string, temp
 	}
 }
 
-// logCostErr logs a cost write error without propagating it. Like the ingot
-// writes, cost accounting is best-effort — but a silently broken cost table is
-// exactly the failure this accounting exists to make visible, so it is logged
-// rather than dropped.
-func logCostErr(workerID, table string, err error) {
-	if err != nil {
-		log.Printf("[pipeline:%s] cost write failed table=%s: %v", workerID, table, err)
-	}
-}
-
-// recordSpawnCost persists one completed Smith spawn's token usage into the
-// three cost tables — the daily aggregate, the per-provider daily aggregate and
-// the bead's cumulative row — from the single set of counters the provider
-// reported. The cache columns take the session's own prompt-cache accounting:
-// cache_read from CacheReadTokens, cache_write from CacheCreationTokens.
+// recordStageCost persists one completed provider session's token usage into
+// the three cost tables, for whichever pipeline stage spawned it. Every stage
+// that runs a model — Schematic, Smith (including a steer-mode resume) and
+// Warden — reports through this one helper, so a stage cannot land in two of
+// the three tables, and none of them can pass a literal zero where the provider
+// reported real prompt-cache accounting. Temper spawns no session and records
+// nothing.
 //
-// A rate-limited spawn is not a completion and records nothing. Cache tokens
-// count toward "did this session use anything", since a session served almost
-// entirely from cache reports large cache reads next to negligible input.
-func recordSpawnCost(db *state.DB, workerID, beadID, anvil, provName string, r *smith.Result) {
-	if db == nil || r == nil || r.RateLimited {
+// stage names the caller in the failure log. A zero usage (a rate-limited
+// spawn, or a stage that never reached a session) writes nothing.
+func (p *Params) recordStageCost(workerID, stage, provName string, u cost.Usage) {
+	if p.DB == nil {
 		return
 	}
-	if r.TokensIn == 0 && r.TokensOut == 0 && r.CacheReadTokens == 0 && r.CacheCreationTokens == 0 && r.CostUSD == 0 {
-		return
+	if err := cost.Record(p.DB, provName, p.Bead.ID, p.AnvilName, u); err != nil {
+		log.Printf("[pipeline:%s] cost write failed stage=%s: %v", workerID, stage, err)
 	}
-	today := cost.Today()
-	logCostErr(workerID, "daily_costs",
-		db.AddDailyCost(today, r.TokensIn, r.TokensOut, r.CacheReadTokens, r.CacheCreationTokens, r.CostUSD))
-	logCostErr(workerID, "provider_daily_costs",
-		db.AddProviderDailyCost(today, provName, r.TokensIn, r.TokensOut, r.CacheReadTokens, r.CacheCreationTokens, r.CostUSD))
-	logCostErr(workerID, "bead_costs",
-		db.AddBeadCost(beadID, anvil, r.TokensIn, r.TokensOut, r.CacheReadTokens, r.CacheCreationTokens, r.CostUSD))
 }
 
 // Run executes the full Smith → Temper → Warden pipeline for a bead.
@@ -1117,8 +1101,9 @@ func Run(ctx context.Context, p Params) *Outcome {
 			}
 		}
 
-		// Record per-provider and aggregate daily costs for non-rate-limited completions.
-		recordSpawnCost(p.DB, workerID, p.Bead.ID, p.AnvilName, string(pv.Kind), smithResult)
+		// Record per-provider and aggregate daily costs for non-rate-limited
+		// completions. Result.Usage reports nothing for a rate-limited spawn.
+		p.recordStageCost(workerID, "smith", string(pv.Kind), smithResult.Usage())
 	}
 
 	// Step 1: Create worktree
@@ -1333,6 +1318,11 @@ func Run(ctx context.Context, p Params) *Outcome {
 					_ = p.DB.AddCopilotRequest(cost.Today(), m)
 				}
 			}
+
+			// The schematic session's spend, on every action it can return: a
+			// decompose, a clarify and a skip all cost the same session, and
+			// each of them ends the pipeline further down this switch.
+			p.recordStageCost(workerID, "schematic", string(usedSchem.Kind), sResult.Usage)
 
 			switch sResult.Action {
 			case schematic.ActionDecompose:
@@ -2639,6 +2629,14 @@ func Run(ctx context.Context, p Params) *Outcome {
 						}
 					}
 				}
+				// One call per completed review, so a Smith→Warden loop records
+				// each iteration's review rather than only the last. The skip
+				// and failure branches above ran no session and record nothing.
+				wardenKind := ""
+				if reviewResult.UsedProvider != nil {
+					wardenKind = string(reviewResult.UsedProvider.Kind)
+				}
+				p.recordStageCost(workerID, "warden", wardenKind, reviewResult.Usage)
 			}
 		}
 		outcome.ReviewResult = reviewResult

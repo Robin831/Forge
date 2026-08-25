@@ -28,6 +28,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Robin831/Forge/internal/cost"
 	"github.com/Robin831/Forge/internal/diff"
 	"github.com/Robin831/Forge/internal/state"
 )
@@ -245,6 +246,13 @@ type ReviewResult struct {
 	// the trend is a query rather than a re-reading of old log lines.
 	CacheCreationTokens int
 	CacheReadTokens     int
+	// Usage is the run's whole token accounting — input, output and the
+	// provider's prompt-cache read/write counts, summed over every session of
+	// every pass, failed sessions included. It is what the daily and per-bead
+	// cost tables record. Its cost half is the same number as CostUSD and its
+	// cache halves the same as the pair above, which stay their own fields
+	// because callers render and persist them directly.
+	Usage cost.Usage
 	// Duration is the wall-clock time spent in Review.
 	Duration time.Duration
 	// Passes holds per-pass metadata.
@@ -354,6 +362,9 @@ type RunError struct {
 	// pass that exhausts its turn budget wrote the whole prefix first.
 	CacheCreationTokens int
 	CacheReadTokens     int
+	// Usage is the full token accounting behind that cost, so a run that dies
+	// still records its prompt-cache columns and not just its dollars.
+	Usage cost.Usage
 	// Err is the underlying failure.
 	Err error
 }
@@ -385,6 +396,19 @@ func RunCacheTokens(err error) (creation, read int) {
 		return re.CacheCreationTokens, re.CacheReadTokens
 	}
 	return 0, 0
+}
+
+// RunUsage is RunCost's whole-accounting twin: the tokens and prompt-cache
+// counts a failed run had been billed, for the cost tables that record all of
+// them together. It reports the zero usage under exactly the conditions RunCost
+// reports 0 — an error raised before any session ran, or one this package did
+// not build.
+func RunUsage(err error) cost.Usage {
+	var re *RunError
+	if errors.As(err, &re) {
+		return re.Usage
+	}
+	return cost.Usage{}
 }
 
 // Review runs the multi-pass Assay review for req and returns the aggregated
@@ -460,22 +484,24 @@ func Review(ctx context.Context, req ReviewRequest, db *state.DB, cfg Config) (*
 	}
 
 	var (
-		passes    []PassReport
-		totalCost float64
-		// Banked alongside totalCost and by the same rule: every session's
-		// cache accounting, answered or not. A pass that wrote the prefix and
-		// then died was billed for the write.
-		cacheCreation int
-		cacheRead     int
+		passes []PassReport
+		// totalUsage is the run's whole token accounting — every session of
+		// every pass, failed ones included, banked as each pass reports. It is
+		// what reaches the daily and per-bead cost tables, and it is the one
+		// accumulator the run-level cost and cache-token fields are both read
+		// off, so they cannot drift apart. A pass that wrote the prefix and
+		// then died was billed for the write, so its usage is banked too.
+		totalUsage cost.Usage
 	)
 
 	// fail wraps an error raised after sessions have run so the run's spend to
 	// that point survives the nil result — see RunError.
 	fail := func(err error) (*ReviewResult, error) {
 		return nil, &RunError{
-			CostUSD:             totalCost,
-			CacheCreationTokens: cacheCreation,
-			CacheReadTokens:     cacheRead,
+			CostUSD:             totalUsage.EstimatedCostUSD,
+			CacheCreationTokens: totalUsage.CacheWriteTokens,
+			CacheReadTokens:     totalUsage.CacheReadTokens,
+			Usage:               totalUsage,
 			Err:                 err,
 		}
 	}
@@ -485,9 +511,7 @@ func Review(ctx context.Context, req ReviewRequest, db *state.DB, cfg Config) (*
 	// or not they answered, and a triage failure aborts the run, so this is the
 	// only place that spend can be attributed.
 	triageRes, err := runTriage(ctx, runner, cfg, req, filtered)
-	totalCost += triageRes.cost
-	cacheCreation += triageRes.cacheCreation
-	cacheRead += triageRes.cacheRead
+	totalUsage.Add(triageRes.usage)
 	if err != nil {
 		return fail(err)
 	}
@@ -498,11 +522,11 @@ func Review(ctx context.Context, req ReviewRequest, db *state.DB, cfg Config) (*
 	passes = append(passes, PassReport{
 		Name:                passTriage.Name,
 		Findings:            0,
-		CostUSD:             triageRes.cost,
+		CostUSD:             triageRes.usage.EstimatedCostUSD,
 		Turns:               triageRes.turns,
 		Attempts:            1,
-		CacheCreationTokens: triageRes.cacheCreation,
-		CacheReadTokens:     triageRes.cacheRead,
+		CacheCreationTokens: triageRes.usage.CacheWriteTokens,
+		CacheReadTokens:     triageRes.usage.CacheReadTokens,
 	})
 
 	scoped := scopeDiffToFiles(filtered, triage.ReviewFiles)
@@ -565,20 +589,18 @@ func Review(ctx context.Context, req ReviewRequest, db *state.DB, cfg Config) (*
 		// Count cost regardless of success — the model ran either way, and a
 		// retried pass ran twice. Its cache accounting is banked on the same
 		// terms.
-		totalCost += o.cost
-		cacheCreation += o.cacheCreation
-		cacheRead += o.cacheRead
+		totalUsage.Add(o.usage)
 		passes = append(passes, PassReport{
 			Name:                deepPasses[i].Name,
 			Findings:            len(o.findings),
-			CostUSD:             o.cost,
+			CostUSD:             o.usage.EstimatedCostUSD,
 			Turns:               o.turns,
 			TerminationReason:   o.failure.Reason,
 			Attempts:            o.attempts,
 			Retried:             o.retried,
 			RetrySkipped:        o.retrySkipped,
-			CacheCreationTokens: o.cacheCreation,
-			CacheReadTokens:     o.cacheRead,
+			CacheCreationTokens: o.usage.CacheWriteTokens,
+			CacheReadTokens:     o.usage.CacheReadTokens,
 			Primer:              i == primerPass,
 		})
 		if o.err != nil {
@@ -665,9 +687,10 @@ func Review(ctx context.Context, req ReviewRequest, db *state.DB, cfg Config) (*
 		Findings:            capped,
 		HeadSHA:             req.HeadSHA,
 		ShadowMode:          cfg.ShadowMode,
-		CostUSD:             totalCost,
-		CacheCreationTokens: cacheCreation,
-		CacheReadTokens:     cacheRead,
+		CostUSD:             totalUsage.EstimatedCostUSD,
+		CacheCreationTokens: totalUsage.CacheWriteTokens,
+		CacheReadTokens:     totalUsage.CacheReadTokens,
+		Usage:               totalUsage,
 		Duration:            time.Since(start),
 		Passes:              passes,
 		NitsCapped:          nCapped,

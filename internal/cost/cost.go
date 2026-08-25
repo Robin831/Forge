@@ -32,6 +32,8 @@
 package cost
 
 import (
+	"errors"
+	"fmt"
 	"log/slog"
 	"strings"
 	"sync"
@@ -292,6 +294,65 @@ func (u *Usage) Add(other Usage) {
 	u.CacheReadTokens += other.CacheReadTokens
 	u.CacheWriteTokens += other.CacheWriteTokens
 	u.EstimatedCostUSD += other.EstimatedCostUSD
+}
+
+// IsZero reports whether the usage carries nothing worth persisting.
+//
+// Cache tokens count toward "did this session use anything": a session served
+// almost entirely from a prompt cache reports large cache reads next to
+// negligible input, and treating that as empty would drop the very sessions the
+// cache columns exist to make visible.
+func (u Usage) IsZero() bool {
+	return u.InputTokens == 0 && u.OutputTokens == 0 &&
+		u.CacheReadTokens == 0 && u.CacheWriteTokens == 0 &&
+		u.EstimatedCostUSD == 0
+}
+
+// Sink is the persistence side of cost recording: the three tables one
+// completed provider session lands in — the daily aggregate, the per-provider
+// daily aggregate and the bead's cumulative row. *state.DB implements it.
+//
+// It is an interface here rather than a concrete dependency because this
+// package is imported by state's own importers; taking the three methods keeps
+// the fan-out in one place without inverting that import.
+type Sink interface {
+	AddDailyCost(date string, input, output, cacheRead, cacheWrite int, cost float64) error
+	AddProviderDailyCost(date, prov string, input, output, cacheRead, cacheWrite int, cost float64) error
+	AddBeadCost(beadID, anvil string, input, output, cacheRead, cacheWrite int, cost float64) error
+}
+
+// Record persists one completed provider session's usage into all three cost
+// tables. It is the single fan-out every stage that spawns a session goes
+// through — Smith, Schematic, Warden, Assay and the quench/burnish/rebase fix
+// workers — so no stage can record two of the three tables, or pass a literal
+// zero where the provider reported real cache accounting.
+//
+// A zero usage writes nothing (a rate-limited spawn is not a completion), and a
+// nil sink is a no-op so callers without a DB need no guard of their own.
+// Callers holding a typed nil pointer (a nil *state.DB) must still check it
+// themselves — a typed nil in an interface is not a nil interface.
+//
+// Every write is attempted even when an earlier one fails: the tables are
+// independent, and a failed daily write is no reason to lose the bead's row.
+// The errors come back joined and named by table, since cost accounting is
+// best-effort but a silently broken cost table is exactly the failure this
+// accounting exists to make visible.
+func Record(sink Sink, providerName, beadID, anvil string, u Usage) error {
+	if sink == nil || u.IsZero() {
+		return nil
+	}
+	today := Today()
+	var errs []error
+	if err := sink.AddDailyCost(today, u.InputTokens, u.OutputTokens, u.CacheReadTokens, u.CacheWriteTokens, u.EstimatedCostUSD); err != nil {
+		errs = append(errs, fmt.Errorf("daily_costs: %w", err))
+	}
+	if err := sink.AddProviderDailyCost(today, providerName, u.InputTokens, u.OutputTokens, u.CacheReadTokens, u.CacheWriteTokens, u.EstimatedCostUSD); err != nil {
+		errs = append(errs, fmt.Errorf("provider_daily_costs: %w", err))
+	}
+	if err := sink.AddBeadCost(beadID, anvil, u.InputTokens, u.OutputTokens, u.CacheReadTokens, u.CacheWriteTokens, u.EstimatedCostUSD); err != nil {
+		errs = append(errs, fmt.Errorf("bead_costs: %w", err))
+	}
+	return errors.Join(errs...)
 }
 
 // Calculate computes the estimated cost based on pricing.

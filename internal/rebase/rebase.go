@@ -45,6 +45,24 @@ type Params struct {
 	Providers []provider.Provider
 }
 
+// recordSessionCost persists one completed rebase session's token usage into the
+// three cost tables, through the same cost.Record fan-out the pipeline stages
+// use. Until this existed, rebase spend reached the provider quota and the
+// Copilot premium counter but never the daily or per-bead cost tables — so a PR
+// worked by the fix loop looked free next to the bead's own Smith run, and the
+// daily_cost_limit it should have counted against never saw it.
+//
+// A rate-limited spawn is not a completion and records nothing: smith.Result's
+// own Usage reports zero for one.
+func recordSessionCost(db *state.DB, beadID, anvil, provName string, r *smith.Result) {
+	if db == nil {
+		return
+	}
+	if err := cost.Record(db, provName, beadID, anvil, r.Usage()); err != nil {
+		log.Printf("[rebase] bead=%s: cost write failed: %v", beadID, err)
+	}
+}
+
 // Result holds the outcome of a rebase attempt.
 type Result struct {
 	Success bool
@@ -140,6 +158,7 @@ func (p *Params) rebaseWithSmith(ctx context.Context, providers []provider.Provi
 				_ = p.DB.AddCopilotRequest(cost.Today(), m)
 			}
 		}
+		recordSessionCost(p.DB, p.BeadID, p.AnvilName, string(pv.Kind), result)
 		if result.ExitCode != 0 || result.IsError {
 			return fmt.Errorf("Smith (%s) exited %d (subtype=%s)", pv.Label(), result.ExitCode, result.ResultSubtype)
 		}

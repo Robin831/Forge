@@ -115,6 +115,32 @@ func (r *Result) Answered() bool {
 	return r != nil && r.ResultSubtype == "success" && !r.IsError
 }
 
+// Usage projects a finished session's provider-reported counters onto the
+// cost.Usage shape every cost sink takes. The cache columns take the session's
+// own prompt-cache accounting: cache_read from CacheReadTokens, cache_write
+// from CacheCreationTokens (the input tokens the provider billed to WRITE the
+// cache).
+//
+// A rate-limited spawn is not a completion and reports nothing: the provider
+// refused the request, so whatever counters rode along with the refusal are not
+// this bead's spend. A nil result reports nothing for the same reason.
+//
+// It lives here, next to the counters it reads, so every stage that spawns a
+// session converts them the same way rather than each rebuilding the mapping —
+// which is how cache_write came to be a literal 0 at three call sites.
+func (r *Result) Usage() cost.Usage {
+	if r == nil || r.RateLimited {
+		return cost.Usage{}
+	}
+	return cost.Usage{
+		InputTokens:      r.TokensIn,
+		OutputTokens:     r.TokensOut,
+		CacheReadTokens:  r.CacheReadTokens,
+		CacheWriteTokens: r.CacheCreationTokens,
+		EstimatedCostUSD: r.CostUSD,
+	}
+}
+
 // Process represents a running or completed Smith (Claude Code) process.
 type Process struct {
 	// Cmd is the underlying exec.Cmd (nil after completion).
