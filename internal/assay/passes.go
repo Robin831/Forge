@@ -106,6 +106,14 @@ type PassOutput struct {
 	// not — and nothing in a per-session cost number says which happened.
 	CacheCreationTokens int
 	CacheReadTokens     int
+	// OpenedFiles are the files the session read, as named by the provider's
+	// tool-use events. Empty for a backend that streams none.
+	//
+	// They exist for the turn-budget retry: the files a session chose to open
+	// are the only in-band evidence of where it thought this diff's risk was,
+	// and they are what scopes a retry's diff (see buildRetryMods). Nothing
+	// branches on them on the success path.
+	OpenedFiles []string
 }
 
 // PassRunner invokes a model for one pass and returns its output. It is the
@@ -155,10 +163,18 @@ const (
 )
 
 // maxTurnsRetries is how many extra attempts a pass gets after exhausting its
-// turn budget. One: a fresh session with identical inputs often lands a shorter
+// turn budget. One: a differently-framed second session often lands a shorter
 // exploration path, but a pass that burns the whole budget twice is telling us
 // the budget is wrong, not that a third session would help — and every attempt
 // is a full-price model run.
+//
+// The retry is never the same request again. Re-sending byte-identical inputs
+// gives the second session exactly as much reason to wander as the first had,
+// so a partial run cost more than a complete one and bought nothing for it —
+// see retry.go, where the retry's inputs are modified (a smaller turn budget,
+// an explicit "answer now" instruction, and a diff scoped to the files the
+// failed session opened) and the retry is dropped outright when they cannot be
+// made to differ.
 const maxTurnsRetries = 1
 
 // maxLabelLen bounds a pass name or failure reason. A pass name ("logic") and
@@ -253,6 +269,11 @@ type PassError struct {
 	// cost the most.
 	CacheCreationTokens int
 	CacheReadTokens     int
+	// OpenedFiles are the files the failed session read before it died. This
+	// is the carrier that matters: a session ending on error_max_turns is
+	// exactly the one whose retry wants to know what it was reading, and a
+	// failed session has no other way to say.
+	OpenedFiles []string
 }
 
 func (e *PassError) Error() string { return e.Message }
@@ -333,9 +354,12 @@ func newSmithRunner(cfg Config, req ReviewRequest) PassRunner {
 		// lifecycle teardown preserves them to ~/.forge/logs/<beadID>/ before
 		// the worktree is removed.
 		logDir := filepath.Join(workDir, ".forge-logs")
-		maxTurns := cfg.MaxTurnsPerPass
+		// The session's turn cap. A retry runs on a reduced one, carried on the
+		// context so PassRunner's signature stays the single seam every stub
+		// already implements (see withTurnBudget).
+		maxTurns := turnBudgetFrom(ctx)
 		if maxTurns <= 0 {
-			maxTurns = assayMaxTurns
+			maxTurns = passTurnBudget(cfg)
 		}
 		flags := []string{"--max-turns", strconv.Itoa(maxTurns)}
 
@@ -360,12 +384,20 @@ func newSmithRunner(cfg Config, req ReviewRequest) PassRunner {
 		// The staggered fan-out waits on the primer pass reaching its first
 		// answered token — the point at which the provider has read (and
 		// cached) the shared prefix the other four passes are about to send.
-		// Only the primer's context carries the callback; every other session
-		// spawns with the historical options. The spend ceiling shares the same
-		// hook, so the callback is installed when either wants it.
+		// Only the primer's context carries that signal. The spend ceiling and
+		// the opened-file tracker share the same hook.
+		//
+		// Unlike the other two, the file tracker is installed unconditionally:
+		// what a session opened is knowable only while it streams, and the
+		// session that needs it — one about to die on turns — does not announce
+		// itself in advance. The callback is the only cost, since smith parses
+		// these events either way.
 		signal := firstOutputFn(ctx)
-		if signal != nil || tracker.enabled() {
-			opts.OnStreamEvent = costStopCallback(tracker, pv, signal, stopSession)
+		files := newFileTracker()
+		stream := costStopCallback(tracker, pv, signal, stopSession)
+		opts.OnStreamEvent = func(ev smith.StreamEvent) {
+			files.observe(ev)
+			stream(ev)
 		}
 
 		proc, err := smith.SpawnWithOptions(sessionCtx, workDir, prompt, logDir, pv, flags, opts)
@@ -376,7 +408,8 @@ func newSmithRunner(cfg Config, req ReviewRequest) PassRunner {
 		if req.OnPassLog != nil && proc.LogPath != "" {
 			req.OnPassLog(proc.LogPath)
 		}
-		return sessionOutcome(pass, tracker, proc.Wait(), pv)
+		out, err := sessionOutcome(pass, tracker, proc.Wait(), pv)
+		return withOpenedFiles(out, err, files.paths())
 	}
 }
 
@@ -805,6 +838,14 @@ type passResult struct {
 	// retried reports whether a fresh session was started after the first one
 	// exhausted its turn budget.
 	retried bool
+	// retrySkipped reports that the pass exhausted its turn budget, was
+	// eligible for the fresh-session re-run, and did not get one because no
+	// modified inputs could be constructed for it (see planRetryInputs). It is
+	// telemetry, not a second failure: the pass fails on error_max_turns either
+	// way and the run reports partial coverage either way — this is what says
+	// the missing coverage was a deliberate refusal to pay twice for the same
+	// request rather than a retry that silently never happened.
+	retrySkipped bool
 	// err is the failure, if any. It is the *final* attempt's error, so the
 	// reason a retried pass reports is the one it ended on.
 	err error
@@ -814,18 +855,48 @@ type passResult struct {
 // telemetry.
 //
 // A pass that exhausts its turn budget (error_max_turns) is re-run once in a
-// fresh session with identical inputs. That failure means the model spent the
-// budget exploring and never emitted its JSON — not that it looked at the diff
-// and found nothing — so throwing the pass away on the first occurrence drops
-// coverage the run could still have had. The retry count is bounded by
-// maxTurnsRetries and driven from this loop, never from runPassAttempt, so a
-// retry can never itself retry. Only a turn-budget failure of an attempt's
-// first session qualifies, which is what holds a pass to three provider
-// sessions at worst rather than four.
+// fresh session. That failure means the model spent the budget exploring and
+// never emitted its JSON — not that it looked at the diff and found nothing —
+// so throwing the pass away on the first occurrence drops coverage the run
+// could still have had. The retry count is bounded by maxTurnsRetries and
+// driven from this loop, never from runPassAttempt, so a retry can never itself
+// retry. Only a turn-budget failure of an attempt's first session qualifies,
+// which is what holds a pass to three provider sessions at worst rather than
+// four.
+//
+// The re-run is never the same request again. A second session handed
+// byte-identical inputs has exactly as much reason to spend its whole budget
+// exploring as the first one did, so the old behaviour made a pass that failed
+// this way cost about twice a successful pass and still, routinely, fail — a
+// partial run costing more than a complete one. So the retry is modified before
+// it is sent (buildRetryMods: a halved turn budget, an appended "answer now"
+// instruction, and — where the failed session's tool events named any — a diff
+// scoped to the changed files it actually opened), and planRetryInputs hashes
+// the assembled payload against the original. If the two match, the retry is
+// dropped and the pass reports its turn-budget failure as it stands: partial
+// coverage is a better outcome than paying full price for a request already
+// asked and answered.
+//
+// Only ReasonMaxTurns reaches any of this. A spend-ceiling stop (ReasonMaxCost)
+// is a different failure with the opposite remedy — a re-run buys the identical
+// runaway again — and it never enters the branch.
 func runDeepPass(ctx context.Context, runner PassRunner, cfg Config, req ReviewRequest, scopedDiff, triageNotes string, p passDef) passResult {
 	var res passResult
+	// The prompt is built once, here, rather than per attempt: the retry is a
+	// modification of this exact payload, and comparing it against one the
+	// retry path rebuilt for itself would compare two things neither of which
+	// was sent.
+	build := func(d string) (string, error) { return buildPassPrompt(p, req, d, triageNotes) }
+	prompt, err := build(scopedDiff)
+	if err != nil {
+		// No session was ever started, so there is nothing to bill or count.
+		perr := newPassError(p.Name, ReasonPromptFailed, err.Error(), err)
+		return passResult{attempts: 1, err: perr, failure: classifyPassError(p.Name, perr)}
+	}
+	in := retryInputs{prompt: prompt, diff: scopedDiff, turns: passTurnBudget(cfg)}
+
 	for attempt := 1; attempt <= 1+maxTurnsRetries; attempt++ {
-		a := runPassAttempt(ctx, runner, cfg, req, scopedDiff, triageNotes, p)
+		a := runPassAttempt(ctx, runner, req, p, in)
 		res.cost += a.cost
 		res.cacheCreation += a.cacheCreation
 		res.cacheRead += a.cacheRead
@@ -850,9 +921,21 @@ func runDeepPass(ctx context.Context, runner PassRunner, cfg Config, req ReviewR
 		if a.sessions > 1 {
 			break
 		}
-		if attempt < 1+maxTurnsRetries {
-			res.retried = true
+		if attempt >= 1+maxTurnsRetries {
+			break
 		}
+		mods, ok := buildRetryMods(cfg, a.openedFiles, diff.ChangedFiles(in.diff))
+		if !ok {
+			res.retrySkipped = true
+			break
+		}
+		next, ok := planRetryInputs(in, mods, build)
+		if !ok {
+			res.retrySkipped = true
+			break
+		}
+		in = next
+		res.retried = true
 	}
 	return res
 }
@@ -869,24 +952,28 @@ type attemptResult struct {
 	cacheRead     int
 	turns         int
 	sessions      int
-	err           error
+	// openedFiles are the files the attempt's sessions read, as the provider
+	// reported them. On a turn-budget failure they are what scopes the retry's
+	// diff; empty otherwise, and empty for any backend that streams no tool
+	// events.
+	openedFiles []string
+	err         error
 }
 
-// runPassAttempt runs one deep-pass session, parsing its JSON output with a
-// single strict-format retry inside that same attempt. On a second parse
-// failure the attempt returns a pass error. It knows nothing about turn-budget
-// retries — its caller owns those, which is what keeps the retry from
-// recursing.
+// runPassAttempt runs one deep-pass session over the given inputs, parsing its
+// JSON output with a single strict-format retry inside that same attempt. On a
+// second parse failure the attempt returns a pass error. It knows nothing about
+// turn-budget retries — its caller owns those, which is what keeps the retry
+// from recursing.
 //
 // Each call to runner is a fresh provider session (the default runner spawns a
-// new process and never resumes one), so re-calling this with the same inputs
-// is exactly the "same prompt, clean session" re-run a max-turns failure wants.
-func runPassAttempt(ctx context.Context, runner PassRunner, cfg Config, req ReviewRequest, scopedDiff, triageNotes string, p passDef) attemptResult {
-	prompt, err := buildPassPrompt(p, req, scopedDiff, triageNotes)
-	if err != nil {
-		// No session was ever started, so there is nothing to bill or count.
-		return attemptResult{err: newPassError(p.Name, ReasonPromptFailed, err.Error(), err)}
-	}
+// new process and never resumes one). The inputs arrive assembled rather than
+// being built here, because the caller's retry decision is a comparison between
+// the payload this attempt sent and the one the next would: a builder on this
+// side would leave that comparison with nothing to hold.
+func runPassAttempt(ctx context.Context, runner PassRunner, req ReviewRequest, p passDef, in retryInputs) attemptResult {
+	ctx = withTurnBudget(ctx, in.turns)
+	prompt := in.prompt
 
 	out, err := runner(ctx, p.Name, p.Tier, prompt)
 	if err != nil {
@@ -897,6 +984,7 @@ func runPassAttempt(ctx context.Context, runner PassRunner, cfg Config, req Revi
 			cacheRead:     cr,
 			turns:         turns,
 			sessions:      1,
+			openedFiles:   passErrorFiles(err),
 			err:           err,
 		}
 	}
@@ -906,6 +994,7 @@ func runPassAttempt(ctx context.Context, runner PassRunner, cfg Config, req Revi
 		cacheRead:     out.CacheReadTokens,
 		turns:         out.Turns,
 		sessions:      1,
+		openedFiles:   out.OpenedFiles,
 	}
 
 	findings, perr := parseFindings(out.Text)
@@ -919,6 +1008,7 @@ func runPassAttempt(ctx context.Context, runner PassRunner, cfg Config, req Revi
 			res.cacheCreation += cc
 			res.cacheRead += cr
 			res.turns = turns2
+			res.openedFiles = mergeOpenedFiles(res.openedFiles, passErrorFiles(err2))
 			res.err = err2
 			return res
 		}
@@ -926,6 +1016,7 @@ func runPassAttempt(ctx context.Context, runner PassRunner, cfg Config, req Revi
 		res.cacheCreation += out2.CacheCreationTokens
 		res.cacheRead += out2.CacheReadTokens
 		res.turns = out2.Turns
+		res.openedFiles = mergeOpenedFiles(res.openedFiles, out2.OpenedFiles)
 		findings, perr = parseFindings(out2.Text)
 		if perr != nil {
 			res.err = newPassError(p.Name, ReasonInvalidJSON,
@@ -958,6 +1049,40 @@ func passErrorTelemetry(err error) (cost float64, turns, cacheCreation, cacheRea
 		return pe.CostUSD, pe.Turns, pe.CacheCreationTokens, pe.CacheReadTokens
 	}
 	return 0, 0, 0, 0
+}
+
+// passErrorFiles reports the files a failed session opened, where the error
+// carries them. It is separate from passErrorTelemetry because it is not
+// telemetry: the list is an input to the retry decision, and a foreign runner
+// reporting none simply means the retry is modified by budget and instruction
+// alone.
+func passErrorFiles(err error) []string {
+	var pe *PassError
+	if errors.As(err, &pe) {
+		return pe.OpenedFiles
+	}
+	return nil
+}
+
+// mergeOpenedFiles appends b's entries to a, dropping duplicates and preserving
+// first-seen order. An attempt can make two sessions (the strict-JSON
+// re-prompt), and what the attempt as a whole opened is the union.
+func mergeOpenedFiles(a, b []string) []string {
+	if len(b) == 0 {
+		return a
+	}
+	seen := make(map[string]struct{}, len(a)+len(b))
+	out := make([]string, 0, len(a)+len(b))
+	for _, list := range [2][]string{a, b} {
+		for _, f := range list {
+			if _, dup := seen[f]; dup {
+				continue
+			}
+			seen[f] = struct{}{}
+			out = append(out, f)
+		}
+	}
+	return out
 }
 
 // findingsEnvelope is the wire shape the model returns for a deep pass.

@@ -328,6 +328,12 @@ func TestReviewReportsCostStopAsPartialNotSuccess(t *testing.T) {
 	if rep.Retried || rep.Attempts != 1 {
 		t.Errorf("telemetry = {Retried:%v Attempts:%d}; want {false 1}", rep.Retried, rep.Attempts)
 	}
+	// Not "skipped" either: a cost stop was never eligible for the turn-budget
+	// re-run, and reporting it as a dropped retry would send an operator
+	// looking for a retry policy that had nothing to do with this pass.
+	if rep.RetrySkipped {
+		t.Error("RetrySkipped = true; a cost stop is not an eligible retry that was dropped")
+	}
 	// A stop is not a refund: what the session burned before it was cut off is
 	// still billed, and still counted.
 	if math.Abs(rep.CostUSD-1.51) > 1e-9 {

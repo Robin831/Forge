@@ -29,13 +29,25 @@ type stubResp struct {
 	// turns, which records the final session only.
 	cacheW int
 	cacheR int
+	// opened is what the session reports having read, as the real runner
+	// reports it off the provider's tool-use events. On a turn-budget failure
+	// it is what scopes the retry's diff; set it on err responses via
+	// PassError.OpenedFiles instead, which is the carrier a failed session has.
+	opened []string
 }
 
 // stubCall records one invocation of the scripted runner, so a test can assert
-// how many sessions a pass took and that a retry re-sent identical inputs.
+// how many sessions a pass took and how the retry's request differed from the
+// one before it.
 type stubCall struct {
 	pass   string
 	prompt string
+	// turnBudget is the --max-turns the session was given, read off the
+	// context the way the real runner reads it. Zero when the caller set none.
+	turnBudget int
+	// openedFiles is what the scripted response says the session read, echoed
+	// here so a test can assert what fed the retry's scoping decision.
+	openedFiles []string
 }
 
 // scriptRunner is a deterministic PassRunner: each pass name has an ordered
@@ -51,10 +63,10 @@ func newScriptRunner(script map[string][]stubResp) *scriptRunner {
 	return &scriptRunner{script: script, idx: map[string]int{}}
 }
 
-func (r *scriptRunner) run(_ context.Context, pass, _, prompt string) (PassOutput, error) {
+func (r *scriptRunner) run(ctx context.Context, pass, _, prompt string) (PassOutput, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.calls = append(r.calls, stubCall{pass: pass, prompt: prompt})
+	r.calls = append(r.calls, stubCall{pass: pass, prompt: prompt, turnBudget: turnBudgetFrom(ctx)})
 	seq := r.script[pass]
 	if len(seq) == 0 {
 		// Default: no findings.
@@ -78,6 +90,7 @@ func (r *scriptRunner) run(_ context.Context, pass, _, prompt string) (PassOutpu
 		CostUSD:             resp.cost,
 		CacheCreationTokens: resp.cacheW,
 		CacheReadTokens:     resp.cacheR,
+		OpenedFiles:         resp.opened,
 	}, nil
 }
 
@@ -949,10 +962,15 @@ func maxTurnsErrCached(pass string, turns int, cost float64, cacheW, cacheR int)
 }
 
 // TestReviewRetriesMaxTurnsPassInFreshSession pins the recovery case: a pass
-// that burns its turn budget exploring is re-run once with identical inputs,
-// and a retry that answers is an ordinary success — it must not leave a
-// residue in PassErrors or FailedPasses, which is what would turn a fully
-// covered run into a "partial" one and put a coverage caveat on the PR.
+// that burns its turn budget exploring is re-run once, and a retry that answers
+// is an ordinary success — it must not leave a residue in PassErrors or
+// FailedPasses, which is what would turn a fully covered run into a "partial"
+// one and put a coverage caveat on the PR.
+//
+// The re-run is a MODIFIED request, not the same one again: it opens with the
+// original's bytes (so it still reads the prompt prefix out of the provider's
+// cache) and ends with the appended "answer now" instruction that is the whole
+// reason to expect a different outcome from it.
 func TestReviewRetriesMaxTurnsPassInFreshSession(t *testing.T) {
 	good := findingsJSON(t, []Finding{
 		{File: "a.go", Anchor: "a.go:1", Category: "logic", Severity: SeverityImportant, Title: "t", Body: "b"},
@@ -987,14 +1005,25 @@ func TestReviewRetriesMaxTurnsPassInFreshSession(t *testing.T) {
 		t.Errorf("expected the retry's finding to survive; got %d findings", len(res.Findings))
 	}
 
-	// Two sessions, same inputs: the retry is a fresh session with the
-	// identical prompt, not a resume of the exhausted one.
+	// Two sessions, and the second is not the first again: a byte-identical
+	// re-send gives the model exactly as much reason to wander as the session
+	// that just wandered, which is what made a partial run cost more than a
+	// complete one.
 	calls := runner.callsFor("logic")
 	if len(calls) != 2 {
 		t.Fatalf("expected 2 logic sessions (attempt + retry); got %d", len(calls))
 	}
-	if calls[0].prompt != calls[1].prompt {
-		t.Error("retry sent a different prompt; the re-run must use identical inputs")
+	if calls[0].prompt == calls[1].prompt {
+		t.Error("retry re-sent a byte-identical prompt; the re-run must modify its inputs")
+	}
+	if !strings.Contains(calls[1].prompt, answerNowInstruction) {
+		t.Error("retry prompt is missing the answer-now instruction")
+	}
+	// The modification is a suffix. Everything above it is unchanged, so the
+	// retry still reads the shared prefix out of the cache rather than paying
+	// to write it a second time.
+	if !strings.HasPrefix(calls[1].prompt, calls[0].prompt) {
+		t.Error("retry prompt does not open with the original's bytes; the cached prefix is lost")
 	}
 
 	rep := passReport(res, "logic")

@@ -91,8 +91,9 @@ func RenderStatusText(status RunStatus, completed, total int, failed []PassFailu
 // the coverage status text — so nothing that reads the existing line breaks.
 // term is always present so a log query can group by it: a pass that answered
 // reports "success", which is the same word the provider uses for the
-// termination it names. retry is only present when a pass was actually re-run,
-// since that is the rare case worth spotting.
+// termination it names. retry is only present when a pass was actually re-run
+// (retry=1) or earned a re-run it did not get (retry=skipped), since those are
+// the rare cases worth spotting.
 //
 // cache_w/cache_r are the pass's prompt-cache write and read token counts, and
 // are omitted together when the provider reported neither — a backend with no
@@ -115,8 +116,15 @@ func RenderPassTelemetry(passes []PassReport) string {
 			term = "success"
 		}
 		s := fmt.Sprintf("pass=%s turns=%d term=%s", p.Name, p.Turns, term)
-		if p.Retried {
+		switch {
+		case p.Retried:
 			s += fmt.Sprintf(" retry=%d", p.Attempts-1)
+		case p.RetrySkipped:
+			// A pass that earned a re-run and did not get one is not the same
+			// as one that was never eligible, and the difference is invisible
+			// in the coverage text (both are just a failed pass). This is the
+			// one place it shows.
+			s += " retry=skipped"
 		}
 		if p.CacheCreationTokens > 0 || p.CacheReadTokens > 0 {
 			s += fmt.Sprintf(" cache_w=%d cache_r=%d", p.CacheCreationTokens, p.CacheReadTokens)
