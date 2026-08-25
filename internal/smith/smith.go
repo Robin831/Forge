@@ -45,6 +45,20 @@ type Result struct {
 	TokensIn int
 	// TokensOut is the total output tokens if extractable.
 	TokensOut int
+	// CacheCreationTokens is how many input tokens the provider wrote into its
+	// prompt cache for this session, and CacheReadTokens how many it served
+	// from a cache another (or an earlier) session had already written. Both
+	// are zero for providers that report no cache accounting.
+	//
+	// They are telemetry, not billing: cost still comes from the provider's own
+	// total_cost_usd. What they measure is whether a set of sessions sharing a
+	// prompt prefix is actually sharing it — a fan-out that writes the same
+	// prefix N times reports N large CacheCreationTokens and no reads, which is
+	// invisible in a per-session cost number and was the bulk of Assay's
+	// cache-write spend before its pass prompts were ordered to share one (the
+	// measurement lives on assay.buildPassPrompt).
+	CacheCreationTokens int
+	CacheReadTokens     int
 	// RateLimited is true when the provider refused the request due to quota.
 	RateLimited bool
 	// AuthFailed is true when the provider rejected the credentials (invalid API
@@ -165,6 +179,12 @@ type StreamUsage struct {
 	// OpenAI API-style (Codex CLI may emit these)
 	PromptTokens     int `json:"prompt_tokens"`
 	CompletionTokens int `json:"completion_tokens"`
+	// Anthropic prompt-cache accounting. CacheCreationInputTokens is what this
+	// request paid to write into the cache; CacheReadInputTokens is what it
+	// served from a prefix already there. Providers that do not do prefix
+	// caching omit both and they stay zero.
+	CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
+	CacheReadInputTokens     int `json:"cache_read_input_tokens"`
 }
 
 // effectiveInputTokens returns the input token count, preferring
@@ -721,6 +741,8 @@ func readStreamJSONEvents(r io.Reader, buf *strings.Builder, logFile *os.File, r
 				if event.Usage != nil {
 					result.TokensIn = event.Usage.effectiveInputTokens()
 					result.TokensOut = event.Usage.effectiveOutputTokens()
+					result.CacheCreationTokens = event.Usage.CacheCreationInputTokens
+					result.CacheReadTokens = event.Usage.CacheReadInputTokens
 				}
 				if event.Result != "" {
 					result.FullOutput = event.Result

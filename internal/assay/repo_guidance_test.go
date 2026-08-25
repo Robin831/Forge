@@ -108,8 +108,11 @@ func TestBuildPassPrompt_IncludesGuidanceBeforeContext(t *testing.T) {
 		t.Fatalf("buildPassPrompt: %v", err)
 	}
 
-	gIdx := strings.Index(prompt, "Repository Review Guidance")
-	cIdx := strings.Index(prompt, "Change Context")
+	// The heading, not the bare phrase: the shared preamble names the section
+	// as the one trusted block in the head, so the phrase itself appears above
+	// every section.
+	gIdx := strings.Index(prompt, "## Repository Review Guidance")
+	cIdx := strings.Index(prompt, "## Change Context")
 	if gIdx == -1 {
 		t.Fatalf("expected guidance section in prompt; got:\n%s", prompt)
 	}
@@ -130,7 +133,7 @@ func TestBuildPassPrompt_OmitsGuidanceWhenAbsent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildPassPrompt: %v", err)
 	}
-	if strings.Contains(prompt, "Repository Review Guidance") {
+	if strings.Contains(prompt, "## Repository Review Guidance") {
 		t.Errorf("expected no guidance section in prompt when RepoGuidance empty; got:\n%s", prompt)
 	}
 }
