@@ -1001,6 +1001,9 @@ the Warden) drop the hunks of files Forge already knows are machine-written:
 | `**/yarn.lock` | Yarn (also matched by `**/*.lock`) |
 | `**/bun.lockb` | Bun (binary lockfile) |
 | `**/*.lock` | Cargo, Bundler, Composer, pipenv, poetry, `bun.lock`, `yarn.lock` |
+| `**/dist/**` | Built output committed with its source: Vite/Rollup/esbuild/tsup/Parcel bundles, goreleaser and setuptools artifacts |
+| `**/*.min.js`, `**/*.min.css` | Minified copies committed outside `dist/` (vendored libraries) |
+| `**/*.js.map`, `**/*.css.map` | Bundler source maps |
 
 Note that `**/*.lock` on its own misses `package-lock.json`,
 `pnpm-lock.yaml` and `npm-shrinkwrap.json` — they do not end in `.lock`, which

@@ -1,0 +1,2 @@
+category: Fixed
+- **Built web bundles are elided from Assay and Warden diffs** - The built-in generated-file filter now covers `**/dist/**`, `*.min.js`/`*.min.css` and bundler source maps. A PR that rebuilt `internal/web/dist` carried a 640KB minified Vite bundle into the review diff, which filled the 250KB diff cap on its own and made the triage pass a 165K-token prompt whose first turn tripped the per-pass cost ceiling before the pass had read anything; with the bundle elided the same PR's diff is 90KB. (Forge-hhz7)
