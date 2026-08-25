@@ -4526,6 +4526,128 @@ VALUES ('anvil-1', 3, 'sha-old', '2026-01-01T00:00:00Z');`); err != nil {
 	}
 }
 
+// TestDB_AssayRunCacheTokensRoundTripAndMigrate covers the prompt-cache
+// columns from both ends: a run records what its sessions wrote into and read
+// from the provider's cache, and a database that predates the columns gains
+// them without losing its rows.
+//
+// The migration half is the half no other test reaches. On a fresh database
+// CREATE TABLE already declares both columns and columnExists short-circuits
+// the ALTER, so a typo in an ALTER statement — or a column name that disagrees
+// with the one RecordAssayRun writes — passes the entire suite and then fails
+// migrate() on every existing production state.db at upgrade, which keeps the
+// daemon from starting at all.
+func TestDB_AssayRunCacheTokensRoundTripAndMigrate(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "forge-state-test-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+	db, err := Open(filepath.Join(tmpDir, "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	readCache := func(id int) (creation, read int) {
+		t.Helper()
+		if err := db.Conn().QueryRow(
+			`SELECT cache_creation_tokens, cache_read_tokens FROM assay_runs WHERE id = ?`, id,
+		).Scan(&creation, &read); err != nil {
+			t.Fatalf("reading cache tokens for run %d: %v", id, err)
+		}
+		return creation, read
+	}
+
+	run := &AssayRun{
+		Anvil: "anvil-1", PRNumber: 7, HeadSHA: "sha-cached",
+		CacheCreationTokens: 42400, CacheReadTokens: 166000,
+	}
+	if err := db.RecordAssayRun(run); err != nil {
+		t.Fatalf("RecordAssayRun: %v", err)
+	}
+	if c, r := readCache(run.ID); c != 42400 || r != 166000 {
+		t.Errorf("cache tokens round-tripped as {w:%d r:%d}; want {42400 166000}", c, r)
+	}
+
+	// A run behind a backend that reports no cache accounting stores zeros,
+	// which is the same thing a pre-migration row reads back as: the column
+	// cannot distinguish "not reported" from "nothing shared", and a reader
+	// comparing runs has to bound the comparison rather than infer a
+	// regression from a zero.
+	quiet := &AssayRun{Anvil: "anvil-1", PRNumber: 8, HeadSHA: "sha-quiet"}
+	if err := db.RecordAssayRun(quiet); err != nil {
+		t.Fatalf("RecordAssayRun (no cache accounting): %v", err)
+	}
+	if c, r := readCache(quiet.ID); c != 0 || r != 0 {
+		t.Errorf("run without cache accounting read back as {w:%d r:%d}; want zeros", c, r)
+	}
+
+	// Now the ALTER path: rebuild the table without the two columns, holding a
+	// row, and migrate it the way an upgrading daemon would.
+	if _, err := db.Conn().Exec(`DROP TABLE assay_runs`); err != nil {
+		t.Fatalf("dropping assay_runs: %v", err)
+	}
+	if _, err := db.Conn().Exec(`
+CREATE TABLE assay_runs (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    anvil            TEXT NOT NULL,
+    pr_number        INTEGER NOT NULL,
+    head_sha         TEXT NOT NULL DEFAULT '',
+    started_at       TEXT NOT NULL,
+    finished_at      TEXT,
+    duration_ms      INTEGER NOT NULL DEFAULT 0,
+    cost_usd         REAL NOT NULL DEFAULT 0,
+    findings_count   INTEGER NOT NULL DEFAULT 0,
+    skipped_reason   TEXT NOT NULL DEFAULT '',
+    shadow_mode      INTEGER NOT NULL DEFAULT 0,
+    posted_count     INTEGER NOT NULL DEFAULT 0,
+    error            TEXT NOT NULL DEFAULT '',
+    status           TEXT NOT NULL DEFAULT '',
+    completed_passes INTEGER NOT NULL DEFAULT 0,
+    total_passes     INTEGER NOT NULL DEFAULT 0,
+    failed_passes    TEXT NOT NULL DEFAULT ''
+);
+INSERT INTO assay_runs (anvil, pr_number, head_sha, started_at)
+VALUES ('anvil-1', 3, 'sha-old', '2026-01-01T00:00:00Z');`); err != nil {
+		t.Fatalf("creating pre-cache assay_runs: %v", err)
+	}
+
+	if err := db.migrate(); err != nil {
+		t.Fatalf("migrate() over pre-cache assay_runs: %v", err)
+	}
+	for _, col := range []string{"cache_creation_tokens", "cache_read_tokens"} {
+		exists, err := db.columnExists("assay_runs", col)
+		if err != nil {
+			t.Fatalf("columnExists(assay_runs.%s): %v", col, err)
+		}
+		if !exists {
+			t.Errorf("expected assay_runs.%s to exist after migration", col)
+		}
+	}
+
+	var creation, read int
+	if err := db.Conn().QueryRow(
+		`SELECT cache_creation_tokens, cache_read_tokens FROM assay_runs WHERE head_sha = 'sha-old'`,
+	).Scan(&creation, &read); err != nil {
+		t.Fatalf("reading migrated row: %v", err)
+	}
+	if creation != 0 || read != 0 {
+		t.Errorf("migrated row carries cache tokens {w:%d r:%d}; want zero defaults", creation, read)
+	}
+
+	after := &AssayRun{
+		Anvil: "anvil-1", PRNumber: 3, HeadSHA: "sha-new",
+		CacheCreationTokens: 900, CacheReadTokens: 41500,
+	}
+	if err := db.RecordAssayRun(after); err != nil {
+		t.Fatalf("RecordAssayRun after migration: %v", err)
+	}
+	if c, r := readCache(after.ID); c != 900 || r != 41500 {
+		t.Errorf("post-migration run read back as {w:%d r:%d}; want {900 41500}", c, r)
+	}
+}
+
 func TestDB_CountAssayRuns(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "forge-state-test-*")
 	if err != nil {

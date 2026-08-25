@@ -1952,11 +1952,20 @@ func (d *Daemon) runAssayReview(ctx context.Context, anvil, anvilPath, beadID st
 			// exactly like a successful run's. Dropping it would understate
 			// the assay spend that daily_cost_limit is measured against.
 			run.CostUSD = assay.RunCost(rerr)
-			d.logger.Error("Assay review failed", "pr", prNumber, "bead", beadID, "error", rerr, "cost_usd", run.CostUSD)
+			// Its prompt-cache accounting is recorded on the same terms and for
+			// the same reason: the sessions a failed run made were billed for
+			// the prefixes they wrote, and a failed run left at zero would read
+			// back as one that shared everything.
+			run.CacheCreationTokens, run.CacheReadTokens = assay.RunCacheTokens(rerr)
+			d.logger.Error("Assay review failed", "pr", prNumber, "bead", beadID, "error", rerr,
+				"cost_usd", run.CostUSD,
+				"cache_w", run.CacheCreationTokens, "cache_r", run.CacheReadTokens)
 			run.Error = rerr.Error()
 			run.Status = state.AssayStatusFailed
 		} else {
 			run.CostUSD = result.CostUSD
+			run.CacheCreationTokens = result.CacheCreationTokens
+			run.CacheReadTokens = result.CacheReadTokens
 			run.FindingsCount = len(result.Findings)
 			// Coverage is recorded on the run, not re-derived: the status,
 			// the pass tally and the named failed passes all come from the
@@ -1994,6 +2003,17 @@ func (d *Daemon) runAssayReview(ctx context.Context, anvil, anvilPath, beadID st
 				"skipped_files", len(result.SkippedFiles),
 				"skipped_bytes", result.SkippedBytes,
 				"shadow", engineCfg.ShadowMode, "cost_usd", run.CostUSD,
+				// The run-level cache totals beside the per-pass ones: cache_w
+				// and cache_r are what the assay_runs row persists, and
+				// cache_w_redundant is the part of cache_w the shared-prefix
+				// ordering exists to remove (see
+				// ReviewResult.RedundantCacheWriteTokens). A run in which it
+				// climbs back towards a whole diff per pass is the regression,
+				// and it is one field to grep for rather than a sum over the
+				// per-pass line.
+				"cache_w", run.CacheCreationTokens,
+				"cache_r", run.CacheReadTokens,
+				"cache_w_redundant", result.RedundantCacheWriteTokens(),
 				"duration_ms", result.Duration.Milliseconds(),
 			)
 
