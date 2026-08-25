@@ -72,6 +72,24 @@ type Manager struct {
 	OnNeedsHuman func(beadID, anvil, title string, failures int, reason string)
 }
 
+// isBellowsMonitorRow reports whether a worker row is one of bellows' synthetic
+// per-PR monitor rows and therefore has nothing for this package to clean up:
+// no process to signal, no worktree to remove, no session to lose. The row is
+// owned by the bellows poll loop, which recreates it while the PR is open and
+// lets it go when the PR merges or closes.
+//
+// It is one predicate shared by GracefulShutdown and CleanupOrphans because the
+// two are the same decision at opposite ends of a restart — the first marked
+// the row failed, the second re-marked whatever survived — so a fix applied to
+// one of them alone leaves the other still stranding open PRs.
+//
+// The PID test is the guard on the naming convention: a monitor row never holds
+// one, so a row that does is a real worker wearing the name and is cleaned up
+// normally rather than left running.
+func isBellowsMonitorRow(w state.Worker) bool {
+	return w.IsBellowsMonitor() && w.PID <= 0
+}
+
 // NewManager creates a new shutdown manager.
 func NewManager(db *state.DB, wm *worktree.Manager, logger *slog.Logger, anvils map[string]string) *Manager {
 	return &Manager{
@@ -143,6 +161,17 @@ func (m *Manager) GracefulShutdown() int {
 	remaining, _ := m.db.ActiveWorkers()
 	killed := 0
 	for _, w := range remaining {
+		if isBellowsMonitorRow(w) {
+			// A bellows monitor row holds no process to kill and no work to
+			// lose: it is bookkeeping for an open PR, recreated by the poll
+			// loop after the restart. Marking it failed was invisible until
+			// the daemon came back — InsertWorkerIfMissing writes only new
+			// rows, so the row stayed failed for the life of the PR and the PR
+			// vanished from the Bellows lane while bellows kept managing it
+			// (Forge-vh17). bellows.ReviveBellowsWorker is the belt to this
+			// braces: it heals a row whoever marked it.
+			continue
+		}
 		if w.PID > 0 {
 			m.logger.Warn("force-killing worker", "id", w.ID, "pid", w.PID)
 			m.killProcess(w.PID)
@@ -168,6 +197,21 @@ func (m *Manager) CleanupOrphans() (cleaned int) {
 	}
 
 	for _, w := range workers {
+		if isBellowsMonitorRow(w) {
+			// Not an orphan: it never had a process, and its PR is still open
+			// (bellows drops the row's PR from OpenPRs when it merges or
+			// closes). The PID-less branch below would otherwise call every
+			// one of them stale on every startup — see the GracefulShutdown
+			// comment for what that costs.
+			//
+			// Staying active also puts the row's branch in the retention set
+			// step 3 builds, so a worktree for an open PR is no longer swept as
+			// abandoned at startup. That is the direction to err in: the one
+			// worktree that survives to this point is a fix commit burnish
+			// deliberately preserved (Forge-xl50), and bellows removes it when
+			// the PR merges either way.
+			continue
+		}
 		isDead := false
 		if w.PID > 0 && !isProcessAlive(w.PID) {
 			m.logger.Warn("found orphaned worker (process dead)", "id", w.ID, "pid", w.PID)

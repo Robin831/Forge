@@ -998,6 +998,67 @@ func (db *DB) SetBellowsWorkerDetached(workerID string, detached bool) error {
 	return err
 }
 
+// ReviveBellowsWorker moves a bellows monitor row out of a terminal status back
+// to the one its still-open PR calls for, clearing completed_at so the row is
+// indistinguishable from one that was never marked at all.
+//
+// It exists because the monitor row is synthetic: it holds no PID and no
+// goroutine, it lives for exactly as long as its PR stays open, and it is
+// recreated by the bellows poll loop rather than by anything that owns a
+// process. Every path that marks "active workers" terminal therefore reaches
+// it too — shutdown's force-kill phase and startup orphan recovery both did —
+// and InsertWorkerIfMissing cannot undo that: INSERT OR IGNORE sees the failed
+// row and writes nothing, so the monitor stays failed for the life of the PR
+// and the PR drops out of every surface that renders only active statuses,
+// while bellows is in fact still managing it (Forge-vh17).
+//
+// Reviving from the terminal set only is what keeps this from fighting the
+// statuses that mean something: an operator-paused row is left alone, and a row
+// already monitoring or detached matches nothing, so a steady-state poll writes
+// nothing (the WAL-churn property InsertWorkerIfMissing is there for).
+// SetBellowsWorkerDetached is the mirror image and deliberately does NOT do
+// this — it moves a row between two live statuses and must never resurrect a
+// terminal one, because it is called for rows the caller has not established
+// are still wanted. Here the caller has: bellows only ever asks for a PR that
+// came back from OpenPRs.
+//
+// Reports whether a row was actually revived, so the caller can say so once
+// rather than every poll.
+func (db *DB) ReviveBellowsWorker(workerID string, status WorkerStatus) (bool, error) {
+	res, err := db.conn.Exec(
+		`UPDATE workers SET status = ?, completed_at = NULL
+		 WHERE id = ? AND phase = 'bellows'
+		   AND status IN ('done', 'failed', 'partial', 'timeout', 'killed')`,
+		string(status), workerID,
+	)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return n > 0, nil
+}
+
+// IsBellowsMonitor reports whether this row is one of bellows' synthetic per-PR
+// monitor rows — the `bellows-<anvil>-<number>` rows the poll loop upserts so an
+// open PR appears in the Workers panel.
+//
+// Both halves of the test are load-bearing. The phase alone is not enough: a
+// pipeline row repurposed as a monitor also carries phase='bellows' (which is
+// exactly what DeletePipelineBellowsWorker exists to sweep), and that row does
+// belong to a real worker. The prefix alone is not enough either, since the ID
+// is only a naming convention. The pair is the same identity the bellows poll
+// loop mints and DeletePipelineBellowsWorker discriminates on.
+//
+// Callers that use this to skip cleanup should pair it with a PID check: a
+// monitor row never holds one, so a row that does is not something to leave
+// behind on the strength of its name.
+func (w Worker) IsBellowsMonitor() bool {
+	return w.Phase == "bellows" && strings.HasPrefix(w.ID, "bellows-")
+}
+
 // DeletePipelineBellowsWorker removes any worker row for bead+anvil that was
 // repurposed from the pipeline (no "bellows-" prefix in ID). Called by the
 // bellows poll loop before inserting the canonical bellows-{anvil}-{prNum} row
