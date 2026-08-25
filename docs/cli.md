@@ -395,6 +395,63 @@ forge scan --anvil my-api   # Scan a specific anvil
 | `-a, --anvil` | Scan only this anvil (optional; default: all) |
 | `--create-beads` | Automatically create beads for discovered vulnerabilities (default: true) |
 
+## AI PR Review (Assay)
+
+### `forge assay stats`
+
+Aggregate the recorded Assay runs into ISO weeks and print what a review costs
+lately: run count, mean cost, mean duration, and the split by coverage outcome
+(complete vs partial).
+
+A single run's cost only reads as wrong against the runs around it, so this is
+what catches a step change in the week it happens rather than in a month-end
+total. The complete/partial split is the point of it: a partial run that costs
+*more* than a complete one is invisible in one blended mean and obvious with the
+two printed side by side.
+
+```bash
+forge assay stats                  # The current ISO week plus the four behind it
+forge assay stats --weeks 12       # A longer window
+forge assay stats --json           # Sums and means per week, for further analysis
+```
+
+```
+Assay runs by ISO week (last 5 weeks, 640 runs):
+
+  2026-W30: 128 runs, mean $0.184, mean 88s | complete 120 runs $0.180/86s | partial 8 runs $0.240/120s
+  ...
+  2026-W34: 128 runs, mean $0.412, mean 94s | complete 101 runs $0.395/88s | partial 27 runs $0.475/116s
+
+WARNING cost drift: 2026-W34 mean $0.412/run over 128 runs is 2.24x the trailing 4-week mean $0.184/run (512 runs)
+```
+
+| Flag | Description |
+|------|-------------|
+| `--weeks` | ISO weeks to report, ending with the current one (default 5, max 104) |
+| `--json` | Emit the per-week sums, means and any drift flag as JSON |
+
+The daemon writes the same report to its own log once a day (`Assay weekly
+cost`), plus a WARN (`Assay weekly cost drift`) when the current week's mean
+cost per run exceeds the trailing four weeks' by more than 1.5x — so the signal
+reaches an operator who never runs the command.
+
+Runs that never reviewed a diff (skipped by the Bellows trigger gate, a failed
+diff fetch) are excluded. Runs that failed *after* spending are included: a
+failure is not a refund, and spend shifting into failed runs is exactly what the
+report exists to expose.
+
+### `forge assay run` / `forge assay rerun`
+
+Force a fresh Assay review over a PR's current head, bypassing the trigger
+gate's head-SHA debounce. `run --pr <id>` addresses the PR by its `state.db` row
+id (what the dashboard holds); `rerun <pr>` addresses it by GitHub PR number,
+scoped by `--anvil`.
+
+```bash
+forge assay run --pr 12 --anvil my-api
+forge assay rerun 431 --anvil my-api
+```
+
 ## History
 
 ### `forge history`

@@ -21,6 +21,10 @@ func init() {
 	_ = assayRerunCmd.MarkFlagRequired("anvil")
 	assayCmd.AddCommand(assayRerunCmd)
 
+	assayStatsCmd.Flags().Int("weeks", defaultAssayStatsWeeks, "Number of ISO weeks to report, ending with the current one")
+	assayStatsCmd.Flags().Bool("json", false, "Emit the weekly aggregates as JSON")
+	assayCmd.AddCommand(assayStatsCmd)
+
 	rootCmd.AddCommand(assayCmd)
 }
 

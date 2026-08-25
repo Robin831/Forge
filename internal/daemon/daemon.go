@@ -1475,6 +1475,11 @@ func (d *Daemon) Run(ctx context.Context) error {
 	)
 	go logSweep.RunScheduled(ctx)
 
+	// Start the weekly Assay spend report. It only reads assay_runs, so it is
+	// unconditional: an anvil that never runs Assay has no rows in the window
+	// and the report stays silent.
+	go d.runAssayCostReport(ctx, DefaultAssayCostReportInterval)
+
 	// Start Wicket issue triage monitor (if enabled)
 	if d.config().Settings.WicketEnabled {
 		d.wicketMu.Lock()

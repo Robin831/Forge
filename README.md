@@ -278,6 +278,15 @@ Use `stage_providers` (global or per-anvil) to assign different AI providers to 
 
 Token usage and USD cost estimates are tracked per-bead and per-day. Set `daily_cost_limit` to automatically pause auto-dispatch when the daily budget is exceeded. View current costs via `forge status`.
 
+AI PR reviews are also tracked per run, and aggregated by ISO week so a change in what a review costs is visible while it is happening rather than in a month-end total:
+
+```bash
+forge assay stats            # Run count, mean cost and mean duration per week,
+                             # split by coverage outcome (complete vs partial)
+```
+
+The daemon writes the same summary to its log once a day, with a WARN when the current week's mean cost per run exceeds the trailing four weeks' by more than 1.5x.
+
 ### Notifications
 
 Forge supports two webhook notification styles:
