@@ -110,6 +110,50 @@ func TestReportAssayCostEmitsOneLinePerWeekAndFlagsDrift(t *testing.T) {
 	require.Contains(t, out, "level=WARN")
 }
 
+func TestReportAssayCostDoesNotFlagAWeekThatIsNoLongerCurrent(t *testing.T) {
+	d, db, buf := reportDaemon(t)
+	now := time.Date(2026, 8, 20, 12, 0, 0, 0, time.UTC) // 2026-W34, no runs
+
+	// The step change happened LAST week and was already reported then. This
+	// week is quiet, so it has no bucket at all — and without a guard the
+	// newest bucket (last week) would be re-read as "current" and re-flagged
+	// every day for as long as the ledger stays silent.
+	for w := 4; w >= 2; w-- {
+		at := now.AddDate(0, 0, -7*w)
+		for i := 0; i < 5; i++ {
+			recordRun(t, db, at.Add(time.Duration(i)*time.Minute), state.AssayStatusComplete, 0.50, 90000)
+		}
+	}
+	last := now.AddDate(0, 0, -7)
+	for i := 0; i < 5; i++ {
+		recordRun(t, db, last.Add(time.Duration(i)*time.Minute), state.AssayStatusComplete, 1.10, 120000)
+	}
+
+	d.reportAssayCost(now)
+	out := buf.String()
+	require.Contains(t, out, "Assay weekly cost", "the weekly lines are still the report")
+	require.NotContains(t, out, "drift", "a completed week must not be re-flagged as the current one:\n%s", out)
+}
+
+func TestReportAssayCostDoesNotFlagASingleRunWeek(t *testing.T) {
+	d, db, buf := reportDaemon(t)
+	now := time.Date(2026, 8, 20, 12, 0, 0, 0, time.UTC)
+	for w := 4; w >= 1; w-- {
+		at := now.AddDate(0, 0, -7*w)
+		for i := 0; i < 5; i++ {
+			recordRun(t, db, at.Add(time.Duration(i)*time.Minute), state.AssayStatusComplete, 0.50, 90000)
+		}
+	}
+	// One expensive run into a fresh week: a 10x ratio over a single sample,
+	// which is one large PR rather than a step change in what a review costs.
+	recordRun(t, db, now, state.AssayStatusComplete, 5.00, 300000)
+
+	d.reportAssayCost(now)
+	out := buf.String()
+	require.Contains(t, out, "2026-W34", "the current week is still reported")
+	require.NotContains(t, out, "drift", "one run must not set off the drift WARN:\n%s", out)
+}
+
 func TestReportAssayCostIsSilentWithNoRuns(t *testing.T) {
 	d, _, buf := reportDaemon(t)
 	d.reportAssayCost(time.Date(2026, 8, 20, 12, 0, 0, 0, time.UTC))

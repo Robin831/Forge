@@ -95,7 +95,7 @@ func (d *Daemon) reportAssayCost(now time.Time) {
 		d.logger.Info("Assay weekly cost", "summary", assay.RenderWeeklyCost(w))
 	}
 
-	if drift := assay.CostDrift(weeks); drift != nil {
+	if drift := assay.CostDrift(weeks, now); drift != nil {
 		d.logger.Warn("Assay weekly cost drift",
 			"detail", drift.Text(),
 			"week", drift.Week,

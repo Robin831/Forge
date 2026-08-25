@@ -192,21 +192,50 @@ const (
 	MinDriftTrailingWeeks = 2
 )
 
+// MinDriftCurrentRuns is how many runs the current week must hold before its
+// mean is compared against anything. A mean over one run IS that run, and a
+// single atypical PR — a large diff, a rate-limited retry — clears 1.5x on its
+// own: at n runs, one run costing 3x the usual moves the week's mean to
+// (n+2)/n, which is past the threshold for any n below 4. Five is that floor
+// with a run of headroom.
+//
+// The cost of the floor is bounded: the check runs daily against a week that
+// keeps filling, so a week whose spend genuinely stepped crosses it within a
+// day or two and is still flagged in the week it happened. The cost of NOT
+// having it is a WARN on the Monday of every week, which is a signal an
+// operator learns to scroll past.
+const MinDriftCurrentRuns = 5
+
 // CostDrift reports the current week's mean cost per run against the trailing
 // weeks', or nil when there is nothing to report: too little history, no runs
-// in the current week, a trailing window that spent nothing, or a ratio under
-// the threshold.
+// in the current week, too few runs in it to read a mean from, a trailing
+// window that spent nothing, or a ratio under the threshold.
+//
+// `now` is what decides which bucket is the current week, and it is a parameter
+// rather than a read of the clock so the daemon's report and `forge assay
+// stats` flag against the same instant they rendered the lines for. It cannot
+// be derived from the buckets: WeeklyStatsFrom emits a bucket only for a week
+// that HAS runs, so on a week with none the newest bucket is a completed week
+// some distance in the past — comparing that against the weeks behind it
+// re-flags a step change that has already been reported, or reports one as
+// current long after it stopped being so.
 //
 // The trailing figure is pooled (total trailing cost / total trailing runs)
 // rather than the mean of the weekly means, so both sides of the ratio are the
 // same quantity — cost per run — and a quiet trailing week with three runs
 // cannot outweigh a busy one with three hundred.
-func CostDrift(weeks []WeeklyStats) *Drift {
+func CostDrift(weeks []WeeklyStats, now time.Time) *Drift {
 	if len(weeks) < MinDriftTrailingWeeks+1 {
 		return nil
 	}
 	current := weeks[len(weeks)-1]
-	if current.All.Runs == 0 {
+	nowYear, nowWeek := now.UTC().ISOWeek()
+	if current.Year != nowYear || current.Week != nowWeek {
+		// This week has no runs at all; the newest bucket belongs to some
+		// earlier week and is not "current" in any sense the report claims.
+		return nil
+	}
+	if current.All.Runs < MinDriftCurrentRuns {
 		return nil
 	}
 

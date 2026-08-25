@@ -218,7 +218,7 @@ func TestCostDrift(t *testing.T) {
 
 	t.Run("step change flags", func(t *testing.T) {
 		stats := weeklyFixture(end, 5, 10, 0.50, 0.50, 0.50, 0.50, 1.10) // 2.2x
-		d := CostDrift(stats)
+		d := CostDrift(stats, end)
 		if d == nil {
 			t.Fatal("expected a drift flag for a 2.2x step change")
 		}
@@ -237,19 +237,19 @@ func TestCostDrift(t *testing.T) {
 	})
 
 	t.Run("flat series does not flag", func(t *testing.T) {
-		if d := CostDrift(weeklyFixture(end, 5, 10, 0.50)); d != nil {
+		if d := CostDrift(weeklyFixture(end, 5, 10, 0.50), end); d != nil {
 			t.Fatalf("flat series flagged drift: %+v", d)
 		}
 	})
 
 	t.Run("a rise under the threshold does not flag", func(t *testing.T) {
-		if d := CostDrift(weeklyFixture(end, 5, 10, 0.50, 0.50, 0.50, 0.50, 0.70)); d != nil {
+		if d := CostDrift(weeklyFixture(end, 5, 10, 0.50, 0.50, 0.50, 0.50, 0.70), end); d != nil {
 			t.Fatalf("1.4x flagged drift: %+v", d)
 		}
 	})
 
 	t.Run("fewer than two trailing weeks does not flag", func(t *testing.T) {
-		if d := CostDrift(weeklyFixture(end, 2, 10, 0.10, 5.00)); d != nil {
+		if d := CostDrift(weeklyFixture(end, 2, 10, 0.10, 5.00), end); d != nil {
 			t.Fatalf("cold ledger flagged drift: %+v", d)
 		}
 	})
@@ -260,7 +260,7 @@ func TestCostDrift(t *testing.T) {
 		// current one and the step change is measured against 0.50, not a mean
 		// dragged down by history the check does not claim to consider.
 		stats := weeklyFixture(end, 7, 10, 0.01, 0.01, 0.50, 0.50, 0.50, 0.50, 1.10)
-		d := CostDrift(stats)
+		d := CostDrift(stats, end)
 		if d == nil {
 			t.Fatal("expected drift")
 		}
@@ -284,7 +284,7 @@ func TestCostDrift(t *testing.T) {
 		for r := 0; r < 100; r++ {
 			samples = append(samples, sample(end.Add(time.Duration(r)*time.Second), state.AssayStatusComplete, 0.30, 60))
 		}
-		d := CostDrift(WeeklyStatsFrom(samples, 0))
+		d := CostDrift(WeeklyStatsFrom(samples, 0), end)
 		if d == nil {
 			t.Fatal("expected drift: 0.30/run against a pooled ~0.133/run")
 		}
@@ -294,14 +294,58 @@ func TestCostDrift(t *testing.T) {
 	})
 
 	t.Run("empty current week does not flag", func(t *testing.T) {
-		if d := CostDrift([]WeeklyStats{{Year: 2026, Week: 32}, {Year: 2026, Week: 33}, {Year: 2026, Week: 34}}); d != nil {
+		if d := CostDrift([]WeeklyStats{{Year: 2026, Week: 32}, {Year: 2026, Week: 33}, {Year: 2026, Week: 34}}, end); d != nil {
 			t.Fatalf("empty weeks flagged drift: %+v", d)
+		}
+	})
+
+	t.Run("a week with no runs at all does not flag its predecessor", func(t *testing.T) {
+		// Only weeks WITH runs become buckets, so a quiet current week leaves
+		// the newest bucket pointing at a completed week. Comparing that one
+		// against its own predecessors reports a step change as "current" for
+		// as long as the ledger stays quiet.
+		stats := weeklyFixture(end, 5, 10, 0.50, 0.50, 0.50, 0.50, 1.10)
+		if d := CostDrift(stats, end.AddDate(0, 0, 7)); d != nil {
+			t.Fatalf("a stale newest bucket was read as the current week: %+v", d)
+		}
+		if d := CostDrift(stats, end.AddDate(0, 0, 70)); d != nil {
+			t.Fatalf("a bucket ten weeks old was read as the current week: %+v", d)
+		}
+		// Same buckets, evaluated inside their own week: still flagged, so the
+		// guard is about WHEN the check runs and not about the data.
+		if d := CostDrift(stats, end.AddDate(0, 0, 2)); d == nil {
+			t.Fatal("expected the step change to still flag within its own week")
+		}
+	})
+
+	t.Run("a current week under the run floor does not flag", func(t *testing.T) {
+		// Four trailing weeks at $0.50 over ten runs each, and a current week
+		// holding one $5.00 run: a 10x ratio off a single sample, which is the
+		// Monday-morning false alarm the floor exists to suppress.
+		stats := weeklyFixture(end, 5, 10, 0.50)
+		stats = stats[:len(stats)-1]
+		stats = append(stats, WeeklyStatsFrom([]state.AssayRunSample{
+			sample(end, state.AssayStatusComplete, 5.00, 60),
+		}, 0)[0])
+		if d := CostDrift(stats, end); d != nil {
+			t.Fatalf("a one-run current week flagged drift: %+v", d)
+		}
+
+		// The same week once it has enough runs to read a mean from: the floor
+		// delays the flag, it does not withdraw it.
+		var busy []state.AssayRunSample
+		for r := 0; r < MinDriftCurrentRuns; r++ {
+			busy = append(busy, sample(end.Add(time.Duration(r)*time.Minute), state.AssayStatusComplete, 5.00, 60))
+		}
+		stats[len(stats)-1] = WeeklyStatsFrom(busy, 0)[0]
+		if d := CostDrift(stats, end); d == nil {
+			t.Fatalf("expected drift once the current week reached %d runs", MinDriftCurrentRuns)
 		}
 	})
 
 	t.Run("a free trailing window does not divide by zero", func(t *testing.T) {
 		stats := weeklyFixture(end, 5, 10, 0, 0, 0, 0, 1.10)
-		if d := CostDrift(stats); d != nil {
+		if d := CostDrift(stats, end); d != nil {
 			t.Fatalf("zero-cost trailing window flagged drift (ratio would be +Inf): %+v", d)
 		}
 	})

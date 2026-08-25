@@ -49,13 +49,14 @@ not a refund, and spend moving into failed runs is exactly what this is for.`,
 		}
 		defer db.Close()
 
-		cutoff := assay.ISOWeekStart(time.Now()).AddDate(0, 0, -7*(weeks-1))
+		now := time.Now()
+		cutoff := assay.ISOWeekStart(now).AddDate(0, 0, -7*(weeks-1))
 		samples, err := db.AssayRunSamplesSince(cutoff)
 		if err != nil {
 			return fmt.Errorf("reading assay runs: %w", err)
 		}
 		stats := assay.WeeklyStatsFrom(samples, weeks)
-		drift := assay.CostDrift(stats)
+		drift := assay.CostDrift(stats, now)
 
 		if asJSON {
 			return json.NewEncoder(os.Stdout).Encode(assayStatsJSON(stats, drift))
