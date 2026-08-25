@@ -1,2 +1,0 @@
-category: Added
-- **`forge cost zero-findings` analysis report** - Classifies Assay runs that reported no findings by run ordinal (first review vs nth) and by whether the PR's head commit moved since the previous run, so the spend a skip/short-circuit heuristic could recover can be sized before one is built. Read-only: it changes no Assay behaviour and gates nothing. See [docs/assay-zero-finding-analysis.md](docs/assay-zero-finding-analysis.md) for the methodology and the finding. (Forge-39kt)

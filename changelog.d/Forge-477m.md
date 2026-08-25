@@ -1,2 +1,0 @@
-category: Added
-- **Assay repeat-review cost attribution** - New `forge cost assay` command reports Assay spend split by first-review vs re-review of a PR and by cache-write/cache-read token class, in table, JSON or CSV form. Run ordinals are derived over each PR's full review history before the reporting window is applied, so a repeat review whose first review predates the window is not miscounted as a first. Runs recorded before prompt-cache instrumentation report token class `unknown` rather than a misleading zero. (Forge-477m)

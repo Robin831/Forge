@@ -1,2 +1,0 @@
-category: Changed
-- **Assay spend pinned to one recording site** - A finished PR review folds its usage into `daily_costs`, `provider_daily_costs` and the bead's row through a single named helper (`recordAssayCost`) alongside its own `assay_runs.cost_usd` ledger, with regression tests that the two agree and that one run is never counted twice. `assay.daily_cost_limit_usd` stays a sub-budget measured against `assay_runs`, and historical runs are not backfilled. (Forge-sw7k)

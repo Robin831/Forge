@@ -1,2 +1,0 @@
-category: Added
-- **Versioned Assay cost measurement artifacts** - Committed the pre-change repeat-review cost baseline under `measurements/` as raw `forge cost assay` output, alongside a `comparison.md` recording the measurement windows, the exact invocations, the normalised cost-per-run and cost-per-repeat-run figures, and the caveats — including that the post-change window is still empty and that the cache-token-class split is one-sided for rows predating the instrumentation. (Forge-9tlm)

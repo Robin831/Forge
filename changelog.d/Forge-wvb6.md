@@ -1,2 +1,0 @@
-category: Fixed
-- **Persisted cache token accounting** - The pipeline now writes each Smith session's prompt-cache tokens into the `cache_read`/`cache_write` columns of `bead_costs`, `daily_costs` and `provider_daily_costs` instead of literal zeros, so the dashboard's cost views show real cache accounting for Claude-backed runs. A session served almost entirely from cache is recorded too, rather than being skipped for having negligible input/output. (Forge-wvb6)
