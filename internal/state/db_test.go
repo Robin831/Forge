@@ -542,6 +542,168 @@ func TestDB_SetBellowsWorkerDetached(t *testing.T) {
 	}
 }
 
+// TestDB_ReviveBellowsWorker exercises the other direction from
+// SetBellowsWorkerDetached (Forge-vh17): a monitor row that some other path
+// marked terminal — shutdown's force-kill phase, startup orphan recovery — is
+// put back to the status its still-open PR calls for, with completed_at
+// cleared, while a row that is already live or deliberately paused is left
+// exactly where it is.
+func TestDB_ReviveBellowsWorker(t *testing.T) {
+	db := openTestDB(t)
+
+	const id = "bellows-anvil-1-854"
+	insert := func(status WorkerStatus) {
+		t.Helper()
+		if err := db.InsertWorker(&Worker{
+			ID: id, BeadID: "Forge-abc1", Anvil: "anvil-1", Branch: "forge/Forge-abc1",
+			Status: status, Phase: "bellows", PRNumber: 854, StartedAt: time.Now(),
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	statusOf := func() WorkerStatus {
+		t.Helper()
+		w, err := db.GetWorker(id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return w.Status
+	}
+	completedAtSet := func() bool {
+		t.Helper()
+		var completed *string
+		if err := db.conn.QueryRow(`SELECT completed_at FROM workers WHERE id = ?`, id).Scan(&completed); err != nil {
+			t.Fatal(err)
+		}
+		return completed != nil
+	}
+
+	// Every terminal status is recoverable, and to either live status: which
+	// one the row wants is the PR's bellows_detached flag, not the row's
+	// history.
+	for _, terminal := range []WorkerStatus{WorkerDone, WorkerFailed, WorkerPartial, WorkerTimeout, WorkerKilled} {
+		for _, want := range []WorkerStatus{WorkerMonitoring, WorkerDetached} {
+			insert(terminal)
+			// UpdateWorkerStatus is how the shutdown path marks it, so it is
+			// also what sets completed_at — the field the revival must clear.
+			if err := db.UpdateWorkerStatus(id, WorkerFailed); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := db.conn.Exec(`UPDATE workers SET status = ? WHERE id = ?`, string(terminal), id); err != nil {
+				t.Fatal(err)
+			}
+			if !completedAtSet() {
+				t.Fatalf("precondition: expected completed_at to be set on a %q row", terminal)
+			}
+
+			revived, err := db.ReviveBellowsWorker(id, want)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !revived {
+				t.Fatalf("ReviveBellowsWorker(%q) must report reviving a %q row", want, terminal)
+			}
+			if got := statusOf(); got != want {
+				t.Fatalf("expected status=%q after reviving a %q row, got %q", want, terminal, got)
+			}
+			if completedAtSet() {
+				t.Fatalf("reviving a %q row must clear completed_at", terminal)
+			}
+
+			// The revived row is active again, which is the whole point: the
+			// PipelineBar and the PR's Bellows lane render active statuses only.
+			active, err := db.ActiveWorkers()
+			if err != nil {
+				t.Fatal(err)
+			}
+			var found bool
+			for _, w := range active {
+				if w.ID == id {
+					found = true
+				}
+			}
+			if !found {
+				t.Fatalf("a revived %q row must be listed by ActiveWorkers", terminal)
+			}
+		}
+	}
+
+	// Steady state: a row already carrying a live status matches nothing, so a
+	// poll writes nothing. checkAll calls this for every open PR on every poll.
+	for _, live := range []WorkerStatus{WorkerMonitoring, WorkerDetached} {
+		insert(live)
+		revived, err := db.ReviveBellowsWorker(id, WorkerMonitoring)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if revived {
+			t.Fatalf("ReviveBellowsWorker must report no work for a row already %q", live)
+		}
+		if got := statusOf(); got != live {
+			t.Fatalf("ReviveBellowsWorker must leave a %q row alone, got %q", live, got)
+		}
+	}
+
+	// Paused is non-terminal and deliberate — an operator put the row there, so
+	// the poll loop does not take it back.
+	insert(WorkerPaused)
+	if revived, err := db.ReviveBellowsWorker(id, WorkerMonitoring); err != nil {
+		t.Fatal(err)
+	} else if revived {
+		t.Fatalf("ReviveBellowsWorker must not claim a paused row")
+	}
+	if got := statusOf(); got != WorkerPaused {
+		t.Fatalf("ReviveBellowsWorker must not resume a paused row, got %q", got)
+	}
+
+	// A row in another phase is not this function's business, id or no id.
+	const pipelineID = "Forge-abc1-smith"
+	if err := db.InsertWorker(&Worker{
+		ID: pipelineID, BeadID: "Forge-abc1", Anvil: "anvil-1", Branch: "forge/Forge-abc1",
+		Status: WorkerFailed, Phase: "smith", StartedAt: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if revived, err := db.ReviveBellowsWorker(pipelineID, WorkerMonitoring); err != nil {
+		t.Fatal(err)
+	} else if revived {
+		t.Fatalf("ReviveBellowsWorker must only touch bellows rows")
+	}
+	w, err := db.GetWorker(pipelineID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if w.Status != WorkerFailed {
+		t.Fatalf("ReviveBellowsWorker must only touch bellows rows, got %q", w.Status)
+	}
+}
+
+// TestWorkerIsBellowsMonitor pins the identity the cleanup paths skip on: the
+// synthetic per-PR row bellows mints, and nothing that merely resembles it.
+func TestWorkerIsBellowsMonitor(t *testing.T) {
+	tests := []struct {
+		name string
+		w    Worker
+		want bool
+	}{
+		{"bellows monitor row", Worker{ID: "bellows-anvil-1-854", Phase: "bellows"}, true},
+		// A pipeline row repurposed as a monitor carries the phase but not the
+		// name — DeletePipelineBellowsWorker sweeps exactly these, and they do
+		// belong to a real worker.
+		{"repurposed pipeline row", Worker{ID: "Forge-abc1", Phase: "bellows"}, false},
+		// The name alone is a convention, not an identity.
+		{"bellows-named fix worker", Worker{ID: "bellows-anvil-1-854", Phase: "quench"}, false},
+		{"ordinary smith row", Worker{ID: "Forge-abc1", Phase: "smith"}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.w.IsBellowsMonitor(); got != tt.want {
+				t.Errorf("IsBellowsMonitor() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 // TestDB_DetachedWorkerLifecycleQueries pins the query lists the detached
 // status had to be added to (Forge-2rrx). A detached bellows row is muted, not
 // finished: it must still be found as the bead's active worker, still be closed

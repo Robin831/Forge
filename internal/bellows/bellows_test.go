@@ -2879,3 +2879,88 @@ func TestCheckAll_DetachedPRWorkerRowLabelled(t *testing.T) {
 	assert.Equal(t, state.WorkerDetached, statusOf(t, "bellows-my-anvil-601"))
 	assert.Equal(t, state.WorkerMonitoring, statusOf(t, "bellows-my-anvil-602"))
 }
+
+// TestCheckAll_RevivesTerminalMonitorRow covers the self-healing half of
+// Forge-vh17: a monitor row someone else marked terminal — shutdown's
+// force-kill phase, startup orphan recovery, a manual sweep — is put back to
+// the status its still-open PR calls for on the next poll.
+//
+// InsertWorkerIfMissing cannot do this: INSERT OR IGNORE sees the existing row
+// and writes nothing, which is exactly why the two rows in the recorded
+// incident stayed failed for the life of their PRs and dropped out of the
+// Bellows lane while bellows kept managing them.
+func TestCheckAll_RevivesTerminalMonitorRow(t *testing.T) {
+	db, cleanup := openTempDB(t)
+	defer cleanup()
+
+	watched := &state.PR{
+		Number:    853,
+		Anvil:     "forge",
+		BeadID:    "forge-watched",
+		Branch:    "forge/forge-watched",
+		Status:    state.PROpen,
+		CreatedAt: time.Now(),
+	}
+	require.NoError(t, db.InsertPR(watched))
+
+	muted := &state.PR{
+		Number:    854,
+		Anvil:     "forge",
+		BeadID:    "forge-muted",
+		Branch:    "forge/forge-muted",
+		Status:    state.PROpen,
+		CreatedAt: time.Now(),
+	}
+	require.NoError(t, db.InsertPR(muted))
+	require.NoError(t, db.UpdatePRBellowsDetached(muted.ID, true))
+
+	// No VCS provider: checkPR bails immediately, leaving only the worker-row
+	// bookkeeping under test.
+	m := New(db, nil, time.Minute, map[string]string{"forge": "/fake"}, nil, nil, nil, nil)
+	m.checkAll(context.Background())
+
+	statusOf := func(t *testing.T, id string) state.WorkerStatus {
+		t.Helper()
+		w, err := db.GetWorker(id)
+		require.NoError(t, err)
+		return w.Status
+	}
+
+	const watchedRow, mutedRow = "bellows-forge-853", "bellows-forge-854"
+	require.Equal(t, state.WorkerMonitoring, statusOf(t, watchedRow))
+	require.Equal(t, state.WorkerDetached, statusOf(t, mutedRow))
+
+	// Both rows are marked failed the way the shutdown path marks them —
+	// status plus completed_at — while their PRs stay open.
+	for _, id := range []string{watchedRow, mutedRow} {
+		require.NoError(t, db.UpdateWorkerStatus(id, state.WorkerFailed))
+		require.Equal(t, state.WorkerFailed, statusOf(t, id))
+	}
+
+	m.checkAll(context.Background())
+
+	assert.Equal(t, state.WorkerMonitoring, statusOf(t, watchedRow),
+		"an open PR's monitor row must come back to monitoring")
+	assert.Equal(t, state.WorkerDetached, statusOf(t, mutedRow),
+		"a muted PR's row must come back detached, not monitoring: bellows is not watching it")
+
+	// Back in the active set, which is what puts the PR back in the Bellows
+	// lane — the panels render active statuses only.
+	active, err := db.ActiveWorkers()
+	require.NoError(t, err)
+	ids := make(map[string]bool, len(active))
+	for _, w := range active {
+		ids[w.ID] = true
+	}
+	assert.True(t, ids[watchedRow], "a revived row must be listed by ActiveWorkers")
+	assert.True(t, ids[mutedRow], "a revived detached row must be listed by ActiveWorkers")
+
+	// completed_at is cleared too, so the revived row is indistinguishable from
+	// one that was never marked — a stale completion timestamp would age it out
+	// of the recently-finished panel's window instead.
+	for _, id := range []string{watchedRow, mutedRow} {
+		w, err := db.GetWorker(id)
+		require.NoError(t, err)
+		assert.Nil(t, w.CompletedAt, "%s: reviving must clear completed_at", id)
+	}
+}

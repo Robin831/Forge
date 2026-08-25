@@ -388,3 +388,112 @@ func TestListProcessesInjectable(t *testing.T) {
 		t.Errorf("expected non-empty evidence for reaped process")
 	}
 }
+
+// TestBellowsMonitorRowsSurviveShutdownAndOrphanCleanup pins the restart
+// invariant behind Forge-vh17: a bellows monitor row is bookkeeping for an open
+// PR, not a worker, so neither end of a restart may mark it terminal. Marking
+// it was invisible until the daemon came back — the bellows poll loop's
+// InsertWorkerIfMissing writes only genuinely new rows — so the row stayed
+// failed for the life of the PR and its PR disappeared from the Bellows lane
+// while bellows was in fact still managing it.
+//
+// Both paths are asserted together because they are the same decision at
+// opposite ends of one restart: fixing either alone still strands the row.
+func TestBellowsMonitorRowsSurviveShutdownAndOrphanCleanup(t *testing.T) {
+	// deadPID is a PID no process holds, so the real worker rows below are
+	// signalled and killed without touching anything on this machine.
+	const deadPID = 0x7FFFFFF0
+
+	seed := func(t *testing.T) *state.DB {
+		t.Helper()
+		db := openTestDB(t)
+		rows := []*state.Worker{
+			// The two rows from the recorded incident.
+			{ID: "bellows-forge-853", BeadID: "Forge-aaa1", Anvil: "forge", Branch: "forge/Forge-aaa1",
+				Status: state.WorkerMonitoring, Phase: "bellows", PRNumber: 853, StartedAt: time.Now()},
+			// A muted PR's row is the same row in its other live state.
+			{ID: "bellows-forge-854", BeadID: "Forge-aaa2", Anvil: "forge", Branch: "forge/Forge-aaa2",
+				Status: state.WorkerDetached, Phase: "bellows", PRNumber: 854, StartedAt: time.Now()},
+			// A real worker: owns a process, so it is cleaned up as before.
+			{ID: "Forge-bbb1", BeadID: "Forge-bbb1", Anvil: "forge", Branch: "forge/Forge-bbb1",
+				PID: deadPID, Status: state.WorkerRunning, Phase: "smith", StartedAt: time.Now()},
+			// A pipeline row repurposed as a monitor — phase='bellows' with no
+			// "bellows-" prefix. It belongs to a real worker, so the skip must
+			// not reach it on the strength of the phase alone.
+			{ID: "Forge-ccc1", BeadID: "Forge-ccc1", Anvil: "forge", Branch: "forge/Forge-ccc1",
+				PID: deadPID, Status: state.WorkerRunning, Phase: "bellows", StartedAt: time.Now()},
+		}
+		for _, w := range rows {
+			if err := db.InsertWorker(w); err != nil {
+				t.Fatalf("seed worker %s: %v", w.ID, err)
+			}
+		}
+		return db
+	}
+
+	statusOf := func(t *testing.T, db *state.DB, id string) state.WorkerStatus {
+		t.Helper()
+		w, err := db.GetWorker(id)
+		if err != nil {
+			t.Fatalf("get worker %s: %v", id, err)
+		}
+		return w.Status
+	}
+
+	assertOutcome := func(t *testing.T, db *state.DB) {
+		t.Helper()
+		if got := statusOf(t, db, "bellows-forge-853"); got != state.WorkerMonitoring {
+			t.Errorf("bellows-forge-853: got status %q, want monitoring (the row must survive untouched)", got)
+		}
+		if got := statusOf(t, db, "bellows-forge-854"); got != state.WorkerDetached {
+			t.Errorf("bellows-forge-854: got status %q, want detached (a muted row survives too)", got)
+		}
+		for _, id := range []string{"Forge-bbb1", "Forge-ccc1"} {
+			if got := statusOf(t, db, id); got != state.WorkerFailed {
+				t.Errorf("%s: got status %q, want failed (a row with a process is still cleaned up)", id, got)
+			}
+		}
+	}
+
+	t.Run("graceful shutdown", func(t *testing.T) {
+		db := seed(t)
+		m := NewManager(db, nil, discardLogger(), map[string]string{})
+		// Zero grace period sends the run straight to the force-kill phase,
+		// which is the phase that marked the monitor rows failed.
+		m.SetGracePeriod(0)
+		m.GracefulShutdown()
+		assertOutcome(t, db)
+	})
+
+	t.Run("startup orphan cleanup", func(t *testing.T) {
+		db := seed(t)
+		// An empty anvil map keeps orphan recovery off bd entirely: the bead
+		// reset is gated on the anvil resolving to a path.
+		m := NewManager(db, nil, discardLogger(), map[string]string{})
+		m.CleanupOrphans()
+		assertOutcome(t, db)
+	})
+}
+
+// TestIsBellowsMonitorRow pins the predicate the two cleanup paths share. The
+// PID test is what keeps the naming convention from being a licence: a row that
+// holds a process is a real worker whatever it is called.
+func TestIsBellowsMonitorRow(t *testing.T) {
+	tests := []struct {
+		name string
+		w    state.Worker
+		want bool
+	}{
+		{"monitor row", state.Worker{ID: "bellows-forge-854", Phase: "bellows"}, true},
+		{"monitor row with a process", state.Worker{ID: "bellows-forge-854", Phase: "bellows", PID: 4242}, false},
+		{"repurposed pipeline row", state.Worker{ID: "Forge-abc1", Phase: "bellows"}, false},
+		{"smith row", state.Worker{ID: "Forge-abc1", Phase: "smith", PID: 4242}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isBellowsMonitorRow(tt.w); got != tt.want {
+				t.Errorf("isBellowsMonitorRow() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}

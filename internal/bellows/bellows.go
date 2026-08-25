@@ -771,6 +771,20 @@ func (m *Monitor) checkAll(ctx context.Context) {
 		}); err != nil {
 			log.Printf("[bellows] Failed to upsert worker row for PR #%d (%s): %v", pr.Number, pr.Anvil, err)
 		}
+		// The insert above only writes new rows, so a row that some other path
+		// marked terminal stays terminal — and the monitor row is marked by
+		// paths that assume a process behind it: shutdown force-kills every
+		// active worker, startup orphan recovery sweeps every PID-less one.
+		// Both are now taught to skip these rows, but the revival is what makes
+		// the recovery self-healing regardless of who did the marking. This PR
+		// came back from OpenPRs, so it is still open and bellows is still
+		// managing it; the row must say so (Forge-vh17).
+		revived, err := m.db.ReviveBellowsWorker(workerID, workerStatus)
+		if err != nil {
+			log.Printf("[bellows] Failed to revive worker row for PR #%d (%s): %v", pr.Number, pr.Anvil, err)
+		} else if revived {
+			log.Printf("[bellows] Revived monitor row %s for open PR #%d (%s) from a terminal status", workerID, pr.Number, pr.Anvil)
+		}
 		// The insert above only writes new rows, so a PR detached (or resumed)
 		// after its row was created is reconciled here. The update is a no-op
 		// unless the row's status actually disagrees with the flag.
