@@ -645,3 +645,34 @@ func TestSpawnOptions_ResumeSessionID(t *testing.T) {
 		t.Fatalf("resume args should include --resume sess-9, got %q", joined)
 	}
 }
+
+// TestResultAnswered pins the one predicate every "did the session actually
+// answer" decision reads — the killed-process exit-code normalisation, the
+// rate-limit/auth clearing, ResumeUnavailable, and Assay's spend-ceiling
+// exception. It is a method rather than the same two conditions re-derived at
+// each site so a new subtype that counts as an answer changes one place.
+func TestResultAnswered(t *testing.T) {
+	cases := []struct {
+		name string
+		res  *Result
+		want bool
+	}{
+		{"nil", nil, false},
+		{"success", &Result{ResultSubtype: "success"}, true},
+		// Claude exits 2 on its own rate-limit code even after recovering
+		// internally; the subtype, not the exit code, says the model answered.
+		{"success despite exit code", &Result{ResultSubtype: "success", ExitCode: 2}, true},
+		// subtype "success" with is_error true is a rate-limit rejection
+		// wearing a success label — no work was done.
+		{"success but is_error", &Result{ResultSubtype: "success", IsError: true}, false},
+		{"max turns", &Result{ResultSubtype: "error_max_turns"}, false},
+		{"no result event", &Result{ExitCode: -1}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.res.Answered(); got != tc.want {
+				t.Errorf("Answered() = %v; want %v", got, tc.want)
+			}
+		})
+	}
+}

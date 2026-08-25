@@ -97,6 +97,24 @@ type Result struct {
 	Model string
 }
 
+// Answered reports whether the session reached a genuine terminal success —
+// the provider's own "the model finished and this is its answer".
+//
+// It is one predicate rather than the same two conditions re-derived at every
+// site that needs it: the exit-code normalisation on a killed process, the
+// rate-limit/auth clearing on a recovered session, ResumeUnavailable, and
+// Assay's spend-ceiling exception all mean the same thing by "the session
+// answered", and a new subtype that counts as an answer has to change one
+// place, not four in two packages.
+//
+// The subtype alone is not enough: Claude returns subtype "success" with
+// is_error true when a session was rate-limit rejected before doing any work,
+// which is a refusal wearing a success label. A nil result — no result event
+// at all — is not an answer.
+func (r *Result) Answered() bool {
+	return r != nil && r.ResultSubtype == "success" && !r.IsError
+}
+
 // Process represents a running or completed Smith (Claude Code) process.
 type Process struct {
 	// Cmd is the underlying exec.Cmd (nil after completion).
@@ -240,7 +258,7 @@ func ResumeUnavailable(r *Result) bool {
 	if r == nil {
 		return true
 	}
-	if r.ResultSubtype == "success" && !r.IsError {
+	if r.Answered() {
 		return false
 	}
 	if r.RateLimited || r.AuthFailed {
@@ -506,7 +524,7 @@ func SpawnWithOptions(ctx context.Context, worktreePath, promptText, logDir stri
 		// IMPORTANT: Do NOT clear RateLimited when is_error is true. Claude returns
 		// subtype:"success" with is_error:true when the session was rate-limit
 		// rejected before any work was done — that is NOT a successful session.
-		if result.ResultSubtype == "success" && !result.IsError {
+		if result.Answered() {
 			result.RateLimited = false
 			result.AuthFailed = false
 		}
@@ -560,7 +578,7 @@ func (p *Process) WaitWithExitTimeout(exitTimeout time.Duration) *Result {
 	r := p.result
 	// Only normalize exit code when we actually killed the process; a normal
 	// exit preserves whatever exit code the process reported.
-	if killed && r != nil && r.ResultSubtype == "success" && !r.IsError {
+	if killed && r.Answered() {
 		r.ExitCode = 0
 	}
 	return r

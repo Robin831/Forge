@@ -63,6 +63,19 @@ type Config struct {
 	// to the engine default (assayMaxTurns).
 	MaxTurnsPerPass int
 
+	// MaxCostPerPassUSD bounds the estimated spend of a single pass session.
+	// The runner accumulates the session's cost as its turns complete and
+	// stops the pass the moment it reaches this value, reporting
+	// ReasonMaxCost. Zero disables the ceiling, which is what every
+	// configuration did before it existed; newCostTracker normalises anything
+	// else unusable (a negative, NaN, Inf) to the same disabled state, though
+	// config validation rejects a negative before it can get this far.
+	//
+	// It bounds a session, not a run: five deep passes each hold their own
+	// budget, and a pass that is stopped costs the run its coverage rather
+	// than the run itself (the result comes back partial, naming the pass).
+	MaxCostPerPassUSD float64
+
 	// SkipPaths are doublestar globs whose files are excluded from review
 	// (their hunks are dropped before the diff reaches any pass).
 	SkipPaths []string
@@ -122,6 +135,10 @@ func FromAssayConfig(ac config.AssayConfig) Config {
 	if mt := ac.GetMaxTurnsPerPass(); mt > 0 {
 		cfg.MaxTurnsPerPass = mt
 	}
+	// Read unconditionally, unlike the fields above: 0 is a meaningful value
+	// here (the ceiling off), so a "> 0" guard would make it impossible to
+	// turn off a default that is on.
+	cfg.MaxCostPerPassUSD = ac.GetMaxCostPerPassUSD()
 	if len(ac.SkipPaths) > 0 {
 		cfg.SkipPaths = ac.SkipPaths
 	}

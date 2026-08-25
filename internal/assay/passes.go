@@ -10,7 +10,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"sync"
 	"unicode/utf8"
 
 	"github.com/Robin831/Forge/internal/provider"
@@ -138,6 +137,19 @@ const (
 	// it is the one failure Assay re-runs in a fresh session (see
 	// maxTurnsRetries).
 	ReasonMaxTurns = "error_max_turns"
+	// ReasonMaxCost — the session's accumulated spend reached the per-pass
+	// ceiling (assay.max_cost_per_pass_usd) and Assay stopped it. It is
+	// deliberately its own label rather than a flavour of ReasonProviderFailed:
+	// the provider did nothing wrong, the stop was Forge's decision, and the
+	// operator's action ("raise the ceiling, or find why this pass is looping")
+	// is not the one any provider failure calls for.
+	//
+	// Nothing retries it. A max-turns failure is re-run because a fresh session
+	// often finds a shorter path to the same answer; a cost stop re-run would
+	// buy the identical runaway a second time at full price. That is what makes
+	// this the reason a retry policy branches on rather than a message it has
+	// to parse.
+	ReasonMaxCost = "error_max_cost"
 )
 
 // maxTurnsRetries is how many extra attempts a pass gets after exhausting its
@@ -325,22 +337,36 @@ func newSmithRunner(cfg Config, req ReviewRequest) PassRunner {
 		}
 		flags := []string{"--max-turns", strconv.Itoa(maxTurns)}
 
+		// This session's spend ceiling. A disabled tracker accumulates nothing
+		// and never fires, so an anvil with no ceiling configured runs exactly
+		// the session it always did.
+		tracker := newCostTracker(cfg.MaxCostPerPassUSD)
+		// The stop is a context cancellation rather than a kill on the returned
+		// handle: the callback that trips the ceiling runs inside the provider's
+		// stdout reader, which is started before SpawnWithOptions returns, so
+		// there is a window in which no handle exists yet to kill.
+		// exec.CommandContext already owns terminating the child on
+		// cancellation and has no such window.
+		sessionCtx := ctx
+		var stopSession context.CancelFunc
+		if tracker.enabled() {
+			sessionCtx, stopSession = context.WithCancel(ctx)
+			defer stopSession()
+		}
+
 		opts := smith.SpawnOptions{LogPrefix: "assay"}
 		// The staggered fan-out waits on the primer pass reaching its first
 		// answered token — the point at which the provider has read (and
 		// cached) the shared prefix the other four passes are about to send.
 		// Only the primer's context carries the callback; every other session
-		// spawns with the historical options.
-		if signal := firstOutputFn(ctx); signal != nil {
-			var once sync.Once
-			opts.OnStreamEvent = func(ev smith.StreamEvent) {
-				if isModelOutput(ev) {
-					once.Do(signal)
-				}
-			}
+		// spawns with the historical options. The spend ceiling shares the same
+		// hook, so the callback is installed when either wants it.
+		signal := firstOutputFn(ctx)
+		if signal != nil || tracker.enabled() {
+			opts.OnStreamEvent = costStopCallback(tracker, pv, signal, stopSession)
 		}
 
-		proc, err := smith.SpawnWithOptions(ctx, workDir, prompt, logDir, pv, flags, opts)
+		proc, err := smith.SpawnWithOptions(sessionCtx, workDir, prompt, logDir, pv, flags, opts)
 		if err != nil {
 			return PassOutput{}, newPassError(pass, ReasonSpawnFailed,
 				fmt.Sprintf("spawning %s: %v", pv.Label(), err), err)
@@ -348,47 +374,76 @@ func newSmithRunner(cfg Config, req ReviewRequest) PassRunner {
 		if req.OnPassLog != nil && proc.LogPath != "" {
 			req.OnPassLog(proc.LogPath)
 		}
-		res := proc.Wait()
-		if res.RateLimited {
-			perr := newPassError(pass, ReasonRateLimited,
-				fmt.Sprintf("provider %s rate limited", pv.Label()), nil)
-			perr.Turns = res.NumTurns
-			perr.CostUSD = res.CostUSD
-			perr.CacheCreationTokens = res.CacheCreationTokens
-			perr.CacheReadTokens = res.CacheReadTokens
-			return PassOutput{}, perr
-		}
-		if res.IsError || res.ExitCode != 0 {
-			// The result subtype (e.g. error_max_turns) is the reason an
-			// operator acts on, so it becomes the failure label when the
-			// provider reported one.
-			reason := res.ResultSubtype
-			if strings.TrimSpace(reason) == "" {
-				reason = ReasonProviderFailed
-			}
-			perr := newPassError(pass, reason,
-				fmt.Sprintf("provider %s failed (exit %d, subtype %s)", pv.Label(), res.ExitCode, res.ResultSubtype), nil)
-			perr.Turns = res.NumTurns
-			// The result event carries total_cost_usd on error subtypes too,
-			// and the stream reader captures it unconditionally — so the
-			// session's cost is known here and must not be dropped.
-			perr.CostUSD = res.CostUSD
-			perr.CacheCreationTokens = res.CacheCreationTokens
-			perr.CacheReadTokens = res.CacheReadTokens
-			return PassOutput{}, perr
-		}
-		text := res.FullOutput
-		if text == "" {
-			text = res.Output
-		}
-		return PassOutput{
-			Text:                text,
-			CostUSD:             res.CostUSD,
-			Turns:               res.NumTurns,
-			CacheCreationTokens: res.CacheCreationTokens,
-			CacheReadTokens:     res.CacheReadTokens,
-		}, nil
+		return sessionOutcome(pass, tracker, proc.Wait(), pv)
 	}
+}
+
+// sessionOutcome turns a finished pass session into the pass's result: its
+// output, or the PassError naming why there is none.
+//
+// The order of the branches is the whole of it, which is why it is one function
+// rather than a tail of the runner nothing can call:
+//
+//   - The spend ceiling is asked FIRST, because a session Assay killed for cost
+//     reports its own death in whatever shape the kill produced — a non-zero
+//     exit, no result event, sometimes a rate-limit flag read off the truncated
+//     stream — and none of those name the cause. Classified further down, a
+//     stopped session would come back as rate_limited and be retried, buying
+//     the identical runaway again at full price.
+//   - Rate limiting next, since it has dedicated handling upstream.
+//   - Any other error subtype after that, keeping the provider's own label
+//     (error_max_turns and the rest) as the reason an operator acts on.
+//
+// Every failing branch carries the session's accounting out with it. A stop
+// takes the tracker's (a killed session emits no result event, so smith.Result
+// reports zeros for turns the provider did bill); the others take the result's,
+// which is populated on error subtypes too.
+func sessionOutcome(pass string, tracker *costTracker, res *smith.Result, pv provider.Provider) (PassOutput, error) {
+	if perr := costStopError(pass, tracker, res); perr != nil {
+		return PassOutput{}, perr
+	}
+	if res.RateLimited {
+		perr := newPassError(pass, ReasonRateLimited,
+			fmt.Sprintf("provider %s rate limited", pv.Label()), nil)
+		withResultTelemetry(perr, res)
+		return PassOutput{}, perr
+	}
+	if res.IsError || res.ExitCode != 0 {
+		// The result subtype (e.g. error_max_turns) is the reason an
+		// operator acts on, so it becomes the failure label when the
+		// provider reported one.
+		reason := res.ResultSubtype
+		if strings.TrimSpace(reason) == "" {
+			reason = ReasonProviderFailed
+		}
+		perr := newPassError(pass, reason,
+			fmt.Sprintf("provider %s failed (exit %d, subtype %s)", pv.Label(), res.ExitCode, res.ResultSubtype), nil)
+		withResultTelemetry(perr, res)
+		return PassOutput{}, perr
+	}
+	text := res.FullOutput
+	if text == "" {
+		text = res.Output
+	}
+	return PassOutput{
+		Text:                text,
+		CostUSD:             res.CostUSD,
+		Turns:               res.NumTurns,
+		CacheCreationTokens: res.CacheCreationTokens,
+		CacheReadTokens:     res.CacheReadTokens,
+	}, nil
+}
+
+// withResultTelemetry copies the session's own accounting onto a failure. The
+// result event carries total_cost_usd, num_turns and the cache lines on error
+// subtypes too, and the stream reader captures them unconditionally — so a
+// failed session's spend is known here and must not be dropped: a failure is
+// not a refund.
+func withResultTelemetry(perr *PassError, res *smith.Result) {
+	perr.Turns = res.NumTurns
+	perr.CostUSD = res.CostUSD
+	perr.CacheCreationTokens = res.CacheCreationTokens
+	perr.CacheReadTokens = res.CacheReadTokens
 }
 
 // loadPrompt returns the embedded instruction text for the named template.

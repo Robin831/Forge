@@ -2021,6 +2021,16 @@ type AssayConfig struct {
 	// allows — the telltale is passes dying at error_max_turns with turns at
 	// exactly the cap on modest diffs.
 	MaxTurnsPerPass *int `mapstructure:"max_turns_per_pass" yaml:"max_turns_per_pass,omitempty"`
+	// MaxCostPerPassUSD is the estimated-spend ceiling for a single review
+	// pass session. The engine accumulates the session's cost as its turns
+	// complete and stops the pass once it reaches this value, reporting
+	// error_max_cost — a named stop, never a quiet success. It is the
+	// per-session counterpart to DailyCostLimitUSD: the daily cap notices a
+	// runaway only after it has spent the day's budget, while this one bounds
+	// the single session that is spending it. Unset uses
+	// defaultAssayMaxCostPerPassUSD; 0 disables the ceiling. A negative value
+	// is a typo rather than a way of saying "off" and Validate rejects it.
+	MaxCostPerPassUSD *float64 `mapstructure:"max_cost_per_pass_usd" yaml:"max_cost_per_pass_usd,omitempty"`
 	// Incremental controls delta reviews: when a PR has been reviewed before,
 	// review only the changes pushed since the last reviewed commit instead of
 	// the whole base..head diff again. Defaults to true when unset. Falls back
@@ -2123,6 +2133,25 @@ func (a AssayConfig) GetMaxTurnsPerPass() int {
 	return *a.MaxTurnsPerPass
 }
 
+// defaultAssayMaxCostPerPassUSD is the fallback per-pass spend ceiling when
+// max_cost_per_pass_usd is unset. It is a runaway brake, not a routine budget:
+// a review pass that spends this much has burned a third of the default
+// daily_cost_limit_usd on one session, which is the shape of a pass looping on
+// tool calls rather than one reading a large diff. Deployments running a
+// premium model over big diffs should raise it (or set 0) rather than have
+// ordinary passes clipped.
+const defaultAssayMaxCostPerPassUSD = 1.50
+
+// GetMaxCostPerPassUSD returns the per-pass USD spend ceiling, defaulting to
+// defaultAssayMaxCostPerPassUSD when unset. Zero disables the ceiling; a
+// negative value never reaches here, since Validate rejects one.
+func (a AssayConfig) GetMaxCostPerPassUSD() float64 {
+	if a.MaxCostPerPassUSD == nil {
+		return defaultAssayMaxCostPerPassUSD
+	}
+	return *a.MaxCostPerPassUSD
+}
+
 // IsIncremental returns whether repeat reviews are scoped to the changes since
 // the last reviewed commit. Defaults to true when unset — re-reviewing the
 // whole PR on every push is what buried PRs in duplicate comments.
@@ -2204,6 +2233,9 @@ func (c *Config) ResolvedAssay(anvilName string) AssayConfig {
 	}
 	if o.MaxTurnsPerPass != nil {
 		resolved.MaxTurnsPerPass = o.MaxTurnsPerPass
+	}
+	if o.MaxCostPerPassUSD != nil {
+		resolved.MaxCostPerPassUSD = o.MaxCostPerPassUSD
 	}
 	if o.Incremental != nil {
 		resolved.Incremental = o.Incremental
@@ -2308,6 +2340,7 @@ func Defaults() Config {
 			MaxDiffBytes:      intPtr(250000),
 			MaxBaseFileBytes:  intPtr(100000),
 			NitCap:            intPtr(5),
+			MaxCostPerPassUSD: float64Ptr(defaultAssayMaxCostPerPassUSD),
 		},
 	}
 }
@@ -2691,6 +2724,23 @@ func resolveDefaultConfigPath() string {
 	return ""
 }
 
+// validateAssay checks the numeric Assay settings that a bad value silently
+// breaks. It is called for the global block and for every per-anvil overlay
+// under the same rules, since an overlay is what the daemon actually resolves
+// and running the check on only one of the two leaves the other unguarded.
+//
+// prefix names the block being checked ("assay", `anvil "x": assay`) so the
+// message points at the value the operator wrote.
+func validateAssay(prefix string, a AssayConfig) []string {
+	var errs []string
+	if v := a.MaxCostPerPassUSD; v != nil {
+		if math.IsNaN(*v) || math.IsInf(*v, 0) || *v < 0 {
+			errs = append(errs, fmt.Sprintf("%s.max_cost_per_pass_usd must be a non-negative finite number (set 0 to disable the per-pass ceiling)", prefix))
+		}
+	}
+	return errs
+}
+
 // Validate checks the config for logical errors.
 func (c *Config) Validate() []string {
 	var errs []string
@@ -2816,7 +2866,12 @@ func (c *Config) Validate() []string {
 		errs = append(errs, "settings.crucible_poll_interval must be >= 30s when enabled (or 0 to disable)")
 	}
 
+	errs = append(errs, validateAssay("assay", c.Assay)...)
+
 	for name, anvil := range c.Anvils {
+		if anvil.Assay != nil {
+			errs = append(errs, validateAssay(fmt.Sprintf("anvil %q: assay", name), *anvil.Assay)...)
+		}
 		if anvil.Path == "" {
 			errs = append(errs, fmt.Sprintf("anvil %q: path is required", name))
 		}

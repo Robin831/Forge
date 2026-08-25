@@ -3,6 +3,7 @@ package config
 import (
 	"bytes"
 	"log/slog"
+	"math"
 	"os"
 	"path/filepath"
 	"testing"
@@ -389,6 +390,83 @@ assay:
 	// An unknown anvil also falls back to the global config.
 	unknown := cfg.ResolvedAssay("does-not-exist")
 	assert.Equal(t, cfg.Assay, unknown)
+}
+
+func TestAssayConfig_MaxCostPerPassUSD(t *testing.T) {
+	// Unset is not "off": the ceiling is a runaway brake that a deployment
+	// which never heard of the key still gets.
+	var a AssayConfig
+	assert.Equal(t, defaultAssayMaxCostPerPassUSD, a.GetMaxCostPerPassUSD())
+
+	// 0 is the documented way to turn it off, and is distinguishable from
+	// unset only because the field is a pointer.
+	off := 0.0
+	a.MaxCostPerPassUSD = &off
+	assert.Equal(t, 0.0, a.GetMaxCostPerPassUSD())
+
+	set := 3.25
+	a.MaxCostPerPassUSD = &set
+	assert.Equal(t, 3.25, a.GetMaxCostPerPassUSD())
+}
+
+func TestAssayConfig_MaxCostPerPassUSD_AnvilOverlay(t *testing.T) {
+	global, anvil := 1.5, 4.0
+	cfg := &Config{
+		Assay: AssayConfig{MaxCostPerPassUSD: &global},
+		Anvils: map[string]AnvilConfig{
+			"api":   {Path: "/repos/api", Assay: &AssayConfig{MaxCostPerPassUSD: &anvil}},
+			"plain": {Path: "/repos/plain"},
+		},
+	}
+	assert.Equal(t, 4.0, cfg.ResolvedAssay("api").GetMaxCostPerPassUSD())
+	assert.Equal(t, 1.5, cfg.ResolvedAssay("plain").GetMaxCostPerPassUSD())
+}
+
+func TestValidate_AssayMaxCostPerPassUSD(t *testing.T) {
+	base := func() *Config {
+		c := Defaults()
+		c.Anvils = map[string]AnvilConfig{"test": {Path: "/repos/test"}}
+		return &c
+	}
+	const globalMsg = "assay.max_cost_per_pass_usd must be a non-negative finite number (set 0 to disable the per-pass ceiling)"
+
+	t.Run("defaults are valid", func(t *testing.T) {
+		for _, e := range base().Validate() {
+			assert.NotContains(t, e, "max_cost_per_pass_usd")
+		}
+	})
+
+	t.Run("zero disables", func(t *testing.T) {
+		cfg := base()
+		zero := 0.0
+		cfg.Assay.MaxCostPerPassUSD = &zero
+		for _, e := range cfg.Validate() {
+			assert.NotContains(t, e, "max_cost_per_pass_usd")
+		}
+	})
+
+	for name, bad := range map[string]float64{
+		"negative": -1,
+		"NaN":      math.NaN(),
+		"infinite": math.Inf(1),
+	} {
+		t.Run(name, func(t *testing.T) {
+			cfg := base()
+			v := bad
+			cfg.Assay.MaxCostPerPassUSD = &v
+			assert.Contains(t, cfg.Validate(), globalMsg)
+		})
+	}
+
+	// A per-anvil overlay is what the daemon actually resolves, so it is
+	// checked under the same rule and named by the anvil that wrote it.
+	t.Run("per-anvil overlay", func(t *testing.T) {
+		cfg := base()
+		bad := -0.5
+		cfg.Anvils["test"] = AnvilConfig{Path: "/repos/test", Assay: &AssayConfig{MaxCostPerPassUSD: &bad}}
+		assert.Contains(t, cfg.Validate(),
+			`anvil "test": assay.max_cost_per_pass_usd must be a non-negative finite number (set 0 to disable the per-pass ceiling)`)
+	})
 }
 
 func TestAssayConfig_ResolverDefaults(t *testing.T) {
