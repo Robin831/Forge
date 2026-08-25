@@ -64,6 +64,16 @@ type assayReservation struct {
 // counter — the gate admits a review and the daemon releases it several
 // goroutines and one event later, with no channel between them to carry a
 // handle, so the two must be able to derive the same key independently.
+//
+// Because the head is part of the key, a PR whose head advances while a review
+// of the previous head is still running holds TWO estimates until the older
+// one is released or its assayRunLease expires. That is deliberate rather than
+// overlooked: nothing cancels the superseded review, so it is still spending,
+// and dropping its hold the moment a new head appeared would free budget
+// against a session that is going to bill for it — the exact blindness this
+// ledger exists to remove. The cost of keeping it is one PR reserving twice
+// its share for at most the width of a review; the cost of dropping it is the
+// overrun back.
 func assayRunKey(anvil string, prNumber int, headSHA string) string {
 	return fmt.Sprintf("%s#%d@%s", anvil, prNumber, headSHA)
 }
@@ -80,6 +90,31 @@ func assayBudgetAdmits(recorded, reserved, estimate, limit float64) bool {
 		return true
 	}
 	return recorded+reserved+estimate <= limit
+}
+
+// clampAssayEstimate bounds a per-run estimate by the daily cap it is measured
+// against, so an estimate larger than the whole budget cannot turn Assay off.
+//
+// Without it the projection is unsatisfiable by construction: an estimate above
+// the limit fails `recorded + reserved + estimate <= limit` even on a day with
+// nothing recorded and nothing in flight, so every review is refused under
+// daily_cost_limit — and assayUpToDate, which tests the identical condition,
+// then releases every head to merge readiness as "reviewed". A deployment whose
+// reviews genuinely cost more than its cap would silently auto-merge every PR
+// unreviewed rather than reviewing one and stopping, which is strictly worse
+// than the overrun: the cap is a spend limit, never a switch that disables
+// review while leaving merges running.
+//
+// Clamping keeps the guarantee that matters — a day that has spent nothing
+// always admits exactly one review — and the first run to finish records real
+// spend, at which point the ordinary exhaustion branch takes over and refuses
+// the rest of the day. A limit of 0 (no cap) reserves nothing and clamps
+// nothing.
+func clampAssayEstimate(estimate, limit float64) float64 {
+	if limit > 0 && estimate > limit {
+		return limit
+	}
+	return estimate
 }
 
 // reservedAssayCostUSD is the total estimate held for admitted-but-unrecorded
@@ -115,7 +150,12 @@ func (m *Monitor) reservedAssayCostLocked() float64 {
 // dispatched review reaches the daemon, so two PRs examined a millisecond apart
 // would both read the same reserved total and both be admitted against the last
 // slot of the budget.
-func (m *Monitor) admitAssayRun(key string, estimate, recorded, limit float64) bool {
+//
+// It returns the reserved total the decision was actually made against, so a
+// refusal can be reported with the arithmetic that produced it rather than with
+// the snapshot the caller read a moment earlier — the whole reason the re-check
+// exists is that the two can differ.
+func (m *Monitor) admitAssayRun(key string, estimate, recorded, limit float64) (bool, float64) {
 	m.assayBudgetMu.Lock()
 	defer m.assayBudgetMu.Unlock()
 	// A re-admission of a key already held (the same head admitted twice
@@ -123,7 +163,7 @@ func (m *Monitor) admitAssayRun(key string, estimate, recorded, limit float64) b
 	// is excluded from the projection it is measured against.
 	reserved := m.reservedAssayCostLocked() - m.assayReservations[key].estimateUSD
 	if !assayBudgetAdmits(recorded, reserved, estimate, limit) {
-		return false
+		return false, reserved
 	}
 	if m.assayReservations == nil {
 		m.assayReservations = make(map[string]assayReservation)
@@ -132,7 +172,7 @@ func (m *Monitor) admitAssayRun(key string, estimate, recorded, limit float64) b
 		estimateUSD: estimate,
 		expires:     m.nowFn().Add(assayAdmissionLease),
 	}
-	return true
+	return true, reserved
 }
 
 // HoldAssayReservation pins the in-flight estimate for a review that is
@@ -146,7 +186,7 @@ func (m *Monitor) admitAssayRun(key string, estimate, recorded, limit float64) b
 // admit, this replaces the admission hold with a longer-lived one keyed the
 // same way — one reservation, refreshed, never two.
 func (m *Monitor) HoldAssayReservation(anvil string, prNumber int, headSHA string) float64 {
-	estimate := m.assayRunCostEstimate(m.assayRunCostFloor(anvil))
+	estimate := m.assayRunCostEstimate(m.assayRunCostBounds(anvil))
 	m.assayBudgetMu.Lock()
 	defer m.assayBudgetMu.Unlock()
 	if m.assayReservations == nil {
@@ -190,12 +230,16 @@ func (m *Monitor) ReleaseAssayReservation(anvil string, prNumber int, headSHA st
 	m.avgAssayRunCost += (actualCostUSD - m.avgAssayRunCost) / float64(m.avgAssayRunCostN)
 }
 
-// assayRunCostFloor is the configured floor for the estimate, per anvil.
-func (m *Monitor) assayRunCostFloor(anvil string) float64 {
+// assayRunCostBounds is the anvil's configured floor for the estimate and the
+// daily cap that bounds it from above. They are read together because a
+// caller that took only one of them could size a hold the gate would then
+// refuse forever (see clampAssayEstimate).
+func (m *Monitor) assayRunCostBounds(anvil string) (floor, limit float64) {
 	if m.assayConfig == nil {
-		return 0
+		return 0, 0
 	}
-	return m.assayConfig(anvil).RunCostEstimateUSD
+	cfg := m.assayConfig(anvil)
+	return cfg.RunCostEstimateUSD, cfg.DailyCostLimitUSD
 }
 
 // assayRunCostEstimate returns what one not-yet-finished review is assumed to
@@ -215,15 +259,23 @@ func (m *Monitor) assayRunCostFloor(anvil string) float64 {
 // from there by ReleaseAssayReservation. A seed query that fails is not
 // retried and not fatal: the floor governs until the first run of the new
 // lifetime records its cost.
-func (m *Monitor) assayRunCostEstimate(floor float64) float64 {
+func (m *Monitor) assayRunCostEstimate(floor, limit float64) float64 {
 	m.seedAssayRunCostMean()
 	m.assayBudgetMu.Lock()
 	avg := m.avgAssayRunCost
 	m.assayBudgetMu.Unlock()
-	if avg > floor {
-		return avg
+	estimate := floor
+	if avg > estimate {
+		estimate = avg
 	}
-	return floor
+	// Bounded by the cap it will be measured against. The mean is seeded from
+	// recorded history, so a deployment whose reviews have cost more than its
+	// own daily cap seeds an estimate no day could ever satisfy — which would
+	// refuse every review from an unspent day and, through assayUpToDate,
+	// release every head to merge readiness unreviewed. The estimate stops at
+	// the limit instead: one review is always admissible on a day that has
+	// spent nothing, and what it actually costs is what closes the day.
+	return clampAssayEstimate(estimate, limit)
 }
 
 // seedAssayRunCostMean primes the rolling mean from recorded history, once.

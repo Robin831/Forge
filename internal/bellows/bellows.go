@@ -475,7 +475,7 @@ func (m *Monitor) assayUpToDate(pr *state.PR, headSHA string, dailyAssayCost *fl
 	// health over a queue rather than over a budget.
 	if dailyAssayCost != nil && cfg.DailyCostLimitUSD > 0 &&
 		(*dailyAssayCost >= cfg.DailyCostLimitUSD ||
-			!assayBudgetAdmits(*dailyAssayCost, 0, m.assayRunCostEstimate(cfg.RunCostEstimateUSD), cfg.DailyCostLimitUSD)) {
+			!assayBudgetAdmits(*dailyAssayCost, 0, m.assayRunCostEstimate(cfg.RunCostEstimateUSD, cfg.DailyCostLimitUSD), cfg.DailyCostLimitUSD)) {
 		return true
 	}
 	return false
@@ -1863,7 +1863,7 @@ func (m *Monitor) maybeEmitReviewNeeded(ctx context.Context, pr *state.PR, statu
 		dailyCostUSD:        *dailyAssayCost,
 		dailyCostLimit:      cfg.DailyCostLimitUSD,
 		reservedUSD:         m.reservedAssayCostUSD(),
-		estimateUSD:         m.assayRunCostEstimate(cfg.RunCostEstimateUSD),
+		estimateUSD:         m.assayRunCostEstimate(cfg.RunCostEstimateUSD, cfg.DailyCostLimitUSD),
 		runCount:            runCount,
 		maxRuns:             cfg.MaxRuns,
 		assayInFlight:       m.assayWorkerInFlight(pr.Anvil, pr.Number),
@@ -1876,8 +1876,18 @@ func (m *Monitor) maybeEmitReviewNeeded(ctx context.Context, pr *state.PR, statu
 	// not reach the ledger until the daemon starts it, several goroutines
 	// later, so without an atomic claim here two PRs in the same cycle would
 	// both be admitted against the last of the budget.
-	if emit && !m.admitAssayRun(assayRunKey(pr.Anvil, pr.Number, status.HeadSHA), in.estimateUSD, in.dailyCostUSD, in.dailyCostLimit) {
-		emit, suppressedBy = false, assaySuppressedInFlightBudget
+	if emit {
+		admitted, reserved := m.admitAssayRun(assayRunKey(pr.Anvil, pr.Number, status.HeadSHA), in.estimateUSD, in.dailyCostUSD, in.dailyCostLimit)
+		if !admitted {
+			// Report the refusal with the total it was actually made against.
+			// in.reservedUSD is the snapshot read before the atomic re-check,
+			// and the whole reason the re-check exists is that another PR in
+			// the same cycle may have taken the slot in between — a message
+			// presenting the stale figure as the deciding arithmetic would not
+			// add up for whoever reads it.
+			in.reservedUSD = reserved
+			emit, suppressedBy = false, assaySuppressedInFlightBudget
+		}
 	}
 	if !emit {
 		if suppressedBy != "" {

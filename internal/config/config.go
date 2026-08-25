@@ -2049,6 +2049,14 @@ type AssayConfig struct {
 	// defaultAssayRunCostEstimateUSD; 0 means "floor at zero", which leaves the
 	// rolling mean alone rather than disabling the reservation. A negative
 	// value is a typo and Validate rejects it.
+	//
+	// Whatever it is set to, the effective estimate is bounded above by
+	// DailyCostLimitUSD: an estimate larger than the whole cap would refuse
+	// every review from a day that has spent nothing, and a refused review
+	// releases its head to merge readiness — so an unspendable estimate would
+	// not slow reviews down, it would switch them off while merges kept
+	// running. Setting this at or above the cap therefore costs nothing but
+	// leaves you with exactly one review per day.
 	RunCostEstimateUSD *float64 `mapstructure:"run_cost_estimate_usd" yaml:"run_cost_estimate_usd,omitempty"`
 	// Incremental controls delta reviews: when a PR has been reviewed before,
 	// review only the changes pushed since the last reviewed commit instead of
@@ -2172,14 +2180,30 @@ func (a AssayConfig) GetMaxCostPerPassUSD() float64 {
 }
 
 // defaultAssayRunCostEstimateUSD is the fallback floor for the in-flight
-// reservation one Assay review holds while it runs. It is deliberately a
-// conservative number: under-estimating re-admits the very overrun the
-// reservation exists to stop, while over-estimating only stops reviews
-// slightly early against a cap that is itself a safety limit. $5.00 sits below
-// the mean run cost observed on this deployment (87 recorded runs, mean $7.05,
-// max $16.67) precisely because it is only a floor — once the ledger holds
-// runs, the rolling mean of them governs and is the larger of the two.
-const defaultAssayRunCostEstimateUSD = 5.00
+// reservation one Assay review holds while it runs.
+//
+// The floor is only ever the cold-start estimate: it covers the window in
+// which no run has recorded a cost yet, and the moment one has, the rolling
+// mean of recorded runs governs (the estimate is the larger of the two). So
+// the number that matters here is not "what does a review cost" — recorded
+// history answers that far better — but "what fraction of an UNCONFIGURED
+// deployment's daily cap may a review nobody has measured yet reserve".
+//
+// $1.00 against the shipped default assay.daily_cost_limit_usd of $5.00 is a
+// fifth of it. That relationship is the point, and it is why this is not the
+// $5.00 that a straight reading of this deployment's observed mean ($7.05 over
+// 87 runs) would suggest: with floor == cap, an unconfigured deployment admits
+// one review and then refuses every later one under daily_cost_limit — which
+// assayUpToDate releases to merge readiness — so the first cent of recorded
+// spend would silently auto-merge the rest of the day's PRs unreviewed. An
+// over-conservative floor does not stop reviews slightly early there; it stops
+// them for the day and hands the PRs a clean bill of health.
+//
+// The conservatism the reservation needs is still present, in the two places
+// it costs nothing: the rolling mean overrides this floor upward as soon as
+// there is one, and a deployment whose reviews really do cost $7 raises its own
+// cap rather than living under a floor that reaches it.
+const defaultAssayRunCostEstimateUSD = 1.00
 
 // GetRunCostEstimateUSD returns the floor for a single in-flight Assay run's
 // cost estimate, defaulting to defaultAssayRunCostEstimateUSD when unset. Zero

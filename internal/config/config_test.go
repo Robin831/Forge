@@ -1861,6 +1861,29 @@ func TestValidate_AssayMaxTurnsPerPass(t *testing.T) {
 	})
 }
 
+// TestAssayDefaultEstimateFloorLeavesRoomUnderTheDefaultCap pins the
+// relationship between the two shipped defaults, not either number.
+//
+// The in-flight gate refuses a review when recorded spend plus the estimate
+// does not fit under the cap, and a review refused that way has its head
+// released to merge readiness as "reviewed". So at floor >= cap an
+// unconfigured deployment admits one review and then auto-merges the rest of
+// the day's PRs unreviewed — the estimate would be acting as an off switch
+// rather than as a budget. Whichever default moves, they must stay apart.
+func TestAssayDefaultEstimateFloorLeavesRoomUnderTheDefaultCap(t *testing.T) {
+	def := Defaults().Assay
+	limit := def.GetDailyCostLimitUSD()
+	floor := def.GetRunCostEstimateUSD()
+
+	require.Greater(t, limit, 0.0, "the shipped Assay cap must not be unlimited")
+	assert.Less(t, floor, limit,
+		"the default run cost estimate floor ($%.2f) must sit below the default daily cap ($%.2f), "+
+			"or one cent of recorded spend refuses every later review and releases its head unreviewed",
+		floor, limit)
+	assert.GreaterOrEqual(t, limit/floor, 2.0,
+		"the default cap must fit more than one estimated review")
+}
+
 func TestAssayConfig_RunCostEstimateUSD(t *testing.T) {
 	var a AssayConfig
 	assert.Equal(t, defaultAssayRunCostEstimateUSD, a.GetRunCostEstimateUSD())

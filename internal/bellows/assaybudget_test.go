@@ -2,6 +2,8 @@ package bellows
 
 import (
 	"context"
+	"fmt"
+	"math"
 	"sync"
 	"testing"
 	"time"
@@ -9,9 +11,14 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/Robin831/Forge/internal/config"
 	"github.com/Robin831/Forge/internal/state"
 	"github.com/Robin831/Forge/internal/vcs"
 )
+
+// admits drops admitAssayRun's reserved-total return so a test that only cares
+// whether the review was let through reads as one expression.
+func admits(admitted bool, _ float64) bool { return admitted }
 
 // ledgerMonitor is a Monitor with nothing wired but the Assay budget: the
 // reservation ledger touches no VCS provider and, unless a test says
@@ -58,10 +65,10 @@ func TestAdmitAssayRunBlocksTheRunThatWouldBreakTheCap(t *testing.T) {
 	)
 
 	for i := 0; i < 3; i++ {
-		assert.True(t, m.admitAssayRun(assayRunKey("anvil", i, "head"), estimate, 0, limit),
+		assert.True(t, admits(m.admitAssayRun(assayRunKey("anvil", i, "head"), estimate, 0, limit)),
 			"review %d fits under the cap (%0.2f reserved so far)", i, float64(i)*estimate)
 	}
-	assert.False(t, m.admitAssayRun(assayRunKey("anvil", 3, "head"), estimate, 0, limit),
+	assert.False(t, admits(m.admitAssayRun(assayRunKey("anvil", 3, "head"), estimate, 0, limit)),
 		"the fourth review would project $12.00 against a $10.00 limit and must be refused")
 	assert.InDelta(t, 9.0, m.reservedAssayCostUSD(), 1e-9,
 		"a refused admission must not leave a reservation behind")
@@ -89,7 +96,7 @@ func TestAdmitAssayRunIsAtomicUnderConcurrency(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			if m.admitAssayRun(assayRunKey("anvil", i, "head"), estimate, 0, limit) {
+			if ok, _ := m.admitAssayRun(assayRunKey("anvil", i, "head"), estimate, 0, limit); ok {
 				mu.Lock()
 				admitted++
 				mu.Unlock()
@@ -109,8 +116,8 @@ func TestAdmitAssayRunReAdmittingOneKeyDoesNotDoubleCount(t *testing.T) {
 	m := ledgerMonitor(nil, 0)
 	key := assayRunKey("anvil", 7, "headsha")
 
-	require.True(t, m.admitAssayRun(key, 3, 0, 10))
-	require.True(t, m.admitAssayRun(key, 3, 0, 10))
+	require.True(t, admits(m.admitAssayRun(key, 3, 0, 10)))
+	require.True(t, admits(m.admitAssayRun(key, 3, 0, 10)))
 	assert.InDelta(t, 3.0, m.reservedAssayCostUSD(), 1e-9)
 }
 
@@ -122,16 +129,16 @@ func TestReleaseAssayReservationFreesTheBudgetAndFeedsTheEstimate(t *testing.T) 
 	m := ledgerMonitor(nil, 0)
 	const limit = 10.0
 
-	require.True(t, m.admitAssayRun(assayRunKey("anvil", 1, "h1"), 4, 0, limit))
-	require.True(t, m.admitAssayRun(assayRunKey("anvil", 2, "h2"), 4, 0, limit))
-	require.False(t, m.admitAssayRun(assayRunKey("anvil", 3, "h3"), 4, 0, limit))
+	require.True(t, admits(m.admitAssayRun(assayRunKey("anvil", 1, "h1"), 4, 0, limit)))
+	require.True(t, admits(m.admitAssayRun(assayRunKey("anvil", 2, "h2"), 4, 0, limit)))
+	require.False(t, admits(m.admitAssayRun(assayRunKey("anvil", 3, "h3"), 4, 0, limit)))
 
 	m.ReleaseAssayReservation("anvil", 1, "h1", 6.50)
 
 	assert.InDelta(t, 4.0, m.reservedAssayCostUSD(), 1e-9, "the finished review's hold is gone")
-	assert.True(t, m.admitAssayRun(assayRunKey("anvil", 3, "h3"), 4, 0, limit),
+	assert.True(t, admits(m.admitAssayRun(assayRunKey("anvil", 3, "h3"), 4, 0, limit)),
 		"the deferred review is admitted once the budget frees up")
-	assert.InDelta(t, 6.50, m.assayRunCostEstimate(0), 1e-9,
+	assert.InDelta(t, 6.50, m.assayRunCostEstimate(0, 0), 1e-9,
 		"the recorded cost is what the next estimate is taken from")
 }
 
@@ -142,17 +149,17 @@ func TestReleaseAssayReservationFreesTheBudgetAndFeedsTheEstimate(t *testing.T) 
 func TestReleaseAssayReservationIgnoresACostlessRun(t *testing.T) {
 	m := ledgerMonitor(nil, 0)
 	m.ReleaseAssayReservation("anvil", 1, "h1", 8.0)
-	require.InDelta(t, 8.0, m.assayRunCostEstimate(0), 1e-9)
+	require.InDelta(t, 8.0, m.assayRunCostEstimate(0, 0), 1e-9)
 
 	m.ReleaseAssayReservation("anvil", 2, "h2", 0)
-	assert.InDelta(t, 8.0, m.assayRunCostEstimate(0), 1e-9)
+	assert.InDelta(t, 8.0, m.assayRunCostEstimate(0, 0), 1e-9)
 }
 
 // TestReleaseAssayReservationIsIdempotent — the run path releases in a defer
 // and the reservation may already have expired underneath it.
 func TestReleaseAssayReservationIsIdempotent(t *testing.T) {
 	m := ledgerMonitor(nil, 0)
-	require.True(t, m.admitAssayRun(assayRunKey("anvil", 1, "h1"), 4, 0, 10))
+	require.True(t, admits(m.admitAssayRun(assayRunKey("anvil", 1, "h1"), 4, 0, 10)))
 	m.ReleaseAssayReservation("anvil", 1, "h1", 4)
 	m.ReleaseAssayReservation("anvil", 1, "h1", 4)
 	m.ReleaseAssayReservation("anvil", 9, "never-held", 4)
@@ -167,7 +174,7 @@ func TestAssayAdmissionExpiresWhenNoRunPicksItUp(t *testing.T) {
 	now := time.Date(2026, 8, 19, 10, 0, 0, 0, time.UTC)
 	m.now = func() time.Time { return now }
 
-	require.True(t, m.admitAssayRun(assayRunKey("anvil", 1, "h1"), 4, 0, 10))
+	require.True(t, admits(m.admitAssayRun(assayRunKey("anvil", 1, "h1"), 4, 0, 10)))
 	require.InDelta(t, 4.0, m.reservedAssayCostUSD(), 1e-9)
 
 	now = now.Add(assayAdmissionLease - time.Minute)
@@ -185,7 +192,7 @@ func TestHoldAssayReservationOutlivesTheAdmissionLease(t *testing.T) {
 	now := time.Date(2026, 8, 19, 10, 0, 0, 0, time.UTC)
 	m.now = func() time.Time { return now }
 
-	require.True(t, m.admitAssayRun(assayRunKey("anvil", 1, "h1"), 4, 0, 10))
+	require.True(t, admits(m.admitAssayRun(assayRunKey("anvil", 1, "h1"), 4, 0, 10)))
 	held := m.HoldAssayReservation("anvil", 1, "h1")
 	assert.InDelta(t, 4.0, held, 1e-9)
 	assert.InDelta(t, 4.0, m.reservedAssayCostUSD(), 1e-9,
@@ -203,7 +210,7 @@ func TestHoldAssayReservationOutlivesTheAdmissionLease(t *testing.T) {
 // budget the admission decision was made on.
 func TestHoldAssayReservationKeepsTheLargerAdmissionEstimate(t *testing.T) {
 	m := ledgerMonitor(nil, 1)
-	require.True(t, m.admitAssayRun(assayRunKey("anvil", 1, "h1"), 6, 0, 10))
+	require.True(t, admits(m.admitAssayRun(assayRunKey("anvil", 1, "h1"), 6, 0, 10)))
 	assert.InDelta(t, 6.0, m.HoldAssayReservation("anvil", 1, "h1"), 1e-9)
 }
 
@@ -215,7 +222,7 @@ func TestHoldAssayReservationCountsARunTheGateNeverSaw(t *testing.T) {
 	m := ledgerMonitor(nil, 5)
 	assert.InDelta(t, 5.0, m.HoldAssayReservation("anvil", 42, "manual"), 1e-9)
 	assert.InDelta(t, 5.0, m.reservedAssayCostUSD(), 1e-9)
-	assert.False(t, m.admitAssayRun(assayRunKey("anvil", 1, "h1"), 5, 2, 10),
+	assert.False(t, admits(m.admitAssayRun(assayRunKey("anvil", 1, "h1"), 5, 2, 10)),
 		"a manual re-run's in-flight spend counts against an automatic review's admission")
 }
 
@@ -235,8 +242,8 @@ func TestAssayRunCostEstimateSeedsFromRecordedRuns(t *testing.T) {
 	}))
 
 	m := ledgerMonitor(db, 0)
-	assert.InDelta(t, 8.0, m.assayRunCostEstimate(0), 1e-9, "mean of the recorded runs")
-	assert.InDelta(t, 12.0, m.assayRunCostEstimate(12), 1e-9, "the floor wins when it is the larger")
+	assert.InDelta(t, 8.0, m.assayRunCostEstimate(0, 0), 1e-9, "mean of the recorded runs")
+	assert.InDelta(t, 12.0, m.assayRunCostEstimate(12, 0), 1e-9, "the floor wins when it is the larger")
 }
 
 // TestAssayRunCostEstimateFallsBackToTheFloorOnAColdLedger — a daemon that has
@@ -245,7 +252,7 @@ func TestAssayRunCostEstimateFallsBackToTheFloorOnAColdLedger(t *testing.T) {
 	db, cleanup := openTempDB(t)
 	defer cleanup()
 	m := ledgerMonitor(db, 5)
-	assert.InDelta(t, 5.0, m.assayRunCostEstimate(5), 1e-9)
+	assert.InDelta(t, 5.0, m.assayRunCostEstimate(5, 0), 1e-9)
 }
 
 // TestMaybeEmitReviewNeeded_DefersTheReviewThatWouldBreakTheDailyCap is the
@@ -379,7 +386,143 @@ func TestAssayUpToDateReleasesAHeadTheBudgetCanNoLongerCover(t *testing.T) {
 	assert.True(t, m.assayUpToDate(pr, "head", float64Ptr(10)), "the budget is spent")
 
 	// A reservation is not a reason to release: it clears in minutes.
-	require.True(t, m.admitAssayRun(assayRunKey("my-anvil", 401, "head"), 4, 2, 10))
+	require.True(t, admits(m.admitAssayRun(assayRunKey("my-anvil", 401, "head"), 4, 2, 10)))
 	assert.False(t, m.assayUpToDate(pr, "head", float64Ptr(2)),
 		"an in-flight reservation must not release the head to merge readiness")
+}
+
+// shippedDefaultsMonitor builds a Monitor whose Assay gate config is the one an
+// unconfigured deployment actually runs: the shipped daily cap and the shipped
+// estimate floor, read from config.Defaults() rather than restated as literals,
+// so this test follows either number if it moves.
+func shippedDefaultsMonitor(t *testing.T, db *state.DB) (m *Monitor, limit, floor float64) {
+	t.Helper()
+	def := config.Defaults().Assay
+	limit, floor = def.GetDailyCostLimitUSD(), def.GetRunCostEstimateUSD()
+	m = New(db, nil, time.Minute, map[string]string{"my-anvil": "/fake"}, nil, nil, nil, nil)
+	m.SetAssayConfig(func(string) AssayGateConfig {
+		return AssayGateConfig{Enabled: true, SkipDrafts: true, DebounceSeconds: 300,
+			DailyCostLimitUSD: limit, RunCostEstimateUSD: floor}
+	})
+	return m, limit, floor
+}
+
+// insertReviewablePRs creates n open PRs on one anvil, each of which the Assay
+// trigger gate would dispatch a review for.
+func insertReviewablePRs(t *testing.T, db *state.DB, first, n int) []*state.PR {
+	t.Helper()
+	prs := make([]*state.PR, n)
+	for i := range prs {
+		prs[i] = &state.PR{
+			Number:    first + i,
+			Anvil:     "my-anvil",
+			BeadID:    "forge-def",
+			Branch:    "forge/forge-def",
+			Status:    state.PROpen,
+			CreatedAt: time.Now(),
+		}
+		require.NoError(t, db.InsertPR(prs[i]))
+	}
+	return prs
+}
+
+// TestAssayBudgetUnderShippedDefaults pins the headroom branch against the
+// SHIPPED defaults rather than against hand-picked numbers.
+//
+// It exists because every other budget test here chooses a limit and a floor
+// that are comfortably apart (limit 10, floor 4), and in that configuration the
+// branch behaves benignly whatever the relationship between the two defaults
+// happens to be. The refusal it guards is not benign: a review refused under
+// daily_cost_limit has its head released to merge readiness by assayUpToDate,
+// so a default pair that refuses early does not review PRs more cheaply — it
+// auto-merges them unreviewed, which is what happened on 2026-08-07 (twenty
+// PRs) and 2026-08-09.
+//
+// The specific arrangement that produces it is floor >= cap: `recorded + 0 +
+// estimate <= limit` then fails at the first cent of recorded spend, and every
+// PR for the rest of the day is released as "reviewed".
+func TestAssayBudgetUnderShippedDefaults(t *testing.T) {
+	def := config.Defaults().Assay
+	limit, floor := def.GetDailyCostLimitUSD(), def.GetRunCostEstimateUSD()
+
+	require.Greater(t, limit, 0.0, "the shipped default must keep a cap; 0 would mean unlimited Assay spend")
+	require.Less(t, floor, limit,
+		"the shipped estimate floor ($%.2f) must sit materially below the shipped daily cap ($%.2f): "+
+			"at floor >= cap an unconfigured deployment admits at most one review a day and releases every "+
+			"later head to merge readiness unreviewed", floor, limit)
+}
+
+// TestShippedDefaultsKeepReviewingAfterTheDayHasSpentSomething is the probe
+// from the review, as a test: one cent of recorded spend must not close the day.
+func TestShippedDefaultsKeepReviewingAfterTheDayHasSpentSomething(t *testing.T) {
+	db, cleanup := openTempDB(t)
+	defer cleanup()
+
+	m, limit, floor := shippedDefaultsMonitor(t, db)
+	const recorded = 0.01
+	wantAdmit := int(math.Floor((limit - recorded) / floor))
+	require.GreaterOrEqual(t, wantAdmit, 2,
+		"with the shipped defaults a day that has spent a cent must still fit more than one review")
+
+	prs := insertReviewablePRs(t, db, 501, wantAdmit+1)
+
+	var mu sync.Mutex
+	var got []PREvent
+	m.OnEvent(func(_ context.Context, ev PREvent) {
+		mu.Lock()
+		got = append(got, ev)
+		mu.Unlock()
+	})
+
+	for i, pr := range prs {
+		status := &vcs.PRStatus{State: "OPEN", HeadRefName: "forge/forge-def", HeadSHA: fmt.Sprintf("head%d", i)}
+		m.maybeEmitReviewNeeded(context.Background(), pr, status, &prSnapshot{CIPassing: true}, float64Ptr(recorded))
+	}
+
+	mu.Lock()
+	assert.Len(t, got, wantAdmit, "the day's budget must admit every review that fits under it, not just the first")
+	mu.Unlock()
+
+	// The first PR — the one a floor == cap default would already have refused
+	// — must not have been released to merge readiness as "reviewed".
+	assert.False(t, m.assayUpToDate(prs[0], "head0", float64Ptr(recorded)),
+		"a head the budget can still pay to review must not count as reviewed")
+}
+
+// TestShippedDefaultsStillAdmitAReviewWhenTheMeanExceedsTheCap is the other
+// half: the rolling mean seeds from recorded history, so a deployment whose
+// reviews have cost more than its own cap (this one: 87 runs, mean $7.05,
+// against the shipped $5.00) seeds an estimate no day could ever satisfy.
+// Unclamped, that refuses every review from a completely unspent day and turns
+// Assay off while leaving auto-merge running.
+func TestShippedDefaultsStillAdmitAReviewWhenTheMeanExceedsTheCap(t *testing.T) {
+	db, cleanup := openTempDB(t)
+	defer cleanup()
+
+	m, limit, floor := shippedDefaultsMonitor(t, db)
+	prs := insertReviewablePRs(t, db, 601, 1)
+
+	// Fold a run more expensive than the whole daily cap into the rolling mean,
+	// the way a finished review does.
+	m.ReleaseAssayReservation("my-anvil", 999, "gone", 7.05)
+	require.Greater(t, 7.05, limit, "the fixture only means something if the mean exceeds the cap")
+
+	assert.InDelta(t, limit, m.assayRunCostEstimate(floor, limit), 1e-9,
+		"an estimate larger than the whole cap is clamped to it, so the projection stays satisfiable")
+
+	var mu sync.Mutex
+	var got []PREvent
+	m.OnEvent(func(_ context.Context, ev PREvent) {
+		mu.Lock()
+		got = append(got, ev)
+		mu.Unlock()
+	})
+	status := &vcs.PRStatus{State: "OPEN", HeadRefName: "forge/forge-def", HeadSHA: "head0"}
+	m.maybeEmitReviewNeeded(context.Background(), prs[0], status, &prSnapshot{CIPassing: true}, float64Ptr(0))
+
+	mu.Lock()
+	assert.Len(t, got, 1, "a day that has spent nothing must always admit one review")
+	mu.Unlock()
+	assert.False(t, m.assayUpToDate(prs[0], "head0", float64Ptr(0)),
+		"an unspent day must not release a head to merge readiness as reviewed")
 }
