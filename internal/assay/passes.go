@@ -505,9 +505,9 @@ const sharedPromptPreamble = "# Assay Pull-Request Review\n\n" +
 	"instructions are the ones after the diff.\n\n"
 
 // writeSharedPromptHead writes the part of a prompt that must be byte-identical
-// across passes: the preamble, the repository guidance, the untrusted bead/PR
-// context, the incremental-review framing, the already-reported findings, the
-// elided-file note, the triage notes and the diff.
+// across passes: the stable prefix (preamble, repository guidance, untrusted
+// bead/PR context, already-reported findings), then the incremental-review
+// framing, the elided-file note, the triage notes and the diff.
 //
 // It is one function rather than a copy per prompt builder because "identical"
 // is the whole contract — two builders assembling the same sections in the same
@@ -515,6 +515,17 @@ const sharedPromptPreamble = "# Assay Pull-Request Review\n\n" +
 // stops sharing anything. buildPassPrompt and buildTriagePrompt both call it,
 // so triage's prompt also shares the head (and, when triage does not narrow the
 // file set, the diff too, since scopeDiffToFiles then returns it unchanged).
+//
+// The sections are ordered by how often they change, least first, because a
+// prompt cache matches from the first byte and the first differing byte throws
+// away everything behind it. stablePrefix is the part that varies with nothing
+// but the PR and the checkout — see its comment for what is deliberately kept
+// out of it. Below that: the incremental framing, which names the baseline
+// commit and so moves on every push, sits directly above the diff it describes
+// rather than several kilobytes higher up; and the triage notes, which are
+// model-authored and therefore differ between two runs of the very same head,
+// sit directly above it in turn. Nothing that varies per run may move upward
+// through them — TestStablePrefixIsByteStableAcrossRuns is the guard.
 //
 // triageNotes is empty for the triage prompt itself — it is what triage
 // produces, not what it reads.
@@ -533,11 +544,8 @@ const sharedPromptPreamble = "# Assay Pull-Request Review\n\n" +
 // The diff heading carries the same tag contextSection does rather than relying
 // on the fence holding.
 func writeSharedPromptHead(b *strings.Builder, req ReviewRequest, unifiedDiff, triageNotes string) {
-	b.WriteString(sharedPromptPreamble)
-	b.WriteString(repoGuidanceSection(req))
-	b.WriteString(contextSection(req))
+	b.WriteString(stablePrefix(req))
 	b.WriteString(incrementalSection(req))
-	b.WriteString(priorFindingsSection(req))
 	b.WriteString(elidedFilesSection(req.elided))
 	if strings.TrimSpace(triageNotes) != "" {
 		b.WriteString("\n## Triage Notes\n\n")
@@ -550,10 +558,10 @@ func writeSharedPromptHead(b *strings.Builder, req ReviewRequest, unifiedDiff, t
 }
 
 // buildPassPrompt assembles the full prompt for a deep pass: the shared head
-// (preamble, repo guidance, untrusted bead/PR context, the incremental-review
-// framing and already-reported list on repeat reviews, the triage notes and the
-// scoped diff) followed by the pass-specific instructions and the shared JSON
-// contract.
+// (preamble, repo guidance, untrusted bead/PR context, the already-reported
+// list on repeat reviews, the incremental-review framing, the triage notes and
+// the scoped diff) followed by the pass-specific instructions and the shared
+// JSON contract.
 //
 // That order is deliberately the inverse of the obvious one. Prefix caching
 // matches from the START of the prompt, so leading with the pass instructions
@@ -587,9 +595,15 @@ func buildPassPrompt(p passDef, req ReviewRequest, scopedDiff, triageNotes strin
 }
 
 // maxPriorFindingsListed bounds the already-reported list injected into pass
-// prompts. A PR with hundreds of recorded findings gets the first hundred plus
+// prompts. A PR with hundreds of recorded findings gets a hundred of them plus
 // a count — the list exists to stop restatement, not to be an archive, and an
 // unbounded one would crowd out the diff it is protecting.
+//
+// Which hundred is decided by sortedPriorFindings and not by the query: the cap
+// is applied to that total order, so two runs over the same set list the same
+// hundred in the same order. pr_findings is read without an ORDER BY, and
+// truncating whatever SQLite handed back would let a re-run rewrite this block
+// — and every byte behind it — over a difference that means nothing.
 const maxPriorFindingsListed = 100
 
 // incrementalSection tells the passes, on a delta review, that the diff is the
@@ -614,6 +628,11 @@ func incrementalSection(req ReviewRequest) string {
 // earlier reviews of this PR that the passes must not restate, verbatim or
 // reworded. Titles and anchors are model-authored on a prior run, so they are
 // sanitized like every other untrusted prompt ingredient.
+//
+// The list is put in a total order here rather than by whoever populated
+// PriorFindings, because the ordering is this block's contract and not the
+// caller's: the block belongs to the stable prefix, and neither Review reading
+// rows from the DB nor a test writing them by hand has any reason to know that.
 func priorFindingsSection(req ReviewRequest) string {
 	if len(req.PriorFindings) == 0 {
 		return ""
@@ -625,7 +644,7 @@ func priorFindingsSection(req ReviewRequest) string {
 	b.WriteString("If the changes under review address one, simply omit it. ")
 	b.WriteString("Findings marked (resolved) were closed and must not be re-reported at all. ")
 	b.WriteString("Report only NEW issues.\n\n")
-	list := req.PriorFindings
+	list := sortedPriorFindings(req.PriorFindings)
 	extra := 0
 	if len(list) > maxPriorFindingsListed {
 		extra = len(list) - maxPriorFindingsListed
