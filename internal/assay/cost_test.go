@@ -667,7 +667,7 @@ func TestSessionOutcomeAsksTheCeilingFirst(t *testing.T) {
 	}
 
 	// A truncated stream that also set RateLimited is still a cost stop.
-	_, err := sessionOutcome("logic", stopped(), &smith.Result{ExitCode: -1, RateLimited: true}, pv)
+	_, err := sessionOutcome("logic", stopped(), nil, &smith.Result{ExitCode: -1, RateLimited: true}, pv)
 	var perr *PassError
 	if !errors.As(err, &perr) || perr.Reason != ReasonMaxCost {
 		t.Fatalf("outcome = %v; want a %s PassError", err, ReasonMaxCost)
@@ -679,32 +679,32 @@ func TestSessionOutcomeAsksTheCeilingFirst(t *testing.T) {
 	}
 
 	// A subtype the provider did report is likewise not allowed to relabel a stop.
-	_, err = sessionOutcome("logic", stopped(), &smith.Result{ExitCode: 1, IsError: true, ResultSubtype: ReasonMaxTurns}, pv)
+	_, err = sessionOutcome("logic", stopped(), nil, &smith.Result{ExitCode: 1, IsError: true, ResultSubtype: ReasonMaxTurns}, pv)
 	if !errors.As(err, &perr) || perr.Reason != ReasonMaxCost {
 		t.Errorf("outcome = %v; want %s to win over the provider's own subtype", err, ReasonMaxCost)
 	}
 
 	// With no ceiling crossed the historical classification is untouched.
 	intact := newCostTracker(1.50)
-	_, err = sessionOutcome("logic", intact, &smith.Result{ExitCode: 1, RateLimited: true, NumTurns: 4, CostUSD: 0.12}, pv)
+	_, err = sessionOutcome("logic", intact, nil, &smith.Result{ExitCode: 1, RateLimited: true, NumTurns: 4, CostUSD: 0.12}, pv)
 	if !errors.As(err, &perr) || perr.Reason != ReasonRateLimited {
 		t.Fatalf("outcome = %v; want %s", err, ReasonRateLimited)
 	}
 	if perr.Turns != 4 || math.Abs(perr.CostUSD-0.12) > 1e-9 {
 		t.Errorf("telemetry = {turns:%d cost:%v}; want the result's {4 0.12} — a failure is not a refund", perr.Turns, perr.CostUSD)
 	}
-	_, err = sessionOutcome("logic", intact, &smith.Result{ExitCode: 1, IsError: true, ResultSubtype: ReasonMaxTurns, NumTurns: 30}, pv)
+	_, err = sessionOutcome("logic", intact, nil, &smith.Result{ExitCode: 1, IsError: true, ResultSubtype: ReasonMaxTurns, NumTurns: 30}, pv)
 	if !errors.As(err, &perr) || perr.Reason != ReasonMaxTurns {
 		t.Errorf("outcome = %v; want %s", err, ReasonMaxTurns)
 	}
-	_, err = sessionOutcome("logic", intact, &smith.Result{ExitCode: 2, IsError: true}, pv)
+	_, err = sessionOutcome("logic", intact, nil, &smith.Result{ExitCode: 2, IsError: true}, pv)
 	if !errors.As(err, &perr) || perr.Reason != ReasonProviderFailed {
 		t.Errorf("outcome = %v; want %s when the provider named no subtype", err, ReasonProviderFailed)
 	}
 
 	// The success path, including a session that answered on the very turn that
 	// crossed the ceiling: nothing was cut short, so it keeps its answer.
-	out, err := sessionOutcome("logic", stopped(), &smith.Result{ResultSubtype: "success", FullOutput: "{}", NumTurns: 7, CostUSD: 1.60}, pv)
+	out, err := sessionOutcome("logic", stopped(), nil, &smith.Result{ResultSubtype: "success", FullOutput: "{}", NumTurns: 7, CostUSD: 1.60}, pv)
 	if err != nil {
 		t.Fatalf("outcome for a session that answered = %v; want the answer", err)
 	}

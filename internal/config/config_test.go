@@ -1747,3 +1747,116 @@ settings:
 	require.NoError(t, err)
 	assert.Equal(t, EmptyDiffActionClose, cfg.Settings.ResolvedEmptyDiffAction())
 }
+
+// TestResolvedAssay_MaxTurnsPerPass covers the per-anvil turn budget in the one
+// place its fallback is decided. The budget is the setting an operator reaches
+// for when one repo's layout starves the passes (a rules file plus a handful of
+// supporting reads), and the point of the overlay is that the repo needing the
+// headroom gets it without every other anvil's runs paying for a raised global.
+func TestResolvedAssay_MaxTurnsPerPass(t *testing.T) {
+	i := func(v int) *int { return &v }
+	cases := []struct {
+		name   string
+		global *int
+		anvils map[string]AnvilConfig
+		anvil  string
+		want   int
+	}{
+		{
+			name:   "per-anvil override wins over the global",
+			global: i(16),
+			anvils: map[string]AnvilConfig{"deep": {Path: "/repos/deep", Assay: &AssayConfig{MaxTurnsPerPass: i(30)}}},
+			anvil:  "deep",
+			want:   30,
+		},
+		{
+			name:   "an anvil with no override inherits the global",
+			global: i(16),
+			anvils: map[string]AnvilConfig{"plain": {Path: "/repos/plain"}},
+			anvil:  "plain",
+			want:   16,
+		},
+		{
+			name:   "an anvil with an assay block but no budget inherits the global",
+			global: i(16),
+			anvils: map[string]AnvilConfig{"other": {Path: "/repos/other", Assay: &AssayConfig{NitCap: i(3)}}},
+			anvil:  "other",
+			want:   16,
+		},
+		{
+			name:   "an unknown anvil inherits the global",
+			global: i(16),
+			anvils: map[string]AnvilConfig{"deep": {Path: "/repos/deep", Assay: &AssayConfig{MaxTurnsPerPass: i(30)}}},
+			anvil:  "does-not-exist",
+			want:   16,
+		},
+		{
+			name:   "an override equal to the global is still an override",
+			global: i(16),
+			anvils: map[string]AnvilConfig{"same": {Path: "/repos/same", Assay: &AssayConfig{MaxTurnsPerPass: i(16)}}},
+			anvil:  "same",
+			want:   16,
+		},
+		{
+			// 0 means unset at both levels; the engine then applies its own
+			// default, which is why the resolver reports 0 rather than guessing.
+			name:   "unset at both levels leaves the engine default to apply",
+			global: nil,
+			anvils: map[string]AnvilConfig{"plain": {Path: "/repos/plain"}},
+			anvil:  "plain",
+			want:   0,
+		},
+		{
+			name:   "a per-anvil override applies with no global set",
+			global: nil,
+			anvils: map[string]AnvilConfig{"deep": {Path: "/repos/deep", Assay: &AssayConfig{MaxTurnsPerPass: i(30)}}},
+			anvil:  "deep",
+			want:   30,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := &Config{Assay: AssayConfig{MaxTurnsPerPass: tc.global}, Anvils: tc.anvils}
+			assert.Equal(t, tc.want, cfg.ResolvedAssay(tc.anvil).GetMaxTurnsPerPass())
+		})
+	}
+}
+
+func TestValidate_AssayMaxTurnsPerPass(t *testing.T) {
+	base := func() *Config {
+		c := Defaults()
+		c.Anvils = map[string]AnvilConfig{"test": {Path: "/repos/test"}}
+		return &c
+	}
+	i := func(v int) *int { return &v }
+	const globalMsg = "assay.max_turns_per_pass must not be negative (omit it to use the engine default)"
+
+	t.Run("defaults are valid", func(t *testing.T) {
+		for _, e := range base().Validate() {
+			assert.NotContains(t, e, "max_turns_per_pass")
+		}
+	})
+
+	// 0 is the documented spelling of "unset", so it is not an error — unlike
+	// the spend ceiling, there is no such thing as a session with no turns.
+	t.Run("zero means unset", func(t *testing.T) {
+		cfg := base()
+		cfg.Assay.MaxTurnsPerPass = i(0)
+		for _, e := range cfg.Validate() {
+			assert.NotContains(t, e, "max_turns_per_pass")
+		}
+	})
+
+	t.Run("negative is a typo, not a switch", func(t *testing.T) {
+		cfg := base()
+		cfg.Assay.MaxTurnsPerPass = i(-1)
+		assert.Contains(t, cfg.Validate(), globalMsg)
+	})
+
+	t.Run("per-anvil overlay", func(t *testing.T) {
+		cfg := base()
+		cfg.Anvils["test"] = AnvilConfig{Path: "/repos/test", Assay: &AssayConfig{MaxTurnsPerPass: i(-4)}}
+		assert.Contains(t, cfg.Validate(),
+			`anvil "test": assay.max_turns_per_pass must not be negative (omit it to use the engine default)`)
+	})
+}

@@ -2015,11 +2015,16 @@ type AssayConfig struct {
 	NitCap            *int     `mapstructure:"nit_cap" yaml:"nit_cap,omitempty"`
 	SkipDrafts        *bool    `mapstructure:"skip_drafts" yaml:"skip_drafts,omitempty"`
 	SkipPaths         []string `mapstructure:"skip_paths" yaml:"skip_paths,omitempty"`
-	// MaxTurnsPerPass bounds each review pass agent session (every file read
-	// costs a turn). Unset or <= 0 uses the engine default. Raise it for repos
-	// whose rules file and code layout need more reading than the default
-	// allows — the telltale is passes dying at error_max_turns with turns at
-	// exactly the cap on modest diffs.
+	// MaxTurnsPerPass bounds each review pass agent session, counted in model
+	// messages (every file a pass opens costs a turn). Unset or <= 0 uses the
+	// engine default; a negative value is a typo rather than a way of saying
+	// "off" and Validate names it.
+	//
+	// Set it on the ANVIL rather than globally when one repo's rules file and
+	// code layout need more reading than the rest — the telltale is that
+	// repo's passes dying at error_max_turns with turns at exactly the cap on
+	// modest diffs — so the headroom is paid for by the runs that need it. See
+	// docs/assay-turn-budget.md for where the engine default comes from.
 	MaxTurnsPerPass *int `mapstructure:"max_turns_per_pass" yaml:"max_turns_per_pass,omitempty"`
 	// MaxCostPerPassUSD is the estimated-spend ceiling for a single review
 	// pass session. The engine accumulates the session's cost as its turns
@@ -2737,6 +2742,15 @@ func validateAssay(prefix string, a AssayConfig) []string {
 		if math.IsNaN(*v) || math.IsInf(*v, 0) || *v < 0 {
 			errs = append(errs, fmt.Sprintf("%s.max_cost_per_pass_usd must be a non-negative finite number (set 0 to disable the per-pass ceiling)", prefix))
 		}
+	}
+	// A negative turn budget is a typo, not a way of saying "off": unlike the
+	// spend ceiling there is nothing to disable — a session always gets some
+	// budget — so the engine ignores anything <= 0 and runs its own default.
+	// Zero is left alone because that is the documented way to write "unset";
+	// a negative one is worth naming, since it reads like a switch and silently
+	// does nothing.
+	if v := a.MaxTurnsPerPass; v != nil && *v < 0 {
+		errs = append(errs, fmt.Sprintf("%s.max_turns_per_pass must not be negative (omit it to use the engine default)", prefix))
 	}
 	return errs
 }
