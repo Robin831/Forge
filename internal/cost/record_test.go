@@ -117,7 +117,8 @@ func TestRecordSkipsZeroUsage(t *testing.T) {
 // tens of thousands of tokens were read from the prefix, and treating that as
 // empty would drop exactly the sessions the cache columns exist to show.
 func TestUsageIsZeroCountsCacheTokens(t *testing.T) {
-	if !(Usage{}).IsZero() {
+	var empty Usage
+	if !empty.IsZero() {
 		t.Error("the zero Usage is not zero")
 	}
 	for _, u := range []Usage{

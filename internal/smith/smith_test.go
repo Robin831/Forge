@@ -707,5 +707,6 @@ func TestResultUsage_MapsProviderCacheColumns(t *testing.T) {
 // usage, which is how every stage inherits this rule from one place.
 func TestResultUsage_RateLimitedIsZero(t *testing.T) {
 	r := &Result{TokensIn: 100, CacheReadTokens: 5000, CostUSD: 0.1, RateLimited: true}
-	assert.True(t, r.Usage().IsZero())
+	u := r.Usage()
+	assert.True(t, u.IsZero())
 }

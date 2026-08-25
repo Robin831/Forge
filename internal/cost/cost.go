@@ -34,6 +34,7 @@ package cost
 import (
 	"errors"
 	"fmt"
+	"log"
 	"log/slog"
 	"strings"
 	"sync"
@@ -302,7 +303,7 @@ func (u *Usage) Add(other Usage) {
 // almost entirely from a prompt cache reports large cache reads next to
 // negligible input, and treating that as empty would drop the very sessions the
 // cache columns exist to make visible.
-func (u Usage) IsZero() bool {
+func (u *Usage) IsZero() bool {
 	return u.InputTokens == 0 && u.OutputTokens == 0 &&
 		u.CacheReadTokens == 0 && u.CacheWriteTokens == 0 &&
 		u.EstimatedCostUSD == 0
@@ -327,10 +328,12 @@ type Sink interface {
 // workers — so no stage can record two of the three tables, or pass a literal
 // zero where the provider reported real cache accounting.
 //
-// A zero usage writes nothing (a rate-limited spawn is not a completion), and a
-// nil sink is a no-op so callers without a DB need no guard of their own.
-// Callers holding a typed nil pointer (a nil *state.DB) must still check it
-// themselves — a typed nil in an interface is not a nil interface.
+// A caller holding a typed nil pointer — a nil *state.DB, which is what every
+// caller in this repo holds — must check it itself: a typed nil in an interface
+// is not a nil interface, so it reaches the sink methods and panics inside
+// them. The nil-interface branch below is a backstop for a caller that has no
+// sink at all, not a substitute for that check. A zero usage writes nothing,
+// since a rate-limited spawn is not a completion.
 //
 // Every write is attempted even when an earlier one fails: the tables are
 // independent, and a failed daily write is no reason to lose the bead's row.
@@ -353,6 +356,29 @@ func Record(sink Sink, providerName, beadID, anvil string, u Usage) error {
 		errs = append(errs, fmt.Errorf("bead_costs: %w", err))
 	}
 	return errors.Join(errs...)
+}
+
+// RecordSession is Record for a caller with nowhere to return the error to: the
+// stage-spawning fix workers (quench, burnish, rebase) record a session from
+// inside a provider-fallback loop whose own result is the fix, not the
+// bookkeeping, so a failed cost write is logged under the stage's tag and the
+// fix carries on. stage is that tag — "quench", "burnish", "rebase" — and lands
+// in the log line as the prefix those packages use for everything else.
+//
+// It exists as one function because the three fix workers had one copy each.
+// Until they recorded at all, their spend reached the provider quota and the
+// Copilot premium counter but neither cost table — so a PR worked by the fix
+// loop looked free next to the bead's own Smith run, and the daily_cost_limit
+// it should have counted against never saw it.
+//
+// The two skips are Record's: a zero usage (a rate-limited spawn is not a
+// completion, and smith.Result.Usage reports zero for one) and a nil sink. A
+// typed nil pointer is not a nil sink — callers holding a *state.DB check it
+// before calling, as Record's own doc requires.
+func RecordSession(sink Sink, stage, providerName, beadID, anvil string, u Usage) {
+	if err := Record(sink, providerName, beadID, anvil, u); err != nil {
+		log.Printf("[%s] bead=%s: cost write failed: %v", stage, beadID, err)
+	}
 }
 
 // Calculate computes the estimated cost based on pricing.

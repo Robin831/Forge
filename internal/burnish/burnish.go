@@ -120,24 +120,6 @@ type FixParams struct {
 	VerifyRetries int
 }
 
-// recordSessionCost persists one completed burnish session's token usage into the
-// three cost tables, through the same cost.Record fan-out the pipeline stages
-// use. Until this existed, burnish spend reached the provider quota and the
-// Copilot premium counter but never the daily or per-bead cost tables — so a PR
-// worked by the fix loop looked free next to the bead's own Smith run, and the
-// daily_cost_limit it should have counted against never saw it.
-//
-// A rate-limited spawn is not a completion and records nothing: smith.Result's
-// own Usage reports zero for one.
-func recordSessionCost(db *state.DB, beadID, anvil, provName string, r *smith.Result) {
-	if db == nil {
-		return
-	}
-	if err := cost.Record(db, provName, beadID, anvil, r.Usage()); err != nil {
-		log.Printf("[burnish] bead=%s: cost write failed: %v", beadID, err)
-	}
-}
-
 // FixResult captures the outcome of addressing review comments.
 type FixResult struct {
 	// Addressed is true if Smith successfully pushed review fixes.
@@ -289,7 +271,9 @@ func BatchFix(ctx context.Context, p BatchFixParams) *FixResult {
 				_ = p.DB.AddCopilotRequest(cost.Today(), m)
 			}
 		}
-		recordSessionCost(p.DB, p.BeadID, p.AnvilName, string(pv.Kind), smithResult)
+		if p.DB != nil {
+			cost.RecordSession(p.DB, "burnish", string(pv.Kind), p.BeadID, p.AnvilName, smithResult.Usage())
+		}
 		if !smithResult.RateLimited {
 			break
 		}
@@ -642,7 +626,9 @@ func Fix(ctx context.Context, p FixParams) *FixResult {
 					_ = p.DB.AddCopilotRequest(cost.Today(), m)
 				}
 			}
-			recordSessionCost(p.DB, p.BeadID, p.AnvilName, string(pv.Kind), smithResult)
+			if p.DB != nil {
+				cost.RecordSession(p.DB, "burnish", string(pv.Kind), p.BeadID, p.AnvilName, smithResult.Usage())
+			}
 			if !smithResult.RateLimited {
 				activeProviderIdx = pi
 				break

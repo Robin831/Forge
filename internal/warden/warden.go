@@ -79,9 +79,16 @@ type ReviewResult struct {
 	CostUSD float64
 	// Usage is the review's full token accounting — input, output and the
 	// provider's prompt-cache read/write counts — summed over every session the
-	// review made, the verdict follow-up turn included. CostUSD is kept as its
-	// own field because callers render it directly; Usage.EstimatedCostUSD
-	// carries the same number for the cost sinks.
+	// review made, the verdict follow-up turn included. It is what the cost
+	// sinks record.
+	//
+	// Usage.EstimatedCostUSD is normally the same number CostUSD carries, but
+	// the two can differ: CostUSD takes whatever the provider reported on each
+	// session, while Usage takes smith.Result.Usage, which is the zero value
+	// for a session the provider refused (a rate-limited verdict follow-up
+	// adds to CostUSD and contributes nothing here). A refused request is not a
+	// completion, so it stays out of the persisted accounting — read CostUSD
+	// for what to render and Usage for what to record, not one for the other.
 	Usage cost.Usage
 	// NoDiff is true when the rejection was because Smith produced no diff.
 	NoDiff bool

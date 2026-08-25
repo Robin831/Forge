@@ -1303,7 +1303,7 @@ func TestRunCostIgnoresForeignErrors(t *testing.T) {
 		t.Errorf("RunCost(foreign) = %v; want 0", got)
 	}
 	// A RunError wrapped further up still reports its cost.
-	wrapped := fmt.Errorf("assay: %w", &RunError{CostUSD: 0.42, Err: errors.New("boom")})
+	wrapped := fmt.Errorf("assay: %w", &RunError{Usage: cost.Usage{EstimatedCostUSD: 0.42}, Err: errors.New("boom")})
 	if got := RunCost(wrapped); math.Abs(got-0.42) > 1e-9 {
 		t.Errorf("RunCost(wrapped) = %v; want 0.42", got)
 	}
@@ -1608,7 +1608,8 @@ func TestRunUsageCarriesFailedRunAccounting(t *testing.T) {
 		t.Errorf("RunUsage cost %v disagrees with RunCost %v", got.EstimatedCostUSD, RunCost(err))
 	}
 	// A foreign error fabricates nothing.
-	if !RunUsage(errors.New("something else")).IsZero() {
+	foreign := RunUsage(errors.New("something else"))
+	if !foreign.IsZero() {
 		t.Error("RunUsage(foreign) should be zero")
 	}
 }

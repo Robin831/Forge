@@ -12,6 +12,7 @@ import (
 
 	"github.com/Robin831/Forge/internal/assay"
 	"github.com/Robin831/Forge/internal/config"
+	"github.com/Robin831/Forge/internal/cost"
 	"github.com/Robin831/Forge/internal/state"
 )
 
@@ -240,10 +241,12 @@ func TestRunAssayReviewRecordsCacheTokens(t *testing.T) {
 		d, db := newAssayRunDaemon(t)
 		d.assayReview = func(context.Context, assay.ReviewRequest, *state.DB, assay.Config) (*assay.ReviewResult, error) {
 			return nil, &assay.RunError{
-				CostUSD:             1.75,
-				CacheCreationTokens: 41500,
-				CacheReadTokens:     900,
-				Err:                 errors.New("all assay deep passes failed"),
+				Usage: cost.Usage{
+					CacheWriteTokens: 41500,
+					CacheReadTokens:  900,
+					EstimatedCostUSD: 1.75,
+				},
+				Err: errors.New("all assay deep passes failed"),
 			}
 		}
 

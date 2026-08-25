@@ -341,8 +341,8 @@ func (r *ReviewResult) RedundantCacheWriteTokens() int {
 // the cost billed up to the point the run failed, so a run that produces no
 // result still reaches cost tracking.
 //
-// This is the run-level counterpart of PassError.CostUSD, and it exists for the
-// same reason: a failure is not a refund. The provider bills a triage session
+// This is the run-level counterpart of PassError's own telemetry, and it exists
+// for the same reason: a failure is not a refund. The provider bills a triage session
 // that ended on error_max_turns — the subtype that by definition burned the
 // whole turn budget — exactly like one that answered, and a run whose every
 // deep pass failed has paid for six full sessions. Without this the daemon's
@@ -352,18 +352,13 @@ func (r *ReviewResult) RedundantCacheWriteTokens() int {
 // Error() reproduces the wrapped message verbatim and Unwrap exposes the cause,
 // so callers that only log or errors.As on the underlying error are unaffected.
 type RunError struct {
-	// CostUSD is what the run had been billed when it failed.
-	CostUSD float64
-	// CacheCreationTokens and CacheReadTokens are the prompt-cache accounting
-	// of the sessions the run made before it died, carried for the same reason
-	// as CostUSD: a failed session was billed for the prefix it wrote, and a
-	// run recorded with zero cache tokens reads as one that shared nothing.
-	// The failures that reach here are not rare enough to leave out — a triage
-	// pass that exhausts its turn budget wrote the whole prefix first.
-	CacheCreationTokens int
-	CacheReadTokens     int
-	// Usage is the full token accounting behind that cost, so a run that dies
-	// still records its prompt-cache columns and not just its dollars.
+	// Usage is everything the run had been billed when it failed — tokens,
+	// prompt-cache counts and the dollars behind them — so a run that dies
+	// still records its cache columns and not just its cost. It is the one
+	// field: a separate CostUSD would be a second copy of
+	// Usage.EstimatedCostUSD that has to be kept in step with it, and RunCost
+	// and RunCacheTokens read it back through RunUsage rather than from fields
+	// of their own.
 	Usage cost.Usage
 	// Err is the underlying failure.
 	Err error
@@ -373,42 +368,32 @@ func (e *RunError) Error() string { return e.Err.Error() }
 
 func (e *RunError) Unwrap() error { return e.Err }
 
-// RunCost reports the cost carried by an error from Review. An error raised
-// before any provider session ran (a malformed request, an unbuildable prompt)
-// carries none and reports 0, as does any error this package did not build —
-// an undercount is the safe direction for a number feeding a spend limit, a
+// RunUsage reports the accounting carried by an error from Review: the tokens,
+// prompt-cache counts and dollars a failed run had been billed, for the cost
+// tables that record all of them together. An error raised before any provider
+// session ran (a malformed request, an unbuildable prompt) carries none and
+// reports the zero usage, as does any error this package did not build — an
+// undercount is the safe direction for numbers feeding a spend limit, a
 // fabricated one is not.
-func RunCost(err error) float64 {
-	var re *RunError
-	if errors.As(err, &re) {
-		return re.CostUSD
-	}
-	return 0
-}
-
-// RunCacheTokens reports the prompt-cache accounting carried by an error from
-// Review — the cache counterpart of RunCost, with the same undercount-rather-
-// than-fabricate rule: an error raised before any session ran, or one this
-// package did not build, reports zeros.
-func RunCacheTokens(err error) (creation, read int) {
-	var re *RunError
-	if errors.As(err, &re) {
-		return re.CacheCreationTokens, re.CacheReadTokens
-	}
-	return 0, 0
-}
-
-// RunUsage is RunCost's whole-accounting twin: the tokens and prompt-cache
-// counts a failed run had been billed, for the cost tables that record all of
-// them together. It reports the zero usage under exactly the conditions RunCost
-// reports 0 — an error raised before any session ran, or one this package did
-// not build.
 func RunUsage(err error) cost.Usage {
 	var re *RunError
 	if errors.As(err, &re) {
 		return re.Usage
 	}
 	return cost.Usage{}
+}
+
+// RunCost is the dollars half of RunUsage, for the callers that record only the
+// figure. It delegates rather than reading a field of its own, so the two can
+// never report different things for the same error.
+func RunCost(err error) float64 { return RunUsage(err).EstimatedCostUSD }
+
+// RunCacheTokens is the prompt-cache half of RunUsage, for the callers that
+// persist the two columns. It delegates for the same reason RunCost does: one
+// reading of the error, so the accessors cannot disagree about it.
+func RunCacheTokens(err error) (creation, read int) {
+	u := RunUsage(err)
+	return u.CacheWriteTokens, u.CacheReadTokens
 }
 
 // Review runs the multi-pass Assay review for req and returns the aggregated
@@ -497,13 +482,7 @@ func Review(ctx context.Context, req ReviewRequest, db *state.DB, cfg Config) (*
 	// fail wraps an error raised after sessions have run so the run's spend to
 	// that point survives the nil result — see RunError.
 	fail := func(err error) (*ReviewResult, error) {
-		return nil, &RunError{
-			CostUSD:             totalUsage.EstimatedCostUSD,
-			CacheCreationTokens: totalUsage.CacheWriteTokens,
-			CacheReadTokens:     totalUsage.CacheReadTokens,
-			Usage:               totalUsage,
-			Err:                 err,
-		}
+		return nil, &RunError{Usage: totalUsage, Err: err}
 	}
 
 	// 1. Triage — scope which files warrant deeper review. Its cost is banked
