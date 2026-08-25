@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	diffpkg "github.com/Robin831/Forge/internal/diff"
 )
 
 // diffBlock builds one "diff --git" block for a path.
@@ -107,7 +109,7 @@ func TestElidedFilesSectionTruncatesLongList(t *testing.T) {
 		t.Errorf("expected the overflow clause for 25 files:\n%s", got)
 	}
 	if !strings.Contains(got, "pkg09/package-lock.json") {
-		t.Errorf("the first %d names must be listed:\n%s", maxElidedFilesListed, got)
+		t.Errorf("the first %d names must be listed:\n%s", diffpkg.MaxElidedFilesListed, got)
 	}
 	if strings.Contains(got, "pkg10/package-lock.json") {
 		t.Errorf("names past the cap must not be listed:\n%s", got)
