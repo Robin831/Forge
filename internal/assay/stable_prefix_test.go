@@ -3,6 +3,7 @@ package assay
 import (
 	"fmt"
 	"math/rand"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -118,6 +119,15 @@ func TestStablePrefixIgnoresPriorFindingOrder(t *testing.T) {
 		{Anchor: "internal/pay/charge.go:9", Severity: "Important", Title: "unchecked error"},
 		{Anchor: "internal/pay/ledger.go:88", Severity: "Important", Title: "unchecked error", Resolved: true},
 		{Anchor: "internal/pay/ledger.go:2", Severity: "Minor", Title: "stale comment"},
+		// The next two reach the digest tiebreaker: they tie with an entry
+		// above on file, line, severity and title alike, so nothing before the
+		// digest separates them. slices.SortFunc is unstable, so a tie is left
+		// in input — i.e. DB — order, which is the instability this whole file
+		// exists to remove. See TestSortedPriorFindingsTiesResolveByDigest for
+		// the direct assertion; their presence here is what makes THIS shuffle
+		// loop fail when the digest stops discriminating.
+		{Anchor: "internal/pay/charge.go:12", Severity: "Nit", Title: "name the constant", Resolved: true},
+		{Anchor: "internal/pay/charge.go:12-15", Severity: "Nit", Title: "name the constant"},
 		{Anchor: "docs/pay.md", Severity: "Nit", Title: "no line anchor"},
 	}
 	want := stablePrefix(req)
@@ -139,6 +149,92 @@ func TestStablePrefixIgnoresPriorFindingOrder(t *testing.T) {
 	if req.PriorFindings[0].Anchor != "internal/pay/charge.go:12" ||
 		req.PriorFindings[len(req.PriorFindings)-1].Anchor != "docs/pay.md" {
 		t.Fatalf("sortedPriorFindings reordered the caller's slice in place: %+v", req.PriorFindings)
+	}
+}
+
+// TestSortedPriorFindingsTiesResolveByDigest pins the one key that makes the
+// order total. Every key above the digest — file, line, severity, title — can
+// tie: two findings can differ only in Resolved (which renders as a visible
+// " (resolved)" suffix), and two distinct anchors can parse to the same
+// file/line ("a.go:12" against the range "a.go:12-15", since parseAnchor
+// anchors a range on its start). slices.SortFunc is NOT stable, so entries the
+// comparator calls equal come back in whatever order they went in — for real
+// prior findings, the order SQLite handed them over in.
+//
+// So the digest is not defensive garnish, it is the load-bearing line: with it
+// mutated to a constant the rest of the suite still passes, and only a fixture
+// that actually reaches it fails.
+func TestSortedPriorFindingsTiesResolveByDigest(t *testing.T) {
+	tied := []PriorFinding{
+		{Anchor: "internal/pay/charge.go:12", Severity: "Nit", Title: "name the constant"},
+		{Anchor: "internal/pay/charge.go:12", Severity: "Nit", Title: "name the constant", Resolved: true},
+		{Anchor: "internal/pay/charge.go:12-15", Severity: "Nit", Title: "name the constant"},
+	}
+
+	// The fixture is only worth anything while it really does tie on every key
+	// above the digest; an edit that separates the entries by title would leave
+	// this test green against a digest that discriminates nothing.
+	for i := range tied {
+		for j := i + 1; j < len(tied); j++ {
+			a, b := parseAnchor(tied[i].Anchor), parseAnchor(tied[j].Anchor)
+			if a.file != b.file || a.line != b.line ||
+				tied[i].Severity != tied[j].Severity || tied[i].Title != tied[j].Title {
+				t.Fatalf("fixture entries %d and %d do not reach the digest tiebreaker: %+v vs %+v", i, j, tied[i], tied[j])
+			}
+		}
+	}
+
+	// And the digest must separate what the keys above it could not — every
+	// field distinguishing two PriorFindings has to be hashed, Resolved
+	// included.
+	seen := map[string]int{}
+	for i, p := range tied {
+		if prev, dup := seen[priorFindingDigest(p)]; dup {
+			t.Fatalf("findings %d and %d share a digest, so the order is not total: %+v vs %+v", prev, i, tied[prev], p)
+		}
+		seen[priorFindingDigest(p)] = i
+	}
+
+	want := sortedPriorFindings(tied)
+	rng := rand.New(rand.NewSource(11))
+	for i := 0; i < 40; i++ {
+		shuffled := append([]PriorFinding(nil), tied...)
+		rng.Shuffle(len(shuffled), func(a, b int) {
+			shuffled[a], shuffled[b] = shuffled[b], shuffled[a]
+		})
+		if got := sortedPriorFindings(shuffled); !slices.Equal(got, want) {
+			t.Fatalf("shuffle %d reordered digest-tied findings\n want: %+v\n got:  %+v", i, want, got)
+		}
+	}
+}
+
+// TestSortedPriorFindingsOrdersExtremeLineNumbers covers the comparator's line
+// key on values parseAnchor does not bound. Anchors are model-authored text
+// read back out of pr_findings, and parseAnchor accumulates digits with no
+// range check, so a long enough tail overflows to an arbitrary — possibly
+// large-negative — int. A subtraction comparator wraps on such a pair and
+// reports the larger line as the smaller one, which is not a strict weak
+// ordering and lets the sort return a different permutation per input order.
+func TestSortedPriorFindingsOrdersExtremeLineNumbers(t *testing.T) {
+	// One anchorless entry (line -1) and two whose tails overflow int64 in
+	// opposite directions once parseAnchor is through with them.
+	extreme := []PriorFinding{
+		{Anchor: "internal/pay/charge.go", Severity: "Nit", Title: "no line at all"},
+		{Anchor: "internal/pay/charge.go:99999999999999999999", Severity: "Nit", Title: "overflowing tail"},
+		{Anchor: "internal/pay/charge.go:88888888888888888888", Severity: "Nit", Title: "another overflowing tail"},
+		{Anchor: "internal/pay/charge.go:7", Severity: "Nit", Title: "an ordinary line"},
+	}
+	want := sortedPriorFindings(extreme)
+
+	rng := rand.New(rand.NewSource(13))
+	for i := 0; i < 40; i++ {
+		shuffled := append([]PriorFinding(nil), extreme...)
+		rng.Shuffle(len(shuffled), func(a, b int) {
+			shuffled[a], shuffled[b] = shuffled[b], shuffled[a]
+		})
+		if got := sortedPriorFindings(shuffled); !slices.Equal(got, want) {
+			t.Fatalf("shuffle %d reordered findings with out-of-range line anchors\n want: %+v\n got:  %+v", i, want, got)
+		}
 	}
 }
 
