@@ -287,6 +287,15 @@ forge assay stats            # Run count, mean cost and mean duration per week,
 
 The daemon writes the same summary to its log once a day, with a WARN when the current week's mean cost per run exceeds the trailing four weeks' by more than 1.5x.
 
+For Assay specifically, `forge cost assay` reports spend split by whether a run was a PR's first review or a re-review, and by prompt-cache token class:
+
+```bash
+forge cost assay --since 2026-06-01 --until 2026-07-01
+forge cost assay --format json --out before.json
+```
+
+See [docs/assay-cost-attribution.md](docs/assay-cost-attribution.md) for the methodology (what counts as a repeat run, why recorded and priced figures are never summed, and how rows predating cache instrumentation are reported).
+
 ### Notifications
 
 Forge supports two webhook notification styles:
