@@ -2023,12 +2023,13 @@ type AssayConfig struct {
 	MaxTurnsPerPass *int `mapstructure:"max_turns_per_pass" yaml:"max_turns_per_pass,omitempty"`
 	// MaxCostPerPassUSD is the estimated-spend ceiling for a single review
 	// pass session. The engine accumulates the session's cost as its turns
-	// complete and stops the pass once it crosses this value, reporting
+	// complete and stops the pass once it reaches this value, reporting
 	// error_max_cost — a named stop, never a quiet success. It is the
 	// per-session counterpart to DailyCostLimitUSD: the daily cap notices a
 	// runaway only after it has spent the day's budget, while this one bounds
 	// the single session that is spending it. Unset uses
-	// defaultAssayMaxCostPerPassUSD; <= 0 disables the ceiling.
+	// defaultAssayMaxCostPerPassUSD; 0 disables the ceiling. A negative value
+	// is a typo rather than a way of saying "off" and Validate rejects it.
 	MaxCostPerPassUSD *float64 `mapstructure:"max_cost_per_pass_usd" yaml:"max_cost_per_pass_usd,omitempty"`
 	// Incremental controls delta reviews: when a PR has been reviewed before,
 	// review only the changes pushed since the last reviewed commit instead of
@@ -2142,7 +2143,8 @@ func (a AssayConfig) GetMaxTurnsPerPass() int {
 const defaultAssayMaxCostPerPassUSD = 1.50
 
 // GetMaxCostPerPassUSD returns the per-pass USD spend ceiling, defaulting to
-// defaultAssayMaxCostPerPassUSD when unset. A value <= 0 disables the ceiling.
+// defaultAssayMaxCostPerPassUSD when unset. Zero disables the ceiling; a
+// negative value never reaches here, since Validate rejects one.
 func (a AssayConfig) GetMaxCostPerPassUSD() float64 {
 	if a.MaxCostPerPassUSD == nil {
 		return defaultAssayMaxCostPerPassUSD
@@ -2722,7 +2724,6 @@ func resolveDefaultConfigPath() string {
 	return ""
 }
 
-// Validate checks the config for logical errors.
 // validateAssay checks the numeric Assay settings that a bad value silently
 // breaks. It is called for the global block and for every per-anvil overlay
 // under the same rules, since an overlay is what the daemon actually resolves
@@ -2740,6 +2741,7 @@ func validateAssay(prefix string, a AssayConfig) []string {
 	return errs
 }
 
+// Validate checks the config for logical errors.
 func (c *Config) Validate() []string {
 	var errs []string
 

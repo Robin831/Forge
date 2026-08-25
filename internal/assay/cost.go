@@ -31,8 +31,8 @@ import (
 // It is written from the provider's stdout reader goroutine and read from the
 // pass goroutine, so every field is guarded.
 type costTracker struct {
-	// limitUSD is the ceiling. Zero (or anything costCeilingUSD normalises to
-	// zero) disables the tracker entirely.
+	// limitUSD is the ceiling. Zero — which is what newCostTracker normalises
+	// every unusable limit to — disables the tracker entirely.
 	limitUSD float64
 
 	mu            sync.Mutex
@@ -40,11 +40,19 @@ type costTracker struct {
 	turns         int
 	cacheCreation int
 	cacheRead     int
+	// seen holds the message ids already billed. Claude emits one assistant
+	// stream event per content block of a single API message — thinking, text
+	// and tool_use arrive as three events sharing one message id and one
+	// identical usage block — so billing per event charges a tool-using turn
+	// two or three times over. See AddTurnCost.
+	seen map[string]struct{}
 }
 
-// newCostTracker returns a tracker enforcing limitUSD. A non-positive or
-// non-finite limit yields a disabled tracker, which accumulates nothing and
-// never reports Exceeded.
+// newCostTracker returns a tracker enforcing limitUSD. This is the one place
+// an unusable ceiling — unset, negative, NaN, Inf — is normalised to zero,
+// which yields a disabled tracker that accumulates nothing and never reports
+// Exceeded. One normalisation means no call site, and no comparison inside the
+// tracker, has to decide what a NaN limit means.
 func newCostTracker(limitUSD float64) *costTracker {
 	if limitUSD <= 0 || math.IsNaN(limitUSD) || math.IsInf(limitUSD, 0) {
 		limitUSD = 0
@@ -56,16 +64,31 @@ func newCostTracker(limitUSD float64) *costTracker {
 // callers never have to nil-check before asking.
 func (t *costTracker) enabled() bool { return t != nil && t.limitUSD > 0 }
 
-// AddTurnCost records one completed turn: its estimated cost in USD and the
+// AddTurnCost records one API message: its estimated cost in USD and the
 // prompt-cache tokens it wrote and read. It reports whether the session has now
 // reached the ceiling.
+//
+// id is the provider's message id, and a message is billed once however many
+// stream events carry it. Claude splits one API turn across an assistant event
+// per content block — a thinking + text + tool_use turn is three events, each
+// repeating the same message id and the same usage block, cache write included
+// — so counting per event bills the turn three times, reaches the ceiling at a
+// third of the configured spend, and kills a healthy pass with an inflated
+// figure in the stop message. Repeats are therefore ignored rather than added:
+// they are the same message, not new spend. The tally still reports whether the
+// ceiling is reached, since a duplicate arriving after the crossing does not
+// un-cross it.
+//
+// An empty id is billed every time, because there is nothing to deduplicate on
+// — a backend that streams usage without message ids gets the historical
+// per-event accounting.
 //
 // A cost that is negative, NaN or infinite is recorded as zero rather than
 // rejecting the turn: a garbled usage payload must not be able to move the
 // running total in either direction — inflating it stops a healthy pass, and
 // letting it go negative buys a runaway unlimited budget. The turn itself is
 // still counted, since it happened.
-func (t *costTracker) AddTurnCost(usd float64, cacheCreation, cacheRead int) bool {
+func (t *costTracker) AddTurnCost(id string, usd float64, cacheCreation, cacheRead int) bool {
 	if !t.enabled() {
 		return false
 	}
@@ -73,13 +96,21 @@ func (t *costTracker) AddTurnCost(usd float64, cacheCreation, cacheRead int) boo
 		usd = 0
 	}
 	t.mu.Lock()
+	defer t.mu.Unlock()
+	if id != "" {
+		if _, dup := t.seen[id]; dup {
+			return t.totalUSD >= t.limitUSD
+		}
+		if t.seen == nil {
+			t.seen = make(map[string]struct{})
+		}
+		t.seen[id] = struct{}{}
+	}
 	t.totalUSD += usd
 	t.turns++
 	t.cacheCreation += max(cacheCreation, 0)
 	t.cacheRead += max(cacheRead, 0)
-	exceeded := t.totalUSD >= t.limitUSD
-	t.mu.Unlock()
-	return exceeded
+	return t.totalUSD >= t.limitUSD
 }
 
 // Exceeded reports whether the accumulated spend has reached the ceiling. The
@@ -114,8 +145,9 @@ func (t *costTracker) LimitUSD() float64 {
 }
 
 // Snapshot returns everything the tracker counted: the spend, the number of
-// turns it saw, and the prompt-cache write/read totals. It is what a stopped
-// session reports instead of the result event it never got to emit.
+// distinct messages it billed, and the prompt-cache write/read totals. It is
+// what a stopped session reports instead of the result event it never got to
+// emit.
 func (t *costTracker) Snapshot() (usd float64, turns, cacheCreation, cacheRead int) {
 	if t == nil {
 		return 0, 0, 0, 0
@@ -126,12 +158,24 @@ func (t *costTracker) Snapshot() (usd float64, turns, cacheCreation, cacheRead i
 }
 
 // turnEnvelope is the per-turn accounting an assistant stream event carries on
-// its message envelope. Claude reports a `usage` block per assistant message —
-// the tokens that turn's request billed, cache lines included — and names the
-// model that served it. It is decoded here rather than in smith.StreamEvent
-// because this is the only consumer: the aggregate Result already gets its
-// totals from the result event.
+// its message envelope: the message's own id, the model that served it, and a
+// `usage` block covering the tokens that message's request billed on the input
+// side — prompt, cache write and cache read.
+//
+// The output side is effectively invisible here. Claude stamps the usage block
+// when the message starts, so `output_tokens` reads as a handful of tokens
+// (2 or 3 in real transcripts) no matter how much the model then went on to
+// write. The estimate this feeds is therefore an input/cache estimate, which is
+// the right shape for the thing it guards — a runaway pass spends by re-reading
+// a large prompt every turn, not by writing prose — but it does mean the
+// ceiling reads slightly low, never high.
+//
+// The id is what makes a message billable once: see costTracker.AddTurnCost.
+//
+// It is decoded here rather than in smith.StreamEvent because this is the only
+// consumer: the aggregate Result already gets its totals from the result event.
 type turnEnvelope struct {
+	ID    string `json:"id"`
 	Model string `json:"model"`
 	Usage *struct {
 		InputTokens              int `json:"input_tokens"`
@@ -141,8 +185,10 @@ type turnEnvelope struct {
 	} `json:"usage"`
 }
 
-// turnUsage extracts one turn's billable usage from a stream event, returning
-// ok=false for every event that is not a turn the provider has just billed.
+// turnUsage extracts one message's billable usage from a stream event,
+// returning ok=false for every event that is not a message the provider has
+// just billed. The message id comes back with it so the same message arriving
+// as several content-block events is billed once (costTracker.AddTurnCost).
 //
 // Only assistant events qualify. The result event carries the whole session's
 // total_cost_usd, which is the sum of the turns already counted here — adding
@@ -154,61 +200,91 @@ type turnEnvelope struct {
 // That is the intended failure direction: the ceiling is a brake on a runaway
 // and must not become a source of pass failures on backends whose spend it
 // cannot see.
-func turnUsage(ev smith.StreamEvent) (u cost.Usage, model string, ok bool) {
+func turnUsage(ev smith.StreamEvent) (u cost.Usage, id, model string, ok bool) {
 	if ev.Type != "assistant" || len(ev.Message) == 0 {
-		return cost.Usage{}, "", false
+		return cost.Usage{}, "", "", false
 	}
 	var env turnEnvelope
 	if err := json.Unmarshal(ev.Message, &env); err != nil || env.Usage == nil {
-		return cost.Usage{}, "", false
+		return cost.Usage{}, "", "", false
 	}
 	return cost.Usage{
 		InputTokens:      env.Usage.InputTokens,
 		OutputTokens:     env.Usage.OutputTokens,
 		CacheReadTokens:  env.Usage.CacheReadInputTokens,
 		CacheWriteTokens: env.Usage.CacheCreationInputTokens,
-	}, env.Model, true
+	}, env.ID, env.Model, true
 }
 
-// turnCostUSD estimates what one turn of a session cost, from the usage the
+// turnCostUSD estimates what one message of a session cost, from the usage the
 // provider reported for it and the pricing table for the model that served it.
+// It returns the message id alongside, which is what the tracker bills against.
 //
 // The estimate is unavoidable: the provider prices a session only in its final
 // result event, so a ceiling that must act mid-session has nothing but tokens
 // and the configured pricing to work from. The model named on the turn itself
 // wins over the configured hint — the hint is often empty ("let the provider
 // pick"), and the turn says what it actually picked.
-func turnCostUSD(ev smith.StreamEvent, pv provider.Provider) (usd float64, cacheCreation, cacheRead int, ok bool) {
-	u, model, ok := turnUsage(ev)
+func turnCostUSD(ev smith.StreamEvent, pv provider.Provider) (id string, usd float64, cacheCreation, cacheRead int, ok bool) {
+	u, id, model, ok := turnUsage(ev)
 	if !ok {
-		return 0, 0, 0, false
+		return "", 0, 0, 0, false
 	}
 	if model == "" {
 		model = pv.Model
 	}
 	u.Calculate(cost.EstimatePricing(pv.Kind, model))
-	return u.EstimatedCostUSD, u.CacheWriteTokens, u.CacheReadTokens, true
+	return id, u.EstimatedCostUSD, u.CacheWriteTokens, u.CacheReadTokens, true
 }
 
-// sessionAnswered reports whether a session reached a genuine terminal success
-// — the provider's own "the model finished and this is its answer". It is the
-// same test smith applies when it decides a session succeeded despite a
-// non-zero exit code, kept here as one predicate so the cost-stop branch and
-// that definition cannot drift apart.
+// costStopCallback builds the stream-event callback a pass session runs on the
+// provider's reader goroutine. It does the two independent jobs that share that
+// one hook:
 //
-// A nil result (no result event at all) is not an answer.
-func sessionAnswered(res *smith.Result) bool {
-	return res != nil && res.ResultSubtype == "success" && !res.IsError
+//   - releasing the staggered fan-out, when signal is non-nil, at the primer's
+//     first model-output event (never at Claude's opening init event, which is
+//     emitted before the model request is even made); and
+//   - billing each message against the tracker and calling stop the moment the
+//     session has spent its budget.
+//
+// The two are deliberately in one function rather than composed at the call
+// site: they are the sole readers of a single OnStreamEvent hook, and the guard
+// that decides whether to install it at all has to be the disjunction of both.
+//
+// Both callbacks fire at most once: signal at the first model output, stop at
+// the crossing (every event after it reports the ceiling as still reached, and
+// stopping a session twice says nothing the first stop did not). A nil stop —
+// a session with no ceiling in force, installed only for the stagger — and a
+// disabled tracker are both simply never billed, which is what lets an
+// unconfigured anvil run exactly the session it always did.
+//
+// The callback does no waiting: cancelling is what ends the process, and the
+// pass goroutine's Wait() is what reaps it.
+func costStopCallback(tracker *costTracker, pv provider.Provider, signal func(), stop func()) func(smith.StreamEvent) {
+	var signalOnce, stopOnce sync.Once
+	return func(ev smith.StreamEvent) {
+		if signal != nil && isModelOutput(ev) {
+			signalOnce.Do(signal)
+		}
+		if !tracker.enabled() || stop == nil {
+			return
+		}
+		if id, usd, cc, cr, ok := turnCostUSD(ev, pv); ok && tracker.AddTurnCost(id, usd, cc, cr) {
+			stopOnce.Do(stop)
+		}
+	}
 }
 
 // costStopError returns the failure for a session Assay stopped at its spend
 // ceiling, or nil when nothing was stopped.
 //
 // The one case where a crossed ceiling is not a stop is a session that
-// answered anyway: the ceiling can only be crossed by a turn the model was
-// already mid-answer on, and a completed answer means nothing was cut short.
-// Reporting that as a stop would throw away a finished review AND claim an
-// intervention that never happened — so it falls through to the ordinary
+// answered anyway (smith.Result.Answered, the same predicate smith itself uses
+// to recognise a genuine terminal success, so the exception here and that
+// definition cannot drift apart): the ceiling can only be crossed by a turn the
+// model was already mid-answer on, and a completed answer means nothing was cut
+// short. Reporting that as a stop would throw away a finished review AND claim
+// an intervention that never happened — so it falls through to the ordinary
 // success path, where the provider's own final cost is what gets recorded.
 //
 // The error carries the tracker's accounting rather than the result's, because
@@ -216,7 +292,7 @@ func sessionAnswered(res *smith.Result) bool {
 // the way is the only record of what the provider already billed. A stop is
 // not a refund.
 func costStopError(pass string, tracker *costTracker, res *smith.Result) *PassError {
-	if !tracker.Exceeded() || sessionAnswered(res) {
+	if !tracker.Exceeded() || res.Answered() {
 		return nil
 	}
 	usd, turns, cacheCreation, cacheRead := tracker.Snapshot()

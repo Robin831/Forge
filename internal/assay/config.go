@@ -1,7 +1,6 @@
 package assay
 
 import (
-	"math"
 	"time"
 
 	"github.com/Robin831/Forge/internal/config"
@@ -66,9 +65,11 @@ type Config struct {
 
 	// MaxCostPerPassUSD bounds the estimated spend of a single pass session.
 	// The runner accumulates the session's cost as its turns complete and
-	// stops the pass the moment it crosses this value, reporting
-	// ReasonMaxCost. Values <= 0 disable the ceiling, which is what every
-	// configuration did before it existed.
+	// stops the pass the moment it reaches this value, reporting
+	// ReasonMaxCost. Zero disables the ceiling, which is what every
+	// configuration did before it existed; newCostTracker normalises anything
+	// else unusable (a negative, NaN, Inf) to the same disabled state, though
+	// config validation rejects a negative before it can get this far.
 	//
 	// It bounds a session, not a run: five deep passes each hold their own
 	// budget, and a pass that is stopped costs the run its coverage rather
@@ -159,18 +160,6 @@ func (c Config) primerWait() time.Duration {
 		return c.primerWaitOverride
 	}
 	return primerWaitDefault
-}
-
-// costCeilingUSD returns the effective per-pass spend ceiling, normalising
-// everything that is not a usable positive limit — unset, negative, NaN, Inf —
-// to 0, which every reader treats as "no ceiling". One normalisation here
-// means no call site has to decide what a NaN limit means.
-func (c Config) costCeilingUSD() float64 {
-	v := c.MaxCostPerPassUSD
-	if v <= 0 || math.IsNaN(v) || math.IsInf(v, 0) {
-		return 0
-	}
-	return v
 }
 
 // maxDiffBytes returns the effective diff size cap, applying the diff.MaxBytes
