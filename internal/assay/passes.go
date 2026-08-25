@@ -27,15 +27,37 @@ const (
 	tierReview = "review"
 )
 
-// assayMaxTurns bounds each pass session. Every file read costs a turn, and
-// passes like tests-missing and repo-specific legitimately want to look at a
-// handful of supporting files before emitting JSON, so 6 turns was too tight
-// (the model would hit error_max_turns before answering on non-trivial diffs).
-// 12 leaves headroom for ~10 tool calls plus the final JSON emission. Repos
-// whose rules file and layout need more reading can raise it per config via
-// assay.max_turns_per_pass (Config.MaxTurnsPerPass); this constant is only
-// the fallback default.
-const assayMaxTurns = 12
+// assayMaxTurns bounds each pass session, counted in model messages (see
+// turnCounter). Every file a pass opens costs a turn, and passes like
+// tests-missing and repo-specific legitimately want to read a handful of
+// supporting files before emitting JSON — which is why this number has only
+// ever moved upward: 6 starved them, then 12 did.
+//
+// 16 is the value the logged sessions support, and the argument for it is the
+// shape of the distribution rather than a percentile of it (the numbers, and
+// why the tail cannot be read off the log directly, are in
+// docs/assay-turn-budget.md). Across 451 sessions under the 12 cap the
+// per-session message counts decay smoothly from 4 to 11 (38, 33, 25, 23, 19,
+// 11, 14, 8) and then spike to 39 at exactly 12, of which 32 died there. That
+// spike is not demand for 12 turns; it is every session that wanted more,
+// piled up against the cap — so the distribution is right-censored and its own
+// p95/p99 (both 12) are artefacts of the cap, not evidence about it. 16 clears
+// the censoring point by four turns, which covers the sessions that were a
+// couple of reads short without pretending to know how far the true tail runs.
+//
+// Raising it is close to free where it does not bind: a turn budget is a clip
+// point, not an allowance, so a pass that answers in 5 turns costs exactly what
+// it did before. Where it does bind, the alternative it replaces is more
+// expensive, not less — a clipped pass pays for its full 12 turns AND a retry
+// session (buildRetryMods), and still reports partial coverage when the retry
+// misses. The runaway this cap used to stand in for is now bounded in the unit
+// that actually matters by assay.max_cost_per_pass_usd, which stops a looping
+// session on spend rather than on turns.
+//
+// Repos whose rules file and layout need more reading still can raise it per
+// config via assay.max_turns_per_pass, globally or per anvil (Config.
+// MaxTurnsPerPass); this constant is only the fallback default.
+const assayMaxTurns = 16
 
 //go:embed prompts/*.md
 var promptFS embed.FS
@@ -93,9 +115,12 @@ type PassOutput struct {
 	Text string
 	// CostUSD is the estimated cost of the invocation.
 	CostUSD float64
-	// Turns is how many agent turns the invocation consumed, as reported by
-	// the provider. Zero when the backend reports none — it is telemetry, and
-	// nothing branches on it.
+	// Turns is how many model messages the invocation consumed — the unit
+	// --max-turns is written in, counted off the stream by turnCounter rather
+	// than taken from the provider's num_turns, which counts tool-result rounds
+	// and so runs ahead of the budget. Falls back to the provider's figure for a
+	// backend whose messages cannot be counted, and is zero when it reports none
+	// either. Telemetry: nothing branches on it.
 	Turns int
 	// TokensIn and TokensOut are the session's input and output token counts as
 	// the provider reported them. They are what the per-bead and daily cost
@@ -270,10 +295,11 @@ type PassError struct {
 	Message string
 	// Err is the wrapped cause, if any.
 	Err error
-	// Turns is how many agent turns the failed session consumed, where the
-	// provider reported it. Telemetry only — it is what tells an operator
-	// whether an error_max_turns pass sat right on the budget or nowhere near
-	// it.
+	// Turns is how many model messages the failed session consumed, in the
+	// same counted unit PassOutput.Turns uses. Telemetry only — it is what
+	// tells an operator whether an error_max_turns pass sat right on the budget
+	// or nowhere near it, which the provider's own figure cannot: on a session
+	// the budget killed it reports the constant cap+1.
 	Turns int
 	// CostUSD is what the failed session cost, where the provider reported it.
 	// A failure is not a refund: the provider bills a session that ended on
@@ -416,11 +442,17 @@ func newSmithRunner(cfg Config, req ReviewRequest) PassRunner {
 		// session that needs it — one about to die on turns — does not announce
 		// itself in advance. The callback is the only cost, since smith parses
 		// these events either way.
+		//
+		// The turn counter is installed unconditionally for the same reason: how many messages a session took is knowable
+		// only while it streams, and it is the one figure that can be compared
+		// against maxTurns afterwards (see turnCounter).
 		signal := firstOutputFn(ctx)
 		files := newFileTracker()
+		turns := &turnCounter{}
 		stream := costStopCallback(tracker, pv, signal, stopSession)
 		opts.OnStreamEvent = func(ev smith.StreamEvent) {
 			files.observe(ev)
+			turns.observe(ev)
 			stream(ev)
 		}
 
@@ -432,7 +464,7 @@ func newSmithRunner(cfg Config, req ReviewRequest) PassRunner {
 		if req.OnPassLog != nil && proc.LogPath != "" {
 			req.OnPassLog(proc.LogPath)
 		}
-		out, err := sessionOutcome(pass, tracker, proc.Wait(), pv)
+		out, err := sessionOutcome(pass, tracker, turns, proc.Wait(), pv)
 		return withOpenedFiles(out, err, files.paths())
 	}
 }
@@ -457,14 +489,14 @@ func newSmithRunner(cfg Config, req ReviewRequest) PassRunner {
 // takes the tracker's (a killed session emits no result event, so smith.Result
 // reports zeros for turns the provider did bill); the others take the result's,
 // which is populated on error subtypes too.
-func sessionOutcome(pass string, tracker *costTracker, res *smith.Result, pv provider.Provider) (PassOutput, error) {
+func sessionOutcome(pass string, tracker *costTracker, turns *turnCounter, res *smith.Result, pv provider.Provider) (PassOutput, error) {
 	if perr := costStopError(pass, tracker, res); perr != nil {
 		return PassOutput{}, perr
 	}
 	if res.RateLimited {
 		perr := newPassError(pass, ReasonRateLimited,
 			fmt.Sprintf("provider %s rate limited", pv.Label()), nil)
-		withResultTelemetry(perr, res)
+		withResultTelemetry(perr, turns, res)
 		return PassOutput{}, perr
 	}
 	if res.IsError || res.ExitCode != 0 {
@@ -477,7 +509,7 @@ func sessionOutcome(pass string, tracker *costTracker, res *smith.Result, pv pro
 		}
 		perr := newPassError(pass, reason,
 			fmt.Sprintf("provider %s failed (exit %d, subtype %s)", pv.Label(), res.ExitCode, res.ResultSubtype), nil)
-		withResultTelemetry(perr, res)
+		withResultTelemetry(perr, turns, res)
 		return PassOutput{}, perr
 	}
 	text := res.FullOutput
@@ -487,7 +519,7 @@ func sessionOutcome(pass string, tracker *costTracker, res *smith.Result, pv pro
 	return PassOutput{
 		Text:                text,
 		CostUSD:             res.CostUSD,
-		Turns:               res.NumTurns,
+		Turns:               observedTurns(turns, res.NumTurns),
 		TokensIn:            res.TokensIn,
 		TokensOut:           res.TokensOut,
 		CacheCreationTokens: res.CacheCreationTokens,
@@ -500,8 +532,13 @@ func sessionOutcome(pass string, tracker *costTracker, res *smith.Result, pv pro
 // subtypes too, and the stream reader captures them unconditionally — so a
 // failed session's spend is known here and must not be dropped: a failure is
 // not a refund.
-func withResultTelemetry(perr *PassError, res *smith.Result) {
-	perr.Turns = res.NumTurns
+//
+// The turn figure is the counted one (observedTurns) rather than the result
+// event's, because this is the path a budget-exhausted session takes and the
+// result event reports a constant cap+1 there — the one number that cannot say
+// how much more the session wanted.
+func withResultTelemetry(perr *PassError, turns *turnCounter, res *smith.Result) {
+	perr.Turns = observedTurns(turns, res.NumTurns)
 	perr.CostUSD = res.CostUSD
 	perr.TokensIn = res.TokensIn
 	perr.TokensOut = res.TokensOut

@@ -173,7 +173,9 @@ type PassReport struct {
 	CostUSD float64
 	// Turns is the turn count of the session the pass recorded — the final
 	// one, not the sum, so the number stays comparable to the --max-turns
-	// budget a single session is given.
+	// budget a single session is given. It is counted in model messages, which
+	// is the unit that budget is written in; see turnCounter for why the
+	// provider's own num_turns is not.
 	Turns int
 	// TerminationReason is how the pass ended: "" when it answered, else the
 	// same label FailedPasses carries (a provider result subtype where there
