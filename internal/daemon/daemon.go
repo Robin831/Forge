@@ -117,6 +117,13 @@ type bellowsMonitorIface interface {
 	SetAssayConfig(f func(anvil string) bellows.AssayGateConfig)
 	SetInFlightChecker(f func(beadID string) bool)
 	SetCycleHook(f func(ctx context.Context))
+	// HoldAssayReservation / ReleaseAssayReservation bracket one Assay review
+	// with the in-flight cost reservation its daily cap is projected against.
+	// They live on the monitor because the gate that reads the reservation
+	// does; the daemon owns only the run's lifetime, which is what these two
+	// calls mark out.
+	HoldAssayReservation(anvil string, prNumber int, headSHA string) float64
+	ReleaseAssayReservation(anvil string, prNumber int, headSHA string, actualCostUSD float64)
 	UpdateAnvilPaths(paths map[string]string)
 	Refresh()
 	Run(ctx context.Context) error
@@ -1366,11 +1373,12 @@ func (d *Daemon) Run(ctx context.Context) error {
 	d.bellowsMonitor.SetAssayConfig(func(anvil string) bellows.AssayGateConfig {
 		ra := d.cfg.Load().ResolvedAssay(anvil)
 		return bellows.AssayGateConfig{
-			Enabled:           ra.IsEnabled(),
-			SkipDrafts:        ra.IsSkipDrafts(),
-			DebounceSeconds:   ra.GetDebounceSeconds(),
-			DailyCostLimitUSD: ra.GetDailyCostLimitUSD(),
-			MaxRuns:           ra.GetMaxRuns(),
+			Enabled:            ra.IsEnabled(),
+			SkipDrafts:         ra.IsSkipDrafts(),
+			DebounceSeconds:    ra.GetDebounceSeconds(),
+			DailyCostLimitUSD:  ra.GetDailyCostLimitUSD(),
+			RunCostEstimateUSD: ra.GetRunCostEstimateUSD(),
+			MaxRuns:            ra.GetMaxRuns(),
 		}
 	})
 	// Let the still-failing/unresolved retry branches re-dispatch a fix only
@@ -1945,6 +1953,25 @@ func (d *Daemon) runAssayReview(ctx context.Context, anvil, anvilPath, beadID st
 		StartedAt:  started,
 		ShadowMode: engineCfg.ShadowMode,
 		LogKey:     logKey,
+	}
+
+	// Hold this review's estimated cost against the Assay daily cap for as
+	// long as it runs, and release it once its actual cost is recorded. The
+	// hold is taken here rather than at the trigger gate because this is the
+	// one funnel every review goes through — the Bellows dispatch, the Burnish
+	// coordination run and `forge assay rerun` alike — and a review the gate
+	// never saw spends exactly as much as one it did.
+	//
+	// The release is deferred, so it runs after RecordAssayRun below on every
+	// path out, panics included. That order is the point: released first, the
+	// spend would be neither reserved nor recorded for the width of the
+	// window, which is the blindness the reservation exists to remove.
+	if d.bellowsMonitor != nil {
+		held := d.bellowsMonitor.HoldAssayReservation(anvil, prNumber, headSHA)
+		defer func() {
+			d.bellowsMonitor.ReleaseAssayReservation(anvil, prNumber, headSHA, run.CostUSD)
+		}()
+		d.logger.Debug("Assay in-flight cost reserved", "pr", prNumber, "bead", beadID, "reserved_usd", held)
 	}
 
 	// Fetch the PR diff — the full net diff base..head, i.e. the cumulative

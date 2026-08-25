@@ -71,3 +71,43 @@ func (db *DB) AssayRunSamplesSince(since time.Time) ([]AssayRunSample, error) {
 	}
 	return out, rows.Err()
 }
+
+// RecentAssayRunCostsUSD returns the recorded cost of the most recent executed
+// Assay runs, newest first, capped at limit rows.
+//
+// It is the sample set the in-flight cost estimate is seeded from: "what does a
+// run of this cost right now", which is a rolling window over rows rather than
+// over time. A time-bounded query is the wrong shape for it — on a quiet week
+// it returns nothing and the estimate falls back to its floor for no reason
+// other than the calendar.
+//
+// Skipped runs are excluded on the same terms as AssayRunSamplesSince: a run
+// that reviewed nothing and spent nothing would drag the mean toward zero,
+// which is the one direction an estimate guarding a spend cap must not err in.
+// A failed run is included, because a failure is not a refund.
+func (db *DB) RecentAssayRunCostsUSD(limit int) ([]float64, error) {
+	if limit <= 0 {
+		return nil, nil
+	}
+	rows, err := db.conn.Query(
+		`SELECT cost_usd FROM assay_runs
+		 WHERE COALESCE(skipped_reason, '') = ''
+		 ORDER BY id DESC
+		 LIMIT ?`,
+		limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []float64
+	for rows.Next() {
+		var cost float64
+		if err := rows.Scan(&cost); err != nil {
+			return nil, err
+		}
+		out = append(out, cost)
+	}
+	return out, rows.Err()
+}

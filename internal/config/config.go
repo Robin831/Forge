@@ -2036,6 +2036,28 @@ type AssayConfig struct {
 	// defaultAssayMaxCostPerPassUSD; 0 disables the ceiling. A negative value
 	// is a typo rather than a way of saying "off" and Validate rejects it.
 	MaxCostPerPassUSD *float64 `mapstructure:"max_cost_per_pass_usd" yaml:"max_cost_per_pass_usd,omitempty"`
+	// RunCostEstimateUSD is the FLOOR under the estimate the trigger gate holds
+	// for a review it has admitted but that has not yet recorded its cost. It
+	// exists because DailyCostLimitUSD is measured against assay_runs, and a
+	// row lands there only when a run ends: a gate reading recorded spend alone
+	// is blind to every review currently in flight, so N concurrent reviews
+	// carry the day past the cap by roughly N x what one costs (2026-08-19:
+	// $185.45 against a $150 limit). The effective estimate is the larger of
+	// this floor and the rolling mean of recent recorded runs, so the floor is
+	// what covers a cold ledger — a daemon that has just started, or an anvil
+	// whose first review of the day has not finished. Unset uses
+	// defaultAssayRunCostEstimateUSD; 0 means "floor at zero", which leaves the
+	// rolling mean alone rather than disabling the reservation. A negative
+	// value is a typo and Validate rejects it.
+	//
+	// Whatever it is set to, the effective estimate is bounded above by
+	// DailyCostLimitUSD: an estimate larger than the whole cap would refuse
+	// every review from a day that has spent nothing, and a refused review
+	// releases its head to merge readiness — so an unspendable estimate would
+	// not slow reviews down, it would switch them off while merges kept
+	// running. Setting this at or above the cap therefore costs nothing but
+	// leaves you with exactly one review per day.
+	RunCostEstimateUSD *float64 `mapstructure:"run_cost_estimate_usd" yaml:"run_cost_estimate_usd,omitempty"`
 	// Incremental controls delta reviews: when a PR has been reviewed before,
 	// review only the changes pushed since the last reviewed commit instead of
 	// the whole base..head diff again. Defaults to true when unset. Falls back
@@ -2157,6 +2179,43 @@ func (a AssayConfig) GetMaxCostPerPassUSD() float64 {
 	return *a.MaxCostPerPassUSD
 }
 
+// defaultAssayRunCostEstimateUSD is the fallback floor for the in-flight
+// reservation one Assay review holds while it runs.
+//
+// The floor is only ever the cold-start estimate: it covers the window in
+// which no run has recorded a cost yet, and the moment one has, the rolling
+// mean of recorded runs governs (the estimate is the larger of the two). So
+// the number that matters here is not "what does a review cost" — recorded
+// history answers that far better — but "what fraction of an UNCONFIGURED
+// deployment's daily cap may a review nobody has measured yet reserve".
+//
+// $1.00 against the shipped default assay.daily_cost_limit_usd of $5.00 is a
+// fifth of it. That relationship is the point, and it is why this is not the
+// $5.00 that a straight reading of this deployment's observed mean ($7.05 over
+// 87 runs) would suggest: with floor == cap, an unconfigured deployment admits
+// one review and then refuses every later one under daily_cost_limit — which
+// assayUpToDate releases to merge readiness — so the first cent of recorded
+// spend would silently auto-merge the rest of the day's PRs unreviewed. An
+// over-conservative floor does not stop reviews slightly early there; it stops
+// them for the day and hands the PRs a clean bill of health.
+//
+// The conservatism the reservation needs is still present, in the two places
+// it costs nothing: the rolling mean overrides this floor upward as soon as
+// there is one, and a deployment whose reviews really do cost $7 raises its own
+// cap rather than living under a floor that reaches it.
+const defaultAssayRunCostEstimateUSD = 1.00
+
+// GetRunCostEstimateUSD returns the floor for a single in-flight Assay run's
+// cost estimate, defaulting to defaultAssayRunCostEstimateUSD when unset. Zero
+// is a legitimate value (no floor; the rolling mean alone estimates); a
+// negative one never reaches here, since Validate rejects it.
+func (a AssayConfig) GetRunCostEstimateUSD() float64 {
+	if a.RunCostEstimateUSD == nil {
+		return defaultAssayRunCostEstimateUSD
+	}
+	return *a.RunCostEstimateUSD
+}
+
 // IsIncremental returns whether repeat reviews are scoped to the changes since
 // the last reviewed commit. Defaults to true when unset — re-reviewing the
 // whole PR on every push is what buried PRs in duplicate comments.
@@ -2241,6 +2300,9 @@ func (c *Config) ResolvedAssay(anvilName string) AssayConfig {
 	}
 	if o.MaxCostPerPassUSD != nil {
 		resolved.MaxCostPerPassUSD = o.MaxCostPerPassUSD
+	}
+	if o.RunCostEstimateUSD != nil {
+		resolved.RunCostEstimateUSD = o.RunCostEstimateUSD
 	}
 	if o.Incremental != nil {
 		resolved.Incremental = o.Incremental
@@ -2741,6 +2803,16 @@ func validateAssay(prefix string, a AssayConfig) []string {
 	if v := a.MaxCostPerPassUSD; v != nil {
 		if math.IsNaN(*v) || math.IsInf(*v, 0) || *v < 0 {
 			errs = append(errs, fmt.Sprintf("%s.max_cost_per_pass_usd must be a non-negative finite number (set 0 to disable the per-pass ceiling)", prefix))
+		}
+	}
+	// The reservation floor is guarded the same way, and for a sharper reason:
+	// a negative floor would subtract from the estimate held for an in-flight
+	// review, i.e. quietly widen the very overrun the reservation exists to
+	// close. Zero is legitimate — it means "no floor, let the rolling mean
+	// estimate on its own".
+	if v := a.RunCostEstimateUSD; v != nil {
+		if math.IsNaN(*v) || math.IsInf(*v, 0) || *v < 0 {
+			errs = append(errs, fmt.Sprintf("%s.run_cost_estimate_usd must be a non-negative finite number (set 0 to estimate from recorded runs alone)", prefix))
 		}
 	}
 	// A negative turn budget is a typo, not a way of saying "off": unlike the
