@@ -1,0 +1,31 @@
+Assay repeat-review cost attribution
+  window            2026-08-25T11:45:54Z .. 2026-08-26T00:00:00Z
+  pricing           sonnet (default) — cache write $3.75/M, cache read $0.30/M
+  runs              11 over 6 PRs ($80.24 recorded)
+
+GROUP       RUNS  PRS  RECORDED $  SHARE   CACHE-W TOK  CACHE-R TOK  PRICED CACHE $  ZERO-FIND RUNS  ZERO-FIND $
+first_run   6     6    43.11       53.7%   0            0            0.00            1               3.13
+repeat_run  5     5    37.13       46.3%   0            0            0.00            1               5.97
+TOTAL       11    6    80.24       100.0%  0            0            0.00            2               9.10
+
+TOKEN CLASS     RUNS  TOKENS  RATE $/M  COST $  BASIS
+cache_creation  0     0       3.75      0.00    priced
+cache_read      0     0       0.30      0.00    priced
+unknown         11    0       -         80.24   recorded
+
+ORDINAL  RUNS  RECORDED $  SHARE  CACHE-W TOK  CACHE-R TOK
+1        6     43.11       53.7%  0            0
+2        5     37.13       46.3%  0            0
+3        0     0.00        0.0%   0            0
+4        0     0.00        0.0%   0            0
+5        0     0.00        0.0%   0            0
+6+       0     0.00        0.0%   0            0
+
+Notes:
+  - RECORDED $ is the provider's own cost_usd. PRICED CACHE $ is cache tokens x their
+    own rates and is a SUBSET of it: assay_runs stores no plain input/output token
+    counts, so the two cache classes can never sum to the recorded total.
+  - 11 of 11 run(s) ($80.24, 100.0% of recorded spend) carry no cache accounting and are
+    reported as token class 'unknown'. Zero cache tokens on a row means 'not knowable'
+    (pre-instrumentation row, or a backend that reports none), not 'no cache traffic'.
+  - Ordinals are derived over each PR's full review history, then restricted to the window.
