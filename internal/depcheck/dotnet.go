@@ -14,11 +14,20 @@ import (
 	"github.com/Robin831/Forge/internal/executil"
 )
 
-// scanDotnet runs 'dotnet list package --outdated --format json' in directories
-// containing *.csproj or *.sln files. Skips bin/obj directories.
-// Returns nil if no .NET project is found.
-func (s *Scanner) scanDotnet(ctx context.Context, anvil, path string) *CheckResult {
-	projectFiles := findDotnetProjects(path)
+// scanDotnet runs 'dotnet list package --outdated --format json' for the
+// project files src reports. Returns nil if no .NET project is found.
+func (s *Scanner) scanDotnet(ctx context.Context, anvil, path string, src manifestSource) *CheckResult {
+	paths, err := src.Paths(ctx)
+	if err != nil {
+		return &CheckResult{
+			Anvil:   anvil,
+			Path:    path,
+			Checked: time.Now(),
+			Error:   fmt.Errorf("listing files in %s: %w", src.Describe(), err),
+		}
+	}
+
+	projectFiles := dotnetProjectPaths(paths)
 	if len(projectFiles) == 0 {
 		return nil
 	}
@@ -33,8 +42,17 @@ func (s *Scanner) scanDotnet(ctx context.Context, anvil, path string) *CheckResu
 	// Track seen packages across all project files to avoid duplicates
 	// when the same package appears in multiple .sln/.csproj files.
 	seen := map[string]bool{}
+	var collected []ModuleUpdate
 
-	for _, projFile := range projectFiles {
+	for _, rel := range projectFiles {
+		projFile := filepath.Join(path, filepath.FromSlash(rel))
+		// A project tracked at the ref but absent from the checkout has
+		// nothing for dotnet to read. Skip it rather than fail the whole
+		// ecosystem: the rest of the solution is still scannable.
+		if _, statErr := os.Stat(projFile); statErr != nil {
+			continue
+		}
+
 		updates, err := runDotnetOutdated(ctx, s.timeout, filepath.Dir(projFile), projFile)
 		if err != nil {
 			result.Error = fmt.Errorf("dotnet list package in %s: %w", projFile, err)
@@ -46,58 +64,86 @@ func (s *Scanner) scanDotnet(ctx context.Context, anvil, path string) *CheckResu
 				continue
 			}
 			seen[u.Path] = true
-			switch u.Kind {
-			case "patch":
-				result.Patch = append(result.Patch, u)
-			case "minor":
-				result.Minor = append(result.Minor, u)
-			case "major":
-				result.Major = append(result.Major, u)
-			}
+			collected = append(collected, u)
+		}
+	}
+
+	// A PackageReference pins a resolved version, so a stale one reported off
+	// the checkout is replaced by what the source actually commits.
+	collected = reconcileWithCommitted(collected, committedPackageRefs(ctx, src, paths), true)
+	sortUpdates(collected)
+
+	for _, u := range collected {
+		switch u.Kind {
+		case "patch":
+			result.Patch = append(result.Patch, u)
+		case "minor":
+			result.Minor = append(result.Minor, u)
+		case "major":
+			result.Major = append(result.Major, u)
 		}
 	}
 
 	return result
 }
 
-// findDotnetProjects walks the anvil directory for *.sln files first, then
-// *.csproj files. If a .sln is found, its directory's csproj files are skipped
-// (the sln covers them). Skips bin, obj, .workers, .worktrees, .previews
-// (Kiln preview checkouts — not the anvil's own code), and .git directories.
-func findDotnetProjects(root string) []string {
+// committedPackageRefs folds every MSBuild file in paths into one package →
+// version map. A file that cannot be read is skipped: an incomplete map only
+// ever means fewer entries are reconciled, never a wrong one.
+func committedPackageRefs(ctx context.Context, src manifestSource, paths []string) map[string]string {
+	refs := map[string]string{}
+	for _, p := range paths {
+		if !isMSBuildManifest(p) {
+			continue
+		}
+		data, err := src.Read(ctx, p)
+		if err != nil {
+			continue
+		}
+		for name, version := range parsePackageRefs(data) {
+			refs[name] = version
+		}
+	}
+	return refs
+}
+
+// isMSBuildManifest reports whether a path holds NuGet package pins — a project
+// file, or the central Directory.Packages.props / Directory.Build.props.
+func isMSBuildManifest(p string) bool {
+	switch strings.ToLower(filepath.Ext(p)) {
+	case ".csproj", ".fsproj", ".vbproj":
+		return true
+	case ".props", ".targets":
+		return true
+	}
+	return false
+}
+
+// dotnetProjectPaths selects the project files to run `dotnet list package`
+// against from a list of repo-relative paths: *.sln first, then any *.csproj
+// not already covered by one (the sln covers its own directory tree).
+func dotnetProjectPaths(paths []string) []string {
 	slnDirs := map[string]bool{}
 	var slnFiles []string
 	var csprojFiles []string
 
-	_ = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
-		if err != nil {
-			return nil
+	for _, p := range paths {
+		switch strings.ToLower(filepath.Ext(p)) {
+		case ".sln":
+			slnFiles = append(slnFiles, p)
+			slnDirs[pathDir(p)] = true
+		case ".csproj":
+			csprojFiles = append(csprojFiles, p)
 		}
-		if d.IsDir() {
-			name := d.Name()
-			if name == "bin" || name == "obj" || name == ".workers" || name == ".worktrees" || name == ".previews" || name == ".git" || name == "node_modules" {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		ext := strings.ToLower(filepath.Ext(d.Name()))
-		if ext == ".sln" {
-			slnFiles = append(slnFiles, path)
-			slnDirs[filepath.Dir(path)] = true
-		} else if ext == ".csproj" {
-			csprojFiles = append(csprojFiles, path)
-		}
-		return nil
-	})
+	}
 
 	// Prefer sln files; only include csproj files not covered by a sln.
-	var result []string
-	result = append(result, slnFiles...)
+	result := append([]string{}, slnFiles...)
 	for _, csproj := range csprojFiles {
-		dir := filepath.Dir(csproj)
+		dir := pathDir(csproj)
 		covered := false
 		for slnDir := range slnDirs {
-			if dir == slnDir || strings.HasPrefix(dir, slnDir+string(filepath.Separator)) {
+			if dirWithin(dir, slnDir) {
 				covered = true
 				break
 			}
@@ -107,6 +153,27 @@ func findDotnetProjects(root string) []string {
 		}
 	}
 
+	return result
+}
+
+// dirWithin reports whether dir is root or sits under it. Both are
+// repo-relative and forward-slashed, so the repository root is "" — which every
+// directory is under, and which no prefix test spells correctly.
+func dirWithin(dir, root string) bool {
+	if root == "" || dir == root {
+		return true
+	}
+	return strings.HasPrefix(dir, root+"/")
+}
+
+// findDotnetProjects is dotnetProjectPaths over a working-tree walk, returning
+// absolute paths.
+func findDotnetProjects(root string) []string {
+	rels := dotnetProjectPaths(walkWorktreePaths(root))
+	result := make([]string, 0, len(rels))
+	for _, rel := range rels {
+		result = append(result, filepath.Join(root, filepath.FromSlash(rel)))
+	}
 	return result
 }
 

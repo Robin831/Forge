@@ -96,7 +96,7 @@ func TestRunNpmOutdated_CallsInstallFirst(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "package.json"), []byte("{}"), 0o644))
 
 	s := &Scanner{timeout: 30 * time.Second}
-	_ = s.scanNpm(context.Background(), "test", dir)
+	_ = s.scanNpm(context.Background(), "test", dir, worktreeSource{root: dir})
 
 	require.GreaterOrEqual(t, len(calls), 2, "expected install and outdated calls")
 	assert.Equal(t, "install:"+dir, calls[0], "npm install should be called before npm outdated")
@@ -135,7 +135,7 @@ func TestRunNpmOutdated_InstallFailureContinues(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "package.json"), []byte("{}"), 0o644))
 
 	s := &Scanner{timeout: 30 * time.Second}
-	result := s.scanNpm(context.Background(), "test", dir)
+	result := s.scanNpm(context.Background(), "test", dir, worktreeSource{root: dir})
 	require.NotNil(t, result)
 	assert.Nil(t, result.Error, "install failure should not cause scanNpm to fail")
 	assert.Len(t, result.Patch, 1, "outdated results should still be returned")
@@ -173,7 +173,7 @@ func TestScanNpmCrossProjectDedup(t *testing.T) {
 	}
 
 	s := &Scanner{timeout: 30 * time.Second}
-	result := s.scanNpm(context.Background(), "test-anvil", dir)
+	result := s.scanNpm(context.Background(), "test-anvil", dir, worktreeSource{root: dir})
 	require.NotNil(t, result)
 
 	assert.Len(t, result.Patch, 1, "lodash should appear once despite two projects reporting it")
@@ -216,7 +216,7 @@ func TestScanNpmCrossProjectDedup_MostSevereWins(t *testing.T) {
 	}
 
 	s := &Scanner{timeout: 30 * time.Second}
-	result := s.scanNpm(context.Background(), "test-anvil", dir)
+	result := s.scanNpm(context.Background(), "test-anvil", dir, worktreeSource{root: dir})
 	require.NotNil(t, result)
 
 	assert.Empty(t, result.Patch, "patch entry should be superseded by the major bump")
@@ -260,7 +260,7 @@ func TestScanNpm_SkipsWhileKilnPreviewLive(t *testing.T) {
 		return "Forge-prev"
 	})
 
-	result := s.scanNpm(context.Background(), "heimdall", dir)
+	result := s.scanNpm(context.Background(), "heimdall", dir, worktreeSource{root: dir})
 
 	assert.Nil(t, result, "npm results should be skipped entirely, not reported from a tree we refused to sync")
 	assert.Empty(t, npmCalls, "no npm command may run while a preview holds node_modules")
@@ -294,7 +294,7 @@ func TestScanNpm_SkipsWhenPreviewStartsMidScan(t *testing.T) {
 		return "Forge-prev"
 	})
 
-	result := s.scanNpm(context.Background(), "heimdall", dir)
+	result := s.scanNpm(context.Background(), "heimdall", dir, worktreeSource{root: dir})
 
 	assert.Nil(t, result, "a preview appearing mid-scan should still skip the npm half")
 	assert.Zero(t, outdatedCalls, "npm outdated (and the npm ci it fronts) must not run")
@@ -327,7 +327,7 @@ func TestScanNpm_RunsWithoutLivePreview(t *testing.T) {
 			s := &Scanner{timeout: 30 * time.Second}
 			s.SetPreviewLiveness(tc.fn)
 
-			result := s.scanNpm(context.Background(), "heimdall", dir)
+			result := s.scanNpm(context.Background(), "heimdall", dir, worktreeSource{root: dir})
 
 			require.NotNil(t, result)
 			assert.Equal(t, 1, outdatedCalls, "the npm scan should run exactly as before")

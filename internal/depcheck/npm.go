@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -31,19 +32,28 @@ var runNpmOutdatedFn = runNpmOutdated
 // requiring npm to be installed.
 var runNpmCmdFn = runNpmCmd
 
-// scanNpm runs 'npm outdated --json' in directories containing package.json.
-// Skips node_modules, .workers, .worktrees, .previews, bin, obj, and .git directories
-// (via findNpmProjects). Deduplicates packages across projects, keeping the
-// most severe update (major > minor > patch) when the same package appears
-// in multiple package.json files. Returns nil if no package.json found, or if a
+// scanNpm runs 'npm outdated --json' in the directories src reports a
+// package.json in. Deduplicates packages across projects, keeping the most
+// severe update (major > minor > patch) when the same package appears in
+// multiple package.json files. Returns nil if no package.json found, or if a
 // live Kiln preview holds the anvil's node_modules (see previewHoldsNodeModules).
-func (s *Scanner) scanNpm(ctx context.Context, anvil, path string) *CheckResult {
+func (s *Scanner) scanNpm(ctx context.Context, anvil, path string, src manifestSource) *CheckResult {
 	if s.previewHoldsNodeModules(anvil) {
 		return nil
 	}
 
-	pkgDirs := findNpmProjects(path)
-	if len(pkgDirs) == 0 {
+	paths, err := src.Paths(ctx)
+	if err != nil {
+		return &CheckResult{
+			Anvil:   anvil,
+			Path:    path,
+			Checked: time.Now(),
+			Error:   fmt.Errorf("listing files in %s: %w", src.Describe(), err),
+		}
+	}
+
+	pkgFiles := npmPackageFiles(paths)
+	if len(pkgFiles) == 0 {
 		return nil
 	}
 
@@ -60,8 +70,23 @@ func (s *Scanner) scanNpm(ctx context.Context, anvil, path string) *CheckResult 
 
 	// Track the best (most severe) update seen per package across all projects.
 	best := map[string]ModuleUpdate{}
+	// The ranges every committed package.json declares, folded together.
+	committed := map[string]string{}
 
-	for _, dir := range pkgDirs {
+	for _, rel := range pkgFiles {
+		if data, readErr := src.Read(ctx, rel); readErr == nil {
+			for name, version := range parsePackageJSONDeps(data) {
+				committed[name] = version
+			}
+		}
+
+		dir := localDir(path, rel)
+		// A project tracked at the ref but absent from the checkout has no
+		// node_modules for npm to read; skip it rather than fail the ecosystem.
+		if _, statErr := os.Stat(dir); statErr != nil {
+			continue
+		}
+
 		// Re-check immediately before the call whose first act is `npm ci`: a
 		// preview can start after the scan began. What is left is the window
 		// between this check and the spawn a few statements later, which is
@@ -85,7 +110,14 @@ func (s *Scanner) scanNpm(ctx context.Context, anvil, path string) *CheckResult 
 		}
 	}
 
+	deduped := make([]ModuleUpdate, 0, len(best))
 	for _, u := range best {
+		deduped = append(deduped, u)
+	}
+	// package.json declares ranges rather than resolved versions, so an entry
+	// upstream has already bumped to the latest is dropped, but nothing the
+	// installed tree reported is rewritten from a range.
+	for _, u := range reconcileWithCommitted(deduped, committed, false) {
 		switch u.Kind {
 		case "patch":
 			result.Patch = append(result.Patch, u)
@@ -127,32 +159,26 @@ func (s *Scanner) previewHoldsNodeModules(anvil string) bool {
 	return true
 }
 
-// findNpmProjects walks the anvil directory for package.json files,
-// skipping node_modules, .workers, .worktrees, .previews, bin, obj, and .git
-// directories.
-//
-// .previews holds Kiln preview checkouts, whose node_modules are junctions
-// into the main checkout. Discovering a project there means running `npm ci`
-// through the junction, which deletes the main checkout's node_modules out
-// from under every worktree linked to it (observed 2026-08-07).
+// npmPackageFiles selects the package.json files among a list of repo-relative
+// paths, in lexicographic order so a run is reproducible.
+func npmPackageFiles(paths []string) []string {
+	var files []string
+	for _, p := range paths {
+		if p == "package.json" || strings.HasSuffix(p, "/package.json") {
+			files = append(files, p)
+		}
+	}
+	sort.Strings(files)
+	return files
+}
+
+// findNpmProjects is npmPackageFiles over a working-tree walk, returning the
+// absolute directories holding each package.json.
 func findNpmProjects(root string) []string {
 	var dirs []string
-	_ = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
-		if err != nil {
-			return nil
-		}
-		if d.IsDir() {
-			name := d.Name()
-			if name == "node_modules" || name == ".workers" || name == ".worktrees" || name == ".previews" || name == "bin" || name == "obj" || name == ".git" {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if d.Name() == "package.json" {
-			dirs = append(dirs, filepath.Dir(path))
-		}
-		return nil
-	})
+	for _, rel := range npmPackageFiles(walkWorktreePaths(root)) {
+		dirs = append(dirs, localDir(root, rel))
+	}
 	return dirs
 }
 
