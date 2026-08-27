@@ -20,21 +20,38 @@ import (
 // actually does with a stash, and a fake that returns whatever the test needs
 // would assert only that the code calls the commands the test expected it to.
 
-// gitBin runs one git command in dir, failing the test on a non-zero exit.
-func gitBin(t *testing.T, dir string, args ...string) string {
-	t.Helper()
-	cmd := exec.Command("git", args...)
-	cmd.Dir = dir
-	// executil.CleanGitEnv, not os.Environ: the test binary itself routinely runs
-	// inside a git worktree with GIT_DIR/GIT_WORK_TREE exported, which would
-	// answer for that repository rather than for the fixture in dir. It is the
-	// same strip set ExecCommander applies, for the same reason.
-	cmd.Env = append(executil.CleanGitEnv(),
+// gitFixtureEnv is the environment every fixture command runs under. It is
+// pinned rather than inherited, on two counts.
+//
+// executil.CleanGitEnv, not os.Environ: the test binary itself routinely runs
+// inside a git worktree with GIT_DIR/GIT_WORK_TREE exported, which would answer
+// for that repository rather than for the fixture in dir. It is the same strip
+// set ExecCommander applies, for the same reason.
+//
+// The identity and the neutralised global/system config are what make the
+// fixture itself the same on every host. Any command that writes a commit
+// otherwise depends on whoever's ~/.gitconfig the test happens to run under —
+// and `git merge` resolves the committer BEFORE it merges anything, so on a host
+// with no user.email (a CI runner, but not a developer's laptop) it exits 128
+// with "Committer identity unknown" having touched nothing at all. A test that
+// reads that non-zero exit as the conflict it meant to build then asserts
+// against a clean checkout, which is how the mid-merge case came to pass locally
+// and fail in CI while the code under test behaved correctly on both.
+func gitFixtureEnv() []string {
+	return append(executil.CleanGitEnv(),
 		"GIT_AUTHOR_NAME=forge", "GIT_AUTHOR_EMAIL=forge@example.com",
 		"GIT_COMMITTER_NAME=forge", "GIT_COMMITTER_EMAIL=forge@example.com",
 		"GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null",
 		"LC_ALL=C", "LANG=C",
 	)
+}
+
+// gitBin runs one git command in dir, failing the test on a non-zero exit.
+func gitBin(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	cmd.Env = gitFixtureEnv()
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("git %s in %s: %v: %s", strings.Join(args, " "), dir, err, out)
@@ -42,12 +59,15 @@ func gitBin(t *testing.T, dir string, args ...string) string {
 	return strings.TrimSpace(string(out))
 }
 
-// tryGit is gitBin for a command that is allowed to fail.
+// tryGit is gitBin for a command that is allowed to fail. It runs under the same
+// pinned environment: a command whose failure is the point of the test has to
+// fail for the reason the test intends, not because the host it landed on
+// configures git differently.
 func tryGit(t *testing.T, dir string, args ...string) (string, error) {
 	t.Helper()
 	cmd := exec.Command("git", args...)
 	cmd.Dir = dir
-	cmd.Env = append(executil.CleanGitEnv(), "LC_ALL=C", "LANG=C")
+	cmd.Env = gitFixtureEnv()
 	out, err := cmd.CombinedOutput()
 	return strings.TrimSpace(string(out)), err
 }
@@ -359,6 +379,15 @@ func TestPullBlockedByAnUnmergedTreeEscalates(t *testing.T) {
 	gitBin(t, repo, "commit", "-am", "main change")
 	if out, err := tryGit(t, repo, "merge", "side"); err == nil {
 		t.Fatalf("expected the merge to conflict, got: %s", out)
+	}
+	// A non-zero exit is not on its own the fixture this test needs: git refuses
+	// some merges before touching the tree at all, and a checkout that is merely
+	// clean is one pullSource is right to deploy from. Prove the index really is
+	// unmerged, so a fixture that stops building a conflict fails here — naming
+	// itself — rather than further down as a false accusation against the code
+	// under test.
+	if unmerged := gitBin(t, repo, "ls-files", "--unmerged"); unmerged == "" {
+		t.Fatal("the fixture left no unmerged entries, so the checkout is not mid-merge")
 	}
 
 	d, sink, em := pullDeployer(t, repo)
