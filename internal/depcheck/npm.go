@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -31,19 +32,28 @@ var runNpmOutdatedFn = runNpmOutdated
 // requiring npm to be installed.
 var runNpmCmdFn = runNpmCmd
 
-// scanNpm runs 'npm outdated --json' in directories containing package.json.
-// Skips node_modules, .workers, .worktrees, .previews, bin, obj, and .git directories
-// (via findNpmProjects). Deduplicates packages across projects, keeping the
-// most severe update (major > minor > patch) when the same package appears
-// in multiple package.json files. Returns nil if no package.json found, or if a
+// scanNpm runs 'npm outdated --json' in the directories src reports a
+// package.json in. Deduplicates packages across projects, keeping the most
+// severe update (major > minor > patch) when the same package appears in
+// multiple package.json files. Returns nil if no package.json found, or if a
 // live Kiln preview holds the anvil's node_modules (see previewHoldsNodeModules).
-func (s *Scanner) scanNpm(ctx context.Context, anvil, path string) *CheckResult {
+func (s *Scanner) scanNpm(ctx context.Context, anvil, path string, src manifestSource) *CheckResult {
 	if s.previewHoldsNodeModules(anvil) {
 		return nil
 	}
 
-	pkgDirs := findNpmProjects(path)
-	if len(pkgDirs) == 0 {
+	paths, err := src.Paths(ctx)
+	if err != nil {
+		return &CheckResult{
+			Anvil:   anvil,
+			Path:    path,
+			Checked: time.Now(),
+			Error:   fmt.Errorf("listing files in %s: %w", src.Describe(), err),
+		}
+	}
+
+	pkgFiles := npmPackageFiles(paths)
+	if len(pkgFiles) == 0 {
 		return nil
 	}
 
@@ -60,8 +70,42 @@ func (s *Scanner) scanNpm(ctx context.Context, anvil, path string) *CheckResult 
 
 	// Track the best (most severe) update seen per package across all projects.
 	best := map[string]ModuleUpdate{}
+	scanned := 0
 
-	for _, dir := range pkgDirs {
+	for _, rel := range pkgFiles {
+		// The ranges THIS project's committed package.json declares. Folding
+		// every package.json in the repo into one map would let one workspace
+		// that upstream has already bumped silence the identical, real update
+		// in every sibling that it has not — a monorepo drops updates with no
+		// trace. A manifest that cannot be read leaves the map empty, which
+		// reconciles nothing and reports what npm found.
+		var committed map[string]string
+		if data, readErr := src.Read(ctx, rel); readErr == nil {
+			committed = parsePackageJSONDeps(data)
+		}
+
+		// A project tracked at the ref but absent from the checkout has no
+		// node_modules for npm to read; skip it rather than fail the ecosystem.
+		//
+		// What is stated is the MANIFEST, not its directory. Discovery now comes
+		// from the tracking ref while npm still runs in the checkout, and
+		// depcheck no longer fast-forwards that checkout at all, so the two
+		// diverge permanently: a package.json upstream added inside a directory
+		// the stale checkout already has (a frontend under an existing web/, a
+		// folder promoted to a workspace) passes a directory check with no
+		// manifest on disk. npm then resolves its prefix by walking UP, so
+		// `npm ci` reinstalls the PARENT project and `npm outdated` reports the
+		// parent's packages as this project's — the exact cross-project bleed
+		// the per-project reconcile above exists to prevent.
+		manifest := filepath.Join(path, filepath.FromSlash(rel))
+		if _, statErr := os.Stat(manifest); statErr != nil {
+			log.Printf("[depcheck] %s: %s is tracked at %s but absent from the checkout — skipping it",
+				anvil, rel, src.Describe())
+			continue
+		}
+		dir := filepath.Dir(manifest)
+		scanned++
+
 		// Re-check immediately before the call whose first act is `npm ci`: a
 		// preview can start after the scan began. What is left is the window
 		// between this check and the spawn a few statements later, which is
@@ -77,12 +121,23 @@ func (s *Scanner) scanNpm(ctx context.Context, anvil, path string) *CheckResult 
 			return result
 		}
 
-		for _, u := range updates {
+		// package.json declares ranges rather than resolved versions, so an
+		// entry this project already pins at the latest is dropped, but
+		// nothing the installed tree reported is rewritten from a range.
+		for _, u := range reconcileWithCommitted(updates, committed, false) {
 			existing, ok := best[u.Path]
 			if !ok || kindRank[u.Kind] > kindRank[existing.Kind] {
 				best[u.Path] = u
 			}
 		}
+	}
+
+	if scanned == 0 {
+		// An ecosystem whose every project was skipped reports empty Patch /
+		// Minor / Major, which is indistinguishable from "everything is up to
+		// date". Leave a trace of the difference.
+		log.Printf("[depcheck] %s: none of the %d npm project(s) tracked at %s are present in the checkout — nothing was scanned",
+			anvil, len(pkgFiles), src.Describe())
 	}
 
 	for _, u := range best {
@@ -127,33 +182,17 @@ func (s *Scanner) previewHoldsNodeModules(anvil string) bool {
 	return true
 }
 
-// findNpmProjects walks the anvil directory for package.json files,
-// skipping node_modules, .workers, .worktrees, .previews, bin, obj, and .git
-// directories.
-//
-// .previews holds Kiln preview checkouts, whose node_modules are junctions
-// into the main checkout. Discovering a project there means running `npm ci`
-// through the junction, which deletes the main checkout's node_modules out
-// from under every worktree linked to it (observed 2026-08-07).
-func findNpmProjects(root string) []string {
-	var dirs []string
-	_ = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
-		if err != nil {
-			return nil
+// npmPackageFiles selects the package.json files among a list of repo-relative
+// paths, in lexicographic order so a run is reproducible.
+func npmPackageFiles(paths []string) []string {
+	var files []string
+	for _, p := range paths {
+		if p == "package.json" || strings.HasSuffix(p, "/package.json") {
+			files = append(files, p)
 		}
-		if d.IsDir() {
-			name := d.Name()
-			if name == "node_modules" || name == ".workers" || name == ".worktrees" || name == ".previews" || name == "bin" || name == "obj" || name == ".git" {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if d.Name() == "package.json" {
-			dirs = append(dirs, filepath.Dir(path))
-		}
-		return nil
-	})
-	return dirs
+	}
+	sort.Strings(files)
+	return files
 }
 
 // npmOutdatedEntry represents a single entry from 'npm outdated --json'.

@@ -10,7 +10,6 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"os/exec"
 	"sort"
 	"strings"
 	"sync"
@@ -164,23 +163,14 @@ func (s *Scanner) ScanAll(ctx context.Context) {
 
 // ScanAnvilDeps runs all applicable ecosystem scanners for a single anvil and
 // returns the results without creating beads. Unlike scanAnvil, it does not
-// pull from the remote — the caller should scan the working tree as-is.
+// touch the remote — the caller should scan the working tree as-is.
 func (s *Scanner) ScanAnvilDeps(ctx context.Context, name, path string) []*CheckResult {
-	scanners := []struct {
-		name string
-		fn   func(ctx context.Context, anvil, path string) *CheckResult
-	}{
-		{"Go", s.scanGo},
-		{"NuGet", s.scanDotnet},
-		{"npm", s.scanNpm},
-	}
-
 	var results []*CheckResult
-	for _, sc := range scanners {
+	for _, sc := range s.ecosystemScanners() {
 		if ctx.Err() != nil {
 			return results
 		}
-		result := sc.fn(ctx, name, path)
+		result := sc.fn(ctx, name, path, worktreeSource{root: path})
 		if result == nil {
 			continue // ecosystem not present
 		}
@@ -194,44 +184,55 @@ func (s *Scanner) ScanAnvilDeps(ctx context.Context, name, path string) []*Check
 	return results
 }
 
+// ecosystemScanner names one ecosystem's scan function. Each returns nil if the
+// ecosystem is not present (e.g. no go.mod → scanGo returns nil).
+type ecosystemScanner struct {
+	name string
+	fn   func(ctx context.Context, anvil, path string, src manifestSource) *CheckResult
+}
+
+func (s *Scanner) ecosystemScanners() []ecosystemScanner {
+	return []ecosystemScanner{
+		{"Go", s.scanGo},
+		{"NuGet", s.scanDotnet},
+		{"npm", s.scanNpm},
+	}
+}
+
 // scanAnvil runs all applicable ecosystem scanners for a single anvil and
 // creates beads for any outdated dependencies found.
+//
+// The manifests are read out of the anvil's upstream tracking ref, not out of
+// its working tree. depcheck used to `git pull --ff-only` first, for the right
+// reason — scanning a stale tree re-detects updates that upstream has already
+// merged and files duplicate beads — but a pull is refused whenever a tracked
+// file has local modifications the incoming commits touch, and some anvils are
+// legitimately never clean (a pod-local `.beads/config.yaml`, bd's own
+// additions to `.beads/.gitignore`). Such an anvil was skipped on that run and
+// on every run after it, because both sides of the condition are permanent.
+//
+// A fetch cannot be refused by local modifications and writes only to .git, so
+// the anvil is scanned with its modifications untouched and still carries them
+// afterwards. The staleness the pull was guarding against is handled from the
+// data instead: the ecosystem tools still run in the checkout, and what they
+// report is reconciled against the versions the tracking ref actually pins.
 func (s *Scanner) scanAnvil(ctx context.Context, name, path string) {
-	// Pull latest main so the scanner sees current dependency versions.
-	// Without this, merged dependency updates that haven't been pulled
-	// locally would be re-detected as outdated, creating duplicate beads.
-	// If the pull fails we must not scan — scanning a stale tree would
-	// produce beads for work that is already done.
-	pullCtx, pullCancel := context.WithTimeout(ctx, 30*time.Second)
-	defer pullCancel()
-	pullCmd := executil.HideWindow(exec.CommandContext(pullCtx, "git", "pull", "--ff-only"))
-	pullCmd.Dir = path
-	if out, pullErr := pullCmd.CombinedOutput(); pullErr != nil {
-		msg := fmt.Sprintf("git pull --ff-only failed for anvil %s — skipping depcheck to avoid stale results: %v: %s",
-			name, pullErr, strings.TrimSpace(string(out)))
+	src, err := s.refSourceFor(ctx, name, path)
+	if err != nil {
+		msg := fmt.Sprintf("could not read dependency manifests for anvil %s from its upstream ref — skipping depcheck to avoid stale results: %v",
+			name, err)
 		log.Printf("[depcheck] %s", msg)
 		_ = s.db.LogEvent(state.EventDepcheckFailed, msg, "", name)
 		return
 	}
 
-	// Run each ecosystem scanner. Each returns nil if the ecosystem is not
-	// present (e.g. no go.mod → scanGo returns nil).
-	scanners := []struct {
-		name string
-		fn   func(ctx context.Context, anvil, path string) *CheckResult
-	}{
-		{"Go", s.scanGo},
-		{"NuGet", s.scanDotnet},
-		{"npm", s.scanNpm},
-	}
-
 	var allResults []*CheckResult
-	for _, sc := range scanners {
+	for _, sc := range s.ecosystemScanners() {
 		if ctx.Err() != nil {
 			return
 		}
 
-		result := sc.fn(ctx, name, path)
+		result := sc.fn(ctx, name, path, src)
 		if result == nil {
 			continue // ecosystem not present in this anvil
 		}
@@ -264,6 +265,21 @@ func (s *Scanner) scanAnvil(ctx context.Context, name, path string) {
 	if len(allResults) > 0 {
 		s.findOrCreateConsolidatedBead(ctx, allResults, path, name)
 	}
+}
+
+// refSourceFor resolves the anvil's upstream tracking branch, fetches it, and
+// returns the manifest source reading that ref's blobs.
+func (s *Scanner) refSourceFor(ctx context.Context, name, path string) (manifestSource, error) {
+	up, err := resolveUpstream(ctx, path)
+	if err != nil {
+		return nil, err
+	}
+	ref, err := fetchUpstream(ctx, path, up)
+	if err != nil {
+		return nil, err
+	}
+	log.Printf("[depcheck] %s: reading manifests from %s (working tree untouched)", name, ref)
+	return refSource{repoDir: path, ref: ref}, nil
 }
 
 // sortUpdates sorts ModuleUpdate slices by kind (major first) then path.

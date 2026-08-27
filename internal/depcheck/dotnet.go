@@ -5,21 +5,41 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
 	"github.com/Robin831/Forge/internal/executil"
 )
 
-// scanDotnet runs 'dotnet list package --outdated --format json' in directories
-// containing *.csproj or *.sln files. Skips bin/obj directories.
-// Returns nil if no .NET project is found.
-func (s *Scanner) scanDotnet(ctx context.Context, anvil, path string) *CheckResult {
-	projectFiles := findDotnetProjects(path)
-	if len(projectFiles) == 0 {
+// runDotnetOutdatedFn is the function used to invoke `dotnet list package`. It
+// is a package-level variable so tests can exercise scanDotnet's own wiring —
+// the per-project reconcile scope above all — without dotnet installed. Without
+// the seam nothing executed scanDotnet's body at all, and passing the wrong
+// scope there (repo-wide, or after the cross-project dedupe) silently drops a
+// real NuGet update while every test in the package still passes.
+var runDotnetOutdatedFn = runDotnetOutdated
+
+// scanDotnet runs 'dotnet list package --outdated --format json' for the
+// project files src reports. Returns nil if no .NET project is found.
+func (s *Scanner) scanDotnet(ctx context.Context, anvil, path string, src manifestSource) *CheckResult {
+	paths, err := src.Paths(ctx)
+	if err != nil {
+		return &CheckResult{
+			Anvil:   anvil,
+			Path:    path,
+			Checked: time.Now(),
+			Error:   fmt.Errorf("listing files in %s: %w", src.Describe(), err),
+		}
+	}
+
+	targets := dotnetScanTargets(ctx, anvil, src, paths)
+	if len(targets) == 0 {
 		return nil
 	}
 
@@ -33,81 +53,349 @@ func (s *Scanner) scanDotnet(ctx context.Context, anvil, path string) *CheckResu
 	// Track seen packages across all project files to avoid duplicates
 	// when the same package appears in multiple .sln/.csproj files.
 	seen := map[string]bool{}
+	var collected []ModuleUpdate
+	pins := newMSBuildPins(src)
+	scanned := 0
 
-	for _, projFile := range projectFiles {
-		updates, err := runDotnetOutdated(ctx, s.timeout, filepath.Dir(projFile), projFile)
+	for _, target := range targets {
+		projFile := filepath.Join(path, filepath.FromSlash(target.rel))
+		// A project tracked at the ref but absent from the checkout has
+		// nothing for dotnet to read. Skip it rather than fail the whole
+		// ecosystem: the rest of the solution is still scannable. Say so,
+		// though — an ecosystem reporting "all dependencies up to date" because
+		// none of its projects were scannable is the one degradation depcheck
+		// leaves no trace of anywhere.
+		if _, statErr := os.Stat(projFile); statErr != nil {
+			log.Printf("[depcheck] %s: %s is tracked at %s but absent from the checkout — skipping it",
+				anvil, target.rel, src.Describe())
+			continue
+		}
+		scanned++
+
+		updates, err := runDotnetOutdatedFn(ctx, s.timeout, filepath.Dir(projFile), projFile)
 		if err != nil {
 			result.Error = fmt.Errorf("dotnet list package in %s: %w", projFile, err)
 			return result
 		}
+
+		// A PackageReference pins a resolved version, so a stale one reported
+		// off the checkout is replaced by what the source actually commits —
+		// reconciled against THIS project's own pins, before the cross-project
+		// dedupe below folds anything together.
+		updates = reconcileWithCommitted(updates, pins.forScope(ctx, paths, target.scope), true)
 
 		for _, u := range updates {
 			if seen[u.Path] {
 				continue
 			}
 			seen[u.Path] = true
-			switch u.Kind {
-			case "patch":
-				result.Patch = append(result.Patch, u)
-			case "minor":
-				result.Minor = append(result.Minor, u)
-			case "major":
-				result.Major = append(result.Major, u)
-			}
+			collected = append(collected, u)
+		}
+	}
+
+	if scanned == 0 {
+		log.Printf("[depcheck] %s: none of the %d NuGet project(s) tracked at %s are present in the checkout — nothing was scanned",
+			anvil, len(targets), src.Describe())
+	}
+
+	sortUpdates(collected)
+
+	for _, u := range collected {
+		switch u.Kind {
+		case "patch":
+			result.Patch = append(result.Patch, u)
+		case "minor":
+			result.Minor = append(result.Minor, u)
+		case "major":
+			result.Major = append(result.Major, u)
 		}
 	}
 
 	return result
 }
 
-// findDotnetProjects walks the anvil directory for *.sln files first, then
-// *.csproj files. If a .sln is found, its directory's csproj files are skipped
-// (the sln covers them). Skips bin, obj, .workers, .worktrees, .previews
-// (Kiln preview checkouts — not the anvil's own code), and .git directories.
-func findDotnetProjects(root string) []string {
-	slnDirs := map[string]bool{}
-	var slnFiles []string
-	var csprojFiles []string
+// msbuildPins folds a source's MSBuild manifests into the package → version
+// map that applies to one project, reading each file at most once across every
+// project of a scan.
+type msbuildPins struct {
+	src   manifestSource
+	cache map[string]map[string]string
+}
 
-	_ = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
-		if err != nil {
-			return nil
-		}
-		if d.IsDir() {
-			name := d.Name()
-			if name == "bin" || name == "obj" || name == ".workers" || name == ".worktrees" || name == ".previews" || name == ".git" || name == "node_modules" {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		ext := strings.ToLower(filepath.Ext(d.Name()))
-		if ext == ".sln" {
-			slnFiles = append(slnFiles, path)
-			slnDirs[filepath.Dir(path)] = true
-		} else if ext == ".csproj" {
-			csprojFiles = append(csprojFiles, path)
-		}
-		return nil
-	})
+func newMSBuildPins(src manifestSource) *msbuildPins {
+	return &msbuildPins{src: src, cache: map[string]map[string]string{}}
+}
 
-	// Prefer sln files; only include csproj files not covered by a sln.
-	var result []string
-	result = append(result, slnFiles...)
-	for _, csproj := range csprojFiles {
-		dir := filepath.Dir(csproj)
-		covered := false
-		for slnDir := range slnDirs {
-			if dir == slnDir || strings.HasPrefix(dir, slnDir+string(filepath.Separator)) {
-				covered = true
-				break
-			}
+// forScope folds the manifests in paths that apply to a scan target — the
+// directories dotnetScanTargets resolved for it. A file that cannot be read is
+// skipped: an incomplete map only ever means fewer entries are reconciled,
+// never a wrong one.
+func (p *msbuildPins) forScope(ctx context.Context, paths []string, scope []scopeRoot) map[string]string {
+	refs := map[string]string{}
+	for _, manifest := range paths {
+		if !isMSBuildManifest(manifest) || !msbuildAppliesTo(manifest, scope) {
+			continue
 		}
-		if !covered {
-			result = append(result, csproj)
+		for name, version := range p.read(ctx, manifest) {
+			refs[name] = version
+		}
+	}
+	return refs
+}
+
+func (p *msbuildPins) read(ctx context.Context, path string) map[string]string {
+	if parsed, ok := p.cache[path]; ok {
+		return parsed
+	}
+	var parsed map[string]string
+	if data, err := p.src.Read(ctx, path); err == nil {
+		parsed = parsePackageRefs(data)
+	}
+	p.cache[path] = parsed
+	return parsed
+}
+
+// scopeRoot is one directory whose MSBuild manifests may pin a scan target's
+// packages. A project contributes its OWN directory; only the .sln tree
+// fallback below contributes a whole subtree, and the difference is the whole
+// of what keeps a root-level project from taking the repository with it.
+type scopeRoot struct {
+	dir string
+	// tree extends the root to every directory beneath it, which is what a
+	// solution's "its own tree" fallback means and what a project's scope must
+	// never mean: MSBuild imports by walking UP from a project, so a manifest
+	// BELOW one either belongs to a different project or is never imported at
+	// all — and at the repository root, where dir is "", a project's subtree is
+	// every directory there is.
+	tree bool
+}
+
+// projectScope is the scope of one project file: the directory it sits in, plus
+// (through msbuildAppliesTo's ancestor rule) the directory-level imports above
+// it.
+func projectScope(dir string) scopeRoot { return scopeRoot{dir: dir} }
+
+// treeScope is the scope of a solution whose project list could not be
+// established: everything under it, which is all that can be said about it.
+func treeScope(dir string) scopeRoot { return scopeRoot{dir: dir, tree: true} }
+
+// msbuildAppliesTo reports whether the pins in manifest apply to a scan target
+// whose scope is the given roots.
+//
+// The scope matters because reconciliation DROPS an update whose committed pin
+// is already the latest version. Folded repo-wide, one project in a monorepo
+// that has been upgraded silences the identical update in every other project
+// that has not — a real update dropped with no trace of it anywhere. So a
+// sibling's manifest is out of scope, and only two things are in it:
+//
+//   - a manifest in one of the scope's own directories — the project's own
+//     .csproj and the directory-level imports beside it, and for a .sln the
+//     directories of the projects that solution references. A tree root (only
+//     the solution fallback mints one) widens that to everything below it;
+//   - a .props/.targets in an ANCESTOR directory of one of them, because
+//     MSBuild imports Directory.Build.props and Directory.Packages.props by
+//     walking up from the project — central package management pins live
+//     nowhere else. The ancestor rule is by extension, not by file name: an
+//     unrelated `version.props` above a project is imported by whatever imports
+//     it, and depcheck cannot tell which those are, so it is read.
+//
+// The directory match is deliberately exact for a project root rather than a
+// dirWithin tree test: dirWithin reports every directory as within "", so a
+// project sitting at the repository root — the layout `dotnet new console` plus
+// `dotnet new sln` produces — would otherwise take every manifest in the
+// repository into its scope and be silenced by any of them.
+func msbuildAppliesTo(manifest string, scope []scopeRoot) bool {
+	dir := pathDir(manifest)
+	directoryLevel := msbuildDirectoryExts[strings.ToLower(filepath.Ext(manifest))]
+	for _, root := range scope {
+		if dir == root.dir || (root.tree && dirWithin(dir, root.dir)) {
+			return true
+		}
+		if directoryLevel && dirWithin(root.dir, dir) {
+			return true
+		}
+	}
+	return false
+}
+
+// isMSBuildManifest reports whether a path can hold NuGet package pins: any
+// project file, and any .props/.targets by extension — the name is deliberately
+// not inspected, since a repository is free to keep its central
+// <PackageVersion> entries in a file called anything at all and import it from
+// Directory.Build.props.
+func isMSBuildManifest(p string) bool {
+	ext := strings.ToLower(filepath.Ext(p))
+	return dotnetProjectExts[ext] || msbuildDirectoryExts[ext]
+}
+
+// dotnetProjectExts are the project files `dotnet list package` runs against.
+// isMSBuildManifest reads this very map rather than restating it, so the two
+// halves of this ecosystem cannot disagree about which project types exist —
+// reading an F# project's pins while never scanning the project itself is the
+// shape that disagreement took, and a comment claiming the sharing is not the
+// same thing as the sharing.
+var dotnetProjectExts = map[string]bool{".csproj": true, ".fsproj": true, ".vbproj": true}
+
+// msbuildDirectoryExts are the directory-level import files MSBuild picks up by
+// walking up from a project. Named once for the same reason: isMSBuildManifest
+// decides whether one is read at all and msbuildAppliesTo decides whether the
+// ancestor rule applies to it, and a set that lived in both would drift.
+var msbuildDirectoryExts = map[string]bool{".props": true, ".targets": true}
+
+// dotnetTarget is one project file to run `dotnet list package` against,
+// together with the scope whose MSBuild manifests pin its packages.
+type dotnetTarget struct {
+	rel   string
+	scope []scopeRoot
+}
+
+// dotnetScanTargets selects the project files to scan and resolves each one's
+// manifest scope: *.sln first, then any project file no solution references.
+//
+// A solution's scope is the set of directories of the projects it REFERENCES,
+// read out of the .sln itself, rather than its own directory tree. That
+// distinction is the whole point on the standard .NET layout, where the solution
+// sits at the repository ROOT: the root directory is "", which dirWithin reports
+// every directory as being within, so a tree-scoped root solution folds every
+// manifest in the repository into its pin map — repo-wide reconciliation again,
+// under a different name. Since reconciliation drops an update whose pin is
+// already the latest, one out-of-solution project upstream has bumped then
+// silences the same real update inside the solution, with no trace anywhere.
+//
+// A solution naming no project this can parse falls back to its own tree, which
+// is all that can be said about it, and is what it has always meant. A solution
+// that could not be READ is a different answer and gets a different one: it says
+// nothing about its projects, so it is dropped as a target and its projects are
+// each scanned in their own right. Both are logged — an ecosystem that quietly
+// widened its reconcile scope, or narrowed what it scanned, is the degradation
+// depcheck otherwise leaves no trace of.
+func dotnetScanTargets(ctx context.Context, anvil string, src manifestSource, paths []string) []dotnetTarget {
+	var slnFiles, projectFiles []string
+	for _, p := range paths {
+		ext := strings.ToLower(filepath.Ext(p))
+		switch {
+		case ext == ".sln":
+			slnFiles = append(slnFiles, p)
+		case dotnetProjectExts[ext]:
+			projectFiles = append(projectFiles, p)
 		}
 	}
 
-	return result
+	var targets []dotnetTarget
+	covered := map[string]bool{}
+
+	for _, sln := range slnFiles {
+		referenced, err := slnReferencedProjects(ctx, src, sln)
+		if err != nil {
+			// Nothing is known about this solution, so nothing is claimed on
+			// its behalf: it is not scanned as a solution and it covers no
+			// project, leaving each project file to be scanned with its own
+			// scope. Falling back to its tree would, for the repository-root
+			// solution the standard layout puts there, fold every manifest in
+			// the repository into one pin map and drop a real update because
+			// some sibling already pins the latest.
+			log.Printf("[depcheck] %s: %s could not be read from %s (%v) — scanning its projects individually instead",
+				anvil, sln, src.Describe(), err)
+			continue
+		}
+		if len(referenced) == 0 {
+			slnDir := pathDir(sln)
+			log.Printf("[depcheck] %s: %s names no project file — reconciling it against its whole tree (%s)",
+				anvil, sln, describeScopeDir(slnDir))
+			for _, proj := range projectFiles {
+				if dirWithin(pathDir(proj), slnDir) {
+					covered[proj] = true
+				}
+			}
+			targets = append(targets, dotnetTarget{rel: sln, scope: []scopeRoot{treeScope(slnDir)}})
+			continue
+		}
+		scope := make([]scopeRoot, 0, len(referenced))
+		for _, proj := range referenced {
+			covered[proj] = true
+			scope = append(scope, projectScope(pathDir(proj)))
+		}
+		targets = append(targets, dotnetTarget{rel: sln, scope: scope})
+	}
+
+	for _, proj := range projectFiles {
+		if covered[proj] {
+			continue
+		}
+		targets = append(targets, dotnetTarget{rel: proj, scope: []scopeRoot{projectScope(pathDir(proj))}})
+	}
+
+	return targets
+}
+
+// slnProjectEntry matches a solution's project entries:
+//
+//	Project("{FAE04EC0-...}") = "MyApp", "src\MyApp\MyApp.csproj", "{...}"
+//
+// The captured field is a path relative to the solution — except for a solution
+// FOLDER, where it repeats the folder's name, which is why only entries naming a
+// known project extension are kept.
+var slnProjectEntry = regexp.MustCompile(`(?i)^Project\("\{[^}]*\}"\)\s*=\s*"[^"]*"\s*,\s*"([^"]+)"`)
+
+// slnReferencedProjects returns the repo-relative paths of the projects a
+// solution references. The read failure is returned rather than folded into an
+// empty list: "this solution names no project" and "this solution could not be
+// read" are different facts about the scan, and the caller acts differently on
+// each.
+//
+// Line endings are the parser's one exposure to how the file was written: a
+// .sln from Visual Studio or `dotnet new sln` is CRLF throughout, so each line
+// is trimmed before it is matched.
+func slnReferencedProjects(ctx context.Context, src manifestSource, sln string) ([]string, error) {
+	data, err := src.Read(ctx, sln)
+	if err != nil {
+		return nil, err
+	}
+	dir := pathDir(sln)
+	var refs []string
+	for _, line := range strings.Split(string(data), "\n") {
+		match := slnProjectEntry.FindStringSubmatch(strings.TrimSpace(line))
+		if match == nil {
+			continue
+		}
+		// A .sln always spells its paths with backslashes, on every host.
+		rel := strings.ReplaceAll(strings.TrimSpace(match[1]), "\\", "/")
+		if !dotnetProjectExts[strings.ToLower(filepath.Ext(rel))] {
+			continue
+		}
+		refs = append(refs, joinRepoPath(dir, rel))
+	}
+	return refs, nil
+}
+
+// describeScopeDir names a scope directory for a log line, where the
+// repository root's "" would otherwise read as a missing value.
+func describeScopeDir(dir string) string {
+	if dir == "" {
+		return "the repository root"
+	}
+	return dir
+}
+
+// joinRepoPath resolves a solution-relative path against the solution's own
+// directory, returning the repo-relative, forward-slashed form the rest of this
+// package passes around. A path escaping the repository root keeps its leading
+// "..", which simply matches nothing.
+func joinRepoPath(dir, rel string) string {
+	if dir == "" {
+		return path.Clean(rel)
+	}
+	return path.Clean(dir + "/" + rel)
+}
+
+// dirWithin reports whether dir is root or sits under it. Both are
+// repo-relative and forward-slashed, so the repository root is "" — which every
+// directory is under, and which no prefix test spells correctly.
+func dirWithin(dir, root string) bool {
+	if root == "" || dir == root {
+		return true
+	}
+	return strings.HasPrefix(dir, root+"/")
 }
 
 // dotnetOutdatedResponse represents the JSON output of

@@ -4,35 +4,38 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"os"
 	"os/exec"
-	"path/filepath"
 	"time"
 
 	"github.com/Robin831/Forge/internal/executil"
 )
 
-// scanGo runs 'go list -m -u -json all' in an anvil directory if it has a go.mod.
-// Only direct dependencies are included — indirect (transitive) deps cannot be
-// independently upgraded and would cause Smith to produce no-diff results.
-// Returns nil if the anvil is not a Go project.
+// scanGo runs 'go list -m -u -json all' in an anvil directory if src has a
+// go.mod. Only direct dependencies are included — indirect (transitive) deps
+// cannot be independently upgraded and would cause Smith to produce no-diff
+// results. Returns nil if the anvil is not a Go project.
 //
-// Note: scanGo checks only the root go.mod of the given path and does not walk
-// subdirectories, so .worktrees copies of go.mod are never scanned. No skip-list
-// is required here (compare findNpmProjects / findDotnetProjects which do walk).
-func (s *Scanner) scanGo(ctx context.Context, anvil, path string) *CheckResult {
-	// Only check Go projects
-	modPath := filepath.Join(path, "go.mod")
-	if _, err := os.Stat(modPath); err != nil {
-		if os.IsNotExist(err) {
+// The presence check and the committed requirements both come from src, so a
+// scheduled scan answers from the tracking ref while `go list` still runs in the
+// checkout: the reported versions are then reconciled against what upstream
+// pins, which is what keeps a checkout that is behind the remote from
+// re-reporting updates that have already landed.
+//
+// Note: scanGo checks only the root go.mod and does not walk subdirectories, so
+// .worktrees copies of go.mod are never scanned.
+func (s *Scanner) scanGo(ctx context.Context, anvil, path string, src manifestSource) *CheckResult {
+	modData, err := src.Read(ctx, "go.mod")
+	if err != nil {
+		if errors.Is(err, ErrBlobNotFound) {
 			return nil // not a Go project
 		}
 		return &CheckResult{
 			Anvil:   anvil,
 			Path:    path,
 			Checked: time.Now(),
-			Error:   fmt.Errorf("stat %s: %w", modPath, err),
+			Error:   fmt.Errorf("reading go.mod from %s: %w", src.Describe(), err),
 		}
 	}
 
@@ -57,7 +60,11 @@ func (s *Scanner) scanGo(ctx context.Context, anvil, path string) *CheckResult {
 		return result
 	}
 
-	updates := parseGoJSONOutput(output)
+	// go.mod pins resolved versions, so a stale reported version is replaced
+	// rather than merely filtered.
+	updates := reconcileWithCommitted(parseGoJSONOutput(output), parseGoModRequires(modData), true)
+	sortUpdates(updates)
+
 	for _, u := range updates {
 		switch u.Kind {
 		case "patch":
