@@ -278,7 +278,7 @@ func (s *Scanner) scanAnvil(ctx context.Context, name, path string) {
 		// nightly-identical-event problem was observed, so this is the one path
 		// that classifies. An ecosystem scan that fails below keeps reporting
 		// per-run, since its errors are the ecosystem tool's rather than git's.
-		s.reportScanFailure(name, path, err)
+		s.reportScanFailure(ctx, name, path, err)
 		return
 	}
 	// Reading the manifests is the proof that whatever blocked an earlier scan

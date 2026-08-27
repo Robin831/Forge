@@ -1,6 +1,7 @@
 package depcheck
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"strings"
@@ -14,6 +15,13 @@ import (
 // a rendered event message. git is normally terse, but a fetch against a remote
 // with hundreds of refs can answer with one line per ref, and that whole wall
 // would otherwise become the operator's headline.
+//
+// It bounds the WHOLE detail, not one component of it. failureEvidence applies
+// it to git's words on the transient exit, where they are the message; on the
+// blocked exit blockedMessage assembles a headline, a path list, a remediation
+// command and that same evidence, and budgets each against this number so the
+// assembled string still fits it. A bound applied per component adds up to a
+// multiple of itself, which is a row nobody reads to the end of.
 const maxFailureDetailBytes = 2000
 
 // evidenceEllipsis marks a truncated evidence string. It is named because
@@ -36,7 +44,7 @@ const evidenceEllipsis = "…"
 // which is how an anvil went unscanned for weeks with the evidence in the log
 // the whole time. Instead the anvil gets a needs-attention entry, one event
 // naming the condition, and silence until the condition CHANGES or clears.
-func (s *Scanner) reportScanFailure(name, path string, err error) {
+func (s *Scanner) reportScanFailure(ctx context.Context, name, path string, err error) {
 	kind := classifyGitError(err)
 
 	if kind != gitFailureBlocked {
@@ -55,7 +63,11 @@ func (s *Scanner) reportScanFailure(name, path string, err error) {
 		return
 	}
 
-	s.escalateBlocked(name, gitFailureSignature(name, kind, failureEvidence(err)), blockedFailureDetail(name, path, err))
+	// The signature is still taken from git's evidence alone, never from the
+	// enumerated detail: the blocking paths are what the operator READS, and a
+	// tree whose modified set shifts by one file between two runs is the same
+	// condition, which a signature over the detail would re-escalate nightly.
+	s.escalateBlocked(name, gitFailureSignature(name, kind, failureEvidence(err)), blockedFailureDetail(ctx, name, path, err))
 }
 
 // escalateBlocked raises the anvil's blocking condition with the operator, or
@@ -65,9 +77,8 @@ func (s *Scanner) reportScanFailure(name, path string, err error) {
 // condition produce the same signature, and the store answers whether it has
 // seen it. detail is the human-readable content of the escalation and is
 // deliberately the only thing this function does not decide — it is built by
-// blockedFailureDetail, which is the seam the sibling bead (Forge-0uvl)
-// replaces with enumerated blocking paths and a remediation command without
-// touching classification or suppression.
+// blockedFailureDetail, which enumerates the blocking paths and names the
+// remediation command without touching classification or suppression.
 //
 // A store that cannot answer escalates: an operator told twice about a real
 // blockage is a nuisance, an operator never told is the bug being fixed.
@@ -150,26 +161,40 @@ func (s *Scanner) pruneBlocked(anvils map[string]string) {
 }
 
 // blockedFailureDetail renders the operator-facing description of a blocked
-// scan: what is blocked, what git said, and what state it leaves the anvil in.
+// scan: which anvil stopped being scanned, the paths an operator can recognise
+// the condition by, the one command that resolves it, and — last, under its own
+// label — git's raw output as the evidence for all of it.
 //
-// This is the seam the message-detail sibling bead (Forge-0uvl) owns. It is a
-// single function taking the anvil, its checkout and the error precisely so
-// that enumerating the blocking paths and naming the remediation command is a
-// change to this body alone — the classification above it and the suppression
-// beside it read only its output, never its shape.
-func blockedFailureDetail(anvil, path string, err error) string {
+// This is the one seam the message content lives on. It takes the anvil, its
+// checkout and the error precisely so that enumerating the blocking paths and
+// naming the remediation command is a change to this body alone: the
+// classification above it and the suppression beside it read only its output,
+// never its shape.
+//
+// The path enumeration is best-effort by construction. `git status` in a
+// checkout already known to be in a bad state is exactly the command that might
+// also fail, and an escalation with no path list is worth far more than no
+// escalation at all — so a failure here is logged and the message is built
+// without it.
+func blockedFailureDetail(ctx context.Context, anvil, path string, err error) string {
 	evidence := failureEvidence(err)
-	var b strings.Builder
-	fmt.Fprintf(&b, "Its dependency manifests cannot be read from the upstream ref, so the anvil is not being scanned at all "+
-		"(it is unscanned, not up to date). This will repeat identically on every scheduled run until the checkout is fixed. ")
-	if path != "" {
-		fmt.Fprintf(&b, "Checkout: %s. ", path)
+
+	var paths []string
+	if dirty, dirtyErr := dirtyPaths(ctx, path); dirtyErr != nil {
+		// failureEvidence rather than %v: this is git's own words reaching
+		// daemon.log, which is the surface, and so the treatment, the escalated
+		// detail beside it already gets. A gitError interpolates stderr verbatim,
+		// and `git status` is being run in a checkout Forge did not author whose
+		// diagnostics routinely echo paths and ref names out of it — unbounded
+		// and unstripped, a multi-line stderr becomes several apparent log
+		// records and an escape sequence in a filename is executed by whatever
+		// tails the log.
+		log.Printf("[depcheck] %s: could not enumerate blocking paths for the escalation: %s", anvil, failureEvidence(dirtyErr))
+	} else {
+		paths = dirty
 	}
-	if evidence != "" {
-		fmt.Fprintf(&b, "git said: %s. ", evidence)
-	}
-	b.WriteString("Forge clears this entry automatically once the anvil scans again.")
-	return b.String()
+
+	return blockedMessage(anvil, path, paths, evidence)
 }
 
 // failureEvidence renders git's own words for a failure, bounded and stripped
@@ -191,11 +216,22 @@ func failureEvidence(err error) string {
 	// ref, and a feed row is one line.
 	clean := termtext.Line(strings.TrimSpace(raw))
 	clean = strings.Join(strings.Fields(clean), " ")
-	if len(clean) > maxFailureDetailBytes {
-		// The marker is inside the bound, not on top of it: maxFailureDetailBytes
-		// is what a row and a feed line are sized in, so a cut that then appends
-		// three more bytes overshoots the very number it is enforcing.
-		clean = textfmt.TruncateRunes(clean, maxFailureDetailBytes-len(evidenceEllipsis)) + evidenceEllipsis
+	return boundEvidence(clean, maxFailureDetailBytes)
+}
+
+// boundEvidence truncates already-sanitized evidence to a byte bound.
+//
+// The marker is inside the bound, not on top of it: the bound is what a row and
+// a feed line are sized in, so a cut that then appends three more bytes
+// overshoots the very number it is enforcing. It is a parameter rather than
+// maxFailureDetailBytes directly because the blocked exit gives git's words
+// whatever the rest of the assembled detail left of that same total.
+func boundEvidence(s string, maxBytes int) string {
+	if maxBytes <= len(evidenceEllipsis) {
+		maxBytes = len(evidenceEllipsis) + 1
 	}
-	return clean
+	if len(s) <= maxBytes {
+		return s
+	}
+	return textfmt.TruncateRunes(s, maxBytes-len(evidenceEllipsis)) + evidenceEllipsis
 }
