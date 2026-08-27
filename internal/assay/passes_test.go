@@ -480,10 +480,12 @@ func TestToolCallsRenderInTelemetry(t *testing.T) {
 	if !strings.Contains(got, "tools=9 files=4") {
 		t.Errorf("RenderPassTelemetry = %q; want it to carry tools=9 files=4", got)
 	}
-	// The motivating case: a pass that made no tool call at all, in a run whose
-	// other passes did. One run is one provider, so a sibling's non-zero count
-	// proves the backend reports the figure and this zero is a measurement —
-	// which is the whole point of the counter and must be on the line.
+	// The motivating case: a pass that made no tool call at all, alongside a
+	// pass on the same backend that did. That sibling's non-zero count proves
+	// the backend reports the figure, so this zero is a measurement — which is
+	// the whole point of the counter and must be on the line. (Same backend is
+	// the operative condition; TestToolTelemetryIsGatedPerProviderNotPerRun
+	// covers the run that spans two.)
 	got = RenderPassTelemetry([]PassReport{
 		{Name: "logic", Turns: 12, Attempts: 1, ToolCalls: 9, FilesRead: 4},
 		{Name: "security", Turns: 2, Attempts: 1},
@@ -507,6 +509,72 @@ func TestToolCallsRenderInTelemetry(t *testing.T) {
 	got = RenderPassTelemetry([]PassReport{{Name: "security", Turns: 5, Attempts: 1, ToolCalls: 3}})
 	if !strings.Contains(got, "tools=3 files=0") {
 		t.Errorf("RenderPassTelemetry = %q; want tools=3 files=0", got)
+	}
+}
+
+// TestToolTelemetryIsGatedPerProviderNotPerRun pins the premise the zero-vs-
+// unknown decision actually rests on. A run is NOT one provider: triage
+// resolves its own from assay.triage_provider and falls back to the review
+// provider only when that is unset, so triage_provider: claude over
+// review_provider: copilot is a shipped configuration in which one run spans
+// two backends — and Copilot's plain-text stream carries no tool_use blocks for
+// fileTracker and no GeminiStats for observedToolCalls to fall back on.
+//
+// Read at the level of the run, triage's genuine count would license
+// "tools=0 files=0" on all five deep passes: a claim that they answered from
+// diff text alone, which is the exact false signal the counter was added to
+// report truthfully. The gate is therefore per provider.
+func TestToolTelemetryIsGatedPerProviderNotPerRun(t *testing.T) {
+	got := RenderPassTelemetry([]PassReport{
+		{Name: "triage", Turns: 3, Attempts: 1, Provider: "claude", ToolCalls: 4, FilesRead: 2},
+		{Name: "logic", Turns: 12, Attempts: 1, Provider: "copilot"},
+		{Name: "security", Turns: 2, Attempts: 1, Provider: "copilot"},
+	})
+	if !strings.Contains(got, "pass=triage turns=3 term=success tools=4 files=2") {
+		t.Errorf("RenderPassTelemetry = %q; want triage's own measured count on the line", got)
+	}
+	if strings.Contains(got, "tools=0") || strings.Contains(got, "files=0") {
+		t.Errorf("RenderPassTelemetry = %q; the copilot passes reported no tool telemetry, so a zero there is unknown, not measured", got)
+	}
+	// The mirror image: the backend that reports nothing is the one with the
+	// count, and the passes that CAN be measured still say so.
+	got = RenderPassTelemetry([]PassReport{
+		{Name: "triage", Turns: 3, Attempts: 1, Provider: "copilot"},
+		{Name: "logic", Turns: 12, Attempts: 1, Provider: "claude", ToolCalls: 9, FilesRead: 4},
+		{Name: "security", Turns: 2, Attempts: 1, Provider: "claude"},
+	})
+	if !strings.Contains(got, "pass=security turns=2 term=success tools=0 files=0") {
+		t.Errorf("RenderPassTelemetry = %q; want tools=0 files=0 for the claude pass that used no tool", got)
+	}
+	if !strings.Contains(got, "pass=triage turns=3 term=success,") {
+		t.Errorf("RenderPassTelemetry = %q; want no tool fields on the copilot pass", got)
+	}
+}
+
+// TestPassReportsCarryTheirProvider is the other half of that gate: the
+// grouping is only as good as the field, and a PassReport assembled without one
+// silently restores the run-level reading.
+func TestPassReportsCarryTheirProvider(t *testing.T) {
+	script := map[string][]stubResp{passTriage.Name: {{text: triageJSON(t, nil, "")}}}
+	for _, p := range deepPasses {
+		script[p.Name] = []stubResp{{text: findingsJSON(t, nil)}}
+	}
+	cfg := DefaultConfig().WithRunner(newScriptRunner(script).run)
+	cfg.TriageProvider = "copilot"
+	cfg.ReviewProvider = "claude"
+
+	res, err := Review(context.Background(), testRequest(), openTestDB(t), cfg)
+	if err != nil {
+		t.Fatalf("Review: %v", err)
+	}
+	for _, p := range res.Passes {
+		want := "claude"
+		if p.Name == passTriage.Name {
+			want = "copilot"
+		}
+		if p.Provider != want {
+			t.Errorf("pass %s Provider = %q; want %q", p.Name, p.Provider, want)
+		}
 	}
 }
 

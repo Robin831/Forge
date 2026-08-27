@@ -267,6 +267,26 @@ type PassReport struct {
 	// the pass whose large CacheCreationTokens is expected rather than a
 	// regression.
 	Primer bool
+	// Provider is the kind of backend that ran the pass ("claude", "copilot",
+	// "gemini"), resolved from the Config's per-tier hints exactly as the
+	// session itself was.
+	//
+	// It is here for one reason: what a zero in ToolCalls/FilesRead MEANS is a
+	// property of the backend, not of the pass or of the run. A run is not one
+	// provider — triage resolves its own from assay.triage_provider and falls
+	// back to the review provider only when that is empty — so with
+	// triage_provider: claude and review_provider: copilot, triage streams
+	// tool_use blocks Forge can count while the five deep passes stream plain
+	// text carrying no tool telemetry at all. Reading triage's non-zero count
+	// as proof that the whole run's zeros are measurements would render
+	// tools=0 for all five, which says they answered from diff text alone: the
+	// exact false signal the counter exists to report truthfully.
+	// RenderPassTelemetry therefore groups by this field.
+	//
+	// Empty for a PassReport assembled without one, which groups all such
+	// passes together — the run-level reading, which is right whenever a run
+	// does turn out to be one provider.
+	Provider string
 }
 
 // ReviewResult is the outcome of a Review.
@@ -596,6 +616,7 @@ func Review(ctx context.Context, req ReviewRequest, db *state.DB, cfg Config) (*
 		Attempts:            1,
 		CacheCreationTokens: triageRes.usage.CacheWriteTokens,
 		CacheReadTokens:     triageRes.usage.CacheReadTokens,
+		Provider:            string(cfg.providerFor(passTriage.Tier).Kind),
 	})
 
 	scoped := scopeDiffToFiles(filtered, triage.ReviewFiles)
@@ -673,6 +694,7 @@ func Review(ctx context.Context, req ReviewRequest, db *state.DB, cfg Config) (*
 			CacheCreationTokens: o.usage.CacheWriteTokens,
 			CacheReadTokens:     o.usage.CacheReadTokens,
 			Primer:              i == primerPass,
+			Provider:            string(cfg.providerFor(deepPasses[i].Tier).Kind),
 		})
 		if o.err != nil {
 			passErrors = append(passErrors, o.err.Error())

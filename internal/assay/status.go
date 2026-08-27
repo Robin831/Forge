@@ -104,13 +104,23 @@ func RenderStatusText(status RunStatus, completed, total int, failed []PassFailu
 // tools=0 is therefore the single most useful line this renderer can produce,
 // and it is rendered whenever it can be told apart from a missing measurement.
 // On one pass alone it cannot: a pass that made no tool call and a backend that
-// reports no tool telemetry at all are the same zero. The RUN resolves it —
-// this function is handed every pass of one run, and one run is one provider —
-// so if ANY pass reported a non-zero count then the backend demonstrably
-// reports the figure, and a sibling's zero is a genuine "this pass never opened
-// anything". Where no pass in the run reported one, the fields are omitted
-// together rather than rendered as zeros: that is the case where the number is
-// unknown, and printing tools=0 there would be inventing evidence.
+// reports no tool telemetry at all are the same zero. What resolves it is the
+// BACKEND — if any pass running on the same provider reported a non-zero count
+// then that provider demonstrably reports the figure, and a sibling's zero is a
+// genuine "this pass never opened anything". Where no pass on a provider
+// reported one, that provider's passes omit the fields together rather than
+// render them as zeros: that is the case where the number is unknown, and
+// printing tools=0 there would be inventing evidence.
+//
+// The grouping is per provider and not per run because a run is not one
+// provider: triage resolves its own from assay.triage_provider (Config.providerFor)
+// and only falls back to the review provider when that is unset. With
+// triage_provider: claude over review_provider: copilot, triage streams
+// tool_use blocks Forge counts while Copilot's plain-text stream carries no
+// tool telemetry at all — read at the level of the run, triage's count would
+// print tools=0 for all five deep passes, i.e. claim they answered from diff
+// text alone. Passes carrying no PassReport.Provider group together, which is
+// the old run-level reading and is right whenever a run is in fact one backend.
 //
 // cache_w/cache_r are the pass's prompt-cache write and read token counts, and
 // are omitted together when the provider reported neither — a backend with no
@@ -126,13 +136,13 @@ func RenderPassTelemetry(passes []PassReport) string {
 	if len(passes) == 0 {
 		return ""
 	}
-	// Whether a zero is a measurement is a property of the run, not of a pass:
-	// see the doc comment. Establishing it costs one pass over the slice.
-	measured := false
+	// Whether a zero is a measurement is a property of the BACKEND, not of a
+	// pass and not of the run: see the doc comment. Establishing it costs one
+	// pass over the slice.
+	measured := make(map[string]bool, 2)
 	for _, p := range passes {
 		if p.ToolCalls > 0 || p.FilesRead > 0 {
-			measured = true
-			break
+			measured[p.Provider] = true
 		}
 	}
 	parts := make([]string, 0, len(passes))
@@ -152,7 +162,7 @@ func RenderPassTelemetry(passes []PassReport) string {
 			// one place it shows.
 			s += " retry=skipped"
 		}
-		if measured {
+		if measured[p.Provider] {
 			s += fmt.Sprintf(" tools=%d files=%d", p.ToolCalls, p.FilesRead)
 		}
 		if p.CacheCreationTokens > 0 || p.CacheReadTokens > 0 {
