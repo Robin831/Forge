@@ -189,10 +189,59 @@ and read as an instruction to stay inside the diff. `logic.md` carried no such
 clause and averaged 12.9 turns against the same budget.
 
 `RenderPassTelemetry` now carries `tools=<calls> files=<distinct paths>` per
-pass, summed over the pass's sessions (the `CostUSD` convention, not the
-final-session `turns=` one — a re-prompt's or a retry's exploration was
-exploration too). Both are omitted when both are zero, since a pass that used no
-tool and a backend that streams no structured tool events are one value here.
+pass. `tools=` is summed over the pass's sessions (the `CostUSD` convention, not
+the final-session `turns=` one — a re-prompt's or a retry's exploration was
+exploration too); `files=` is the size of the deduplicated union of what those
+sessions opened, since "how many files did this pass read" is a question about a
+set.
+
+`tools=0` **is** rendered — it is the whole point of the field — whenever it can
+be told apart from a missing measurement. On one pass alone it cannot: a pass
+that made no tool call and a backend that reports no tool telemetry are the same
+zero. The run resolves it, since one run is one provider: if any pass of the run
+reported a non-zero count, a sibling's zero is a genuine "never opened
+anything". Where no pass in the run reported one, the fields are omitted
+together rather than printed as zeros that claim to know which case it was. (A
+backend that reports its tool calls somewhere other than per-message — Gemini,
+in its result event — is folded back in by `observedToolCalls` before any of
+this, so it counts as measured.)
 
 That makes the script above unnecessary for this question: `tools=0` on a
 completed pass says outright what a low `turns=` only hinted at.
+
+## Addendum — do 16 turns and $1.50 still hold? (Forge-q2qz)
+
+Teaching two passes to explore raises the question this file exists for, since
+both bounds were measured against the behaviour that change replaces.
+
+**The turn cap (`assayMaxTurns` = 16).** Logic is the worked precedent: it
+carries no anti-reading clause, averages 12.9 turns against this budget, and its
+`error_max_turns` rate is part of what set the number. Moving security (2.5) and
+repo-specific (9.8) into that regime is the intent of the change, so two more
+passes will sit where logic sits — a mean four turns under the cap, on a
+distribution whose right tail cannot be read off the log (see the censoring
+argument above). The cap is deliberately not raised here on a prediction: a turn
+exhaustion is **recoverable**, since `error_max_turns` earns one modified retry
+(halved budget, an "answer now" instruction, and the diff scoped to the files
+the dead session opened), so an under-sized cap costs money and a slower pass
+rather than coverage.
+
+**The spend ceiling (`assay.max_cost_per_pass_usd` = $1.50/session).** This is
+the bound that bites, because `ReasonMaxCost` is terminal by design — never
+retried, since a re-run buys the identical runaway at full price — so a pass
+killed on spend counts as failed and its coverage drops out of the run. A
+security pass that used to answer in ~2 turns and now reads files like logic
+does is a materially larger session, and on the largest PRs the plausible
+failure is that the pass Assay just taught to read is the one that gets stopped.
+It is left at $1.50 for the same reason the cap is left at 16 — there is no
+post-change data yet, and a bound moved on a guess is exactly what this file was
+written to prevent — but it is the number to watch first.
+
+**Re-measure rather than re-guess** (Forge-sra6). The telemetry added in the
+same commit is what answers it: per-pass `turns=`/`tools=`/`files=`, the
+`error_max_turns` and `error_max_cost` rates for security and repo-specific
+specifically, and `forge assay stats` for the per-run cost. Act if either the
+two passes start exhausting their turn budget materially more often than logic
+does, or any pass reaches `error_max_cost` at all — the first says the cap is
+too low for the work now asked of them, the second says the ceiling is removing
+coverage silently. Record whatever the new distribution turns out to be here.

@@ -70,6 +70,9 @@ func runTriage(ctx context.Context, runner PassRunner, cfg Config, req ReviewReq
 
 	out, err := runner(ctx, passTriage.Name, passTriage.Tier, prompt)
 	if err != nil {
+		// One session has run, so its own list IS the union — there is nothing
+		// earlier to merge with. The paths below, which do merge, are the ones
+		// reached after a session has already produced a PassOutput.
 		u, turns, calls := passErrorTelemetry(err)
 		return triageRun{usage: u, turns: turns, toolCalls: calls,
 			filesRead: len(passErrorFiles(err))}, err
