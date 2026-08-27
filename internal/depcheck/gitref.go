@@ -126,7 +126,7 @@ func runGit(ctx context.Context, repoDir string, args ...string) ([]byte, error)
 // unrecoverable. Left unattached, a fetch that ran past gitTimeout came back as
 // a message matching no pattern and was classified gitFailureUnknown; wrapped,
 // errors.Is finds context.DeadlineExceeded through gitError.Unwrap and
-// isTimeoutError classifies it as the transient failure it is.
+// gitfail.IsTimeout classifies it as the transient failure it is.
 //
 // Both causes are wrapped rather than one replacing the other: the exec error
 // is what an operator reading the log line recognises, and the context error is

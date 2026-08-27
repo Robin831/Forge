@@ -16,12 +16,23 @@ import (
 const fakeHeadSHA = "cafebabe0123456789abcdef"
 
 // fakeCommander records the commands it is asked to run and fails any command
-// whose name+first-arg matches a key in failOn. For a `go build` invocation it
-// writes a stub binary to the -o target so the swap step has a real file.
+// whose name+first-arg (or name+first-two-args, which is what distinguishes
+// `git rev-parse HEAD` from the stash probe) matches a key in failOn. For a
+// `go build` invocation it writes a stub binary to the -o target so the swap
+// step has a real file.
 type fakeCommander struct {
 	mu     sync.Mutex
 	calls  [][]string
-	failOn map[string]error // key: "name arg0" (e.g. "git pull", "go build")
+	failOn map[string]error // key: "name arg0" or "name arg0 arg1"
+	// stash, when set, is what the stash probe reports as the top of the stack.
+	// Empty means an empty stack, which is what a clean tree leaves behind and
+	// so what every test that is not about stashing wants.
+	stash string
+	// unmerged and sequencer are what the two conflict probes report: the
+	// `ls-files --unmerged` entries, and the sequencer refs `rev-list` resolves.
+	// Both empty is a checkout in the middle of nothing.
+	unmerged  string
+	sequencer string
 }
 
 func (f *fakeCommander) Run(_ context.Context, dir, name string, args ...string) ([]byte, error) {
@@ -29,12 +40,34 @@ func (f *fakeCommander) Run(_ context.Context, dir, name string, args ...string)
 	defer f.mu.Unlock()
 	f.calls = append(f.calls, append([]string{name}, args...))
 
-	key := name
-	if len(args) > 0 {
-		key = name + " " + args[0]
+	// The longer key is tried first so a test can fail one rev-parse without
+	// failing the other.
+	for n := 2; n >= 0; n-- {
+		if len(args) < n {
+			continue
+		}
+		key := strings.Join(append([]string{name}, args[:n]...), " ")
+		if err, ok := f.failOn[key]; ok {
+			return []byte("boom: " + key), err
+		}
 	}
-	if err, ok := f.failOn[key]; ok {
-		return []byte("boom: " + key), err
+
+	// Emulate the stash probe, which exits 0 either way: empty output is an
+	// empty stack, and a non-zero exit is a real failure.
+	if name == "git" && len(args) > 0 && args[0] == "for-each-ref" {
+		return []byte(f.stash), nil
+	}
+
+	// Emulate the two conflict probes, both of which exit 0 either way: empty
+	// output is a checkout in the middle of nothing, which is what every test
+	// that is not about a mid-merge one wants. Without this the fake's catch-all
+	// "ok" reads as unmerged entries (or a live MERGE_HEAD) and every deploy
+	// refuses to pull. unmerged/sequencer let a test say otherwise.
+	if name == "git" && len(args) > 0 && args[0] == "ls-files" {
+		return []byte(f.unmerged), nil
+	}
+	if name == "git" && len(args) > 0 && args[0] == "rev-list" {
+		return []byte(f.sequencer), nil
 	}
 
 	// Emulate `git rev-parse HEAD` so the deploy can stamp a build SHA.

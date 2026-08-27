@@ -338,6 +338,7 @@ Forge/
 │   ├── epic/             # Opt-in gate + branch name for epic orchestration
 │   ├── executil/         # Platform-specific process execution
 │   ├── forge/            # Core types and constants (version info)
+│   ├── gitfail/          # Shared git-failure classification, cause and blocking-path rendering
 │   ├── vcs/              # VCS provider interface & GitHub implementation
 │   ├── hearth/           # Bubbletea TUI dashboard
 │   ├── hooks/            # Pipeline hook execution (before/after each stage)

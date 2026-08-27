@@ -14,6 +14,18 @@ const (
 	DeployReasonSwapFailed     = "swap_failed"
 	DeployReasonRestartFailed  = "restart_failed"
 	DeployReasonRollbackFailed = "rollback_failed"
+	// DeployReasonPullBlocked: the fast-forward pull was refused by the
+	// checkout's own state. Nothing was built or swapped, and every later deploy
+	// fails identically until an operator fixes the checkout.
+	DeployReasonPullBlocked = "pull_blocked"
+	// DeployReasonStashRetained: the deploy set local changes aside to
+	// fast-forward and could not put them back, so they are in a stash the
+	// detail names. Nothing was built or swapped. Unlike every other reason
+	// here, this row is expected to OUTLIVE later successful deploys: the
+	// checkout is left clean, so deploys resume immediately and say nothing
+	// about where the stashed work went. selfdeploy withdraws it only once the
+	// stash stack no longer holds an entry it labelled.
+	DeployReasonStashRetained = "stash_retained"
 )
 
 // shaDisplayLen bounds how much of a build SHA is shown in the needs-attention
@@ -63,6 +75,8 @@ var deployReasonLabels = map[string]string{
 	DeployReasonSwapFailed:     "binary swap failed",
 	DeployReasonRestartFailed:  "restart failed",
 	DeployReasonRollbackFailed: "restart AND rollback failed",
+	DeployReasonPullBlocked:    "the checkout blocks the pull",
+	DeployReasonStashRetained:  "local changes left in a stash",
 }
 
 func deployReasonLabel(reason string) string {
@@ -83,6 +97,13 @@ func (f DeployFailure) Title() string {
 		return "Self-deploy deferred: workers did not drain"
 	case f.Reason == DeployReasonRollbackFailed:
 		return "Self-deploy failed: restart AND rollback failed"
+	case f.Reason == DeployReasonStashRetained:
+		// Not "failed": nothing was built, nothing was swapped, and the one
+		// thing an operator has to act on is work sitting in a stash rather
+		// than a binary in the wrong state.
+		return "Self-deploy abandoned: local changes left in a stash"
+	case f.Reason == DeployReasonPullBlocked:
+		return "Self-deploy blocked: the checkout cannot be fast-forwarded"
 	case f.RolledBack:
 		return "Self-deploy rolled back: " + deployReasonLabel(f.Reason)
 	default:

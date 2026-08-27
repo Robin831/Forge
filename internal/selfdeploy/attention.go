@@ -22,7 +22,50 @@ const (
 	// be put back. This is the worst state — the on-disk binary is the new,
 	// never-started build while the running process is still the old one.
 	ReasonRollbackFailed FailureReason = "rollback_failed"
+	// ReasonPullBlocked: the fast-forward pull was refused by the checkout's own
+	// state — a tree left mid-merge, a detached HEAD, a ref the pull cannot
+	// lock. Nothing was touched; the live binary is still the one that was
+	// running, and every later deploy fails the same way until an operator fixes
+	// the checkout. It is escalated precisely because it does NOT clear on its
+	// own: deferring quietly each time is how the running binary fell weeks
+	// behind main with the evidence in the event log the whole time.
+	ReasonPullBlocked FailureReason = "pull_blocked"
+	// ReasonStashRetained: the deploy set local changes aside to fast-forward
+	// and could not put them back, so they are in a stash it names rather than
+	// in the working tree. Nothing was built or swapped. This is its own reason
+	// rather than a flavour of ReasonPullBlocked because the remedy is unlike
+	// any other deploy failure's — no later deploy restores those changes, and
+	// the message is the only record of where they went.
+	ReasonStashRetained FailureReason = "stash_retained"
 )
+
+// AllReasons is every failure reason a deploy can raise. It exists so that
+// "clear everything a deploy has superseded" can be written as an explicit
+// list — the one thing it must not be is the empty list, which every Emitter
+// reads as "clear all" and which would therefore withdraw the sticky reasons
+// below along with the rest.
+var AllReasons = []FailureReason{
+	ReasonDrainTimeout,
+	ReasonSwapFailed,
+	ReasonRestartFailed,
+	ReasonRollbackFailed,
+	ReasonPullBlocked,
+	ReasonStashRetained,
+}
+
+// IsSticky reports whether a later deploy is forbidden from withdrawing this
+// reason's entry.
+//
+// Every other reason describes the DEPLOY's own state — a deferral, a rollback,
+// a checkout that cannot be fast-forwarded — and a deploy that gets past that
+// step has proved the condition gone. ReasonStashRetained describes the
+// OPERATOR's work sitting in a stash, which no deploy restores and no deploy can
+// therefore speak for: worse, the recovery path resets the tree clean, so the
+// very next deploy succeeds by construction and would withdraw the only record
+// of where the work went. It is withdrawn by evidence instead — a deploy that
+// finds no forge-selfdeploy entry left on the stash stack — which is the one
+// observation that actually proves the condition is over.
+func (r FailureReason) IsSticky() bool { return r == ReasonStashRetained }
 
 // DeployEvent describes a self-deploy that ended somewhere other than "new
 // binary live and restarting".
@@ -74,12 +117,21 @@ type DeployEvent struct {
 // goroutine; errors are logged by the Deployer and never abort a rollback.
 type Emitter interface {
 	// EmitNeedsAttention records one needs-attention item for ev. It is called
-	// exactly once per failed deploy — a restart failure that leads to a
-	// rollback produces a single event, not one per step.
+	// once per failure MODE, not once per step: a restart failure that leads to
+	// a rollback produces a single event. A deploy can legitimately raise two
+	// where two things went wrong that need separate action — a pull blocked by
+	// the checkout AND local changes it could not put back are different
+	// problems with different remedies, and folding them into one row would
+	// leave whichever was reported second invisible.
 	EmitNeedsAttention(ev DeployEvent) error
 	// ClearNeedsAttention resolves outstanding items for the given reasons, or
 	// every reason when called with none. The Deployer calls it once the deploy
 	// has progressed past the failure mode in question, so a deferral or a
 	// rollback cannot linger in the list after a later deploy has superseded it.
+	//
+	// It is never called with no reasons by the Deployer: a sticky reason
+	// (FailureReason.IsSticky) is not something progressing past a step proves
+	// anything about, so the reasons are always enumerated and the sticky ones
+	// filtered out first.
 	ClearNeedsAttention(reasons ...FailureReason) error
 }

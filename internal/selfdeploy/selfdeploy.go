@@ -11,6 +11,10 @@
 // rollback), and restarts the systemd unit.
 //
 // The flow is deliberately conservative:
+//   - it never loses a local modification to Forge's own checkout: the pull sets
+//     the working tree aside in a named stash and puts it back, and a stash it
+//     cannot put back aborts the deploy with the ref in the message rather than
+//     rebuilding over it (see pullSource);
 //   - it refuses to run while any worker is active: the caller pauses dispatch,
 //     then Deploy waits out Config.MaxDrainWait, re-checking on a ticker until
 //     the forge is idle (the last check is the one guarding the binary swap) or
@@ -36,6 +40,8 @@ import (
 	"os/exec"
 	"strings"
 	"time"
+
+	"github.com/Robin831/Forge/internal/executil"
 )
 
 // Event names emitted over an EventSink during a deploy. They mirror the
@@ -222,10 +228,25 @@ func (d *Deployer) Deploy(ctx context.Context) error {
 	d.resolveAttention(ReasonDrainTimeout)
 
 	// 1. Pull the latest source (fast-forward only — a diverged tree is an
-	//    operator problem the manual restart.sh path is better suited to).
-	if out, err := d.cmd.Run(ctx, d.cfg.RepoPath, "git", "pull", "--ff-only", "origin", d.cfg.Branch); err != nil {
-		return d.fail("git pull failed: %v: %s", err, trim(out))
+	//    operator problem the manual restart.sh path is better suited to), with
+	//    any local modifications set aside for the duration and put back after.
+	//    See pullSource: a stray edit in Forge's own checkout used to refuse the
+	//    pull on every deploy from then on, which is the version skew this
+	//    package exists to close arriving by its own front door.
+	if err := d.pullSource(ctx); err != nil {
+		return err
 	}
+	// The pull worked, so an earlier blockage is history — the same reasoning as
+	// the drain deferral above, and the only thing that withdraws that entry.
+	//
+	// ReasonStashRetained is deliberately NOT in that list. A successful pull is
+	// not evidence that an earlier deploy's stashed work was ever restored — and
+	// since recovering from a failed pop leaves the tree clean, the very next
+	// deploy succeeds by construction, so withdrawing it here would reliably
+	// delete the only record of where that work went. It is withdrawn by looking
+	// at the stash stack instead.
+	d.resolveAttention(ReasonPullBlocked)
+	d.resolveStashAttention(ctx)
 
 	// 1b. Resolve the commit being deployed. Best-effort: it only feeds the
 	//     restart intent log and the transient scope unit name, so a failure here
@@ -350,10 +371,40 @@ func (d *Deployer) raiseAttention(ev DeployEvent) {
 }
 
 // resolveAttention clears outstanding needs-attention items for the given
-// reasons (all of them when called with none). Like raiseAttention it never
-// fails a deploy.
+// reasons (every non-sticky one when called with none). Like raiseAttention it
+// never fails a deploy.
+//
+// Sticky reasons are filtered out here rather than at each call site, because
+// the rule is about what a deploy can PROVE and not about which step it reached:
+// a deploy getting past the pull says the checkout is fast-forwardable again, and
+// says nothing whatsoever about whether the work an earlier deploy stashed is
+// back in somebody's tree. Filtered centrally, no future call site can withdraw
+// that entry by reaching a milestone. The only thing that withdraws it is
+// resolveStashAttention, which looks at the stack.
 func (d *Deployer) resolveAttention(reasons ...FailureReason) {
 	if d.attention == nil {
+		return
+	}
+	if len(reasons) == 0 {
+		reasons = AllReasons
+	}
+	clear := make([]FailureReason, 0, len(reasons))
+	for _, r := range reasons {
+		if r.IsSticky() {
+			continue
+		}
+		clear = append(clear, r)
+	}
+	d.clearAttention(clear...)
+}
+
+// clearAttention withdraws entries without asking whether their reason is
+// sticky. It has exactly two callers: resolveAttention, which has filtered
+// already, and resolveStashAttention, which holds the one piece of evidence a
+// sticky entry can be withdrawn on. Anything else wanting to clear an entry
+// wants resolveAttention.
+func (d *Deployer) clearAttention(reasons ...FailureReason) {
+	if d.attention == nil || len(reasons) == 0 {
 		return
 	}
 	if err := d.attention.ClearNeedsAttention(reasons...); err != nil {
@@ -426,10 +477,21 @@ func trim(out []byte) string {
 type ExecCommander struct{}
 
 // Run executes name with args in dir (empty dir inherits the process cwd).
+//
+// The environment is pinned rather than inherited, for two reasons that both
+// bite the git half of a deploy. An ambient GIT_DIR or GIT_WORK_TREE would
+// answer for a repository other than dir, so a pull meant for the Forge checkout
+// could land anywhere — executil.CleanGitEnv strips exactly the repo-location
+// variables and leaves everything else. And git's diagnostics are
+// gettext-translated, while the failure classification behind a blocked deploy
+// matches git's own English words: on a `LANG=de_DE.UTF-8` host every blocked
+// condition would come back unclassified and be retried nightly forever, which
+// is the bug the classification exists to fix arriving through the locale.
 func (ExecCommander) Run(ctx context.Context, dir, name string, args ...string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, name, args...)
 	if dir != "" {
 		cmd.Dir = dir
 	}
+	cmd.Env = append(executil.CleanGitEnv(), "LC_ALL=C", "LANG=C")
 	return cmd.CombinedOutput()
 }
