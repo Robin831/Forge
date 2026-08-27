@@ -62,10 +62,22 @@ var ErrPullBlocked = errors.New("pull blocked by the checkout's own state")
 // have CONSUMED it, and anything else aborts the deploy with the ref in the
 // message.
 //
+// The one tree that is never stashed is a conflicted one (refuseUnmergedTree):
+// what git makes of an unmerged index differs by version, and setting somebody's
+// half-finished merge aside is not a thing a deploy may do quietly.
+//
 // The tree is left exactly as it was found on every failure path: either the
 // changes are back in the working tree, or they are in a named stash and the
 // error says so. It never both fails and leaves a stash unmentioned.
 func (d *Deployer) pullSource(ctx context.Context) error {
+	unmerged, err := d.hasUnmergedEntries(ctx)
+	if err != nil {
+		return err
+	}
+	if unmerged {
+		return d.refuseUnmergedTree(ctx)
+	}
+
 	stash, err := d.stashLocalChanges(ctx)
 	if err != nil {
 		return err
@@ -87,6 +99,53 @@ func (d *Deployer) pullSource(ctx context.Context) error {
 		return err
 	}
 	return d.restoreStash(ctx, stash)
+}
+
+// hasUnmergedEntries reports whether the checkout's index holds conflicts from a
+// merge, rebase or cherry-pick somebody is in the middle of.
+//
+// `ls-files --unmerged` rather than a message match: an unmerged index is a fact
+// about the index, which git reports the same way on every version and in every
+// locale, unlike the sentence a command refusing to touch one happens to print.
+// It exits 0 whether or not there are entries, so any non-zero exit is a real
+// failure to report — the same property stashTop relies on for-each-ref for.
+func (d *Deployer) hasUnmergedEntries(ctx context.Context) (bool, error) {
+	out, err := d.git(ctx, "ls-files", "--unmerged")
+	if err != nil {
+		return false, d.failPull(ctx, "could not read the checkout's merge state before the pull", err, out)
+	}
+	return out != "", nil
+}
+
+// refuseUnmergedTree abandons a deploy whose checkout is mid-conflict, without
+// touching the stash.
+//
+// A conflicted index is not a local modification the deploy is entitled to set
+// aside. The resolution somebody is part-way through lives in that index and
+// nowhere else — no commit holds it — and what a stash makes of it is a matter
+// of git's version: git 2.43 refuses to stash an unmerged index at all
+// ("<path>: needs merge"), while 2.55 stashes it happily, which drops the merge
+// state, lets the fast-forward through, and pops conflict markers back over the
+// pulled tree. That deploy then rebuilds Forge from a tree full of `<<<<<<<`,
+// and the operator's half-finished merge is a stash entry nobody mentioned.
+//
+// So the stash is skipped entirely and the pull is attempted as the tree stands.
+// git refuses it in its own words — "Pulling is not possible because you have
+// unmerged files" — which is the evidence failPull classifies as blocked and
+// escalates with `merge --abort` in front of the operator. Deriving the message
+// from git's refusal rather than writing one here is what keeps the remediation
+// tied to the same text the operator is shown.
+func (d *Deployer) refuseUnmergedTree(ctx context.Context) error {
+	if err := d.fastForward(ctx); err != nil {
+		return err
+	}
+	// git accepted a fast-forward over an unmerged index, which no version of it
+	// does. Nothing resolved those entries, so the tree still holds conflict
+	// markers and must not be built from; it is reported as an ordinary failure
+	// rather than escalated, since a condition nothing models is one an operator
+	// cannot be given a command for.
+	return d.fail("selfdeploy: the checkout %s holds unmerged files but the fast-forward was not refused, "+
+		"so the tree cannot be trusted to build from", d.cfg.RepoPath)
 }
 
 // stashLocalChanges sets the working tree's modifications aside and returns the

@@ -53,6 +53,14 @@ func (f *fakeCommander) Run(_ context.Context, dir, name string, args ...string)
 		return []byte(f.stash), nil
 	}
 
+	// Emulate the unmerged-index probe, which also exits 0 either way: empty
+	// output is an index with no conflicts in it, which is what every test that
+	// is not about a mid-merge checkout wants. Without this the fake's catch-all
+	// "ok" reads as three unmerged entries and every deploy refuses to pull.
+	if name == "git" && len(args) > 0 && args[0] == "ls-files" {
+		return nil, nil
+	}
+
 	// Emulate `git rev-parse HEAD` so the deploy can stamp a build SHA.
 	if name == "git" && len(args) > 0 && args[0] == "rev-parse" {
 		return []byte(fakeHeadSHA + "\n"), nil
