@@ -72,3 +72,31 @@ func TestNpmPackageFiles(t *testing.T) {
 	paths := []string{"web/package.json", "package.json", "web/package.json.bak", "docs/README.md"}
 	assert.Equal(t, []string{"package.json", "web/package.json"}, npmPackageFiles(paths))
 }
+
+// The two helpers below are the composition production performs itself — the
+// paths worktreeSource reports, narrowed by the ecosystem's own selector — kept
+// here so the discovery tests exercise the real path rather than a wrapper that
+// exists only for them.
+
+func npmProjectDirsIn(t *testing.T, root string) []string {
+	t.Helper()
+	paths, err := worktreeSource{root: root}.Paths(context.Background())
+	require.NoError(t, err)
+	var dirs []string
+	for _, rel := range npmPackageFiles(paths) {
+		dirs = append(dirs, localDir(root, rel))
+	}
+	return dirs
+}
+
+func dotnetProjectsIn(t *testing.T, root string) []string {
+	t.Helper()
+	paths, err := worktreeSource{root: root}.Paths(context.Background())
+	require.NoError(t, err)
+	rels := dotnetProjectPaths(paths)
+	files := make([]string, 0, len(rels))
+	for _, rel := range rels {
+		files = append(files, filepath.Join(root, filepath.FromSlash(rel)))
+	}
+	return files
+}

@@ -70,14 +70,17 @@ func (s *Scanner) scanNpm(ctx context.Context, anvil, path string, src manifestS
 
 	// Track the best (most severe) update seen per package across all projects.
 	best := map[string]ModuleUpdate{}
-	// The ranges every committed package.json declares, folded together.
-	committed := map[string]string{}
 
 	for _, rel := range pkgFiles {
+		// The ranges THIS project's committed package.json declares. Folding
+		// every package.json in the repo into one map would let one workspace
+		// that upstream has already bumped silence the identical, real update
+		// in every sibling that it has not — a monorepo drops updates with no
+		// trace. A manifest that cannot be read leaves the map empty, which
+		// reconciles nothing and reports what npm found.
+		var committed map[string]string
 		if data, readErr := src.Read(ctx, rel); readErr == nil {
-			for name, version := range parsePackageJSONDeps(data) {
-				committed[name] = version
-			}
+			committed = parsePackageJSONDeps(data)
 		}
 
 		dir := localDir(path, rel)
@@ -102,7 +105,10 @@ func (s *Scanner) scanNpm(ctx context.Context, anvil, path string, src manifestS
 			return result
 		}
 
-		for _, u := range updates {
+		// package.json declares ranges rather than resolved versions, so an
+		// entry this project already pins at the latest is dropped, but
+		// nothing the installed tree reported is rewritten from a range.
+		for _, u := range reconcileWithCommitted(updates, committed, false) {
 			existing, ok := best[u.Path]
 			if !ok || kindRank[u.Kind] > kindRank[existing.Kind] {
 				best[u.Path] = u
@@ -110,14 +116,7 @@ func (s *Scanner) scanNpm(ctx context.Context, anvil, path string, src manifestS
 		}
 	}
 
-	deduped := make([]ModuleUpdate, 0, len(best))
 	for _, u := range best {
-		deduped = append(deduped, u)
-	}
-	// package.json declares ranges rather than resolved versions, so an entry
-	// upstream has already bumped to the latest is dropped, but nothing the
-	// installed tree reported is rewritten from a range.
-	for _, u := range reconcileWithCommitted(deduped, committed, false) {
 		switch u.Kind {
 		case "patch":
 			result.Patch = append(result.Patch, u)
@@ -170,16 +169,6 @@ func npmPackageFiles(paths []string) []string {
 	}
 	sort.Strings(files)
 	return files
-}
-
-// findNpmProjects is npmPackageFiles over a working-tree walk, returning the
-// absolute directories holding each package.json.
-func findNpmProjects(root string) []string {
-	var dirs []string
-	for _, rel := range npmPackageFiles(walkWorktreePaths(root)) {
-		dirs = append(dirs, localDir(root, rel))
-	}
-	return dirs
 }
 
 // npmOutdatedEntry represents a single entry from 'npm outdated --json'.

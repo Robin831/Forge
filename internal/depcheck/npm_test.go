@@ -13,7 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestFindNpmProjects(t *testing.T) {
+func TestNpmProjectDiscovery(t *testing.T) {
 	dir := t.TempDir()
 
 	// Create package.json in root
@@ -51,15 +51,15 @@ func TestFindNpmProjects(t *testing.T) {
 	require.NoError(t, os.MkdirAll(obj, 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(obj, "package.json"), []byte("{}"), 0o644))
 
-	dirs := findNpmProjects(dir)
+	dirs := npmProjectDirsIn(t, dir)
 	assert.Len(t, dirs, 2)
 	assert.Contains(t, dirs, dir)
 	assert.Contains(t, dirs, sub)
 }
 
-func TestFindNpmProjects_NoPackageJson(t *testing.T) {
+func TestNpmProjectDiscovery_NoPackageJson(t *testing.T) {
 	dir := t.TempDir()
-	dirs := findNpmProjects(dir)
+	dirs := npmProjectDirsIn(t, dir)
 	assert.Empty(t, dirs)
 }
 
@@ -334,4 +334,67 @@ func TestScanNpm_RunsWithoutLivePreview(t *testing.T) {
 			assert.Len(t, result.Patch, 1)
 		})
 	}
+}
+
+// TestScanNpm_MonorepoSiblingDoesNotSilenceARealUpdate pins the scope of the
+// npm reconcile. "app" still pins lodash at ^4.17.20 and is genuinely
+// outdated; the sibling "lib" has already been bumped to ^4.17.21. Folding both
+// package.json files into one map made the sibling's pin read as "upstream has
+// already done this upgrade" and dropped app's real update entirely — in a
+// monorepo, silently and with nothing left to notice it by.
+func TestScanNpm_MonorepoSiblingDoesNotSilenceARealUpdate(t *testing.T) {
+	dir := t.TempDir()
+
+	manifests := map[string]string{
+		"app": `{"dependencies":{"lodash":"^4.17.20"}}`,
+		"lib": `{"dependencies":{"lodash":"^4.17.21"}}`,
+	}
+	for sub, manifest := range manifests {
+		subDir := filepath.Join(dir, sub)
+		require.NoError(t, os.MkdirAll(subDir, 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(subDir, "package.json"), []byte(manifest), 0o644))
+	}
+
+	// Only "app" is behind; "lib" is already at the latest, so npm reports
+	// nothing for it.
+	stubUpdates := map[string][]ModuleUpdate{
+		filepath.Join(dir, "app"): {
+			{Path: "lodash", Current: "4.17.20", Latest: "4.17.21", Kind: "patch"},
+		},
+	}
+
+	orig := runNpmOutdatedFn
+	t.Cleanup(func() { runNpmOutdatedFn = orig })
+	runNpmOutdatedFn = func(_ context.Context, _ time.Duration, d string) ([]ModuleUpdate, error) {
+		return stubUpdates[d], nil
+	}
+
+	s := &Scanner{timeout: 30 * time.Second}
+	result := s.scanNpm(context.Background(), "test-anvil", dir, worktreeSource{root: dir})
+	require.NotNil(t, result)
+
+	require.Len(t, result.Patch, 1, "app's own manifest still pins the old version, so its update is real")
+	assert.Equal(t, "lodash", result.Patch[0].Path)
+}
+
+// TestScanNpm_DropsWhatTheProjectsOwnManifestAlreadyPins is the other half of
+// the same scope: a project whose OWN committed package.json is already at the
+// latest is reporting an update upstream has merged, and that entry is dropped.
+func TestScanNpm_DropsWhatTheProjectsOwnManifestAlreadyPins(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "package.json"),
+		[]byte(`{"dependencies":{"lodash":"^4.17.21"}}`), 0o644))
+
+	orig := runNpmOutdatedFn
+	t.Cleanup(func() { runNpmOutdatedFn = orig })
+	runNpmOutdatedFn = func(_ context.Context, _ time.Duration, _ string) ([]ModuleUpdate, error) {
+		return []ModuleUpdate{
+			{Path: "lodash", Current: "4.17.20", Latest: "4.17.21", Kind: "patch"},
+		}, nil
+	}
+
+	s := &Scanner{timeout: 30 * time.Second}
+	result := s.scanNpm(context.Background(), "test-anvil", dir, worktreeSource{root: dir})
+	require.NotNil(t, result)
+	assert.Empty(t, result.Patch, "the checkout is behind what its own manifest commits")
 }

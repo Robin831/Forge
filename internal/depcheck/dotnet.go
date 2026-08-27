@@ -43,6 +43,7 @@ func (s *Scanner) scanDotnet(ctx context.Context, anvil, path string, src manife
 	// when the same package appears in multiple .sln/.csproj files.
 	seen := map[string]bool{}
 	var collected []ModuleUpdate
+	pins := newMSBuildPins(src)
 
 	for _, rel := range projectFiles {
 		projFile := filepath.Join(path, filepath.FromSlash(rel))
@@ -59,6 +60,12 @@ func (s *Scanner) scanDotnet(ctx context.Context, anvil, path string, src manife
 			return result
 		}
 
+		// A PackageReference pins a resolved version, so a stale one reported
+		// off the checkout is replaced by what the source actually commits —
+		// reconciled against THIS project's own pins, before the cross-project
+		// dedupe below folds anything together.
+		updates = reconcileWithCommitted(updates, pins.forProject(ctx, paths, pathDir(rel)), true)
+
 		for _, u := range updates {
 			if seen[u.Path] {
 				continue
@@ -68,9 +75,6 @@ func (s *Scanner) scanDotnet(ctx context.Context, anvil, path string, src manife
 		}
 	}
 
-	// A PackageReference pins a resolved version, so a stale one reported off
-	// the checkout is replaced by what the source actually commits.
-	collected = reconcileWithCommitted(collected, committedPackageRefs(ctx, src, paths), true)
 	sortUpdates(collected)
 
 	for _, u := range collected {
@@ -87,24 +91,72 @@ func (s *Scanner) scanDotnet(ctx context.Context, anvil, path string, src manife
 	return result
 }
 
-// committedPackageRefs folds every MSBuild file in paths into one package →
-// version map. A file that cannot be read is skipped: an incomplete map only
+// msbuildPins folds a source's MSBuild manifests into the package → version
+// map that applies to one project, reading each file at most once across every
+// project of a scan.
+type msbuildPins struct {
+	src   manifestSource
+	cache map[string]map[string]string
+}
+
+func newMSBuildPins(src manifestSource) *msbuildPins {
+	return &msbuildPins{src: src, cache: map[string]map[string]string{}}
+}
+
+// forProject folds the manifests in paths that apply to a project rooted at
+// projectDir. A file that cannot be read is skipped: an incomplete map only
 // ever means fewer entries are reconciled, never a wrong one.
-func committedPackageRefs(ctx context.Context, src manifestSource, paths []string) map[string]string {
+func (p *msbuildPins) forProject(ctx context.Context, paths []string, projectDir string) map[string]string {
 	refs := map[string]string{}
-	for _, p := range paths {
-		if !isMSBuildManifest(p) {
+	for _, path := range paths {
+		if !isMSBuildManifest(path) || !msbuildAppliesTo(path, projectDir) {
 			continue
 		}
-		data, err := src.Read(ctx, p)
-		if err != nil {
-			continue
-		}
-		for name, version := range parsePackageRefs(data) {
+		for name, version := range p.read(ctx, path) {
 			refs[name] = version
 		}
 	}
 	return refs
+}
+
+func (p *msbuildPins) read(ctx context.Context, path string) map[string]string {
+	if parsed, ok := p.cache[path]; ok {
+		return parsed
+	}
+	var parsed map[string]string
+	if data, err := p.src.Read(ctx, path); err == nil {
+		parsed = parsePackageRefs(data)
+	}
+	p.cache[path] = parsed
+	return parsed
+}
+
+// msbuildAppliesTo reports whether the pins in manifest path apply to a project
+// rooted at projectDir.
+//
+// The scope matters because reconciliation DROPS an update whose committed pin
+// is already the latest version. Folded repo-wide, one project in a monorepo
+// that has been upgraded silences the identical update in every other project
+// that has not — a real update dropped with no trace of it anywhere. So a
+// sibling's manifest is out of scope, and only two things are in it:
+//
+//   - a manifest inside the project's own tree (its .csproj, and for a .sln the
+//     project files under it, which is exactly the set `dotnet list package`
+//     reports on for that solution);
+//   - a directory-level .props/.targets in an ANCESTOR directory, because
+//     MSBuild imports Directory.Build.props and Directory.Packages.props by
+//     walking up from the project — central package management pins live
+//     nowhere else.
+func msbuildAppliesTo(path, projectDir string) bool {
+	dir := pathDir(path)
+	if dirWithin(dir, projectDir) {
+		return true
+	}
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".props", ".targets":
+		return dirWithin(projectDir, dir)
+	}
+	return false
 }
 
 // isMSBuildManifest reports whether a path holds NuGet package pins — a project
@@ -164,17 +216,6 @@ func dirWithin(dir, root string) bool {
 		return true
 	}
 	return strings.HasPrefix(dir, root+"/")
-}
-
-// findDotnetProjects is dotnetProjectPaths over a working-tree walk, returning
-// absolute paths.
-func findDotnetProjects(root string) []string {
-	rels := dotnetProjectPaths(walkWorktreePaths(root))
-	result := make([]string, 0, len(rels))
-	for _, rel := range rels {
-		result = append(result, filepath.Join(root, filepath.FromSlash(rel)))
-	}
-	return result
 }
 
 // dotnetOutdatedResponse represents the JSON output of

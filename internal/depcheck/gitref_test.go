@@ -333,5 +333,5 @@ func TestScanDotnetDiscoversProjectsFromTheRef(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, []string{"src/App/App.csproj"}, dotnetProjectPaths(paths))
 	assert.Equal(t, map[string]string{"Serilog": "3.1.1"},
-		committedPackageRefs(context.Background(), src, paths))
+		newMSBuildPins(src).forProject(context.Background(), paths, "src/App"))
 }

@@ -121,10 +121,21 @@ func parseUpstreamRef(raw string) (upstream, bool) {
 // permanently modified (a pod-local `.beads/config.yaml`, bd's own additions to
 // `.beads/.gitignore`) are untouched and stay that way.
 //
-// The ref returned is normally the remote-tracking ref, but a remote configured
-// without the standard fetch refspec updates only FETCH_HEAD; that is checked
-// rather than assumed, because reading blobs from a tracking ref the fetch did
-// not move would silently scan whatever it last pointed at.
+// The ref returned is the remote-tracking ref when there is one, and FETCH_HEAD
+// otherwise — a remote configured without the standard fetch refspec writes only
+// FETCH_HEAD, and demanding a tracking ref there would fail a scan the fetch
+// itself answered fine. The tracking ref is preferred rather than always reading
+// FETCH_HEAD because FETCH_HEAD is one file per repository: an anvil's own
+// worker fetching concurrently overwrites it, while `origin/<branch>` is
+// per-branch and cannot be rewritten out from under this scan.
+//
+// What refExists establishes is only that the ref RESOLVES to a commit, not that
+// this fetch is what moved it. A tracking ref left behind by an earlier fetch of
+// a remote whose refspec no longer writes it would be read at the commit it last
+// held. Proving otherwise needs the ref's pre-fetch value compared against
+// FETCH_HEAD, which is deliberately not done: the arrangement is rare and its
+// worst outcome is a scan of a slightly older commit of the right branch, which
+// reconciliation then treats exactly as it treats any other committed state.
 func fetchUpstream(ctx context.Context, repoDir string, up upstream) (string, error) {
 	if _, err := runGit(ctx, repoDir, "fetch", up.Remote, up.Branch); err != nil {
 		return "", err
