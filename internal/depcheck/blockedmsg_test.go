@@ -80,9 +80,53 @@ func TestBlockedMessageCapsThePathList(t *testing.T) {
 	assert.Contains(t, msg, "and 7 more")
 	assert.NotContains(t, msg, "pkg/file20.go", "the 21st path is past the cap")
 	// The command is capped harder than the list: a pasted line that wraps four
-	// times is not a command an operator runs.
-	assert.Contains(t, msg, "stash push -u -- pkg/file00.go pkg/file01.go pkg/file02.go pkg/file03.go pkg/file04.go`.",
+	// times is not a command an operator runs. What it must NOT do is describe
+	// that partial command as dealing with "the unexpected changes" — pasted,
+	// it clears five of twenty-seven paths and leaves the scan blocked while
+	// reading like the fix.
+	assert.Contains(t, msg, "stash push -u -- pkg/file00.go pkg/file01.go pkg/file02.go pkg/file03.go pkg/file04.go`")
+	assert.Contains(t, msg, fmt.Sprintf("%d paths are unexpectedly modified, more than fit one command", len(paths)))
+	assert.Contains(t, msg, "sets the first 5 aside")
+	assert.Contains(t, msg, "repeat it for the rest")
+	assert.NotContains(t, msg, "set the unexpected changes aside (recoverable) with `git -C /srv/anvils/heimdall stash push -u -- pkg/file00.go",
+		"a command covering 5 of the paths must not be reported as covering the set")
+	assert.NotContains(t, msg, "annotated as expected",
 		"no path here is annotated as expected, so the message must not name a set the list above does not contain")
+}
+
+// TestBlockedMessageCommandCoversTheWholeSetAtTheCap: the boundary between the
+// two remediation wordings. At exactly maxCommandPathsListed the pasted command
+// IS the whole fix, so it must be reported as one rather than hedged.
+func TestBlockedMessageCommandCoversTheWholeSetAtTheCap(t *testing.T) {
+	var paths []string
+	for i := 0; i < maxCommandPathsListed; i++ {
+		paths = append(paths, fmt.Sprintf("pkg/file%02d.go", i))
+	}
+	msg := blockedMessage("heimdall", "/srv/anvils/heimdall", paths, dirtyTreeEvidence)
+
+	assert.Contains(t, msg, "To resolve: set the unexpected changes aside (recoverable) with "+
+		"`git -C /srv/anvils/heimdall stash push -u -- pkg/file00.go pkg/file01.go pkg/file02.go pkg/file03.go pkg/file04.go`.")
+	assert.NotContains(t, msg, "more than fit one command")
+}
+
+// TestBlockedMessageKeepClauseFollowsTheRenderedList: the "leaving the paths
+// annotated as expected in place" clause rests on an annotation the operator can
+// SEE. An expected path past the list cap is not rendered, so a clause resting on
+// it names a set the message does not contain — which reads as a path the render
+// dropped.
+func TestBlockedMessageKeepClauseFollowsTheRenderedList(t *testing.T) {
+	var paths []string
+	for i := 0; i < maxBlockingPathsListed; i++ {
+		paths = append(paths, fmt.Sprintf("pkg/file%02d.go", i))
+	}
+	// Sorts last, so it lands past the cap and is never rendered.
+	paths = append(paths, "zz/.beads/config.yaml")
+
+	msg := blockedMessage("heimdall", "/srv/anvils/heimdall", paths, dirtyTreeEvidence)
+
+	assert.NotContains(t, msg, "zz/.beads/config.yaml", "the annotated path is past the list cap")
+	assert.NotContains(t, msg, "annotated as expected",
+		"the clause must not name an annotation the reader cannot check")
 }
 
 // TestBlockedMessageSanitisesPaths: a path comes out of a checkout Forge did not

@@ -243,15 +243,21 @@ func annotateBlockingPath(p string) string {
 // `.beads/config.yaml` is telling them to break the anvil's beads connection.
 func isExpectedBlockingPath(p string) bool { return annotateBlockingPath(p) != "" }
 
+// listedPaths is the prefix of the path set the message actually shows. It is
+// the one definition of that cap, so a sentence written about "the paths above"
+// is written about the paths that are above it.
+func listedPaths(paths []string) []string {
+	if len(paths) > maxBlockingPathsListed {
+		return paths[:maxBlockingPathsListed]
+	}
+	return paths
+}
+
 // renderBlockingPaths renders the enumerated list, annotated, capped, with the
 // full count beside it so a truncated list never reads as the whole story.
 func renderBlockingPaths(paths []string) string {
-	shown := paths
-	extra := 0
-	if len(shown) > maxBlockingPathsListed {
-		extra = len(shown) - maxBlockingPathsListed
-		shown = shown[:maxBlockingPathsListed]
-	}
+	shown := listedPaths(paths)
+	extra := len(paths) - len(shown)
 	rendered := make([]string, 0, len(shown))
 	for _, p := range shown {
 		entry := safeBlockingPath(p)
@@ -277,19 +283,24 @@ func shellQuotePath(p string) string {
 }
 
 // commandPathspec renders the pathspec for the remediation command, or "" when
-// no usable one can be built.
+// no usable one can be built. The second return says whether that pathspec
+// covers EVERY path it was handed: past maxCommandPathsListed it does not, and
+// the caller must not then describe the command as dealing with the whole set —
+// a pasted line that clears five of twelve blocking paths leaves the scan
+// blocked while reading like the fix, which is the one way a remediation can be
+// worse than none.
 //
 // A path is only written into a command if sanitization left it BYTE-IDENTICAL:
 // a command is meant to be pasted and run, and a path silently truncated or with
 // a rune replaced names a different file — or, with the wrong luck, a wider set
-// than the operator read. Where that cannot be guaranteed for every path in the
-// set, the caller falls back to a command with a placeholder, which is honest
-// about being a template.
-func commandPathspec(paths []string) string {
+// than the operator read. Where that cannot be guaranteed for every path the
+// command would carry, the caller falls back to a command with a placeholder,
+// which is honest about being a template.
+func commandPathspec(paths []string) (string, bool) {
 	usable := make([]string, 0, len(paths))
 	for _, p := range paths {
 		if safeBlockingPath(p) != p {
-			return ""
+			return "", false
 		}
 		usable = append(usable, shellQuotePath(p))
 		if len(usable) == maxCommandPathsListed {
@@ -297,9 +308,9 @@ func commandPathspec(paths []string) string {
 		}
 	}
 	if len(usable) == 0 {
-		return ""
+		return "", false
 	}
-	return strings.Join(usable, " ")
+	return strings.Join(usable, " "), len(usable) == len(paths)
 }
 
 // unexpectedPaths drops the permanently modified files an anvil is supposed to
@@ -341,19 +352,35 @@ func remediation(cause blockedCause, anvil, checkout string, paths []string) str
 			return fmt.Sprintf("To resolve: nothing unexpected is modified — the paths above are the ones this anvil is "+
 				"meant to carry, so inspect the rest of the checkout's git state with `git -C %s status`.", at)
 		}
-		// The trailing clause is only true when some path WAS annotated as
-		// expected; on a tree with none of them it names a set the list above
-		// does not contain, which reads as a path the message failed to render.
+		// The trailing clause is only true when a path the operator can SEE was
+		// annotated as expected. Read off the enumerated list rather than off the
+		// whole set, since that list is itself capped: an annotation past the cap
+		// is one the reader cannot check, so a clause resting on it names a set
+		// the message does not contain.
 		keep := ""
-		if len(unexpected) != len(paths) {
+		if len(unexpectedPaths(listedPaths(paths))) != len(listedPaths(paths)) {
 			keep = ", leaving the paths annotated as expected in place"
 		}
-		if spec := commandPathspec(unexpected); spec != "" {
+		spec, whole := commandPathspec(unexpected)
+		switch {
+		case spec != "" && whole:
 			return fmt.Sprintf("To resolve: set the unexpected changes aside (recoverable) with "+
 				"`git -C %s stash push -u -- %s`%s.", at, spec, keep)
+		case spec != "":
+			// More unexpected paths than fit one readable command. The command is
+			// still worth pasting, but it is described as the partial step it is
+			// and the operator is pointed at the full set — reported as "the
+			// unexpected changes" it would read as the whole fix and leave the
+			// next scan blocked on the paths it never named.
+			return fmt.Sprintf("To resolve: %s are unexpectedly modified, more than fit one command — "+
+				"`git -C %s stash push -u -- %s` sets the first %d aside (recoverable)%s; repeat it for the rest, "+
+				"which `git -C %s status` lists in full.",
+				textfmt.Count(len(unexpected), "path"), at, spec, maxCommandPathsListed, keep, at)
+		default:
+			return fmt.Sprintf("To resolve: set the unexpected changes aside (recoverable) with "+
+				"`git -C %s stash push -u -- <path>` for each of the %s that `git -C %s status` reports and this "+
+				"message does not annotate as expected.", at, textfmt.Count(len(unexpected), "path"), at)
 		}
-		return fmt.Sprintf("To resolve: set the unexpected changes aside (recoverable) with "+
-			"`git -C %s stash push -u -- <path>` for each path above that is not annotated as expected.", at)
 
 	case causeDetachedHead:
 		return fmt.Sprintf("To resolve: put the checkout back on a branch that tracks a remote, with "+
