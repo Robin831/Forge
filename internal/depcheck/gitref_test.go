@@ -331,10 +331,10 @@ func TestScanDotnetDiscoversProjectsFromTheRef(t *testing.T) {
 
 	paths, err := src.Paths(context.Background())
 	require.NoError(t, err)
-	assert.Equal(t, []dotnetTarget{{rel: "src/App/App.csproj", scope: []string{"src/App"}}},
-		dotnetScanTargets(context.Background(), src, paths))
+	assert.Equal(t, []dotnetTarget{{rel: "src/App/App.csproj", scope: []scopeRoot{projectScope("src/App")}}},
+		dotnetScanTargets(context.Background(), "anvil", src, paths))
 	assert.Equal(t, map[string]string{"Serilog": "3.1.1"},
-		newMSBuildPins(src).forScope(context.Background(), paths, []string{"src/App"}))
+		newMSBuildPins(src).forScope(context.Background(), paths, []scopeRoot{projectScope("src/App")}))
 }
 
 // TestBlobExists_AnswersByExitCode pins the helper the missing-path decision is

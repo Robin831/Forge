@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -77,32 +78,66 @@ func TestDotnetProjectDiscovery_SkipsWorktrees(t *testing.T) {
 }
 
 // TestMSBuildAppliesTo covers the scope of the NuGet reconcile: a project's own
-// tree and the directory-level props above it, never a sibling's pins.
+// directory and the directory-level props above it, never a sibling's pins.
 func TestMSBuildAppliesTo(t *testing.T) {
 	cases := []struct {
 		name     string
 		manifest string
-		scope    []string
+		scope    []scopeRoot
 		want     bool
 	}{
-		{"the project's own file", "src/App/App.csproj", []string{"src/App"}, true},
-		{"a file nested under the project", "src/App/sub/Nested.csproj", []string{"src/App"}, true},
-		{"a sibling project", "src/Other/Other.csproj", []string{"src/App"}, false},
-		{"an ancestor Directory.Packages.props", "Directory.Packages.props", []string{"src/App"}, true},
-		{"an intermediate Directory.Build.props", "src/Directory.Build.props", []string{"src/App"}, true},
-		{"a sibling's props", "src/Other/Other.props", []string{"src/App"}, false},
+		{"the project's own file", "src/App/App.csproj", []scopeRoot{projectScope("src/App")}, true},
+		{"props beside the project", "src/App/Directory.Build.props", []scopeRoot{projectScope("src/App")}, true},
+		// MSBuild imports by walking UP from a project, so a manifest below one
+		// is either never imported or belongs to a different project — whose
+		// already-upgraded pin is exactly what must not silence this one.
+		{"a project nested under the project", "src/App/sub/Nested.csproj", []scopeRoot{projectScope("src/App")}, false},
+		{"a sibling project", "src/Other/Other.csproj", []scopeRoot{projectScope("src/App")}, false},
+		{"an ancestor Directory.Packages.props", "Directory.Packages.props", []scopeRoot{projectScope("src/App")}, true},
+		{"an intermediate Directory.Build.props", "src/Directory.Build.props", []scopeRoot{projectScope("src/App")}, true},
+		{"a sibling's props", "src/Other/Other.props", []scopeRoot{projectScope("src/App")}, false},
+		// A project at the repository root has scope "", which dirWithin
+		// reports every directory as within: matched as a tree it would take
+		// the whole repository, which is the repo-wide fold under another name.
+		{"a root-level project's own file", "MyApp.csproj", []scopeRoot{projectScope("")}, true},
+		{"root-level props", "Directory.Packages.props", []scopeRoot{projectScope("")}, true},
+		{"a project elsewhere in the repository", "tests/Tests.csproj", []scopeRoot{projectScope("")}, false},
+		{"props under another directory", "tests/Tests.props", []scopeRoot{projectScope("")}, false},
 		// A solution's scope is the several projects it references, and a
 		// project outside all of them stays outside — which is what a
 		// root-level solution scoped to its own tree could not express.
-		{"a second project of the same solution", "src/Lib/Lib.csproj", []string{"src/App", "src/Lib"}, true},
-		{"a project the solution does not reference", "tools/Tool/Tool.csproj", []string{"src/App", "src/Lib"}, false},
-		{"props above one of the solution's projects", "src/Directory.Packages.props", []string{"src/App", "src/Lib"}, true},
+		{"a second project of the same solution", "src/Lib/Lib.csproj", []scopeRoot{projectScope("src/App"), projectScope("src/Lib")}, true},
+		{"a project the solution does not reference", "tools/Tool/Tool.csproj", []scopeRoot{projectScope("src/App"), projectScope("src/Lib")}, false},
+		{"props above one of the solution's projects", "src/Directory.Packages.props", []scopeRoot{projectScope("src/App"), projectScope("src/Lib")}, true},
+		// Only the fallback for a solution naming no parseable project mints a
+		// tree root, and there the subtree is the point.
+		{"a project under a tree root", "src/App/App.csproj", []scopeRoot{treeScope("src")}, true},
+		{"a project outside a tree root", "tools/Tool/Tool.csproj", []scopeRoot{treeScope("src")}, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			assert.Equal(t, tc.want, msbuildAppliesTo(tc.manifest, tc.scope))
 		})
 	}
+}
+
+// TestIsMSBuildManifestReadsTheExtensionSets is the invariant the doc on
+// dotnetProjectExts asserts: the project types this ecosystem SCANS and the
+// ones whose pins it READS are one set, so neither can grow without the other.
+// It was previously only claimed — isMSBuildManifest restated the list — which
+// is how .fsproj came to have its pins read while the project itself was never
+// scanned.
+func TestIsMSBuildManifestReadsTheExtensionSets(t *testing.T) {
+	for ext := range dotnetProjectExts {
+		assert.True(t, isMSBuildManifest("src/App/App"+ext), ext)
+		assert.True(t, isMSBuildManifest("src/App/App"+strings.ToUpper(ext)), "extensions are matched case-insensitively")
+	}
+	for ext := range msbuildDirectoryExts {
+		assert.True(t, isMSBuildManifest("Directory.Build"+ext), ext)
+		assert.False(t, dotnetProjectExts[ext], "a directory-level import is not a project to scan")
+	}
+	assert.False(t, isMSBuildManifest("src/App/App.sln"))
+	assert.False(t, isMSBuildManifest("README.md"))
 }
 
 // TestMSBuildPins_ExcludesASiblingsPins is the failure the scope exists to
@@ -123,9 +158,9 @@ func TestMSBuildPins_ExcludesASiblingsPins(t *testing.T) {
 
 	pins := newMSBuildPins(src)
 	assert.Equal(t, map[string]string{"Serilog": "3.1.0", "Shared": "1.0.0"},
-		pins.forScope(context.Background(), paths, []string{"src/App"}))
+		pins.forScope(context.Background(), paths, []scopeRoot{projectScope("src/App")}))
 	assert.Equal(t, map[string]string{"Serilog": "3.1.1", "Shared": "1.0.0"},
-		pins.forScope(context.Background(), paths, []string{"src/Other"}))
+		pins.forScope(context.Background(), paths, []scopeRoot{projectScope("src/Other")}))
 }
 
 // TestScanDotnet_MonorepoSiblingDoesNotSilenceARealUpdate is the npm scan-level
@@ -156,6 +191,36 @@ func TestScanDotnet_MonorepoSiblingDoesNotSilenceARealUpdate(t *testing.T) {
 
 	require.Len(t, result.Patch, 1, "App's own project file still pins the old version, so its update is real")
 	assert.Equal(t, "Serilog", result.Patch[0].Path)
+}
+
+// TestScanDotnet_RootLevelSolutionIsNotSilencedByAProjectOutsideIt is the same
+// failure on the standard .NET layout, which is the one that hides it: the
+// solution and its project sit at the repository ROOT, so the scope root is ""
+// — the directory dirWithin reports every other directory as being within. A
+// test project the solution never references has already been bumped to 4.2.0
+// upstream; matched as a tree, its pin lands in the solution's map and drops
+// MyApp's real, un-applied update with no bead and no log line.
+func TestScanDotnet_RootLevelSolutionIsNotSilencedByAProjectOutsideIt(t *testing.T) {
+	dir := t.TempDir()
+	writeFiles(t, dir, map[string]string{
+		"MyApp.sln":          slnReferencing("MyApp.csproj"),
+		"MyApp.csproj":       `<Project><ItemGroup><PackageReference Include="Serilog" Version="4.1.0" /></ItemGroup></Project>`,
+		"tests/Tests.csproj": `<Project><ItemGroup><PackageReference Include="Serilog" Version="4.2.0" /></ItemGroup></Project>`,
+	})
+
+	stubOutdated(t, map[string][]ModuleUpdate{
+		filepath.Join(dir, "MyApp.sln"): {
+			{Path: "Serilog", Current: "4.1.0", Latest: "4.2.0", Kind: "minor"},
+		},
+	})
+
+	s := &Scanner{timeout: 30 * time.Second}
+	result := s.scanDotnet(context.Background(), "test-anvil", dir, worktreeSource{root: dir})
+	require.NotNil(t, result)
+	require.NoError(t, result.Error)
+
+	require.Len(t, result.Minor, 1, "the solution's own project still pins 4.1.0, so its update is real")
+	assert.Equal(t, "Serilog", result.Minor[0].Path)
 }
 
 // TestScanDotnet_DropsWhatTheProjectsOwnManifestAlreadyPins is the other half of
