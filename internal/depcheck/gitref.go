@@ -37,6 +37,43 @@ type upstream struct {
 	Ref    string // e.g. "origin/main" — the local remote-tracking ref
 }
 
+// gitError is a failed git invocation: which command, what git said, and the
+// underlying exec error.
+//
+// Its Error() renders exactly the sentence runGit used to build by hand, so
+// every existing log line and event message is byte-identical. What it adds is
+// Stderr as a FIELD: the failure classifier decides between a transient and a
+// blocked condition by matching git's own words, and reading them back out of a
+// formatted sentence means re-parsing a string this package wrote — the
+// arrangement that breaks the first time a wrapper adds a prefix.
+type gitError struct {
+	Args   []string // the git arguments, without the leading "git"
+	Stderr string   // git's own output, trimmed; stdout when stderr was empty
+	Err    error    // the exec error (exit status, context deadline, ...)
+}
+
+func (e *gitError) Error() string {
+	if e.Stderr == "" {
+		return fmt.Sprintf("git %s: %v", strings.Join(e.Args, " "), e.Err)
+	}
+	return fmt.Sprintf("git %s: %v: %s", strings.Join(e.Args, " "), e.Err, e.Stderr)
+}
+
+// Unwrap exposes the exec error so errors.Is finds context.DeadlineExceeded and
+// friends through the wrapper.
+func (e *gitError) Unwrap() error { return e.Err }
+
+// gitStderr returns git's own output for a failed command, or "" for an error
+// that did not come from runGit. It is the one reader of gitError.Stderr, so a
+// caller never has to know whether the error it holds is wrapped.
+func gitStderr(err error) string {
+	var ge *gitError
+	if errors.As(err, &ge) {
+		return ge.Stderr
+	}
+	return ""
+}
+
 // runGit executes one git command in repoDir and returns its stdout. Errors
 // carry the combined output so the caller (and the failure classifier that
 // reads these messages) sees git's own words rather than "exit status 1".
@@ -63,10 +100,7 @@ func runGit(ctx context.Context, repoDir string, args ...string) ([]byte, error)
 		if detail == "" {
 			detail = strings.TrimSpace(stdout.String())
 		}
-		if detail == "" {
-			return stdout.Bytes(), fmt.Errorf("git %s: %w", strings.Join(args, " "), err)
-		}
-		return stdout.Bytes(), fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, detail)
+		return stdout.Bytes(), &gitError{Args: args, Stderr: detail, Err: err}
 	}
 	return stdout.Bytes(), nil
 }

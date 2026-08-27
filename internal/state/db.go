@@ -659,6 +659,17 @@ CREATE TABLE IF NOT EXISTS deploy_failures (
     PRIMARY KEY (anvil, reason)
 );
 
+CREATE TABLE IF NOT EXISTS depcheck_failures (
+    anvil       TEXT PRIMARY KEY,
+    kind        TEXT NOT NULL DEFAULT '',
+    signature   TEXT NOT NULL DEFAULT '',
+    title       TEXT NOT NULL DEFAULT '',
+    detail      TEXT NOT NULL DEFAULT '',
+    occurrences INTEGER NOT NULL DEFAULT 0,
+    first_seen  TEXT NOT NULL DEFAULT '',
+    last_seen   TEXT NOT NULL DEFAULT ''
+);
+
 CREATE TABLE IF NOT EXISTS previews (
     bead_id        TEXT PRIMARY KEY,
     anvil          TEXT NOT NULL DEFAULT '',
@@ -3854,6 +3865,14 @@ const (
 	// the anvil kind it has no bead and no PR, and it clears itself once a later
 	// deploy gets past the same failure mode.
 	AttentionKindDeploy = "deploy"
+	// AttentionKindDepcheck marks an anvil whose dependency scan is blocked by a
+	// git condition that repeats identically every run. It is its own kind
+	// rather than AttentionKindAnvil because the remediation is a different one
+	// — the beads database is fine, the checkout is not — and an entry that
+	// tells an operator to resolve a merge conflict that does not exist is
+	// worse than no entry. Like the other non-bead kinds it carries no bead and
+	// clears itself, on the next scan that reads the anvil's manifests.
+	AttentionKindDepcheck = "depcheck"
 )
 
 // NeedsAttentionBeads returns all beads with needs_human=1, clarification_needed=1,
@@ -4029,6 +4048,25 @@ func (db *DB) NeedsAttentionBeads(maxCI, maxRev, maxRebase int) ([]NeedsAttentio
 			Reason:     df.Summary(),
 			NeedsHuman: true,
 			Kind:       AttentionKindDeploy,
+		})
+	}
+
+	// Append blocked dependency scans. These are anvil-level too: the anvil's
+	// manifests cannot be read at all, so it is not "up to date", it is
+	// unscanned — a distinction that is invisible from the depcheck_passed/
+	// depcheck_found events, neither of which is written for it. They are
+	// cleared by depcheck once the anvil scans again.
+	blocked, err := db.DepcheckFailures()
+	if err != nil {
+		return nil, fmt.Errorf("fetching blocked dependency scans: %w", err)
+	}
+	for _, bf := range blocked {
+		beads = append(beads, NeedsAttentionBead{
+			Anvil:      bf.Anvil,
+			Title:      depcheckAttentionTitle(bf),
+			Reason:     bf.Detail,
+			NeedsHuman: true,
+			Kind:       AttentionKindDepcheck,
 		})
 	}
 

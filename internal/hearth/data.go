@@ -27,6 +27,8 @@ func classifyAttentionReason(b state.NeedsAttentionBead) AttentionReason {
 		return AttentionAnvilWedged
 	case state.AttentionKindDeploy:
 		return AttentionSelfDeploy
+	case state.AttentionKindDepcheck:
+		return AttentionDepcheckBlocked
 	}
 	if b.ClarificationNeeded {
 		return AttentionClarification
@@ -907,8 +909,8 @@ func FetchNeedsAttention(ds *DataSource) tea.Cmd {
 				PRNumber:       b.PRNumber,
 				Kind:           b.Kind,
 			}
-			// Anvil- and deploy-level entries have no bead, so skip the per-row
-			// warden lookup.
+			// Anvil-, deploy- and depcheck-level entries have no bead, so skip
+			// the per-row warden lookup.
 			if item.IsBeadScoped() {
 				item.LastWardenReject = ds.DB.LatestWardenRejectMessage(b.BeadID)
 			}
