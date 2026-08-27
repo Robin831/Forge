@@ -300,7 +300,7 @@ func TestDeploy_PassesRestartRequest(t *testing.T) {
 // TestDeploy_MissingSHADoesNotAbort keeps the SHA lookup best-effort: it is
 // diagnostic metadata, not a gate on deploying.
 func TestDeploy_MissingSHADoesNotAbort(t *testing.T) {
-	d, _, rest, _, _ := setup(t, 0, map[string]error{"git rev-parse": errors.New("not a git repo")})
+	d, _, rest, _, _ := setup(t, 0, map[string]error{"git rev-parse HEAD": errors.New("not a git repo")})
 
 	if err := d.Deploy(context.Background()); err != nil {
 		t.Fatalf("Deploy should tolerate a failed rev-parse: %v", err)

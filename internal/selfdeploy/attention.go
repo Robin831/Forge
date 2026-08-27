@@ -22,6 +22,21 @@ const (
 	// be put back. This is the worst state — the on-disk binary is the new,
 	// never-started build while the running process is still the old one.
 	ReasonRollbackFailed FailureReason = "rollback_failed"
+	// ReasonPullBlocked: the fast-forward pull was refused by the checkout's own
+	// state — a tree left mid-merge, a detached HEAD, a ref the pull cannot
+	// lock. Nothing was touched; the live binary is still the one that was
+	// running, and every later deploy fails the same way until an operator fixes
+	// the checkout. It is escalated precisely because it does NOT clear on its
+	// own: deferring quietly each time is how the running binary fell weeks
+	// behind main with the evidence in the event log the whole time.
+	ReasonPullBlocked FailureReason = "pull_blocked"
+	// ReasonStashRetained: the deploy set local changes aside to fast-forward
+	// and could not put them back, so they are in a stash it names rather than
+	// in the working tree. Nothing was built or swapped. This is its own reason
+	// rather than a flavour of ReasonPullBlocked because the remedy is unlike
+	// any other deploy failure's — no later deploy restores those changes, and
+	// the message is the only record of where they went.
+	ReasonStashRetained FailureReason = "stash_retained"
 )
 
 // DeployEvent describes a self-deploy that ended somewhere other than "new
@@ -74,8 +89,12 @@ type DeployEvent struct {
 // goroutine; errors are logged by the Deployer and never abort a rollback.
 type Emitter interface {
 	// EmitNeedsAttention records one needs-attention item for ev. It is called
-	// exactly once per failed deploy — a restart failure that leads to a
-	// rollback produces a single event, not one per step.
+	// once per failure MODE, not once per step: a restart failure that leads to
+	// a rollback produces a single event. A deploy can legitimately raise two
+	// where two things went wrong that need separate action — a pull blocked by
+	// the checkout AND local changes it could not put back are different
+	// problems with different remedies, and folding them into one row would
+	// leave whichever was reported second invisible.
 	EmitNeedsAttention(ev DeployEvent) error
 	// ClearNeedsAttention resolves outstanding items for the given reasons, or
 	// every reason when called with none. The Deployer calls it once the deploy

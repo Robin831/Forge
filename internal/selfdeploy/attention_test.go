@@ -259,14 +259,21 @@ func TestDeploy_SuccessResolvesEverything(t *testing.T) {
 	if len(em.events) != 0 {
 		t.Fatalf("a successful deploy must raise nothing, got %+v", em.events)
 	}
-	if len(em.cleared) != 2 {
-		t.Fatalf("want a drain-timeout resolve then a full resolve, got %+v", em.cleared)
+	if len(em.cleared) != 3 {
+		t.Fatalf("want a drain-timeout resolve, a pull resolve, then a full resolve, got %+v", em.cleared)
 	}
 	if len(em.cleared[0]) != 1 || em.cleared[0][0] != ReasonDrainTimeout {
 		t.Errorf("first resolve = %v, want only %q", em.cleared[0], ReasonDrainTimeout)
 	}
-	if len(em.cleared[1]) != 0 {
-		t.Errorf("final resolve = %v, want every reason (no arguments)", em.cleared[1])
+	// The pull is the second thing that can be blocked by a condition an
+	// operator has to clear, so a successful one withdraws its own entries at
+	// the point it proves them gone — not at the end, where a later failure
+	// would leave a resolved blockage in the list.
+	if len(em.cleared[1]) != 2 || em.cleared[1][0] != ReasonPullBlocked || em.cleared[1][1] != ReasonStashRetained {
+		t.Errorf("second resolve = %v, want %q and %q", em.cleared[1], ReasonPullBlocked, ReasonStashRetained)
+	}
+	if len(em.cleared[2]) != 0 {
+		t.Errorf("final resolve = %v, want every reason (no arguments)", em.cleared[2])
 	}
 }
 

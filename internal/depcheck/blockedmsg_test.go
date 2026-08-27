@@ -488,8 +488,8 @@ func TestCausePatternsAreAllBlockedPatterns(t *testing.T) {
 	known[strings.ToLower(ErrNoUpstream.Error())] = struct{}{}
 
 	for _, c := range causePatterns {
-		_, ok := known[c.pattern]
-		assert.True(t, ok, "cause pattern %q matches no blockedPatterns entry — causeOf can never see it", c.pattern)
+		_, ok := known[c.Pattern]
+		assert.True(t, ok, "cause pattern %q matches no blockedPatterns entry — causeOf can never see it", c.Pattern)
 	}
 }
 
@@ -709,7 +709,7 @@ func TestListedPathsByteCapBindsOnDeepPaths(t *testing.T) {
 func TestListedPathsAlwaysListsTheFirstPath(t *testing.T) {
 	widest := 0
 	for _, known := range knownBlockingPaths {
-		if n := len(" (" + known.note + ")"); n > widest {
+		if n := len(" (" + known.Note + ")"); n > widest {
 			widest = n
 		}
 	}
@@ -830,7 +830,7 @@ func TestDirtyTreeRemediationMakesNoClaimAboutAnUninspectedTree(t *testing.T) {
 	// naming a set the rest of the file no longer agrees with.
 	assert.Contains(t, msg, "leaving "+expectedPathNames()+" in place")
 	for _, known := range knownBlockingPaths {
-		assert.Contains(t, msg, "`"+known.suffix+"`",
+		assert.Contains(t, msg, "`"+known.Suffix+"`",
 			"every table entry is named in the sentence that stands in for the list")
 	}
 }

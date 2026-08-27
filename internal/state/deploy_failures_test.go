@@ -114,6 +114,33 @@ func TestDeployFailureRendering(t *testing.T) {
 	if got := broken.Title(); !strings.Contains(got, "rollback failed") {
 		t.Errorf("Title = %q, want it to name the failed rollback", got)
 	}
+
+	// The two pull-side outcomes are not "failed" deploys in the sense the
+	// others are: nothing was built and nothing was swapped, so the headline has
+	// to say what an operator actually has to deal with — a checkout that cannot
+	// be fast-forwarded, or work sitting in a stash.
+	blocked := DeployFailure{Anvil: "forge", Reason: DeployReasonPullBlocked, Detail: "unmerged paths"}
+	if got := blocked.Title(); !strings.Contains(got, "fast-forwarded") {
+		t.Errorf("Title = %q, want it to name the blocked checkout", got)
+	}
+	stashed := DeployFailure{Anvil: "forge", Reason: DeployReasonStashRetained, Detail: "pop conflicted"}
+	if got := stashed.Title(); !strings.Contains(got, "stash") {
+		t.Errorf("Title = %q, want it to name the stash", got)
+	}
+	if got := stashed.Title(); strings.Contains(got, "failed") {
+		t.Errorf("Title = %q, must not read as a failed build — nothing was built", got)
+	}
+
+	// Every reason a deploy can raise must render as prose, so a row added here
+	// without a label does not surface as a bare snake_case token.
+	for _, reason := range []string{
+		DeployReasonDrainTimeout, DeployReasonSwapFailed, DeployReasonRestartFailed,
+		DeployReasonRollbackFailed, DeployReasonPullBlocked, DeployReasonStashRetained,
+	} {
+		if _, ok := deployReasonLabels[reason]; !ok {
+			t.Errorf("reason %q has no human-readable label", reason)
+		}
+	}
 }
 
 func TestNeedsAttentionBeads_IncludesDeployFailures(t *testing.T) {
