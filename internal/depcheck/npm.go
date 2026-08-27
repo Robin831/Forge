@@ -70,6 +70,7 @@ func (s *Scanner) scanNpm(ctx context.Context, anvil, path string, src manifestS
 
 	// Track the best (most severe) update seen per package across all projects.
 	best := map[string]ModuleUpdate{}
+	scanned := 0
 
 	for _, rel := range pkgFiles {
 		// The ranges THIS project's committed package.json declares. Folding
@@ -83,12 +84,27 @@ func (s *Scanner) scanNpm(ctx context.Context, anvil, path string, src manifestS
 			committed = parsePackageJSONDeps(data)
 		}
 
-		dir := localDir(path, rel)
 		// A project tracked at the ref but absent from the checkout has no
 		// node_modules for npm to read; skip it rather than fail the ecosystem.
-		if _, statErr := os.Stat(dir); statErr != nil {
+		//
+		// What is stated is the MANIFEST, not its directory. Discovery now comes
+		// from the tracking ref while npm still runs in the checkout, and
+		// depcheck no longer fast-forwards that checkout at all, so the two
+		// diverge permanently: a package.json upstream added inside a directory
+		// the stale checkout already has (a frontend under an existing web/, a
+		// folder promoted to a workspace) passes a directory check with no
+		// manifest on disk. npm then resolves its prefix by walking UP, so
+		// `npm ci` reinstalls the PARENT project and `npm outdated` reports the
+		// parent's packages as this project's — the exact cross-project bleed
+		// the per-project reconcile above exists to prevent.
+		manifest := filepath.Join(path, filepath.FromSlash(rel))
+		if _, statErr := os.Stat(manifest); statErr != nil {
+			log.Printf("[depcheck] %s: %s is tracked at %s but absent from the checkout — skipping it",
+				anvil, rel, src.Describe())
 			continue
 		}
+		dir := filepath.Dir(manifest)
+		scanned++
 
 		// Re-check immediately before the call whose first act is `npm ci`: a
 		// preview can start after the scan began. What is left is the window
@@ -114,6 +130,14 @@ func (s *Scanner) scanNpm(ctx context.Context, anvil, path string, src manifestS
 				best[u.Path] = u
 			}
 		}
+	}
+
+	if scanned == 0 {
+		// An ecosystem whose every project was skipped reports empty Patch /
+		// Minor / Major, which is indistinguishable from "everything is up to
+		// date". Leave a trace of the difference.
+		log.Printf("[depcheck] %s: none of the %d npm project(s) tracked at %s are present in the checkout — nothing was scanned",
+			anvil, len(pkgFiles), src.Describe())
 	}
 
 	for _, u := range best {

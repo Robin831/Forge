@@ -1,8 +1,10 @@
 package depcheck
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -397,4 +399,117 @@ func TestScanNpm_DropsWhatTheProjectsOwnManifestAlreadyPins(t *testing.T) {
 	result := s.scanNpm(context.Background(), "test-anvil", dir, worktreeSource{root: dir})
 	require.NotNil(t, result)
 	assert.Empty(t, result.Patch, "the checkout is behind what its own manifest commits")
+}
+
+// TestScanNpm_SkipsAProjectAbsentFromTheCheckout pins the fail-open guard that
+// moving discovery to the tracking ref made necessary: a package.json the ref
+// tracks need not exist on disk (a sparse or partial checkout, a directory
+// deleted locally), and npm has nothing to read there. The rest of the scan
+// still runs, and the skip leaves a log line rather than passing in silence.
+func TestScanNpm_SkipsAProjectAbsentFromTheCheckout(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "app"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "app", "package.json"),
+		[]byte(`{"dependencies":{"lodash":"^4.17.20"}}`), 0o644))
+
+	// The ref tracks a second workspace this checkout never materialized.
+	src := stubSource{files: map[string]string{
+		"app/package.json":   `{"dependencies":{"lodash":"^4.17.20"}}`,
+		"ghost/package.json": `{"dependencies":{"lodash":"^4.17.20"}}`,
+	}}
+
+	var scannedDirs []string
+	orig := runNpmOutdatedFn
+	t.Cleanup(func() { runNpmOutdatedFn = orig })
+	runNpmOutdatedFn = func(_ context.Context, _ time.Duration, d string) ([]ModuleUpdate, error) {
+		scannedDirs = append(scannedDirs, d)
+		return []ModuleUpdate{{Path: "lodash", Current: "4.17.20", Latest: "4.17.21", Kind: "patch"}}, nil
+	}
+
+	s := &Scanner{timeout: 30 * time.Second}
+	result := s.scanNpm(context.Background(), "test-anvil", dir, src)
+	require.NotNil(t, result)
+	require.NoError(t, result.Error, "one absent project must not fail the whole ecosystem")
+
+	assert.Equal(t, []string{filepath.Join(dir, "app")}, scannedDirs,
+		"npm runs only where the manifest is actually present")
+	require.Len(t, result.Patch, 1)
+	assert.Equal(t, "lodash", result.Patch[0].Path)
+}
+
+// TestScanNpm_AbsentManifestInAnExistingDirectoryIsSkipped is the case a
+// directory-level guard let through. Upstream adds web/frontend/package.json
+// while the stale checkout already has web/frontend/ (holding something else),
+// so the directory exists and the manifest does not. npm resolves its prefix by
+// walking UP, so running there would reinstall the PARENT project and report the
+// parent's packages as this project's — the cross-project bleed the per-project
+// reconcile exists to prevent.
+func TestScanNpm_AbsentManifestInAnExistingDirectoryIsSkipped(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "package.json"),
+		[]byte(`{"dependencies":{"lodash":"^4.17.20"}}`), 0o644))
+	// The directory exists in the checkout; the manifest upstream added does not.
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "web", "frontend"), 0o755))
+
+	src := stubSource{files: map[string]string{
+		"package.json":              `{"dependencies":{"lodash":"^4.17.20"}}`,
+		"web/frontend/package.json": `{"dependencies":{"react":"^18.0.0"}}`,
+	}}
+
+	var scannedDirs []string
+	orig := runNpmOutdatedFn
+	t.Cleanup(func() { runNpmOutdatedFn = orig })
+	runNpmOutdatedFn = func(_ context.Context, _ time.Duration, d string) ([]ModuleUpdate, error) {
+		scannedDirs = append(scannedDirs, d)
+		return []ModuleUpdate{{Path: "lodash", Current: "4.17.20", Latest: "4.17.21", Kind: "patch"}}, nil
+	}
+
+	s := &Scanner{timeout: 30 * time.Second}
+	result := s.scanNpm(context.Background(), "test-anvil", dir, src)
+	require.NotNil(t, result)
+	assert.Equal(t, []string{dir}, scannedDirs,
+		"a directory without the manifest is not a project npm can be run in")
+}
+
+// TestScanNpm_WhollyUnscannableAnvilReportsNothingAndSaysSo is the contract for
+// the degenerate case: every tracked project missing reports empty, exactly as
+// "everything is up to date" does, so it must at least leave a trace.
+func TestScanNpm_WhollyUnscannableAnvilReportsNothingAndSaysSo(t *testing.T) {
+	dir := t.TempDir()
+	src := stubSource{files: map[string]string{"web/package.json": `{"dependencies":{"lodash":"^4.17.20"}}`}}
+
+	orig := runNpmOutdatedFn
+	t.Cleanup(func() { runNpmOutdatedFn = orig })
+	runNpmOutdatedFn = func(_ context.Context, _ time.Duration, _ string) ([]ModuleUpdate, error) {
+		t.Fatal("npm must not run for a project that is not in the checkout")
+		return nil, nil
+	}
+
+	var logged bytes.Buffer
+	restoreLog := captureLog(t, &logged)
+	s := &Scanner{timeout: 30 * time.Second}
+	result := s.scanNpm(context.Background(), "test-anvil", dir, src)
+	restoreLog()
+
+	require.NotNil(t, result)
+	assert.Empty(t, result.Patch)
+	assert.Empty(t, result.Minor)
+	assert.Empty(t, result.Major)
+	assert.Contains(t, logged.String(), "none of the 1 npm project(s)",
+		"a scan that read nothing must not be indistinguishable from a clean one")
+}
+
+// captureLog redirects the standard logger into buf, returning the restore
+// function so a test can assert on the output it produced.
+func captureLog(t *testing.T, buf *bytes.Buffer) func() {
+	t.Helper()
+	prevOut, prevFlags := log.Writer(), log.Flags()
+	log.SetOutput(buf)
+	log.SetFlags(0)
+	restore := func() {
+		log.SetOutput(prevOut)
+		log.SetFlags(prevFlags)
+	}
+	t.Cleanup(restore)
+	return restore
 }

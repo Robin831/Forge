@@ -70,9 +70,11 @@ func parseGoModRequires(data []byte) map[string]string {
 // which central management uses to override one entry) and the version either
 // as a Version attribute or a nested <Version> element.
 //
-// A version that is an MSBuild property reference ($(Foo)) is skipped rather
-// than recorded: it cannot be compared against a concrete version, and
-// recording it would make an update look already-applied.
+// Only a version that names ONE concrete version is recorded — see
+// nugetPinnedVersion. Anything else (an MSBuild property reference, an interval,
+// a float) is skipped rather than recorded: it cannot be compared against a
+// concrete version, and an unrecorded package is passed through untouched, which
+// is the direction reconcileWithCommitted's own contract argues for.
 func parsePackageRefs(data []byte) map[string]string {
 	refs := map[string]string{}
 	dec := xml.NewDecoder(bytes.NewReader(data))
@@ -111,14 +113,45 @@ func parsePackageRefs(data []byte) map[string]string {
 		}
 		version := elem.Version
 		if version == "" {
-			version = strings.TrimSpace(elem.Nested)
+			version = elem.Nested
 		}
-		if name == "" || version == "" || strings.Contains(version, "$(") {
+		version = nugetPinnedVersion(version)
+		if name == "" || version == "" {
 			continue
 		}
 		refs[name] = version
 	}
 	return refs
+}
+
+// nugetPinnedVersion reduces a NuGet version expression to the single concrete
+// version it pins, or "" when it names no such version.
+//
+// NuGet spells an exact pin two ways — bare ("1.2.3", nominally a minimum, and
+// the form depcheck has always read as the pin) and bracketed ("[1.2.3]") — and
+// it also accepts intervals ("[1.0.0,2.0.0)") and floats ("1.0.*"), neither of
+// which names a version at all. Recording one of those verbatim was worse than
+// recording nothing twice over: reconcileWithCommitted rewrote the reported
+// current version to the raw range text, so classifyUpdate re-derived the kind
+// from "[1" and reported every such update as `major` (routing a patch bump to
+// needs-attention), and the already-at-latest DROP never fired, because
+// "[1.2.4]" is not "1.2.4" — so an update upstream had already merged was
+// emitted as a no-op `major` from [1.2.4] to 1.2.4, which is the duplicate bead
+// this reconciliation exists to prevent.
+func nugetPinnedVersion(v string) string {
+	v = strings.TrimSpace(v)
+	if v == "" || strings.Contains(v, "$(") {
+		return ""
+	}
+	// [1.2.3] is the bracket spelling of one exact version; every other
+	// bracketed or parenthesised form is an interval with two ends.
+	if strings.HasPrefix(v, "[") && strings.HasSuffix(v, "]") {
+		v = strings.TrimSpace(v[1 : len(v)-1])
+	}
+	if strings.ContainsAny(v, "[](),*") {
+		return ""
+	}
+	return v
 }
 
 // parsePackageJSONDeps extracts the declared dependency ranges of a
@@ -148,6 +181,14 @@ func parsePackageJSONDeps(data []byte) map[string]string {
 // it pins: "^1.2.3" and "v1.2.3" and ">=1.2.3 <2.0.0" all become "1.2.3". It is
 // only ever used to compare a manifest entry against a concrete version the
 // ecosystem tool reported, never to order two versions.
+//
+// A BARE strict inequality names the one version its range excludes, so it
+// normalizes to "" rather than to that version: "<2.0.0" reduced to "2.0.0" made
+// reconcileWithCommitted read a manifest that genuinely needs bumping as one
+// upstream had already bumped, and drop a real major update with no trace. "" is
+// the same answer as a package the manifests do not mention — passed through
+// untouched. A compound range is unaffected either way, since only its first
+// field is read, and "<=1.2.3" does admit 1.2.3 and so keeps it.
 func normalizeVersion(v string) string {
 	v = strings.TrimSpace(v)
 	if v == "" {
@@ -156,7 +197,13 @@ func normalizeVersion(v string) string {
 	if fields := strings.Fields(v); len(fields) > 0 {
 		v = fields[0]
 	}
-	v = strings.TrimLeft(v, "^~>=<v ")
+	switch {
+	case strings.HasPrefix(v, "<="), strings.HasPrefix(v, ">="):
+		v = v[2:]
+	case strings.HasPrefix(v, "<"), strings.HasPrefix(v, ">"):
+		return ""
+	}
+	v = strings.TrimLeft(v, "^~=v ")
 	return strings.TrimSpace(v)
 }
 

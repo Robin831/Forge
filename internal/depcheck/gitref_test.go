@@ -331,7 +331,43 @@ func TestScanDotnetDiscoversProjectsFromTheRef(t *testing.T) {
 
 	paths, err := src.Paths(context.Background())
 	require.NoError(t, err)
-	assert.Equal(t, []string{"src/App/App.csproj"}, dotnetProjectPaths(paths))
+	assert.Equal(t, []dotnetTarget{{rel: "src/App/App.csproj", scope: []string{"src/App"}}},
+		dotnetScanTargets(context.Background(), src, paths))
 	assert.Equal(t, map[string]string{"Serilog": "3.1.1"},
-		newMSBuildPins(src).forProject(context.Background(), paths, "src/App"))
+		newMSBuildPins(src).forScope(context.Background(), paths, []string{"src/App"}))
+}
+
+// TestBlobExists_AnswersByExitCode pins the helper the missing-path decision is
+// made with. The distinction it draws — "this repository has no go.mod" versus
+// "git failed" — used to be a substring match on git's `fatal:` text, which is
+// gettext-translated: on a non-English host every scheduled scan of a .NET- or
+// Node-only anvil reported a Go manifest-read FAILURE and wrote a
+// depcheck_failed event, forever, for an anvil that is simply not a Go project.
+func TestBlobExists_AnswersByExitCode(t *testing.T) {
+	clone := newOriginAndClone(t, map[string]string{"go.mod": "module x\n"})
+
+	assert.True(t, blobExists(context.Background(), clone, "origin/main:go.mod"))
+	assert.False(t, blobExists(context.Background(), clone, "origin/main:package.json"))
+	assert.False(t, blobExists(context.Background(), clone, "origin/no-such-branch:go.mod"),
+		"an unresolvable ref names no object either — showBlob keeps the two apart by checking the ref itself")
+}
+
+// TestShowBlob_ClassifiesUnderATranslatedLocale runs the same classification on
+// a host whose git would answer in another language. It is a no-op where git's
+// message catalogs are not installed, and the exact failure above where they
+// are — which is why the decision is not made from that text at all.
+func TestShowBlob_ClassifiesUnderATranslatedLocale(t *testing.T) {
+	clone := newOriginAndClone(t, map[string]string{"go.mod": "module x\n"})
+
+	for _, locale := range []string{"de_DE.UTF-8", "fr_FR.UTF-8", "zh_CN.UTF-8"} {
+		t.Setenv("LC_ALL", locale)
+		t.Setenv("LANGUAGE", locale)
+
+		_, err := showBlob(context.Background(), clone, "origin/main", "package.json")
+		assert.ErrorIs(t, err, ErrBlobNotFound, "a path missing from the ref is an absent ecosystem, in any language")
+
+		_, err = showBlob(context.Background(), clone, "origin/no-such-branch", "go.mod")
+		require.Error(t, err)
+		assert.False(t, errors.Is(err, ErrBlobNotFound), "an unresolvable ref is still a failed scan")
+	}
 }

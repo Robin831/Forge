@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestParseGoModRequires(t *testing.T) {
@@ -99,9 +100,89 @@ func TestNormalizeVersion(t *testing.T) {
 		"  v1.2.3  ":      "1.2.3",
 		"v0.0.0-2026-abc": "0.0.0-2026-abc",
 		"":                "",
+		// A bare strict inequality names the version its range EXCLUDES, so it
+		// pins nothing — reducing it to that version made a manifest that still
+		// needs bumping read as one already bumped.
+		"<2.0.0": "",
+		">1.2.3": "",
+		// The non-strict forms do admit the version they name.
+		"<=1.2.3": "1.2.3",
+		">=1.2.3": "1.2.3",
 	} {
 		assert.Equal(t, want, normalizeVersion(in), "normalizeVersion(%q)", in)
 	}
+}
+
+// TestReconcileWithCommitted_KeepsAnUpdateABareUpperBoundExcludes is that
+// reduction at the level it mattered: "<2.0.0" excludes 2.0.0, so the manifest
+// genuinely needs bumping and the update must not vanish.
+func TestReconcileWithCommitted_KeepsAnUpdateABareUpperBoundExcludes(t *testing.T) {
+	updates := []ModuleUpdate{
+		{Path: "left-pad", Current: "1.0.0", Latest: "2.0.0", Kind: "major"},
+	}
+	got := reconcileWithCommitted(updates, map[string]string{"left-pad": "<2.0.0"}, false)
+	require.Len(t, got, 1, "the range excludes the latest version, so this update is still outstanding")
+	assert.Equal(t, "1.0.0", got[0].Current)
+}
+
+// TestParsePackageRefs_RangesAndFloatsAreNotPins covers NuGet's version syntax
+// beyond the bare form. A bracketed single version IS an exact pin and is read
+// as one; an interval or a float names no version and is recorded as nothing,
+// so reconciliation passes such a package through untouched.
+func TestParsePackageRefs_RangesAndFloatsAreNotPins(t *testing.T) {
+	csproj := []byte(`<Project>
+  <ItemGroup>
+    <PackageReference Include="Exact" Version="[1.2.3]" />
+    <PackageReference Include="Interval" Version="[1.0.0,2.0.0)" />
+    <PackageReference Include="ClosedInterval" Version="[1.0.0,2.0.0]" />
+    <PackageReference Include="MinOnly" Version="(1.0.0,)" />
+    <PackageReference Include="Float" Version="1.0.*" />
+    <PackageReference Include="Bare" Version="3.1.1" />
+  </ItemGroup>
+</Project>`)
+
+	assert.Equal(t, map[string]string{
+		"Exact": "1.2.3",
+		"Bare":  "3.1.1",
+	}, parsePackageRefs(csproj))
+}
+
+// TestReconcileWithCommitted_BracketPinnedNuGetPackage is what the two
+// consequences of recording a range verbatim looked like. Unreduced, "[1.2.3]"
+// was written into Current and classifyUpdate re-derived the kind from "[1",
+// reporting a patch bump as `major` (which routes it to needs-attention rather
+// than auto-dispatch); and "[1.2.4]" never equalled "1.2.4", so an update
+// upstream had ALREADY merged survived the drop and was emitted as a nonsense
+// no-op from [1.2.4] to 1.2.4 — the duplicate bead this reconciliation exists
+// to prevent.
+func TestReconcileWithCommitted_BracketPinnedNuGetPackage(t *testing.T) {
+	updates := []ModuleUpdate{
+		{Path: "Serilog", Current: "1.2.3", Latest: "1.2.4", Kind: "patch"},
+	}
+
+	got := reconcileWithCommitted(updates, parsePackageRefs(
+		[]byte(`<Project><ItemGroup><PackageReference Include="Serilog" Version="[1.2.3]" /></ItemGroup></Project>`)), true)
+	require.Len(t, got, 1)
+	assert.Equal(t, "1.2.3", got[0].Current)
+	assert.Equal(t, "patch", got[0].Kind, "a bracket pin must not turn a patch bump into a major one")
+
+	assert.Empty(t, reconcileWithCommitted(updates, parsePackageRefs(
+		[]byte(`<Project><ItemGroup><PackageReference Include="Serilog" Version="[1.2.4]" /></ItemGroup></Project>`)), true),
+		"upstream already pins the latest — filing a bead for it duplicates merged work")
+}
+
+// TestReconcileWithCommitted_FloatingNuGetPackageIsPassedThrough is the safe
+// direction for a version that names no single version: nothing is recorded, so
+// the reported update is neither rewritten nor dropped.
+func TestReconcileWithCommitted_FloatingNuGetPackageIsPassedThrough(t *testing.T) {
+	updates := []ModuleUpdate{
+		{Path: "Serilog", Current: "1.2.3", Latest: "1.2.4", Kind: "patch"},
+	}
+	got := reconcileWithCommitted(updates, parsePackageRefs(
+		[]byte(`<Project><ItemGroup><PackageReference Include="Serilog" Version="1.0.*" /></ItemGroup></Project>`)), true)
+	require.Len(t, got, 1)
+	assert.Equal(t, "1.2.3", got[0].Current)
+	assert.Equal(t, "patch", got[0].Kind)
 }
 
 func TestReconcileWithCommitted_DropsUpdatesUpstreamAlreadyApplied(t *testing.T) {

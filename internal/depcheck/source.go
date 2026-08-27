@@ -18,8 +18,6 @@ import (
 // checked out. Paths are repo-root-relative and forward-slashed in both
 // implementations, so a caller cannot tell them apart by shape.
 type manifestSource interface {
-	// Root is the working-tree directory the ecosystem tools run in.
-	Root() string
 	// Paths lists every candidate manifest file, repo-relative.
 	Paths(ctx context.Context) ([]string, error)
 	// Read returns one file's contents, or a wrapped ErrBlobNotFound.
@@ -30,8 +28,6 @@ type manifestSource interface {
 
 // worktreeSource reads the checkout as it stands on disk.
 type worktreeSource struct{ root string }
-
-func (w worktreeSource) Root() string { return w.root }
 
 func (w worktreeSource) Describe() string { return "working tree" }
 
@@ -58,8 +54,6 @@ type refSource struct {
 	repoDir string
 	ref     string
 }
-
-func (r refSource) Root() string { return r.repoDir }
 
 func (r refSource) Describe() string { return r.ref }
 
@@ -110,11 +104,6 @@ func walkWorktreePaths(root string) []string {
 		return nil
 	})
 	return paths
-}
-
-// localDir maps a repo-relative path's directory onto the working tree.
-func localDir(root, relPath string) string {
-	return filepath.Join(root, filepath.FromSlash(pathDir(relPath)))
 }
 
 // pathDir is filepath.Dir for the forward-slashed, repo-relative paths this

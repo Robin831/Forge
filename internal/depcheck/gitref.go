@@ -47,7 +47,12 @@ func runGit(ctx context.Context, repoDir string, args ...string) ([]byte, error)
 	cmd := executil.HideWindow(exec.CommandContext(cmdCtx, "git", args...))
 	cmd.Dir = repoDir
 	// An ambient GIT_DIR would answer for a repository other than repoDir.
-	cmd.Env = executil.CleanGitEnv()
+	// CleanGitEnv strips only the repo-location variables, so the host's locale
+	// survives and git's diagnostics are gettext-translated: pin them to C so an
+	// error this package logs or an event it writes reads the same on every host.
+	// Nothing here BRANCHES on that text — see blobExists — but a message a
+	// German-locale daemon writes into the event log is nobody's diagnostic.
+	cmd.Env = append(executil.CleanGitEnv(), "LC_ALL=C", "LANG=C")
 
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -165,7 +170,9 @@ func showBlob(ctx context.Context, repoDir, ref, path string) ([]byte, error) {
 	spec := ref + ":" + strings.ReplaceAll(path, "\\", "/")
 	out, err := runGit(ctx, repoDir, "show", spec)
 	if err != nil {
-		if isPathNotInRef(err) {
+		// The path is absent only if the REF resolves and the object under it
+		// does not; anything else is git failing and must stay a failure.
+		if refExists(ctx, repoDir, ref) && !blobExists(ctx, repoDir, spec) {
 			return nil, fmt.Errorf("%s@%s: %w", path, ref, ErrBlobNotFound)
 		}
 		return nil, err
@@ -173,29 +180,20 @@ func showBlob(ctx context.Context, repoDir, ref, path string) ([]byte, error) {
 	return out, nil
 }
 
-// notInRefMarkers are the phrases git uses to say "that PATH is not in this
-// ref": `fatal: path 'x' does not exist in 'origin/main'`, and the variant it
-// uses when the path is present in the checkout but untracked.
+// blobExists reports whether spec ("<ref>:<path>") names an object in repoDir.
 //
-// The match is on text because git reports every `git show` failure as exit
-// 128. Only path-level wording belongs here: an unknown ref is
-// `fatal: invalid object name 'origin/nope'`, and reading that as
-// ErrBlobNotFound would report a repository whose ref could not be resolved as
-// one that simply has no go.mod — a silent "nothing to update" in place of a
-// failure.
-var notInRefMarkers = []string{
-	"exists on disk, but not in",
-	"does not exist in",
-}
-
-func isPathNotInRef(err error) bool {
-	msg := strings.ToLower(err.Error())
-	for _, marker := range notInRefMarkers {
-		if strings.Contains(msg, marker) {
-			return true
-		}
-	}
-	return false
+// It answers by EXIT CODE, which is the whole reason it exists. This is the most
+// consequential distinction the source layer makes — "this repository has no
+// go.mod" versus "git failed" — and it used to be decided by substring-matching
+// git's `fatal:` text. Those diagnostics are gettext-translated and runGit
+// inherits the host's locale, so on a `LANG=de_DE.UTF-8` host with git's message
+// catalogs installed the match failed and every scheduled scan of a .NET-only or
+// Node-only anvil logged a Go manifest-read failure and wrote a depcheck_failed
+// event, forever, for an anvil that is simply not a Go project. `git cat-file -e`
+// says the same thing in a number.
+func blobExists(ctx context.Context, repoDir, spec string) bool {
+	_, err := runGit(ctx, repoDir, "cat-file", "-e", spec)
+	return err == nil
 }
 
 // listTreePaths returns every path tracked at ref, repo-root-relative and

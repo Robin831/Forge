@@ -2,8 +2,11 @@ package depcheck
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -58,14 +61,68 @@ func TestPathDirAndDirWithin(t *testing.T) {
 	assert.False(t, dirWithin("tools", "src"))
 }
 
-func TestDotnetProjectPaths_RootSlnCoversNestedCsproj(t *testing.T) {
-	paths := []string{"MyApp.sln", "src/MyApp/MyApp.csproj", "README.md"}
-	assert.Equal(t, []string{"MyApp.sln"}, dotnetProjectPaths(paths))
+func TestDotnetScanTargets_UnparseableSlnCoversItsTree(t *testing.T) {
+	// A solution naming no project this can parse is all the .sln says, so it
+	// keeps its historic meaning: it covers its own tree.
+	src := stubSource{files: map[string]string{"MyApp.sln": "Microsoft Visual Studio Solution File\n"}}
+	targets := dotnetScanTargets(context.Background(), src,
+		[]string{"MyApp.sln", "src/MyApp/MyApp.csproj", "README.md"})
+
+	require.Len(t, targets, 1)
+	assert.Equal(t, "MyApp.sln", targets[0].rel)
+	assert.Equal(t, []string{""}, targets[0].scope)
 }
 
-func TestDotnetProjectPaths_UncoveredCsprojIsIncluded(t *testing.T) {
-	paths := []string{"src/App/App.sln", "src/App/App.csproj", "tools/Tool/Tool.csproj"}
-	assert.Equal(t, []string{"src/App/App.sln", "tools/Tool/Tool.csproj"}, dotnetProjectPaths(paths))
+func TestDotnetScanTargets_UncoveredProjectIsIncluded(t *testing.T) {
+	src := stubSource{files: map[string]string{
+		"src/App/App.sln": slnReferencing("App.csproj"),
+	}}
+	targets := dotnetScanTargets(context.Background(), src,
+		[]string{"src/App/App.sln", "src/App/App.csproj", "tools/Tool/Tool.csproj"})
+
+	assert.Equal(t, []dotnetTarget{
+		{rel: "src/App/App.sln", scope: []string{"src/App"}},
+		{rel: "tools/Tool/Tool.csproj", scope: []string{"tools/Tool"}},
+	}, targets)
+}
+
+// TestDotnetScanTargets_RootSlnScopesToItsOwnProjects is the failure a
+// tree-scoped solution reintroduced: at the repository root a solution's tree is
+// the whole repository, so every manifest in it — including a project the
+// solution does not reference — was folded into its pin map, and an
+// out-of-solution project upstream had bumped silenced the same real update
+// inside the solution. Its scope is the projects it actually references, and the
+// project it leaves out becomes a scan target of its own.
+func TestDotnetScanTargets_RootSlnScopesToItsOwnProjects(t *testing.T) {
+	src := stubSource{files: map[string]string{
+		"MyApp.sln": slnReferencing("src\\App\\App.csproj", "src\\Lib\\Lib.fsproj"),
+	}}
+	targets := dotnetScanTargets(context.Background(), src, []string{
+		"MyApp.sln",
+		"src/App/App.csproj",
+		"src/Lib/Lib.fsproj",
+		"tools/Tool/Tool.csproj",
+	})
+
+	assert.Equal(t, []dotnetTarget{
+		{rel: "MyApp.sln", scope: []string{"src/App", "src/Lib"}},
+		{rel: "tools/Tool/Tool.csproj", scope: []string{"tools/Tool"}},
+	}, targets, "the unreferenced project is neither in the solution's scope nor left unscanned")
+}
+
+func TestSlnReferencedProjects_SkipsSolutionFolders(t *testing.T) {
+	sln := `Microsoft Visual Studio Solution File, Format Version 12.00
+Project("{2150E333-8FDC-42A3-9474-1DD2E32FD3B2}") = "Solution Items", "Solution Items", "{AAA}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "App", "src\App\App.csproj", "{BBB}"
+EndProject
+Project("{F2A71F9B-5D33-465A-A702-920D77279786}") = "Lib", "..\shared\Lib.fsproj", "{CCC}"
+EndProject
+`
+	src := stubSource{files: map[string]string{"nested/MyApp.sln": sln}}
+	assert.Equal(t, []string{"nested/src/App/App.csproj", "shared/Lib.fsproj"},
+		slnReferencedProjects(context.Background(), src, "nested/MyApp.sln"),
+		"a solution folder names a label rather than a path, and a relative path resolves against the .sln")
 }
 
 func TestNpmPackageFiles(t *testing.T) {
@@ -84,19 +141,53 @@ func npmProjectDirsIn(t *testing.T, root string) []string {
 	require.NoError(t, err)
 	var dirs []string
 	for _, rel := range npmPackageFiles(paths) {
-		dirs = append(dirs, localDir(root, rel))
+		dirs = append(dirs, filepath.Dir(filepath.Join(root, filepath.FromSlash(rel))))
 	}
 	return dirs
 }
 
 func dotnetProjectsIn(t *testing.T, root string) []string {
 	t.Helper()
-	paths, err := worktreeSource{root: root}.Paths(context.Background())
+	src := worktreeSource{root: root}
+	paths, err := src.Paths(context.Background())
 	require.NoError(t, err)
-	rels := dotnetProjectPaths(paths)
-	files := make([]string, 0, len(rels))
-	for _, rel := range rels {
-		files = append(files, filepath.Join(root, filepath.FromSlash(rel)))
+	var files []string
+	for _, target := range dotnetScanTargets(context.Background(), src, paths) {
+		files = append(files, filepath.Join(root, filepath.FromSlash(target.rel)))
 	}
 	return files
+}
+
+// stubSource serves a fixed set of repo-relative files, for the discovery tests
+// that need a solution's CONTENTS without a checkout to put it in.
+type stubSource struct{ files map[string]string }
+
+func (s stubSource) Describe() string { return "stub" }
+
+func (s stubSource) Paths(context.Context) ([]string, error) {
+	paths := make([]string, 0, len(s.files))
+	for p := range s.files {
+		paths = append(paths, p)
+	}
+	sort.Strings(paths)
+	return paths, nil
+}
+
+func (s stubSource) Read(_ context.Context, path string) ([]byte, error) {
+	data, ok := s.files[path]
+	if !ok {
+		return nil, fmt.Errorf("%s: %w", path, ErrBlobNotFound)
+	}
+	return []byte(data), nil
+}
+
+// slnReferencing builds the minimum solution text carrying the given
+// solution-relative project paths (backslashed, as a .sln always spells them).
+func slnReferencing(projects ...string) string {
+	var b strings.Builder
+	b.WriteString("Microsoft Visual Studio Solution File, Format Version 12.00\n")
+	for i, proj := range projects {
+		fmt.Fprintf(&b, "Project(\"{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}\") = \"P%d\", \"%s\", \"{%d}\"\nEndProject\n", i, proj, i)
+	}
+	return b.String()
 }

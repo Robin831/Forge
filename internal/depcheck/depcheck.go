@@ -166,7 +166,7 @@ func (s *Scanner) ScanAll(ctx context.Context) {
 // touch the remote — the caller should scan the working tree as-is.
 func (s *Scanner) ScanAnvilDeps(ctx context.Context, name, path string) []*CheckResult {
 	var results []*CheckResult
-	for _, sc := range ecosystemScanners(s) {
+	for _, sc := range s.ecosystemScanners() {
 		if ctx.Err() != nil {
 			return results
 		}
@@ -191,7 +191,7 @@ type ecosystemScanner struct {
 	fn   func(ctx context.Context, anvil, path string, src manifestSource) *CheckResult
 }
 
-func ecosystemScanners(s *Scanner) []ecosystemScanner {
+func (s *Scanner) ecosystemScanners() []ecosystemScanner {
 	return []ecosystemScanner{
 		{"Go", s.scanGo},
 		{"NuGet", s.scanDotnet},
@@ -227,7 +227,7 @@ func (s *Scanner) scanAnvil(ctx context.Context, name, path string) {
 	}
 
 	var allResults []*CheckResult
-	for _, sc := range ecosystemScanners(s) {
+	for _, sc := range s.ecosystemScanners() {
 		if ctx.Err() != nil {
 			return
 		}
