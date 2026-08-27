@@ -39,6 +39,34 @@ const (
 	ReasonStashRetained FailureReason = "stash_retained"
 )
 
+// AllReasons is every failure reason a deploy can raise. It exists so that
+// "clear everything a deploy has superseded" can be written as an explicit
+// list — the one thing it must not be is the empty list, which every Emitter
+// reads as "clear all" and which would therefore withdraw the sticky reasons
+// below along with the rest.
+var AllReasons = []FailureReason{
+	ReasonDrainTimeout,
+	ReasonSwapFailed,
+	ReasonRestartFailed,
+	ReasonRollbackFailed,
+	ReasonPullBlocked,
+	ReasonStashRetained,
+}
+
+// IsSticky reports whether a later deploy is forbidden from withdrawing this
+// reason's entry.
+//
+// Every other reason describes the DEPLOY's own state — a deferral, a rollback,
+// a checkout that cannot be fast-forwarded — and a deploy that gets past that
+// step has proved the condition gone. ReasonStashRetained describes the
+// OPERATOR's work sitting in a stash, which no deploy restores and no deploy can
+// therefore speak for: worse, the recovery path resets the tree clean, so the
+// very next deploy succeeds by construction and would withdraw the only record
+// of where the work went. It is withdrawn by evidence instead — a deploy that
+// finds no forge-selfdeploy entry left on the stash stack — which is the one
+// observation that actually proves the condition is over.
+func (r FailureReason) IsSticky() bool { return r == ReasonStashRetained }
+
 // DeployEvent describes a self-deploy that ended somewhere other than "new
 // binary live and restarting".
 //
@@ -100,5 +128,10 @@ type Emitter interface {
 	// every reason when called with none. The Deployer calls it once the deploy
 	// has progressed past the failure mode in question, so a deferral or a
 	// rollback cannot linger in the list after a later deploy has superseded it.
+	//
+	// It is never called with no reasons by the Deployer: a sticky reason
+	// (FailureReason.IsSticky) is not something progressing past a step proves
+	// anything about, so the reasons are always enumerated and the sticky ones
+	// filtered out first.
 	ClearNeedsAttention(reasons ...FailureReason) error
 }

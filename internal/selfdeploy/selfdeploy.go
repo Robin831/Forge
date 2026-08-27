@@ -237,8 +237,16 @@ func (d *Deployer) Deploy(ctx context.Context) error {
 		return err
 	}
 	// The pull worked, so an earlier blockage is history — the same reasoning as
-	// the drain deferral above, and the only thing that withdraws either entry.
-	d.resolveAttention(ReasonPullBlocked, ReasonStashRetained)
+	// the drain deferral above, and the only thing that withdraws that entry.
+	//
+	// ReasonStashRetained is deliberately NOT in that list. A successful pull is
+	// not evidence that an earlier deploy's stashed work was ever restored — and
+	// since recovering from a failed pop leaves the tree clean, the very next
+	// deploy succeeds by construction, so withdrawing it here would reliably
+	// delete the only record of where that work went. It is withdrawn by looking
+	// at the stash stack instead.
+	d.resolveAttention(ReasonPullBlocked)
+	d.resolveStashAttention(ctx)
 
 	// 1b. Resolve the commit being deployed. Best-effort: it only feeds the
 	//     restart intent log and the transient scope unit name, so a failure here
@@ -363,10 +371,40 @@ func (d *Deployer) raiseAttention(ev DeployEvent) {
 }
 
 // resolveAttention clears outstanding needs-attention items for the given
-// reasons (all of them when called with none). Like raiseAttention it never
-// fails a deploy.
+// reasons (every non-sticky one when called with none). Like raiseAttention it
+// never fails a deploy.
+//
+// Sticky reasons are filtered out here rather than at each call site, because
+// the rule is about what a deploy can PROVE and not about which step it reached:
+// a deploy getting past the pull says the checkout is fast-forwardable again, and
+// says nothing whatsoever about whether the work an earlier deploy stashed is
+// back in somebody's tree. Filtered centrally, no future call site can withdraw
+// that entry by reaching a milestone. The only thing that withdraws it is
+// resolveStashAttention, which looks at the stack.
 func (d *Deployer) resolveAttention(reasons ...FailureReason) {
 	if d.attention == nil {
+		return
+	}
+	if len(reasons) == 0 {
+		reasons = AllReasons
+	}
+	clear := make([]FailureReason, 0, len(reasons))
+	for _, r := range reasons {
+		if r.IsSticky() {
+			continue
+		}
+		clear = append(clear, r)
+	}
+	d.clearAttention(clear...)
+}
+
+// clearAttention withdraws entries without asking whether their reason is
+// sticky. It has exactly two callers: resolveAttention, which has filtered
+// already, and resolveStashAttention, which holds the one piece of evidence a
+// sticky entry can be withdrawn on. Anything else wanting to clear an entry
+// wants resolveAttention.
+func (d *Deployer) clearAttention(reasons ...FailureReason) {
+	if d.attention == nil || len(reasons) == 0 {
 		return
 	}
 	if err := d.attention.ClearNeedsAttention(reasons...); err != nil {

@@ -546,3 +546,155 @@ func TestPullAbortsWhenTheStashProbeFails(t *testing.T) {
 		}
 	}
 }
+
+// TestRetainedStashSurvivesLaterSuccessfulDeploys is the invariant the
+// retained-stash escalation rests on. Recovering from a failed pop leaves the
+// checkout clean, so the very NEXT deploy fast-forwards without incident — which
+// means any withdrawal rule keyed on "a deploy got past the pull" deletes the
+// only record of where the operator's work went, reliably, within one deploy
+// cycle. It is withdrawn on evidence about the stash stack instead, so the entry
+// stands for exactly as long as the work is still on it.
+func TestRetainedStashSurvivesLaterSuccessfulDeploys(t *testing.T) {
+	repo, upstream := upstreamRepo(t)
+	write(t, repo, "app.go", "package main\n\nconst version = 99\n")
+	pushUpstream(t, upstream, "app.go", "package main\n\nconst version = 2\n")
+
+	d, _, em := pullDeployer(t, repo)
+	if err := d.pullSource(context.Background()); !errors.Is(err, ErrStashRetained) {
+		t.Fatalf("error = %v, want it to unwrap to ErrStashRetained", err)
+	}
+	if n := stashCount(t, repo); n != 1 {
+		t.Fatalf("stash entries = %d, want the operator's work still stashed", n)
+	}
+
+	// A second deploy: the tree the recovery left is clean, so this pull is an
+	// ordinary success. It must not touch the entry.
+	pushUpstream(t, upstream, "other.go", "package main\n\nconst other = 2\n")
+	em.cleared = nil
+	if err := d.pullSource(context.Background()); err != nil {
+		t.Fatalf("the second pull must succeed off the tree the recovery left: %v", err)
+	}
+	d.resolveStashAttention(context.Background())
+	if len(em.cleared) != 0 {
+		t.Fatalf("a successful pull withdrew the retained-stash entry while the work was still stashed: %+v",
+			em.cleared)
+	}
+
+	// An unrelated entry from another worktree is not this deploy's work, so it
+	// must not hold the escalation open either — only an entry this package
+	// labelled counts.
+	gitBin(t, repo, "stash", "drop")
+	write(t, repo, "unrelated.txt", "another worktree's work\n")
+	gitBin(t, repo, "stash", "push", "-u", "-m", "someone else")
+
+	em.cleared = nil
+	d.resolveStashAttention(context.Background())
+	if len(em.cleared) != 1 || len(em.cleared[0]) != 1 || em.cleared[0][0] != ReasonStashRetained {
+		t.Fatalf("cleared = %+v, want the retained-stash entry withdrawn once the work is off the stack",
+			em.cleared)
+	}
+}
+
+// TestRetainedStashStandsWhenTheStackCannotBeRead: an unreadable stack is not
+// evidence of an empty one. Being wrong in that direction would delete the only
+// record of where somebody's work went; being wrong the other way costs one
+// stale row.
+func TestRetainedStashStandsWhenTheStackCannotBeRead(t *testing.T) {
+	repo, _ := upstreamRepo(t)
+	d, _, em := pullDeployer(t, repo)
+	d.cmd = failingListCommander{Commander: ExecCommander{}}
+
+	d.resolveStashAttention(context.Background())
+	if len(em.cleared) != 0 {
+		t.Fatalf("an unreadable stash stack withdrew the entry anyway: %+v", em.cleared)
+	}
+}
+
+// failingListCommander fails `git stash list` and nothing else.
+type failingListCommander struct {
+	Commander
+}
+
+func (f failingListCommander) Run(ctx context.Context, dir, name string, args ...string) ([]byte, error) {
+	if name == "git" && len(args) > 1 && args[0] == "stash" && args[1] == "list" {
+		return []byte("fatal: not a git repository"), errors.New("exit status 128")
+	}
+	return f.Commander.Run(ctx, dir, name, args...)
+}
+
+// TestPullRefusesToAdoptAnEntryItDidNotCreate closes the other half of the
+// shared-stack problem. The stack moving between our push and our read-back does
+// not make the new top OURS: a worker worktree pushing in that window puts its
+// own entry there, and adopting it by SHA alone would pop that worktree's work
+// over the pulled tree while leaving ours behind. The entry's message is what
+// tells the two apart.
+func TestPullRefusesToAdoptAnEntryItDidNotCreate(t *testing.T) {
+	repo, upstream := upstreamRepo(t)
+	write(t, repo, "app.go", "package main\n\nconst version = 1 // local tweak\n")
+	pushUpstream(t, upstream, "other.go", "package main\n\nconst other = 2\n")
+	before := gitBin(t, repo, "rev-parse", "HEAD")
+
+	d, _, em := pullDeployer(t, repo)
+	// Push a second entry between our stash push and the read-back that names
+	// it, which is the whole window the identity check covers.
+	d.cmd = afterCommander{
+		Commander: ExecCommander{},
+		after: func(args []string) {
+			if len(args) > 2 && args[0] == "git" && args[1] == "stash" && args[2] == "push" {
+				write(t, repo, "interloper.txt", "another worktree's work\n")
+				gitBin(t, repo, "stash", "push", "-u", "-m", "someone else")
+			}
+		},
+	}
+
+	err := d.pullSource(context.Background())
+	if !errors.Is(err, ErrStashRetained) {
+		t.Fatalf("error = %v, want it to unwrap to ErrStashRetained", err)
+	}
+	if after := gitBin(t, repo, "rev-parse", "HEAD"); after != before {
+		t.Errorf("the deploy pulled on past an entry it could not identify: HEAD moved to %s", after)
+	}
+	if n := stashCount(t, repo); n != 2 {
+		t.Errorf("stash entries = %d, want both this deploy's and the interloper's kept", n)
+	}
+	ev := em.only(t)
+	if ev.Reason != ReasonStashRetained {
+		t.Errorf("Reason = %q, want %q", ev.Reason, ReasonStashRetained)
+	}
+	// It cannot name the entry, so it must say how to find it.
+	for _, want := range []string{"stash list", stashMessage, repo} {
+		if !strings.Contains(ev.Detail, want) {
+			t.Errorf("escalation detail does not mention %q:\n%s", want, ev.Detail)
+		}
+	}
+}
+
+// TestPullTreatsAnInterloperOnACleanTreeAsNothingToRestore is the same window
+// with nothing of ours in it: the tree was clean, so our push saved nothing and
+// the entry that appeared belongs to somebody else. The pull proceeds — refusing
+// here would defer every deploy that happened to race a worker's stash.
+func TestPullTreatsAnInterloperOnACleanTreeAsNothingToRestore(t *testing.T) {
+	repo, upstream := upstreamRepo(t)
+	pushUpstream(t, upstream, "other.go", "package main\n\nconst other = 2\n")
+
+	d, _, em := pullDeployer(t, repo)
+	d.cmd = afterCommander{
+		Commander: ExecCommander{},
+		after: func(args []string) {
+			if len(args) > 2 && args[0] == "git" && args[1] == "stash" && args[2] == "push" {
+				write(t, repo, "interloper.txt", "another worktree's work\n")
+				gitBin(t, repo, "stash", "push", "-u", "-m", "someone else")
+			}
+		},
+	}
+
+	if err := d.pullSource(context.Background()); err != nil {
+		t.Fatalf("pullSource on a clean tree racing another worktree's stash: %v", err)
+	}
+	if got := read(t, repo, "other.go"); !strings.Contains(got, "other = 2") {
+		t.Errorf("other.go = %q, want the pulled content", got)
+	}
+	if len(em.events) != 0 {
+		t.Errorf("nothing of ours was stashed, so nothing may be escalated: %+v", em.events)
+	}
+}

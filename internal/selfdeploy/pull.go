@@ -20,8 +20,9 @@ const stashMessage = "forge-selfdeploy: local changes set aside for a fast-forwa
 const stashRef = "refs/stash"
 
 // restoreTimeout bounds the restore sequence, which runs on a context that
-// deliberately ignores the deploy's own cancellation (see restoreCtx). Without
-// a bound of its own a hung git there would hold up a shutdown indefinitely.
+// deliberately ignores the deploy's own cancellation (see restoreStash). Being
+// uncancellable is exactly why it needs a deadline of its own: without one a git
+// command hung there would hold up a shutdown indefinitely.
 const restoreTimeout = 2 * time.Minute
 
 // ErrStashRetained is the sentinel behind every outcome that leaves the
@@ -98,6 +99,14 @@ func (d *Deployer) pullSource(ctx context.Context) error {
 // with every other worktree of this repository — Forge's own workers each hold
 // one — so "there is a stash" was never the same claim as "we made it". The SHA
 // is what makes the later pop provably about this deploy's entry.
+//
+// A moved top is not on its own proof that the new top is OURS, which is the
+// second half of the same shared-stack problem: a worker worktree pushing an
+// entry in the window between our push and our read-back puts THEIR SHA there,
+// and adopting it would mean popping their work over the pulled tree while
+// leaving ours on the stack. So the entry's message has to name this package
+// too — the one thing about it that a concurrent entry cannot coincidentally
+// match.
 func (d *Deployer) stashLocalChanges(ctx context.Context) (string, error) {
 	before, err := d.stashTop(ctx)
 	if err != nil {
@@ -114,7 +123,7 @@ func (d *Deployer) stashLocalChanges(ctx context.Context) (string, error) {
 		return "", d.failPull(ctx, "could not set local changes aside before the pull", pushErr, out)
 	}
 
-	after, err := d.stashTop(ctx)
+	after, subject, err := d.stashTopEntry(ctx)
 	if err != nil {
 		// The push reported success, so there may now be an entry holding the
 		// operator's work that we can no longer name. Abandoning the deploy here
@@ -126,6 +135,20 @@ func (d *Deployer) stashLocalChanges(ctx context.Context) (string, error) {
 	if after == before {
 		// Nothing was stashed: a clean tree, or one holding only ignored files.
 		return "", nil
+	}
+	if !strings.Contains(subject, stashMessage) {
+		// The top moved to an entry somebody else pushed. If our own push saved
+		// nothing then this is simply a busy stack and there is nothing of ours
+		// to restore — the pull can go ahead untouched.
+		if strings.Contains(out, gitNothingToStash) {
+			return "", nil
+		}
+		// Otherwise our entry exists but is no longer the top, and this sequence
+		// only ever pops the top. Say where the work is and stop, rather than
+		// popping an entry that belongs to another worktree.
+		return "", d.failStashRetained("", nil,
+			"local changes were set aside but another process pushed onto the shared stash stack immediately "+
+				"afterwards, so this deploy's entry is neither the top one nor safely identifiable")
 	}
 	return after, nil
 }
@@ -251,12 +274,70 @@ func (d *Deployer) git(ctx context.Context, args ...string) (string, error) {
 // nothing, so an empty result means an empty stack and ANY non-zero exit is a
 // real failure to report.
 func (d *Deployer) stashTop(ctx context.Context) (string, error) {
-	out, err := d.git(ctx, "for-each-ref", "--format=%(objectname)", stashRef)
+	sha, _, err := d.stashTopEntry(ctx)
+	return sha, err
+}
+
+// stashTopEntry is stashTop plus the entry's message, which is what tells an
+// entry this deploy made apart from one that merely arrived while it was
+// working. Both come out of one command, so the two answers cannot describe two
+// different tops.
+func (d *Deployer) stashTopEntry(ctx context.Context) (sha, subject string, err error) {
+	// A NUL separator: the subject is a message this deploy did not necessarily
+	// write (another worktree's entry can be on top), and every printable
+	// separator is legal inside one.
+	const format = "--format=%(objectname)%00%(contents:subject)"
+	out, err := d.git(ctx, "for-each-ref", format, stashRef)
 	if err != nil {
-		return "", fmt.Errorf("git for-each-ref %s: %v: %s", stashRef, err,
+		return "", "", fmt.Errorf("git for-each-ref %s: %v: %s", stashRef, err,
 			gitfail.Sanitize(firstNonEmpty(out, err.Error()), maxEvidenceBytes))
 	}
-	return strings.TrimSpace(out), nil
+	out = strings.TrimSpace(out)
+	if out == "" {
+		return "", "", nil
+	}
+	sha, subject, _ = strings.Cut(out, "\x00")
+	return strings.TrimSpace(sha), strings.TrimSpace(subject), nil
+}
+
+// gitNothingToStash is git's answer on a tree with nothing to set aside. It is
+// matched as text, which is sound for the same reason gitfail's patterns are:
+// ExecCommander pins LC_ALL=C, so git's diagnostics are not translated. And it
+// is only ever a SECOND opinion — the identity of an entry is decided by SHA and
+// by message above — so a future rewording costs nothing but a needlessly
+// cautious abort in the rare window it covers.
+const gitNothingToStash = "No local changes to save"
+
+// resolveStashAttention withdraws a ReasonStashRetained entry, but only on the
+// one piece of evidence that can justify it: no entry labelled by this package
+// is left on the stash stack.
+//
+// Nothing else may withdraw it. A deploy reaching any later step proves only
+// that the DEPLOY is healthy, and the failure being reported is that the
+// OPERATOR's work is sitting in a stash — which recoverFailedPop's clean reset
+// guarantees does not stop the next deploy from succeeding. So the entry has to
+// outlive successful deploys until the stack itself says the work has been taken
+// back out (or dropped, which is the operator's decision to make).
+//
+// A probe that cannot run leaves the entry standing: an unreadable stack is not
+// evidence of an empty one, and this is the direction in which being wrong costs
+// only a stale row rather than the record of where somebody's work went.
+func (d *Deployer) resolveStashAttention(ctx context.Context) {
+	if d.attention == nil {
+		return
+	}
+	// `stash list` rather than the top entry alone: a retained entry is pushed
+	// down the stack by every later stash, this deploy's own included.
+	out, err := d.git(ctx, "stash", "list")
+	if err != nil {
+		d.logger.Warn("self-deploy: could not read the stash stack, so any retained-stash entry stands",
+			"repo", d.cfg.RepoPath, "error", gitfail.Sanitize(firstNonEmpty(out, err.Error()), maxEvidenceBytes))
+		return
+	}
+	if strings.Contains(out, stashMessage) {
+		return
+	}
+	d.clearAttention(ReasonStashRetained)
 }
 
 // blockingPaths enumerates what the working tree is holding, for the message.

@@ -204,6 +204,13 @@ func (d *Deployer) pullRemediation(cause gitfail.Cause, paths []string) string {
 // what happened, then the paths, then the commands that get the work back — and
 // the deploy's own state last, since the binary being unchanged is the least
 // urgent part of this particular failure.
+//
+// The closing sentence is the one that differs from every other escalation's,
+// and it has to: this entry does not withdraw itself when deploys start working
+// again (they will, immediately — the recovery reset leaves the tree clean),
+// only when the stash stack no longer holds an entry this package labelled. An
+// operator told "cleared once a deploy pulls successfully" would watch the only
+// record of where their work went disappear within the hour.
 func (d *Deployer) stashRetainedDetail(stash string, paths []string, detail string) string {
 	at := d.cfg.RepoPath
 	if at == "" {
@@ -239,7 +246,9 @@ func (d *Deployer) stashRetainedDetail(stash string, paths []string, detail stri
 			"the stack until you drop it (`git -C %s stash list` names its position).", at, stash, at, stash, at)
 	}
 	b.WriteString(" The deploy was abandoned before the rebuild, so the daemon still runs the binary it had. " +
-		"Forge clears this entry automatically once a deploy pulls successfully.")
+		"This entry is NOT withdrawn by the next deploy that works: the checkout was left clean, so deploys resume " +
+		"immediately and say nothing about where this work went. Forge withdraws it once no entry labelled " +
+		"`" + stashMessage + "` is left on the stash stack — i.e. once you have restored it and dropped the entry.")
 	return b.String()
 }
 

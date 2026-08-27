@@ -20,7 +20,11 @@ const (
 	DeployReasonPullBlocked = "pull_blocked"
 	// DeployReasonStashRetained: the deploy set local changes aside to
 	// fast-forward and could not put them back, so they are in a stash the
-	// detail names. Nothing was built or swapped.
+	// detail names. Nothing was built or swapped. Unlike every other reason
+	// here, this row is expected to OUTLIVE later successful deploys: the
+	// checkout is left clean, so deploys resume immediately and say nothing
+	// about where the stashed work went. selfdeploy withdraws it only once the
+	// stash stack no longer holds an entry it labelled.
 	DeployReasonStashRetained = "stash_retained"
 )
 

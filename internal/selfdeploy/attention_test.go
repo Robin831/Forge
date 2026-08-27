@@ -259,21 +259,68 @@ func TestDeploy_SuccessResolvesEverything(t *testing.T) {
 	if len(em.events) != 0 {
 		t.Fatalf("a successful deploy must raise nothing, got %+v", em.events)
 	}
-	if len(em.cleared) != 3 {
-		t.Fatalf("want a drain-timeout resolve, a pull resolve, then a full resolve, got %+v", em.cleared)
+	if len(em.cleared) != 4 {
+		t.Fatalf("want a drain-timeout resolve, a pull resolve, a stash resolve, then a full resolve, got %+v",
+			em.cleared)
 	}
 	if len(em.cleared[0]) != 1 || em.cleared[0][0] != ReasonDrainTimeout {
 		t.Errorf("first resolve = %v, want only %q", em.cleared[0], ReasonDrainTimeout)
 	}
 	// The pull is the second thing that can be blocked by a condition an
-	// operator has to clear, so a successful one withdraws its own entries at
-	// the point it proves them gone — not at the end, where a later failure
-	// would leave a resolved blockage in the list.
-	if len(em.cleared[1]) != 2 || em.cleared[1][0] != ReasonPullBlocked || em.cleared[1][1] != ReasonStashRetained {
-		t.Errorf("second resolve = %v, want %q and %q", em.cleared[1], ReasonPullBlocked, ReasonStashRetained)
+	// operator has to clear, so a successful one withdraws its own entry at the
+	// point it proves it gone — not at the end, where a later failure would
+	// leave a resolved blockage in the list.
+	if len(em.cleared[1]) != 1 || em.cleared[1][0] != ReasonPullBlocked {
+		t.Errorf("second resolve = %v, want only %q", em.cleared[1], ReasonPullBlocked)
 	}
-	if len(em.cleared[2]) != 0 {
-		t.Errorf("final resolve = %v, want every reason (no arguments)", em.cleared[2])
+	// The retained-stash entry is withdrawn separately, and only because the
+	// stash stack was read and holds no entry this package labelled. A
+	// successful pull on its own must never withdraw it.
+	if len(em.cleared[2]) != 1 || em.cleared[2][0] != ReasonStashRetained {
+		t.Errorf("third resolve = %v, want only %q", em.cleared[2], ReasonStashRetained)
+	}
+	// The terminal resolve enumerates the reasons rather than passing none,
+	// because "none" means "all" to an Emitter and would take the sticky reason
+	// with it.
+	if len(em.cleared[3]) != len(AllReasons)-1 {
+		t.Errorf("final resolve = %v, want every non-sticky reason", em.cleared[3])
+	}
+	for _, r := range em.cleared[3] {
+		if r.IsSticky() {
+			t.Errorf("final resolve includes the sticky reason %q", r)
+		}
+	}
+}
+
+// TestResolveAttentionNeverWithdrawsAStickyReason is the invariant the whole
+// split exists for, asserted at the one seam every call site goes through: a
+// deploy may name ReasonStashRetained as loudly as it likes and it is still
+// filtered out, because reaching a later step is not evidence about where an
+// operator's stashed work is.
+func TestResolveAttentionNeverWithdrawsAStickyReason(t *testing.T) {
+	d, _, em, _ := setupWithEmitter(t, 0, 0)
+
+	d.resolveAttention(ReasonStashRetained)
+	if len(em.cleared) != 0 {
+		t.Fatalf("a sticky-only resolve must reach the emitter not at all, got %+v", em.cleared)
+	}
+
+	d.resolveAttention(ReasonPullBlocked, ReasonStashRetained)
+	if len(em.cleared) != 1 || len(em.cleared[0]) != 1 || em.cleared[0][0] != ReasonPullBlocked {
+		t.Fatalf("mixed resolve = %+v, want only %q", em.cleared, ReasonPullBlocked)
+	}
+
+	d.resolveAttention()
+	if len(em.cleared) != 2 {
+		t.Fatalf("want the bare resolve to reach the emitter, got %+v", em.cleared)
+	}
+	if len(em.cleared[1]) == 0 {
+		t.Error("the bare resolve passed no reasons, which every Emitter reads as 'clear all'")
+	}
+	for _, r := range em.cleared[1] {
+		if r.IsSticky() {
+			t.Errorf("bare resolve includes the sticky reason %q", r)
+		}
 	}
 }
 
