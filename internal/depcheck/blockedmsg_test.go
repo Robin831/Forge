@@ -507,3 +507,330 @@ func TestBlockedMessageAlwaysShowsSomeEvidence(t *testing.T) {
 	assert.Contains(t, msg, "git output: error: cannot lock ref")
 	assert.GreaterOrEqual(t, len(msg)-strings.Index(msg, "git output: "), minEvidenceBytes)
 }
+
+// TestParsePorcelainZRecordShapes drives the parser against LITERAL `-z` bytes.
+//
+// The rewrite from the plain short format traded a ` -> ` split for consuming
+// the next record by index, which encodes an assumption about git's record order
+// (`XY NEW\0ORIG\0`) that is invisible in the code. Read the other way round it
+// silently yields the ORIGINAL path — one that no longer exists in the tree, so
+// the pasted remediation command names a missing file and fails outright, which
+// is the exact failure class the rewrite exists to remove.
+func TestParsePorcelainZRecordShapes(t *testing.T) {
+	cases := []struct {
+		name string
+		out  string
+		want []string
+	}{
+		{
+			// The load-bearing order: the CURRENT path comes first, and it is the
+			// one a pathspec has to name.
+			name: "rename is current then original",
+			out:  "R  new/name.go\x00old/name.go\x00",
+			want: []string{"new/name.go"},
+		},
+		{
+			// `C` is the other status that carries a second record. Missed, its
+			// source path would be read as a status entry of its own.
+			name: "copy is destination then source",
+			out:  "C  copy.txt\x00src.txt\x00",
+			want: []string{"copy.txt"},
+		},
+		{
+			// Either column can carry it, which is why isRenameOrCopy is asked
+			// about both.
+			name: "rename reported in the worktree column",
+			out:  "MR mixed.txt\x00orig.txt\x00",
+			want: []string{"mixed.txt"},
+		},
+		{
+			// The original is consumed by INDEX rather than by inspection, so the
+			// `len(rec) < 4` guard does not protect it — and does not need to.
+			// Two bytes is shorter than any record shape.
+			name: "original record shorter than a record header",
+			out:  "R  new.txt\x00ab\x00",
+			want: []string{"new.txt"},
+		},
+		{
+			// Four bytes is long enough to survive the guard, so a missed skip
+			// here would surface as the bogus path `o` (`"a.go"[3:]`).
+			name: "original record exactly four bytes",
+			out:  "R  new.txt\x00a.go\x00",
+			want: []string{"new.txt"},
+		},
+		{
+			// The separator the old format split on, inside a filename that is
+			// merely modified. One path, taken whole.
+			name: "arrow inside a modified filename",
+			out:  " M notes -> ../secrets.env\x00",
+			want: []string{"notes -> ../secrets.env"},
+		},
+		{
+			// The same string as a rename's ORIGINAL: consumed, never parsed, so
+			// it can contribute no path at all.
+			name: "arrow inside a rename original",
+			out:  "R  new.txt\x00arrow -> old.txt\x00",
+			want: []string{"new.txt"},
+		},
+		{
+			// The same string as a rename's CURRENT path: it is what exists in
+			// the tree, so it is kept entire.
+			name: "arrow inside a rename current path",
+			out:  "R  arrow -> name.txt\x00old.txt\x00",
+			want: []string{"arrow -> name.txt"},
+		},
+		{
+			// git terminates the last record too, so Split always leaves an empty
+			// tail. The record-header guard is what drops it.
+			name: "trailing empty record from the final NUL",
+			out:  " M a.go\x00",
+			want: []string{"a.go"},
+		},
+		{
+			name: "no records at all",
+			out:  "",
+			want: nil,
+		},
+		{
+			// A filename may legally begin or end with a space. `-z` reports it
+			// verbatim and so does this parser: trimming would rewrite it into a
+			// name that is not a file in the tree.
+			name: "trailing space in a filename",
+			out:  " M dir/x \x00",
+			want: []string{"dir/x "},
+		},
+		{
+			name: "leading space in a filename",
+			out:  " M  leading.go\x00",
+			want: []string{" leading.go"},
+		},
+		{
+			// A path that is nothing but spaces is still a path.
+			name: "filename of spaces only",
+			out:  " M    \x00",
+			want: []string{"   "},
+		},
+		{
+			// A rename whose current path carries a trailing space, consuming an
+			// original that carries one too.
+			name: "spaces around a rename pair",
+			out:  "R  new \x00 old\x00",
+			want: []string{"new "},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, parsePorcelainZ(tc.out))
+		})
+	}
+}
+
+// TestParsePorcelainZKeepsWhitespacePathsOutOfTheCommand is why the trim had to
+// go rather than merely being tidied away. commandPathspec writes a path into
+// the pasteable remediation only when sanitization left it BYTE-IDENTICAL, and
+// safeBlockingPath collapses whitespace — so an untrimmed `dir/x ` fails that
+// guard and the command honestly degrades to the `<path>` template. Trimmed at
+// the parse, `p` is already `dir/x`, the guard passes, and the escalation emits
+// `stash push -u -- dir/x`: a command naming a file that does not exist, which
+// leaves the scan blocked while reading like the fix (or, with a sibling `dir/x`
+// that does exist, stashes the wrong file).
+func TestParsePorcelainZKeepsWhitespacePathsOutOfTheCommand(t *testing.T) {
+	paths := parsePorcelainZ(" M dir/x \x00")
+	require.Equal(t, []string{"dir/x "}, paths)
+
+	spec, covered := commandPathspec(paths)
+	assert.Empty(t, spec, "a path sanitization would rewrite is never written into a command")
+	assert.Zero(t, covered)
+
+	msg := blockedMessage("heimdall", "/srv/anvils/heimdall", paths, dirtyTreeEvidence)
+	assert.Contains(t, msg, "stash push -u -- <path>")
+	assert.NotContains(t, msg, "stash push -u -- dir/x")
+}
+
+// pathOfLen builds an ASCII path of exactly n bytes, free of shell
+// metacharacters and of anything sanitization would rewrite — so it survives
+// safeBlockingPath byte-identical and is written into a command verbatim. That
+// is what makes it usable for exercising the BYTE caps rather than the
+// sanitization guard.
+func pathOfLen(t *testing.T, n int, tag string) string {
+	t.Helper()
+	prefix, suffix := "pkg/"+tag+"/", ".go"
+	require.Greater(t, n, len(prefix)+len(suffix), "path too short to build")
+	p := prefix + strings.Repeat("d", n-len(prefix)-len(suffix)) + suffix
+	require.Len(t, p, n)
+	require.Equal(t, p, safeBlockingPath(p), "the fixture must survive sanitization intact")
+	return p
+}
+
+// TestListedPathsCountCapBindsOnShortPaths: with ordinary paths the byte cap is
+// slack and the count cap is the one that binds, which is the case every
+// existing expectation about "20 paths" rests on.
+func TestListedPathsCountCapBindsOnShortPaths(t *testing.T) {
+	var paths []string
+	for i := 0; i < maxBlockingPathsListed+5; i++ {
+		paths = append(paths, fmt.Sprintf("pkg/f%02d.go", i))
+	}
+
+	shown := listedPaths(paths)
+	assert.Len(t, shown, maxBlockingPathsListed, "short paths are cut by the count cap, not the byte cap")
+	assert.LessOrEqual(t, len(renderBlockingPaths(paths)), maxBlockingPathsBytes+len(", and 5 more"),
+		"and the rendered list of them stays inside the byte cap")
+}
+
+// TestListedPathsByteCapBindsOnDeepPaths is the new cap's whole justification:
+// maxBlockingPathsListed paths at maxBlockingPathLen each is larger than
+// maxFailureDetailBytes, the bound the assembled detail is sized in, so a count
+// cap alone lets the list overrun the row it is a component of.
+func TestListedPathsByteCapBindsOnDeepPaths(t *testing.T) {
+	var paths []string
+	for i := 0; i < maxBlockingPathsListed; i++ {
+		paths = append(paths, pathOfLen(t, maxBlockingPathLen-10, fmt.Sprintf("d%02d", i)))
+	}
+
+	shown := listedPaths(paths)
+	assert.Less(t, len(shown), maxBlockingPathsListed, "the byte cap cuts deep paths well before the count cap")
+	assert.NotEmpty(t, shown)
+
+	rendered := 0
+	for _, p := range shown {
+		rendered += len(renderBlockingPath(p)) + len(", ")
+	}
+	assert.LessOrEqual(t, rendered, maxBlockingPathsBytes)
+}
+
+// TestListedPathsAlwaysListsTheFirstPath pins the exemption the comment promises
+// out loud: an enumeration block carrying a count and no paths says less than no
+// block at all, so path one is listed whatever it costs.
+//
+// The arithmetic that keeps that exemption from ever overrunning the budget is
+// pinned alongside it, because it is the thing a future edit breaks silently: one
+// rendered entry is at most maxBlockingPathLen bytes plus the widest annotation,
+// and that has to fit inside maxBlockingPathsBytes on its own.
+func TestListedPathsAlwaysListsTheFirstPath(t *testing.T) {
+	widest := 0
+	for _, known := range knownBlockingPaths {
+		if n := len(" (" + known.note + ")"); n > widest {
+			widest = n
+		}
+	}
+	assert.LessOrEqual(t, maxBlockingPathLen+widest+len(", "), maxBlockingPathsBytes,
+		"one maximal rendered entry must fit the byte cap, or the always-list-the-first rule overruns it")
+
+	// A maximal path that is ALSO annotated: the most expensive entry the
+	// renderer can produce.
+	annotated := strings.Repeat("d", maxBlockingPathLen-len("/.beads/config.yaml")) + "/.beads/config.yaml"
+	require.Len(t, annotated, maxBlockingPathLen)
+	require.NotEmpty(t, annotateBlockingPath(annotated))
+
+	assert.Equal(t, []string{annotated}, listedPaths([]string{annotated}),
+		"a single path is listed however much it costs")
+}
+
+// TestCommandPathspecStopsOnTheByteBudget: the byte cap, not the count cap, is
+// what bounds the pathspec on deep paths — and it must stop BEFORE the path that
+// would cross it rather than cutting one, since half a path is a pathspec naming
+// a different file.
+func TestCommandPathspecStopsOnTheByteBudget(t *testing.T) {
+	var paths []string
+	for i := 0; i < maxCommandPathsListed; i++ {
+		paths = append(paths, pathOfLen(t, 100, fmt.Sprintf("d%02d", i)))
+	}
+
+	spec, covered := commandPathspec(paths)
+	assert.Less(t, covered, maxCommandPathsListed, "the byte cap binds before the count cap")
+	assert.Positive(t, covered)
+	assert.LessOrEqual(t, len(spec), maxCommandPathspecBytes)
+	// Whatever it covered, it covered whole: every path in the spec is one of the
+	// inputs verbatim.
+	for _, word := range strings.Fields(spec) {
+		assert.Contains(t, paths, word, "the pathspec must never carry a truncated path")
+	}
+	assert.Equal(t, covered, len(strings.Fields(spec)))
+
+	msg := blockedMessage("heimdall", "/srv/anvils/heimdall", paths, dirtyTreeEvidence)
+	assert.Contains(t, msg, fmt.Sprintf("%d paths are unexpectedly modified, more than fit one command", len(paths)))
+	assert.Contains(t, msg, fmt.Sprintf("sets the first %d aside", covered))
+}
+
+// TestCommandPathspecCoveringOnePathReadsAsOne is the case the constant's comment
+// calls out by name: a single deep path can fill maxCommandPathspecBytes on its
+// own, so the covered count reaches 1 by the BYTE cap rather than because there
+// was one path. The sentence an operator reads has to survive that ("the first
+// one", not "the first 1") — and, more importantly, must not report whole-set
+// coverage for a one-element pathspec that was byte-truncated out of a longer
+// set.
+func TestCommandPathspecCoveringOnePathReadsAsOne(t *testing.T) {
+	a := pathOfLen(t, maxBlockingPathLen, "aa")
+	b := pathOfLen(t, maxBlockingPathLen, "bb")
+
+	spec, covered := commandPathspec([]string{a, b})
+	require.Equal(t, 1, covered, "two maximal paths do not both fit maxCommandPathspecBytes")
+	require.Equal(t, a, spec)
+
+	msg := blockedMessage("heimdall", "/srv/anvils/heimdall", []string{a, b}, dirtyTreeEvidence)
+	assert.Contains(t, msg, "sets the first one aside")
+	assert.NotContains(t, msg, "sets the first 1 aside")
+	assert.Contains(t, msg, "2 paths are unexpectedly modified, more than fit one command")
+	assert.NotContains(t, msg, "To resolve: set the unexpected changes aside",
+		"a pathspec covering one of two paths must not be reported as the whole fix")
+	assert.Contains(t, msg, "repeat it for the rest")
+}
+
+// TestBlockedMessageFitsTheBoundWithWorstCasePaths is the property both byte caps
+// exist to hold, and the one that degrades silently if a future annotation or
+// separator changes the per-entry cost: whatever the tree holds, the assembled
+// detail fits the bound it is persisted and emitted under.
+func TestBlockedMessageFitsTheBoundWithWorstCasePaths(t *testing.T) {
+	var paths []string
+	for i := 0; i < 200; i++ {
+		paths = append(paths, pathOfLen(t, maxBlockingPathLen, fmt.Sprintf("d%03d", i)))
+	}
+	// Half of them annotated, so the list carries the widest entries the renderer
+	// can produce and the remediation still has unexpected paths to act on.
+	for i := 0; i < 100; i++ {
+		paths = append(paths, strings.Repeat("e", maxBlockingPathLen-len("/x000/.beads/config.yaml"))+
+			fmt.Sprintf("/x%03d/.beads/config.yaml", i))
+	}
+
+	msg := blockedMessage("heimdall", "/srv/anvils/heimdall", paths,
+		strings.Repeat("error: your local changes to the following files would be overwritten by merge: x ", 200))
+
+	assert.LessOrEqual(t, len(msg), maxFailureDetailBytes, "the whole detail is what the bound sizes")
+	assert.Contains(t, msg, "Anvil heimdall")
+	assert.Contains(t, msg, "To resolve:")
+	assert.Contains(t, msg, "git output: error:")
+	assert.GreaterOrEqual(t, len(msg)-strings.Index(msg, "git output: "), minEvidenceBytes)
+}
+
+// TestDirtyTreeRemediationMakesNoClaimAboutAnUninspectedTree is Comment 5's
+// property, and it is a property of PROSE, which regresses silently. With
+// `git status` unable to run — the likeliest outcome in the checkout an
+// escalation is about — nothing was enumerated, so the message may assert
+// nothing at all about what the tree holds. In particular "nothing unexpected is
+// modified" is the one sentence that tells the operator the checkout is healthy
+// while the entry exists precisely because it is not.
+func TestDirtyTreeRemediationMakesNoClaimAboutAnUninspectedTree(t *testing.T) {
+	msg := blockedMessage("heimdall", "/srv/anvils/heimdall", nil, dirtyTreeEvidence)
+
+	// No claim about the tree, and no enumeration to rest one on.
+	assert.NotContains(t, msg, "nothing unexpected is modified")
+	assert.NotContains(t, msg, "Blocking paths")
+	assert.NotContains(t, msg, "Working tree")
+	assert.NotContains(t, msg, "the paths above")
+	assert.NotContains(t, msg, "annotated as expected")
+
+	// What it does instead: name the command that inspects, and the template that
+	// is honest about naming no path.
+	assert.Contains(t, msg, "could not list what is modified here")
+	assert.Contains(t, msg, "`git -C /srv/anvils/heimdall status`")
+	assert.Contains(t, msg, "`git -C /srv/anvils/heimdall stash push -u -- <path>`")
+
+	// The expected-files clause is read off knownBlockingPaths rather than
+	// written out again, so a new entry there cannot leave this one sentence
+	// naming a set the rest of the file no longer agrees with.
+	assert.Contains(t, msg, "leaving "+expectedPathNames()+" in place")
+	for _, known := range knownBlockingPaths {
+		assert.Contains(t, msg, "`"+known.suffix+"`",
+			"every table entry is named in the sentence that stands in for the list")
+	}
+}

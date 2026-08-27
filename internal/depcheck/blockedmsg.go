@@ -200,26 +200,36 @@ func dirtyPaths(ctx context.Context, repoDir string) ([]string, error) {
 // first and the original after it, so the second is consumed here: the path that
 // matters is the one present in the tree, which is the one a pathspec has to
 // name, and the original no longer exists for a pathspec to match.
+//
+// `rec[3:]` IS the path, taken whole and never trimmed. The record carries no
+// terminator of its own — the NUL is the separator Split has already consumed —
+// so there is nothing to trim off, and trimming anyway would rewrite a legal
+// filename (`dir/x ` with a trailing space, ` leading.go`) into a name that is
+// not a file in the tree. That is not merely a cosmetic loss: commandPathspec
+// only writes a path into the pasteable remediation when sanitization left it
+// BYTE-IDENTICAL, and a pre-trimmed path passes that guard and puts a
+// nonexistent file into a command an operator is told to run. Untrimmed, it
+// fails the guard and the command degrades to the honest `<path>` template.
 func parsePorcelainZ(out string) []string {
 	records := strings.Split(out, "\x00")
 	seen := map[string]struct{}{}
 	var paths []string
 	for i := 0; i < len(records); i++ {
 		rec := records[i]
-		// "XY P" is the shortest record that can carry a path.
+		// "XY P" is the shortest record that can carry a path, which also drops
+		// the empty trailing record git's final NUL leaves behind.
 		if len(rec) < 4 {
 			continue
 		}
 		if isRenameOrCopy(rec[0]) || isRenameOrCopy(rec[1]) {
 			// The original path follows as its own record. Skipping it here is
 			// what keeps it from being read as a status entry of its own — its
-			// first three bytes are part of a filename, not status columns.
+			// first three bytes are part of a filename, not status columns. It is
+			// consumed by INDEX rather than by inspection, so a short original
+			// (`ab`) is skipped as reliably as a long one.
 			i++
 		}
-		p := strings.TrimSpace(rec[3:])
-		if p == "" {
-			continue
-		}
+		p := rec[3:]
 		if _, dup := seen[p]; dup {
 			continue
 		}
