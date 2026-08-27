@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -171,8 +172,19 @@ func TestBlockedMessageRemediationPerCause(t *testing.T) {
 		{"unmerged", "error: you have unmerged paths.", []string{"merge --abort"}},
 		{"detached", "fatal: You are not currently on a branch.", []string{"checkout <branch>", "--set-upstream-to"}},
 		{"no upstream", "resolving upstream for /srv/x: no upstream tracking ref", []string{"checkout <branch>"}},
-		{"ref lock", "error: cannot lock ref 'refs/remotes/origin/main'", []string{"stale lock file", "/srv/anvils/heimdall/.git"}},
-		{"not a repo", "fatal: not a git repository", []string{"forge anvil add heimdall"}},
+		// "below", because git's output is the LAST section of this message —
+		// pointing the reader backwards past the headline is what the reordering
+		// this file exists for was against.
+		{"ref lock", "error: cannot lock ref 'refs/remotes/origin/main'", []string{
+			"stale lock file git names below under `git output:`", "/srv/anvils/heimdall/.git",
+		}},
+		// The add is paired with the remove: `forge anvil add` refuses a name that
+		// already exists, and this escalation only ever fires for an anvil that is
+		// registered — so the add alone is a command that cannot succeed.
+		{"not a repo", "fatal: not a git repository", []string{
+			"forge anvil remove heimdall && forge anvil add heimdall <path-to-checkout>",
+			"~/.forge/config.yaml",
+		}},
 		{"unmodelled", "fatal: refusing to merge unrelated histories", []string{"no specific", "git -C /srv/anvils/heimdall status"}},
 	}
 	for _, tc := range cases {
@@ -194,19 +206,19 @@ func TestBlockedMessageWithoutACheckout(t *testing.T) {
 	assert.Contains(t, msg, "git -C <checkout> checkout <branch>")
 }
 
-// TestParsePorcelain covers the entry shapes `git status --porcelain` produces:
-// staged, unstaged, untracked, unmerged, and a rename — whose NEW path is the
-// one present in the tree and the one a pathspec has to name.
-func TestParsePorcelain(t *testing.T) {
-	out := strings.Join([]string{
+// TestParsePorcelainZ covers the record shapes `git status --porcelain -z`
+// produces: staged, unstaged, untracked, unmerged, and a rename — whose CURRENT
+// path is the one present in the tree and the one a pathspec has to name, with
+// the original following as its own record.
+func TestParsePorcelainZ(t *testing.T) {
+	out := porcelainZ(
 		" M .beads/config.yaml",
 		"M  internal/foo.go",
 		"?? scratch/notes.txt",
 		"UU internal/conflict.go",
 		"A  internal/foo.go", // a second entry for one path
-		"R  old/name.go -> new/name.go",
-		"",
-	}, "\n")
+		"R  new/name.go", "old/name.go",
+	)
 
 	assert.Equal(t, []string{
 		".beads/config.yaml",
@@ -214,17 +226,55 @@ func TestParsePorcelain(t *testing.T) {
 		"internal/foo.go",
 		"new/name.go",
 		"scratch/notes.txt",
-	}, parsePorcelain(out))
+	}, parsePorcelainZ(out))
 }
 
-// TestParsePorcelainUnquotes: git C-quotes a path with anything special in it,
-// and the quotes are git's syntax rather than part of the name.
-func TestParsePorcelainUnquotes(t *testing.T) {
-	assert.Equal(t, []string{"dir/a b.go"}, parsePorcelain(` M "dir/a b.go"`))
-	assert.Equal(t, []string{"dir/é.go"}, parsePorcelain(` M "dir/\303\251.go"`))
-	// A quoted value git wrote but Go refuses to decode keeps its content rather
-	// than being dropped: an undecodable path is still one an operator knows.
-	assert.Equal(t, []string{`dir/\q.go`}, parsePorcelain(` M "dir/\q.go"`))
+// TestParsePorcelainZKeepsPathsVerbatim is the reason for -z. The plain short
+// format quotes a path with a space in it and separates a rename's two paths
+// with ` -> `, which is a legal substring of a filename — so a path containing
+// one was cut in half, yielding a name that is not a file in the tree. Under -z
+// there is nothing to unquote and nothing to split on.
+func TestParsePorcelainZKeepsPathsVerbatim(t *testing.T) {
+	assert.Equal(t, []string{"dir/a b.go"}, parsePorcelainZ(porcelainZ(" M dir/a b.go")))
+	assert.Equal(t, []string{"dir/é.go"}, parsePorcelainZ(porcelainZ(" M dir/é.go")))
+	// A filename containing the rename separator. It is one path, not two, and
+	// not a suffix of itself.
+	assert.Equal(t, []string{"notes -> ../secrets.env"}, parsePorcelainZ(porcelainZ(" M notes -> ../secrets.env")))
+	// A genuine rename whose ORIGINAL path contains the separator: the current
+	// path is taken whole and the original record is consumed, never read as a
+	// status entry of its own.
+	assert.Equal(t, []string{"new.txt"}, parsePorcelainZ(porcelainZ("R  new.txt", "arrow -> old.txt")))
+}
+
+// porcelainZ assembles NUL-terminated records the way git writes them.
+func porcelainZ(records ...string) string {
+	var b strings.Builder
+	for _, r := range records {
+		b.WriteString(r)
+		b.WriteByte(0)
+	}
+	return b.String()
+}
+
+// TestDirtyPathsReadsAnArrowFilenameAsOnePath drives the parse through git
+// itself, because the bug it fixes was a claim about a format rather than about
+// the code: a path containing " -> " is quoted by the plain short format and was
+// cut inside its own quotes, producing `name.txt"` — a path that does not exist,
+// so the remediation command naming it fails outright and none of the other,
+// correct paths in the same command are set aside either.
+func TestDirtyPathsReadsAnArrowFilenameAsOnePath(t *testing.T) {
+	requireGit(t)
+
+	clone := newOriginAndClone(t, map[string]string{
+		"arrow -> name.txt": "seed\n",
+		"old.txt":           "seed\n",
+	})
+	writeFiles(t, clone, map[string]string{"arrow -> name.txt": "modified\n"})
+	git(t, clone, "mv", "old.txt", "new.txt")
+
+	paths, err := dirtyPaths(context.Background(), clone)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"arrow -> name.txt", "new.txt"}, paths)
 }
 
 // TestDirtyPathsAgainstARealCheckout drives the enumeration through git itself,
@@ -275,6 +325,13 @@ func TestBlockedDetailSurvivesAFailedEnumeration(t *testing.T) {
 	assert.Contains(t, detail, "Anvil heimdall")
 	assert.Contains(t, detail, "To resolve:")
 	assert.NotContains(t, detail, "Blocking paths")
+	// And it must not claim the tree is fine. Nothing was enumerated, so
+	// "nothing unexpected is modified" would be a statement about a set nobody
+	// inspected — and the one statement that tells the operator the checkout is
+	// healthy while the entry exists because it is not.
+	assert.NotContains(t, detail, "nothing unexpected is modified")
+	assert.Contains(t, detail, "could not list what is modified here")
+	assert.Contains(t, detail, "`.beads/config.yaml` and `.beads/.gitignore`")
 }
 
 // TestBlockedDetailEnumeratesAgainstARealCheckout is the whole feature end to
@@ -319,4 +376,134 @@ func TestEnumerationDoesNotChangeSuppression(t *testing.T) {
 	// The row still describes the LATEST observation, which is what makes the
 	// refresh worth doing at all.
 	assert.Contains(t, store.rows["heimdall"].Detail, "b.go")
+}
+
+// TestDirtyTreeRemediationWithNoEnumeratedPaths is the same rule at the unit
+// level, and covers the other route to an empty list: dirtyPaths answers
+// `nil, nil` for an empty checkout path. A message may only say the tree holds
+// nothing unexpected when a non-empty set was inspected and every member of it
+// was annotated.
+func TestDirtyTreeRemediationWithNoEnumeratedPaths(t *testing.T) {
+	msg := blockedMessage("heimdall", "/srv/anvils/heimdall", nil, dirtyTreeEvidence)
+
+	assert.NotContains(t, msg, "nothing unexpected is modified")
+	assert.Contains(t, msg, "To resolve: Forge could not list what is modified here")
+	assert.Contains(t, msg, "stash push -u -- <path>")
+}
+
+// TestBlockedMessageQuotesPathsForTheShell: shellQuotePath is the only thing
+// between a path read out of a checkout Forge did not author and a command an
+// operator is told to paste. A space, a quote or a shell metacharacter all
+// survive sanitization byte-identical, so they ARE written into that command and
+// the quoting is load-bearing.
+func TestBlockedMessageQuotesPathsForTheShell(t *testing.T) {
+	paths := []string{"a b.go", "a'b.go", "x;rm -rf ~"}
+	msg := blockedMessage("heimdall", "/srv/anvils/heimdall", paths, dirtyTreeEvidence)
+
+	assert.Contains(t, msg, `stash push -u -- 'a b.go' 'a'\''b.go' 'x;rm -rf ~'`+"`")
+	// Each is one shell word, so nothing after the first is read as a second
+	// argument or as a command of its own.
+	assert.NotContains(t, msg, "-- a b.go")
+}
+
+// TestBlockedMessageDropsTheCommandForAnOverLongPath is the other side of the
+// byte-identity rule, which held only for the escape-sequence case before: a
+// path sanitization TRUNCATED names a different file, or a wider set than the
+// operator read, so no command may carry it.
+func TestBlockedMessageDropsTheCommandForAnOverLongPath(t *testing.T) {
+	long := "pkg/" + strings.Repeat("d", maxBlockingPathLen) + "/main.go"
+	msg := blockedMessage("heimdall", "/srv/anvils/heimdall", []string{long}, dirtyTreeEvidence)
+
+	assert.NotContains(t, msg, "stash push -u -- pkg/")
+	assert.Contains(t, msg, "stash push -u -- <path>")
+	// The truncated path is still shown: an operator recognises the condition
+	// from it even though a command must not name it.
+	assert.Contains(t, msg, "pkg/dddd")
+}
+
+// TestBlockedMessageLabelsAnUnmodelledTreeAsContext: with no cause established,
+// nothing says the tree is what blocks the scan, so the list is context rather
+// than a diagnosis — and is labelled as such. Calling it "Blocking paths" would
+// be a claim the message has not earned.
+func TestBlockedMessageLabelsAnUnmodelledTreeAsContext(t *testing.T) {
+	msg := blockedMessage("heimdall", "/srv/anvils/heimdall", []string{"internal/foo.go"},
+		"fatal: refusing to merge unrelated histories")
+
+	assert.Contains(t, msg, "Working tree (1 path): internal/foo.go")
+	assert.NotContains(t, msg, "Blocking paths")
+	assert.Contains(t, msg, "no specific")
+}
+
+// TestBlockedMessageFitsTheDetailBound: the assembled string is persisted as one
+// DepcheckFailure.Detail and emitted as one event message, so
+// maxFailureDetailBytes has to bound the WHOLE of it. Bounding each component
+// against that number separately adds up to a multiple of it — twenty paths at
+// maxBlockingPathLen alone is larger than the budget.
+func TestBlockedMessageFitsTheDetailBound(t *testing.T) {
+	var paths []string
+	for i := 0; i < 200; i++ {
+		paths = append(paths, fmt.Sprintf("pkg/%s/file%03d.go", strings.Repeat("deep", 30), i))
+	}
+	msg := blockedMessage("heimdall", "/srv/anvils/heimdall", paths,
+		strings.Repeat("error: your local changes to the following files would be overwritten by merge: x ", 200))
+
+	assert.LessOrEqual(t, len(msg), maxFailureDetailBytes, "the whole detail is what the bound sizes")
+	// Bounded, not gutted: the parts an operator acts on all survive, and git's
+	// own words still appear so the claim can be checked.
+	assert.Contains(t, msg, "Anvil heimdall")
+	assert.Contains(t, msg, "To resolve:")
+	assert.Contains(t, msg, "git output: error:")
+	assert.Contains(t, msg, "and 1")
+}
+
+// TestBlockedMessageFitsTheBoundWithMultibytePaths: the caps are byte bounds and
+// the paths are not ASCII by construction, so a cut through a rune is exactly
+// what a per-path bound must not do — and the total must still fit.
+func TestBlockedMessageFitsTheBoundWithMultibytePaths(t *testing.T) {
+	var paths []string
+	for i := 0; i < 50; i++ {
+		paths = append(paths, fmt.Sprintf("pkg/%s/fil%03d.go", strings.Repeat("é", 90), i))
+	}
+	msg := blockedMessage("heimdall", "/srv/anvils/heimdall", paths, dirtyTreeEvidence)
+
+	assert.LessOrEqual(t, len(msg), maxFailureDetailBytes)
+	assert.True(t, utf8.ValidString(msg), "a bound applied through a rune leaves a replacement character")
+}
+
+// TestCausePatternsAreAllBlockedPatterns pins the invariant the causePatterns
+// table documents but nothing enforced: a cause is only ever asked for a failure
+// classifyGitError already called blocked, so every pattern here must be one of
+// the patterns that classification matches (or ErrNoUpstream's own sentence,
+// which reaches the same exit as a sentinel rather than as git text).
+//
+// The two tables live in different files, and the failure is silent: an edit to
+// git's wording in gitfailure.go leaves causeOf falling through to causeUnknown,
+// so the condition is still escalated but with the generic `git status` remedy
+// and the weaker "Working tree" label instead of the specific one.
+func TestCausePatternsAreAllBlockedPatterns(t *testing.T) {
+	known := map[string]struct{}{}
+	for _, p := range blockedPatterns {
+		known[p] = struct{}{}
+	}
+	known[strings.ToLower(ErrNoUpstream.Error())] = struct{}{}
+
+	for _, c := range causePatterns {
+		_, ok := known[c.pattern]
+		assert.True(t, ok, "cause pattern %q matches no blockedPatterns entry — causeOf can never see it", c.pattern)
+	}
+}
+
+// TestBlockedMessageAlwaysShowsSomeEvidence is the floor under the budget. The
+// anvil's name and its checkout path are Forge's own config rather than
+// something read out of the checkout, so they are never truncated — a `git -C`
+// argument cut short names a different directory. A pathological pair of those
+// could spend the whole budget before git's words are reached, and a message
+// asserting a condition while quoting nothing to check it against is
+// unverifiable, so the evidence keeps minEvidenceBytes whatever is left.
+func TestBlockedMessageAlwaysShowsSomeEvidence(t *testing.T) {
+	checkout := "/srv/anvils/" + strings.Repeat("deep/", 400)
+	msg := blockedMessage("heimdall", checkout, nil, strings.Repeat("error: cannot lock ref refs/remotes/origin/main ", 100))
+
+	assert.Contains(t, msg, "git output: error: cannot lock ref")
+	assert.GreaterOrEqual(t, len(msg)-strings.Index(msg, "git output: "), minEvidenceBytes)
 }

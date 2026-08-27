@@ -15,6 +15,13 @@ import (
 // a rendered event message. git is normally terse, but a fetch against a remote
 // with hundreds of refs can answer with one line per ref, and that whole wall
 // would otherwise become the operator's headline.
+//
+// It bounds the WHOLE detail, not one component of it. failureEvidence applies
+// it to git's words on the transient exit, where they are the message; on the
+// blocked exit blockedMessage assembles a headline, a path list, a remediation
+// command and that same evidence, and budgets each against this number so the
+// assembled string still fits it. A bound applied per component adds up to a
+// multiple of itself, which is a row nobody reads to the end of.
 const maxFailureDetailBytes = 2000
 
 // evidenceEllipsis marks a truncated evidence string. It is named because
@@ -174,7 +181,15 @@ func blockedFailureDetail(ctx context.Context, anvil, path string, err error) st
 
 	var paths []string
 	if dirty, dirtyErr := dirtyPaths(ctx, path); dirtyErr != nil {
-		log.Printf("[depcheck] %s: could not enumerate blocking paths for the escalation: %v", anvil, dirtyErr)
+		// failureEvidence rather than %v: this is git's own words reaching
+		// daemon.log, which is the surface, and so the treatment, the escalated
+		// detail beside it already gets. A gitError interpolates stderr verbatim,
+		// and `git status` is being run in a checkout Forge did not author whose
+		// diagnostics routinely echo paths and ref names out of it — unbounded
+		// and unstripped, a multi-line stderr becomes several apparent log
+		// records and an escape sequence in a filename is executed by whatever
+		// tails the log.
+		log.Printf("[depcheck] %s: could not enumerate blocking paths for the escalation: %s", anvil, failureEvidence(dirtyErr))
 	} else {
 		paths = dirty
 	}
@@ -201,11 +216,22 @@ func failureEvidence(err error) string {
 	// ref, and a feed row is one line.
 	clean := termtext.Line(strings.TrimSpace(raw))
 	clean = strings.Join(strings.Fields(clean), " ")
-	if len(clean) > maxFailureDetailBytes {
-		// The marker is inside the bound, not on top of it: maxFailureDetailBytes
-		// is what a row and a feed line are sized in, so a cut that then appends
-		// three more bytes overshoots the very number it is enforcing.
-		clean = textfmt.TruncateRunes(clean, maxFailureDetailBytes-len(evidenceEllipsis)) + evidenceEllipsis
+	return boundEvidence(clean, maxFailureDetailBytes)
+}
+
+// boundEvidence truncates already-sanitized evidence to a byte bound.
+//
+// The marker is inside the bound, not on top of it: the bound is what a row and
+// a feed line are sized in, so a cut that then appends three more bytes
+// overshoots the very number it is enforcing. It is a parameter rather than
+// maxFailureDetailBytes directly because the blocked exit gives git's words
+// whatever the rest of the assembled detail left of that same total.
+func boundEvidence(s string, maxBytes int) string {
+	if maxBytes <= len(evidenceEllipsis) {
+		maxBytes = len(evidenceEllipsis) + 1
 	}
-	return clean
+	if len(s) <= maxBytes {
+		return s
+	}
+	return textfmt.TruncateRunes(s, maxBytes-len(evidenceEllipsis)) + evidenceEllipsis
 }

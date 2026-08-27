@@ -4,25 +4,42 @@ import (
 	"context"
 	"fmt"
 	"sort"
-	"strconv"
 	"strings"
 
 	"github.com/Robin831/Forge/internal/termtext"
 	"github.com/Robin831/Forge/internal/textfmt"
 )
 
-// maxBlockingPathsListed bounds the enumerated path list in one escalation.
-// The list exists so an operator RECOGNISES the condition at a glance; a
+// maxBlockingPathsListed bounds the enumerated path list in one escalation by
+// COUNT. The list exists so an operator RECOGNISES the condition at a glance; a
 // checkout with two hundred modified files rendered in full is the same wall of
-// text the bounded git evidence above it is already kept away from, and it
+// text the bounded git evidence below it is already kept away from, and it
 // would push the remediation command off the end of a Needs Attention row.
 const maxBlockingPathsListed = 20
+
+// maxBlockingPathsBytes bounds the same list by SIZE, and is the binding one on
+// deep paths: twenty paths at maxBlockingPathLen each is larger than
+// maxFailureDetailBytes, the bound the whole detail is sized in, so a count cap
+// alone would let the list overrun the row it is a component of.
+const maxBlockingPathsBytes = 400
 
 // maxCommandPathsListed bounds the paths written into the remediation command.
 // A command is copy-pasted, not read: past a handful of paths an operator works
 // from `git status` anyway, and a line that wraps four times reads as noise
 // rather than as the one thing to run.
 const maxCommandPathsListed = 5
+
+// maxCommandPathspecBytes is the same bound by size, for the same reason as
+// maxBlockingPathsBytes. What it must never do is CUT a path — a truncated one
+// names a different file — so commandPathspec stops before the path that would
+// cross it and reports how many it covered.
+const maxCommandPathspecBytes = 320
+
+// minEvidenceBytes is the floor on git's own words inside the assembled detail.
+// The evidence is rendered last and is given whatever maxFailureDetailBytes has
+// left, but a message that spent its budget on paths and still shows no evidence
+// is unverifiable — the operator cannot check the claim against what git said.
+const minEvidenceBytes = 200
 
 // maxBlockingPathLen bounds one rendered path. Paths come out of a checkout
 // Forge did not author, so this is the same treatment the git evidence gets:
@@ -139,12 +156,21 @@ func (c blockedCause) involvesWorkingTree() bool {
 // dirtyPaths enumerates the working-tree paths that differ from HEAD in
 // repoDir, sorted and deduplicated.
 //
-// It reads `git status --porcelain`, which reports staged, unstaged, untracked
-// and unmerged entries in one pass — the four kinds that between them cover
-// every tree condition a blocked scan can be sitting on. There is deliberately
-// no `git diff --name-only` fallback: that command answers a strict SUBSET of
-// this one, so an empty result here means a clean tree rather than a question
-// still to be asked.
+// It reads `git status --porcelain -z`, which reports staged, unstaged,
+// untracked and unmerged entries in one pass — the four kinds that between them
+// cover every tree condition a blocked scan can be sitting on. There is
+// deliberately no `git diff --name-only` fallback: that command answers a strict
+// SUBSET of this one, so an empty result here means a clean tree rather than a
+// question still to be asked.
+//
+// `-z` rather than the plain short format because the plain one is ambiguous on
+// exactly the paths this package must get right: it C-quotes a path containing a
+// space and separates a rename's two paths with ` -> `, which is itself a legal
+// substring of a filename, so `notes -> ../secrets.env` and
+// `"arrow -> name.txt"` both parse to something that is not a file in the tree —
+// and a path that is not a file in the tree is a pathspec that makes the
+// remediation command git tells the operator to paste fail outright. Under `-z`
+// paths arrive verbatim, NUL-separated, and a rename is two records.
 //
 // A wholly untracked directory is reported by git as the directory itself
 // rather than as its contents, which is left as-is: it is the bound that keeps a
@@ -159,34 +185,38 @@ func dirtyPaths(ctx context.Context, repoDir string) ([]string, error) {
 	if repoDir == "" {
 		return nil, nil
 	}
-	out, err := runGit(ctx, repoDir, "status", "--porcelain")
+	out, err := runGit(ctx, repoDir, "status", "--porcelain", "-z")
 	if err != nil {
 		return nil, err
 	}
-	return parsePorcelain(string(out)), nil
+	return parsePorcelainZ(string(out)), nil
 }
 
-// parsePorcelain extracts the paths from `git status --porcelain` (v1) output.
+// parsePorcelainZ extracts the paths from `git status --porcelain -z` output.
 //
-// Each entry is two status columns, a space, and the path. A rename or copy is
-// reported as `ORIG -> NEW`, and the path that matters is NEW: that is the one
-// present in the tree and the one a pathspec has to name. A path containing
-// anything git considers special arrives C-quoted, which is why the entry is
-// unquoted rather than merely trimmed.
-func parsePorcelain(out string) []string {
+// Each record is two status columns, a space, and the path — unquoted, however
+// the path is spelled, because `-z` is the format that has no quoting to undo.
+// A rename or copy (`R`/`C` in either column) is TWO records, the current path
+// first and the original after it, so the second is consumed here: the path that
+// matters is the one present in the tree, which is the one a pathspec has to
+// name, and the original no longer exists for a pathspec to match.
+func parsePorcelainZ(out string) []string {
+	records := strings.Split(out, "\x00")
 	seen := map[string]struct{}{}
 	var paths []string
-	for _, line := range strings.Split(out, "\n") {
-		line = strings.TrimRight(line, "\r")
-		// "XY P" is the shortest entry that can carry a path.
-		if len(line) < 4 {
+	for i := 0; i < len(records); i++ {
+		rec := records[i]
+		// "XY P" is the shortest record that can carry a path.
+		if len(rec) < 4 {
 			continue
 		}
-		entry := line[3:]
-		if _, dst, ok := strings.Cut(entry, " -> "); ok {
-			entry = dst
+		if isRenameOrCopy(rec[0]) || isRenameOrCopy(rec[1]) {
+			// The original path follows as its own record. Skipping it here is
+			// what keeps it from being read as a status entry of its own — its
+			// first three bytes are part of a filename, not status columns.
+			i++
 		}
-		p := unquotePorcelainPath(entry)
+		p := strings.TrimSpace(rec[3:])
 		if p == "" {
 			continue
 		}
@@ -200,21 +230,9 @@ func parsePorcelain(out string) []string {
 	return paths
 }
 
-// unquotePorcelainPath undoes git's C-style quoting of a path. git's escapes
-// are a subset of Go's string-literal escapes (\n, \t, \", \\ and octal), so
-// strconv.Unquote decodes them; a value it refuses is stripped of its quotes and
-// used as-is rather than dropped, since a path Forge cannot decode is still a
-// path an operator can recognise.
-func unquotePorcelainPath(entry string) string {
-	s := strings.TrimSpace(entry)
-	if len(s) < 2 || !strings.HasPrefix(s, `"`) || !strings.HasSuffix(s, `"`) {
-		return s
-	}
-	if unquoted, err := strconv.Unquote(s); err == nil {
-		return unquoted
-	}
-	return strings.Trim(s, `"`)
-}
+// isRenameOrCopy reports whether a porcelain status column says a second,
+// original path follows the entry.
+func isRenameOrCopy(c byte) bool { return c == 'R' || c == 'C' }
 
 // safeBlockingPath renders one path for an operator-facing surface. The path
 // came out of somebody's checkout, and the detail it lands in is written to
@@ -237,18 +255,63 @@ func annotateBlockingPath(p string) string {
 	return ""
 }
 
+// expectedPathNames renders the permanently-modified files an anvil legitimately
+// carries, for a message that has no enumerated list to annotate. It is read off
+// the table rather than written out again, so a new entry there cannot leave one
+// sentence naming a set the rest of the file no longer agrees with.
+func expectedPathNames() string {
+	names := make([]string, 0, len(knownBlockingPaths))
+	for _, known := range knownBlockingPaths {
+		names = append(names, "`"+known.suffix+"`")
+	}
+	switch len(names) {
+	case 0:
+		return "anything this anvil is meant to carry"
+	case 1:
+		return names[0]
+	default:
+		return strings.Join(names[:len(names)-1], ", ") + " and " + names[len(names)-1]
+	}
+}
+
 // isExpectedBlockingPath reports whether a path is one of the permanently
 // modified files a Forge-managed anvil legitimately carries. They are excluded
 // from the remediation command: telling an operator to stash the pod-local
 // `.beads/config.yaml` is telling them to break the anvil's beads connection.
 func isExpectedBlockingPath(p string) bool { return annotateBlockingPath(p) != "" }
 
-// listedPaths is the prefix of the path set the message actually shows. It is
-// the one definition of that cap, so a sentence written about "the paths above"
-// is written about the paths that are above it.
+// renderBlockingPath renders one entry of the enumerated list: the sanitized
+// path plus, for one an operator is expected to see modified, the inline note
+// saying so.
+func renderBlockingPath(p string) string {
+	entry := safeBlockingPath(p)
+	if note := annotateBlockingPath(p); note != "" {
+		entry += " (" + note + ")"
+	}
+	return entry
+}
+
+// listedPaths is the prefix of the path set the message actually shows — both
+// caps applied, count and size. It is the one definition of that prefix, so a
+// sentence written about "the paths above" is written about the paths that are
+// above it, and so the rendered list cannot outgrow the budget listedPaths was
+// measured against.
+//
+// The first path is always listed, whatever it costs: an enumeration block with
+// a count and no paths in it says less than no block at all. It cannot overrun
+// the budget on its own, since safeBlockingPath bounds one path to
+// maxBlockingPathLen bytes and an annotation is one of the fixed notes above.
 func listedPaths(paths []string) []string {
-	if len(paths) > maxBlockingPathsListed {
-		return paths[:maxBlockingPathsListed]
+	budget := maxBlockingPathsBytes
+	for i, p := range paths {
+		if i == maxBlockingPathsListed {
+			return paths[:i]
+		}
+		cost := len(renderBlockingPath(p)) + len(", ")
+		if i > 0 && cost > budget {
+			return paths[:i]
+		}
+		budget -= cost
 	}
 	return paths
 }
@@ -260,11 +323,7 @@ func renderBlockingPaths(paths []string) string {
 	extra := len(paths) - len(shown)
 	rendered := make([]string, 0, len(shown))
 	for _, p := range shown {
-		entry := safeBlockingPath(p)
-		if note := annotateBlockingPath(p); note != "" {
-			entry += " (" + note + ")"
-		}
-		rendered = append(rendered, entry)
+		rendered = append(rendered, renderBlockingPath(p))
 	}
 	list := strings.Join(rendered, ", ")
 	if extra > 0 {
@@ -283,12 +342,14 @@ func shellQuotePath(p string) string {
 }
 
 // commandPathspec renders the pathspec for the remediation command, or "" when
-// no usable one can be built. The second return says whether that pathspec
-// covers EVERY path it was handed: past maxCommandPathsListed it does not, and
-// the caller must not then describe the command as dealing with the whole set —
-// a pasted line that clears five of twelve blocking paths leaves the scan
-// blocked while reading like the fix, which is the one way a remediation can be
-// worse than none.
+// no usable one can be built. The second return is how many of the paths it was
+// handed that pathspec actually covers: past maxCommandPathsListed (or
+// maxCommandPathspecBytes) it is not all of them, and the caller must not then
+// describe the command as dealing with the whole set — a pasted line that clears
+// five of twelve blocking paths leaves the scan blocked while reading like the
+// fix, which is the one way a remediation can be worse than none. It is a count
+// rather than a bool because the caller says the number out loud, and two caps
+// mean the number is not always maxCommandPathsListed.
 //
 // A path is only written into a command if sanitization left it BYTE-IDENTICAL:
 // a command is meant to be pasted and run, and a path silently truncated or with
@@ -296,21 +357,29 @@ func shellQuotePath(p string) string {
 // than the operator read. Where that cannot be guaranteed for every path the
 // command would carry, the caller falls back to a command with a placeholder,
 // which is honest about being a template.
-func commandPathspec(paths []string) (string, bool) {
+func commandPathspec(paths []string) (string, int) {
 	usable := make([]string, 0, len(paths))
+	budget := maxCommandPathspecBytes
 	for _, p := range paths {
 		if safeBlockingPath(p) != p {
-			return "", false
+			return "", 0
 		}
-		usable = append(usable, shellQuotePath(p))
+		quoted := shellQuotePath(p)
+		// Stop BEFORE the path that would cross the budget rather than cutting
+		// it: half a path is a pathspec naming a different file, or none.
+		if len(usable) > 0 && len(quoted)+1 > budget {
+			break
+		}
+		budget -= len(quoted) + 1
+		usable = append(usable, quoted)
 		if len(usable) == maxCommandPathsListed {
 			break
 		}
 	}
 	if len(usable) == 0 {
-		return "", false
+		return "", 0
 	}
-	return strings.Join(usable, " "), len(usable) == len(paths)
+	return strings.Join(usable, " "), len(usable)
 }
 
 // unexpectedPaths drops the permanently modified files an anvil is supposed to
@@ -343,6 +412,19 @@ func remediation(cause blockedCause, anvil, checkout string, paths []string) str
 			"(`rebase --abort` if it is a rebase).", at)
 
 	case causeDirtyTree:
+		if len(paths) == 0 {
+			// Nothing was enumerated: `git status` failed — the likeliest
+			// outcome in the checkout an escalation is raised about — or there
+			// was no checkout to run it in. Every sentence below is a claim
+			// about a set that was inspected, and the "nothing unexpected is
+			// modified" one is the worst of them to make here: it tells the
+			// operator the checkout is fine while the entry exists precisely
+			// because it is not. What a message claims must not outrun what it
+			// did, so this says what to look at instead.
+			return fmt.Sprintf("To resolve: Forge could not list what is modified here — inspect it with "+
+				"`git -C %s status` and set the unexpected changes aside (recoverable) with "+
+				"`git -C %s stash push -u -- <path>`, leaving %s in place.", at, at, expectedPathNames())
+		}
 		unexpected := unexpectedPaths(paths)
 		if len(unexpected) == 0 {
 			// Everything modified is a file this anvil is meant to carry, so
@@ -361,21 +443,28 @@ func remediation(cause blockedCause, anvil, checkout string, paths []string) str
 		if len(unexpectedPaths(listedPaths(paths))) != len(listedPaths(paths)) {
 			keep = ", leaving the paths annotated as expected in place"
 		}
-		spec, whole := commandPathspec(unexpected)
+		spec, covered := commandPathspec(unexpected)
 		switch {
-		case spec != "" && whole:
+		case spec != "" && covered == len(unexpected):
 			return fmt.Sprintf("To resolve: set the unexpected changes aside (recoverable) with "+
 				"`git -C %s stash push -u -- %s`%s.", at, spec, keep)
 		case spec != "":
+			// "the first one", not "the first 1": both caps can leave a single
+			// path covered — one deep path fills maxCommandPathspecBytes on its
+			// own — and a sentence an operator reads aloud has to survive it.
+			first := fmt.Sprintf("%d", covered)
+			if covered == 1 {
+				first = "one"
+			}
 			// More unexpected paths than fit one readable command. The command is
 			// still worth pasting, but it is described as the partial step it is
 			// and the operator is pointed at the full set — reported as "the
 			// unexpected changes" it would read as the whole fix and leave the
 			// next scan blocked on the paths it never named.
 			return fmt.Sprintf("To resolve: %s are unexpectedly modified, more than fit one command — "+
-				"`git -C %s stash push -u -- %s` sets the first %d aside (recoverable)%s; repeat it for the rest, "+
+				"`git -C %s stash push -u -- %s` sets the first %s aside (recoverable)%s; repeat it for the rest, "+
 				"which `git -C %s status` lists in full.",
-				textfmt.Count(len(unexpected), "path"), at, spec, maxCommandPathsListed, keep, at)
+				textfmt.Count(len(unexpected), "path"), at, spec, first, keep, at)
 		default:
 			return fmt.Sprintf("To resolve: set the unexpected changes aside (recoverable) with "+
 				"`git -C %s stash push -u -- <path>` for each of the %s that `git -C %s status` reports and this "+
@@ -387,12 +476,21 @@ func remediation(cause blockedCause, anvil, checkout string, paths []string) str
 			"`git -C %s checkout <branch> && git -C %s branch --set-upstream-to=origin/<branch>`.", at, at)
 
 	case causeRefLock:
-		return fmt.Sprintf("To resolve: no git process should be running here — remove the stale lock file git names above "+
-			"(under `%s/.git`), then let the next scan retry.", at)
+		// "below": git's output is the LAST section of this message, under its
+		// own label. Pointing the reader backwards past the headline is what the
+		// whole reordering was against.
+		return fmt.Sprintf("To resolve: no git process should be running here — remove the stale lock file git names "+
+			"below under `git output:` (under `%s/.git`), then let the next scan retry.", at)
 
 	case causeNotARepo:
-		return fmt.Sprintf("To resolve: the registered path is not a git checkout — re-register the anvil against one with "+
-			"`forge anvil add %s <path-to-checkout>`.", anvil)
+		// The add is paired with the remove because this only ever fires for an
+		// anvil that IS registered — the scan iterates the configured ones — and
+		// `forge anvil add` refuses a name that already exists. Named alone it is
+		// a command that cannot succeed as written, which leaves the operator
+		// exactly where the escalation found them.
+		return fmt.Sprintf("To resolve: the registered path is not a git checkout — point the anvil at one, either by "+
+			"editing its `path` in `~/.forge/config.yaml` or with "+
+			"`forge anvil remove %s && forge anvil add %s <path-to-checkout>`.", anvil, anvil)
 
 	default:
 		return fmt.Sprintf("To resolve: inspect the checkout's git state with `git -C %s status` — Forge has no specific "+
@@ -411,8 +509,17 @@ func remediation(cause blockedCause, anvil, checkout string, paths []string) str
 // Attention row says nothing about which anvil stopped being scanned or what to
 // do about it.
 //
-// gitOut is expected to be already sanitized and bounded (failureEvidence);
-// paths are not, and are sanitized here.
+// gitOut is expected to be already sanitized (failureEvidence); paths are not,
+// and are sanitized here.
+//
+// The WHOLE assembled string is what maxFailureDetailBytes sizes — it is
+// persisted as one DepcheckFailure.Detail and emitted as one event message — so
+// each component is budgeted against it rather than beside it. The path list and
+// the remediation's pathspec have their own caps above; git's evidence is
+// rendered last and gets what those left, floored at minEvidenceBytes. Trimming
+// the evidence rather than the assembled string is the one order that is safe:
+// a blind cut of the whole message lands mid-command, and a command truncated to
+// a shorter pathspec is a pasted line that names a different set of files.
 func blockedMessage(anvil, checkout string, paths []string, gitOut string) string {
 	cause := causeOf(gitOut)
 
@@ -438,7 +545,13 @@ func blockedMessage(anvil, checkout string, paths []string, gitOut string) strin
 	b.WriteString(" Forge clears this entry automatically once the anvil scans again.")
 
 	if gitOut != "" {
-		fmt.Fprintf(&b, " git output: %s", gitOut)
+		const label = " git output: "
+		budget := maxFailureDetailBytes - b.Len() - len(label)
+		if budget < minEvidenceBytes {
+			budget = minEvidenceBytes
+		}
+		b.WriteString(label)
+		b.WriteString(boundEvidence(gitOut, budget))
 	}
 	return b.String()
 }
