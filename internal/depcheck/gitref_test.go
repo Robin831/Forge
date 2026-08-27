@@ -371,3 +371,55 @@ func TestShowBlob_ClassifiesUnderATranslatedLocale(t *testing.T) {
 		assert.False(t, errors.Is(err, ErrBlobNotFound), "an unresolvable ref is still a failed scan")
 	}
 }
+
+// TestWithContextErrAttachesTheDeadline: a command killed by its deadline is
+// reported by exec as the kill it received, and the deadline is recoverable
+// only from the context. Without this the classifier saw "signal: killed",
+// which matches no pattern, and called a timeout unclassifiable.
+func TestWithContextErrAttachesTheDeadline(t *testing.T) {
+	expired, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancel()
+
+	killed := errors.New("signal: killed")
+	got := withContextErr(expired, killed)
+	assert.ErrorIs(t, got, context.DeadlineExceeded, "the deadline must survive as a cause")
+	assert.ErrorIs(t, got, killed, "so must the error the run actually reported")
+	assert.Contains(t, got.Error(), "signal: killed")
+
+	// A live context changes nothing, and neither does an error that already
+	// IS the context's — exec returns it verbatim when the context is done
+	// before the command starts, and wrapping it in itself says nothing.
+	live, cancelLive := context.WithCancel(context.Background())
+	defer cancelLive()
+	assert.Equal(t, killed, withContextErr(live, killed))
+	assert.Equal(t, context.DeadlineExceeded, withContextErr(expired, context.DeadlineExceeded))
+	assert.NoError(t, withContextErr(expired, nil))
+}
+
+// TestKilledGitCommandIsTransient is the end of that plumbing: the error a
+// deadline produces reaches classifyGitError through *gitError and comes back
+// transient — a retry next run — rather than unknown.
+func TestKilledGitCommandIsTransient(t *testing.T) {
+	expired, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancel()
+
+	// A killed fetch writes nothing to stderr: the classification has only the
+	// error to go on.
+	err := &gitError{Args: []string{"fetch", "origin", "main"}, Err: withContextErr(expired, errors.New("signal: killed"))}
+	assert.Equal(t, gitFailureTransient, classifyGitError(err))
+}
+
+// TestRunGitReportsAnExpiredContext drives the same seam through runGit with
+// git actually on the path.
+func TestRunGitReportsAnExpiredContext(t *testing.T) {
+	requireGit(t)
+	dir := newOriginAndClone(t, map[string]string{"go.mod": "module example.com/x\n"})
+
+	expired, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancel()
+
+	_, err := runGit(expired, dir, "rev-parse", "HEAD")
+	require.Error(t, err)
+	assert.ErrorIs(t, err, context.DeadlineExceeded)
+	assert.Equal(t, gitFailureTransient, classifyGitError(err))
+}

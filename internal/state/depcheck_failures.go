@@ -42,8 +42,6 @@ type DepcheckFailure struct {
 	// hitting the same blocking condition produce the same value; that equality
 	// is the whole suppression rule.
 	Signature string
-	// Title is the needs-attention headline.
-	Title string
 	// Detail is the operator-facing description: what is blocking, and what
 	// resolves it.
 	Detail string
@@ -61,12 +59,15 @@ type DepcheckFailure struct {
 // repeats identically until an operator intervenes.
 const DepcheckKindBlocked = "blocked"
 
-// depcheckAttentionTitle is the needs-attention title for a blocked scan, kept
-// as a function so an empty stored title still reads as something.
-func depcheckAttentionTitle(f DepcheckFailure) string {
-	if f.Title != "" {
-		return f.Title
-	}
+// Title renders the needs-attention headline, the same way DeployFailure does:
+// the sentence lives on the record rather than being written by whoever inserts
+// the row. Written at both ends it would be one headline in two packages, and
+// every row escalated before an edit would keep rendering the other copy.
+//
+// It is derived rather than stored for the same reason: the row's substance is
+// the anvil, the signature and the detail, and a stored headline is a second
+// answer to a question the record can already answer.
+func (f DepcheckFailure) Title() string {
 	return fmt.Sprintf("Anvil %s: dependency scan blocked", f.Anvil)
 }
 
@@ -132,7 +133,7 @@ func (db *DB) RecordDepcheckFailure(f DepcheckFailure) (bool, error) {
 		    occurrences = excluded.occurrences,
 		    first_seen = excluded.first_seen,
 		    last_seen = excluded.last_seen`,
-		f.Anvil, kind, f.Signature, f.Title, f.Detail, occurrences,
+		f.Anvil, kind, f.Signature, f.Title(), f.Detail, occurrences,
 		firstSeen.Format(dbTimeLayout), lastSeen.Format(dbTimeLayout),
 	)
 	if err != nil {
@@ -160,8 +161,11 @@ func (db *DB) ClearDepcheckFailure(anvil string) (bool, error) {
 // condition first — the one that has been blocking longest is the one that has
 // been ignored longest.
 func (db *DB) DepcheckFailures() ([]DepcheckFailure, error) {
+	// title is written (so a row read straight out of the DB says what it is)
+	// but never read back: DepcheckFailure.Title renders it, so a row escalated
+	// before an edit to that sentence renders the current one.
 	rows, err := db.conn.Query(
-		`SELECT anvil, kind, signature, title, detail, occurrences, first_seen, last_seen
+		`SELECT anvil, kind, signature, detail, occurrences, first_seen, last_seen
 		   FROM depcheck_failures
 		  ORDER BY first_seen ASC, anvil ASC`)
 	if err != nil {
@@ -175,7 +179,7 @@ func (db *DB) DepcheckFailures() ([]DepcheckFailure, error) {
 			f                   DepcheckFailure
 			firstSeen, lastSeen string
 		)
-		if err := rows.Scan(&f.Anvil, &f.Kind, &f.Signature, &f.Title, &f.Detail,
+		if err := rows.Scan(&f.Anvil, &f.Kind, &f.Signature, &f.Detail,
 			&f.Occurrences, &firstSeen, &lastSeen); err != nil {
 			return nil, err
 		}

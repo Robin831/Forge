@@ -4063,7 +4063,7 @@ func (db *DB) NeedsAttentionBeads(maxCI, maxRev, maxRebase int) ([]NeedsAttentio
 	for _, bf := range blocked {
 		beads = append(beads, NeedsAttentionBead{
 			Anvil:      bf.Anvil,
-			Title:      depcheckAttentionTitle(bf),
+			Title:      bf.Title(),
 			Reason:     bf.Detail,
 			NeedsHuman: true,
 			Kind:       AttentionKindDepcheck,

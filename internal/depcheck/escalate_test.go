@@ -296,7 +296,9 @@ func TestFailureEvidenceIsSanitisedAndBounded(t *testing.T) {
 	assert.Contains(t, got, "could not fetch")
 
 	long := &gitError{Args: []string{"fetch"}, Stderr: strings.Repeat("x", maxFailureDetailBytes*2), Err: errors.New("exit status 1")}
-	assert.LessOrEqual(t, len(failureEvidence(long)), maxFailureDetailBytes+len("…"))
+	// The marker is budgeted INSIDE the bound, not appended on top of it: the
+	// constant is what a persisted row and a feed line are sized in.
+	assert.LessOrEqual(t, len(failureEvidence(long)), maxFailureDetailBytes)
 
 	// An error that never went through runGit still has to say something.
 	assert.Equal(t, "resolving upstream: no upstream tracking ref",
@@ -316,7 +318,7 @@ func TestFailureEvidenceCutsOnARuneBoundary(t *testing.T) {
 		got := failureEvidence(&gitError{Args: []string{"fetch"}, Stderr: stderr, Err: errors.New("exit status 1")})
 
 		assert.True(t, utf8.ValidString(got), "pad=%d: truncated evidence must stay valid UTF-8", pad)
-		assert.LessOrEqual(t, len(got), maxFailureDetailBytes+len("…"))
+		assert.LessOrEqual(t, len(got), maxFailureDetailBytes)
 		assert.True(t, strings.HasSuffix(got, "…"), "pad=%d: a truncated line is marked as one", pad)
 		// The cut backs off at most one rune, so nothing else is lost.
 		assert.Greater(t, len(got), maxFailureDetailBytes-utf8.UTFMax)
@@ -348,4 +350,47 @@ func TestScanAnvilEscalatesAndClearsAgainstARealCheckout(t *testing.T) {
 
 	assert.NotContains(t, store.rows, "heimdall", "a scan that read the manifests withdraws the entry")
 	assert.Len(t, events.ofType(state.EventDepcheckFailed), 1)
+}
+
+// TestTransientEvidenceIsSanitisedToo: both exits of reportScanFailure render
+// the same untrusted text — git's, and partly the remote's — into daemon.log
+// and an activity-feed row Hearth wraps without stripping. Classification is by
+// substring match, so a message that matches no blocked pattern lands on the
+// transient exit by construction; if only the blocked one stripped, that would
+// be the branch an escape sequence took.
+func TestTransientEvidenceIsSanitisedToo(t *testing.T) {
+	s, store, events := newTestScanner()
+
+	s.reportScanFailure("heimdall", "/srv/anvils/heimdall", &gitError{
+		Args:   []string{"fetch", "origin", "main"},
+		Stderr: "remote: \x1b]0;pwned\x07\x1b[31mdenied\x1b[0m\nfatal: could not read from remote repository",
+		Err:    errors.New("exit status 128"),
+	})
+
+	failed := events.ofType(state.EventDepcheckFailed)
+	require.Len(t, failed, 1)
+	assert.Empty(t, store.rows, "a credential-shaped refusal is transient, not an attention row")
+	assert.NotContains(t, failed[0].Message, "\x1b")
+	assert.NotContains(t, failed[0].Message, "\n")
+	assert.NotContains(t, failed[0].Message, "pwned")
+	assert.Contains(t, failed[0].Message, "skipping depcheck to avoid stale results")
+	assert.Contains(t, failed[0].Message, "could not read from remote repository")
+}
+
+// TestTransientEventIsBounded: the same wall of refs that would swamp an
+// attention row swamps a feed line, so the transient exit is bounded by the
+// same constant.
+func TestTransientEventIsBounded(t *testing.T) {
+	s, _, events := newTestScanner()
+
+	s.reportScanFailure("heimdall", "/srv/anvils/heimdall", &gitError{
+		Args:   []string{"fetch", "origin", "main"},
+		Stderr: "error: connection refused " + strings.Repeat("x", maxFailureDetailBytes*3),
+		Err:    errors.New("exit status 128"),
+	})
+
+	failed := events.ofType(state.EventDepcheckFailed)
+	require.Len(t, failed, 1)
+	assert.Less(t, len(failed[0].Message), maxFailureDetailBytes*2,
+		"an unbounded event message is the wall of text the bound exists to stop")
 }

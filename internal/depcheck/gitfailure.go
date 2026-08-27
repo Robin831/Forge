@@ -142,6 +142,15 @@ var transientPatterns = []string{
 // from — and misreading a blocked condition as transient restores the nightly
 // noise this exists to remove, while the reverse only raises an entry that the
 // next successful scan withdraws.
+//
+// Only the blocked/not-blocked split is acted on today: reportScanFailure is
+// the sole consumer and branches on kind == gitFailureBlocked, so transient and
+// unknown take the identical path (a log line, a depcheck_failed event, a retry
+// next run). The two are still distinguished here because they are different
+// claims — transient means the message was RECOGNISED as a passing condition,
+// unknown means nothing has modelled it — and it is the second that says the
+// pattern sets need a new entry. Anything that starts branching on them must
+// treat unknown as transient, never as its own class.
 func classifyGitFailure(stderr string, err error) gitFailureKind {
 	text := strings.ToLower(stderr)
 	if err != nil {
@@ -185,8 +194,13 @@ func classifyGitError(err error) gitFailureKind {
 }
 
 // isTimeoutError reports whether err is a deadline or a network timeout — the
-// failures that never produce git output because the command was killed or the
-// connection never completed.
+// failures that produce little or no git output because the command was killed
+// or the connection never completed.
+//
+// It reaches the deadline case only because runGit attaches the expired
+// context's error to the one exec reports: a command killed by gitTimeout comes
+// back as a bare *exec.ExitError ("signal: killed"), which matches no pattern
+// here and would otherwise be classified gitFailureUnknown.
 func isTimeoutError(err error) bool {
 	if err == nil {
 		return false

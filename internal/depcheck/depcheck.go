@@ -81,29 +81,42 @@ type Scanner struct {
 	mu          sync.RWMutex
 }
 
+// minScanTimeout is the floor on the per-ecosystem scan timeout. It is a floor
+// rather than a suggestion because Scanner.timeout is used as a DEADLINE, not
+// as a descriptor: scanGo derives its context from it and the .NET and npm
+// scans hand it to their own runners, so a zero duration is an already-expired
+// deadline that kills `go list -m -u -json all` before it starts and reports
+// every ecosystem as "context deadline exceeded".
+const minScanTimeout = 1 * time.Minute
+
 // New creates a dependency check scanner.
 func New(db *state.DB, interval, timeout time.Duration, anvilPaths map[string]string) *Scanner {
 	if interval < 1*time.Hour {
 		interval = 1 * time.Hour
 	}
-	if timeout < 1*time.Minute {
-		timeout = 1 * time.Minute
-	}
 	s := newScanner(db)
 	s.interval = interval
-	s.timeout = timeout
+	if timeout > s.timeout {
+		s.timeout = timeout
+	}
 	s.anvilPaths = anvilPaths
 	return s
 }
 
-// newScanner wires a scanner's two database-backed capabilities and nothing
-// else. It is separate from New because the on-demand dispatch path builds a
-// scanner without the periodic loop's interval and timeout, and both paths must
-// agree on the assignment below: a nil *state.DB stored in an interface is not
-// a nil interface, so assigning it unguarded would defeat every nil check at
-// the call sites and turn a scanner built without a database into a panic.
+// newScanner builds a scanner that can scan: its two database-backed
+// capabilities, and the timeout floor every ecosystem scan runs under. It is
+// separate from New because the on-demand dispatch path builds a scanner
+// without the periodic loop's interval and its configured timeout — but NOT
+// without a usable timeout, which is why the floor is applied here rather than
+// in New: a scanner built without one runs every ecosystem scan against an
+// expired deadline.
+//
+// Both paths must also agree on the assignment below: a nil *state.DB stored in
+// an interface is not a nil interface, so assigning it unguarded would defeat
+// every nil check at the call sites and turn a scanner built without a database
+// into a panic.
 func newScanner(db *state.DB) *Scanner {
-	s := &Scanner{}
+	s := &Scanner{timeout: minScanTimeout}
 	if db != nil {
 		s.events = db
 		s.failures = db

@@ -4,10 +4,10 @@ import (
 	"fmt"
 	"log"
 	"strings"
-	"unicode/utf8"
 
 	"github.com/Robin831/Forge/internal/state"
 	"github.com/Robin831/Forge/internal/termtext"
+	"github.com/Robin831/Forge/internal/textfmt"
 )
 
 // maxFailureDetailBytes bounds what reaches a persisted needs-attention row and
@@ -15,6 +15,11 @@ import (
 // with hundreds of refs can answer with one line per ref, and that whole wall
 // would otherwise become the operator's headline.
 const maxFailureDetailBytes = 2000
+
+// evidenceEllipsis marks a truncated evidence string. It is named because
+// failureEvidence budgets for its length rather than appending it on top of the
+// bound above.
+const evidenceEllipsis = "…"
 
 // reportScanFailure is the one place a failure to read an anvil's manifests is
 // reported, and the only place the transient/blocked distinction changes what
@@ -33,17 +38,24 @@ const maxFailureDetailBytes = 2000
 // naming the condition, and silence until the condition CHANGES or clears.
 func (s *Scanner) reportScanFailure(name, path string, err error) {
 	kind := classifyGitError(err)
-	detail := blockedFailureDetail(name, path, err)
 
 	if kind != gitFailureBlocked {
-		msg := fmt.Sprintf("could not read dependency manifests for anvil %s from its upstream ref — skipping depcheck to avoid stale results: %v",
-			name, err)
+		// git's words go through failureEvidence on this exit too, not just the
+		// blocked one below. The text is equally untrusted on both — a
+		// server-side hook's rejection is echoed verbatim by the fetch — and it
+		// reaches the same two rendered surfaces (daemon.log and an activity
+		// feed row Hearth wraps without stripping), so escape sequences or
+		// embedded newlines in it would forge feed and log lines. Classification
+		// is by substring match, which means a message that avoids every blocked
+		// pattern lands here by construction.
+		msg := fmt.Sprintf("could not read dependency manifests for anvil %s from its upstream ref — skipping depcheck to avoid stale results: %s",
+			name, failureEvidence(err))
 		log.Printf("[depcheck] %s", msg)
 		s.emit(state.EventDepcheckFailed, msg, "", name)
 		return
 	}
 
-	s.escalateBlocked(name, gitFailureSignature(name, kind, failureEvidence(err)), detail)
+	s.escalateBlocked(name, gitFailureSignature(name, kind, failureEvidence(err)), blockedFailureDetail(name, path, err))
 }
 
 // escalateBlocked raises the anvil's blocking condition with the operator, or
@@ -60,18 +72,22 @@ func (s *Scanner) reportScanFailure(name, path string, err error) {
 // A store that cannot answer escalates: an operator told twice about a real
 // blockage is a nuisance, an operator never told is the bug being fixed.
 func (s *Scanner) escalateBlocked(name, sig, detail string) {
-	title := fmt.Sprintf("Anvil %s: dependency scan blocked", name)
+	failure := state.DepcheckFailure{
+		Anvil:     name,
+		Kind:      state.DepcheckKindBlocked,
+		Signature: sig,
+		Detail:    detail,
+	}
+	// The headline is the record's to render (state.DepcheckFailure.Title), the
+	// same way a deploy failure renders its own: written here as well it would
+	// be one sentence in two packages, and a row escalated before an edit would
+	// keep rendering the other one.
+	title := failure.Title()
 
 	fresh := true
 	if s.failures != nil {
 		var err error
-		fresh, err = s.failures.RecordDepcheckFailure(state.DepcheckFailure{
-			Anvil:     name,
-			Kind:      state.DepcheckKindBlocked,
-			Signature: sig,
-			Title:     title,
-			Detail:    detail,
-		})
+		fresh, err = s.failures.RecordDepcheckFailure(failure)
 		if err != nil {
 			log.Printf("[depcheck] %s: could not record blocked dependency scan — escalating anyway: %v", name, err)
 			fresh = true
@@ -176,30 +192,10 @@ func failureEvidence(err error) string {
 	clean := termtext.Line(strings.TrimSpace(raw))
 	clean = strings.Join(strings.Fields(clean), " ")
 	if len(clean) > maxFailureDetailBytes {
-		clean = truncateRunes(clean, maxFailureDetailBytes) + "…"
+		// The marker is inside the bound, not on top of it: maxFailureDetailBytes
+		// is what a row and a feed line are sized in, so a cut that then appends
+		// three more bytes overshoots the very number it is enforcing.
+		clean = textfmt.TruncateRunes(clean, maxFailureDetailBytes-len(evidenceEllipsis)) + evidenceEllipsis
 	}
 	return clean
-}
-
-// truncateRunes returns at most maxBytes bytes of s, cutting back to the last
-// rune boundary rather than through a multi-byte sequence.
-//
-// The bound has to be in bytes (it is what a row and a feed line are sized in),
-// but the text is git's — and git's is partly the remote's, since a server-side
-// hook's rejection message is echoed verbatim — so it is neither ASCII by
-// construction nor Forge's to re-encode. A plain slice at a byte index leaves a
-// half-written rune at the end, which is stored in the needs-attention row and
-// rendered into the activity feed as a replacement character at best.
-//
-// It is a local copy of the same helper assay keeps rather than a shared one,
-// for the same reason: the dependency would run the wrong way.
-func truncateRunes(s string, maxBytes int) string {
-	if len(s) <= maxBytes {
-		return s
-	}
-	cut := maxBytes
-	for cut > 0 && !utf8.RuneStart(s[cut]) {
-		cut--
-	}
-	return s[:cut]
 }

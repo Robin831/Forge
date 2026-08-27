@@ -104,9 +104,33 @@ func runGit(ctx context.Context, repoDir string, args ...string) ([]byte, error)
 		if detail == "" {
 			detail = strings.TrimSpace(stdout.String())
 		}
-		return stdout.Bytes(), &gitError{Args: args, Stderr: detail, Err: err}
+		return stdout.Bytes(), &gitError{Args: args, Stderr: detail, Err: withContextErr(cmdCtx, err)}
 	}
 	return stdout.Bytes(), nil
+}
+
+// withContextErr attaches the reason a command's context ended to the error the
+// run itself reported.
+//
+// exec.CommandContext kills the child when the deadline expires and reports the
+// kill ("signal: killed") — never the deadline — and the expired context is not
+// folded in anywhere else, so the reason the command died is otherwise
+// unrecoverable. Left unattached, a fetch that ran past gitTimeout came back as
+// a message matching no pattern and was classified gitFailureUnknown; wrapped,
+// errors.Is finds context.DeadlineExceeded through gitError.Unwrap and
+// isTimeoutError classifies it as the transient failure it is.
+//
+// Both causes are wrapped rather than one replacing the other: the exec error
+// is what an operator reading the log line recognises, and the context error is
+// what the classifier tests for. A context that is still live, or one whose
+// error the run already reported (exec returns it verbatim for a context
+// already done at Start), is left alone.
+func withContextErr(ctx context.Context, err error) error {
+	ctxErr := ctx.Err()
+	if err == nil || ctxErr == nil || errors.Is(err, ctxErr) {
+		return err
+	}
+	return fmt.Errorf("%w (%w)", err, ctxErr)
 }
 
 // resolveUpstream reports the remote branch this checkout tracks. The upstream

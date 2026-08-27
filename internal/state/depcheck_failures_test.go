@@ -10,7 +10,6 @@ func blockedFixture(anvil, signature string) DepcheckFailure {
 		Anvil:     anvil,
 		Kind:      DepcheckKindBlocked,
 		Signature: signature,
-		Title:     "Anvil " + anvil + ": dependency scan blocked",
 		Detail:    "git said: fatal: You are not currently on a branch.",
 		LastSeen:  time.Date(2026, 8, 27, 3, 0, 0, 0, time.UTC),
 	}
@@ -233,11 +232,40 @@ func TestBlockedScanSurfacesInNeedsAttention(t *testing.T) {
 	}
 }
 
-// TestDepcheckAttentionTitleFallsBack: a row written before the title existed
-// (or by a caller that supplied none) must still read as something.
-func TestDepcheckAttentionTitleFallsBack(t *testing.T) {
-	got := depcheckAttentionTitle(DepcheckFailure{Anvil: "heimdall"})
+// TestDepcheckFailureRendersItsOwnTitle: the headline is derived from the row,
+// not stored on it, so a row escalated before an edit to that sentence renders
+// the current one — the same arrangement DeployFailure.Title uses.
+func TestDepcheckFailureRendersItsOwnTitle(t *testing.T) {
+	got := DepcheckFailure{Anvil: "heimdall"}.Title()
 	if got != "Anvil heimdall: dependency scan blocked" {
-		t.Fatalf("unexpected fallback title: %q", got)
+		t.Fatalf("unexpected title: %q", got)
 	}
+}
+
+// TestDepcheckAttentionTitleSurvivesAnEmptyTitleColumn: nothing reads the
+// stored title back, so a row whose column is empty (written by an older build,
+// or by hand) still gets a headline.
+func TestDepcheckAttentionTitleSurvivesAnEmptyTitleColumn(t *testing.T) {
+	db := openTestDB(t)
+	if _, err := db.RecordDepcheckFailure(blockedFixture("heimdall", "sig-a")); err != nil {
+		t.Fatalf("RecordDepcheckFailure: %v", err)
+	}
+	if _, err := db.conn.Exec(`UPDATE depcheck_failures SET title = '' WHERE anvil = ?`, "heimdall"); err != nil {
+		t.Fatalf("blanking the title column: %v", err)
+	}
+
+	items, err := db.NeedsAttentionBeads(5, 5, 3)
+	if err != nil {
+		t.Fatalf("NeedsAttentionBeads: %v", err)
+	}
+	for _, it := range items {
+		if it.Kind != AttentionKindDepcheck {
+			continue
+		}
+		if it.Title != "Anvil heimdall: dependency scan blocked" {
+			t.Fatalf("unexpected title: %q", it.Title)
+		}
+		return
+	}
+	t.Fatalf("blocked scan missing from needs-attention: %+v", items)
 }
