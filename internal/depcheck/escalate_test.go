@@ -115,7 +115,7 @@ func TestBlockedEscalatesOnce(t *testing.T) {
 	s, store, events := newTestScanner()
 
 	for i := 0; i < 3; i++ {
-		s.reportScanFailure("heimdall", "/srv/anvils/heimdall", blockedErr())
+		s.reportScanFailure(context.Background(), "heimdall", "/srv/anvils/heimdall", blockedErr())
 	}
 
 	failed := events.ofType(state.EventDepcheckFailed)
@@ -137,10 +137,10 @@ func TestBlockedEscalatesOnce(t *testing.T) {
 func TestBlockedReescalatesAfterChange(t *testing.T) {
 	s, store, events := newTestScanner()
 
-	s.reportScanFailure("heimdall", "/srv/anvils/heimdall", blockedErr())
+	s.reportScanFailure(context.Background(), "heimdall", "/srv/anvils/heimdall", blockedErr())
 	first := store.rows["heimdall"].Signature
 
-	s.reportScanFailure("heimdall", "/srv/anvils/heimdall", &gitError{
+	s.reportScanFailure(context.Background(), "heimdall", "/srv/anvils/heimdall", &gitError{
 		Args:   []string{"fetch", "origin", "main"},
 		Stderr: "error: cannot lock ref 'refs/remotes/origin/main'",
 		Err:    errors.New("exit status 1"),
@@ -165,8 +165,8 @@ func TestTransientReportsEveryRun(t *testing.T) {
 		Stderr: "ssh: Could not resolve hostname github.com: Temporary failure in name resolution",
 		Err:    errors.New("exit status 128"),
 	}
-	s.reportScanFailure("heimdall", "/srv/anvils/heimdall", transient)
-	s.reportScanFailure("heimdall", "/srv/anvils/heimdall", transient)
+	s.reportScanFailure(context.Background(), "heimdall", "/srv/anvils/heimdall", transient)
+	s.reportScanFailure(context.Background(), "heimdall", "/srv/anvils/heimdall", transient)
 
 	failed := events.ofType(state.EventDepcheckFailed)
 	require.Len(t, failed, 2, "a transient failure keeps reporting per run")
@@ -184,8 +184,8 @@ func TestUnrecognisedFailureKeepsTheOldBehaviour(t *testing.T) {
 	s, store, events := newTestScanner()
 
 	unknown := &gitError{Args: []string{"fetch"}, Stderr: "error: nobody has modelled this", Err: errors.New("exit status 3")}
-	s.reportScanFailure("heimdall", "/srv/anvils/heimdall", unknown)
-	s.reportScanFailure("heimdall", "/srv/anvils/heimdall", unknown)
+	s.reportScanFailure(context.Background(), "heimdall", "/srv/anvils/heimdall", unknown)
+	s.reportScanFailure(context.Background(), "heimdall", "/srv/anvils/heimdall", unknown)
 
 	assert.Len(t, events.ofType(state.EventDepcheckFailed), 2)
 	assert.Empty(t, store.rows)
@@ -197,7 +197,7 @@ func TestUnrecognisedFailureKeepsTheOldBehaviour(t *testing.T) {
 func TestSuccessClearsSignature(t *testing.T) {
 	s, store, events := newTestScanner()
 
-	s.reportScanFailure("heimdall", "/srv/anvils/heimdall", blockedErr())
+	s.reportScanFailure(context.Background(), "heimdall", "/srv/anvils/heimdall", blockedErr())
 	require.Len(t, events.ofType(state.EventDepcheckFailed), 1)
 
 	s.clearBlocked("heimdall")
@@ -206,7 +206,7 @@ func TestSuccessClearsSignature(t *testing.T) {
 	require.Len(t, passed, 1, "the recovery is announced, like every other self-clearing condition")
 	assert.Contains(t, passed[0].Message, "unblocked")
 
-	s.reportScanFailure("heimdall", "/srv/anvils/heimdall", blockedErr())
+	s.reportScanFailure(context.Background(), "heimdall", "/srv/anvils/heimdall", blockedErr())
 	assert.Len(t, events.ofType(state.EventDepcheckFailed), 2, "a recurrence after a fix escalates again")
 }
 
@@ -226,8 +226,8 @@ func TestEscalationSurvivesAnUnwritableStore(t *testing.T) {
 	s, store, events := newTestScanner()
 	store.recordErr = errors.New("database is locked")
 
-	s.reportScanFailure("heimdall", "/srv/anvils/heimdall", blockedErr())
-	s.reportScanFailure("heimdall", "/srv/anvils/heimdall", blockedErr())
+	s.reportScanFailure(context.Background(), "heimdall", "/srv/anvils/heimdall", blockedErr())
+	s.reportScanFailure(context.Background(), "heimdall", "/srv/anvils/heimdall", blockedErr())
 
 	assert.Len(t, events.ofType(state.EventDepcheckFailed), 2)
 }
@@ -238,7 +238,7 @@ func TestEscalationSurvivesAnUnwritableStore(t *testing.T) {
 func TestScannerWithoutAStoreStillReports(t *testing.T) {
 	s := &Scanner{}
 	assert.NotPanics(t, func() {
-		s.reportScanFailure("heimdall", "/srv/anvils/heimdall", blockedErr())
+		s.reportScanFailure(context.Background(), "heimdall", "/srv/anvils/heimdall", blockedErr())
 		s.clearBlocked("heimdall")
 		s.pruneBlocked(map[string]string{"heimdall": "/srv/anvils/heimdall"})
 	})
@@ -250,8 +250,8 @@ func TestScannerWithoutAStoreStillReports(t *testing.T) {
 // entry no action can resolve.
 func TestPruneBlockedDropsDeregisteredAnvils(t *testing.T) {
 	s, store, _ := newTestScanner()
-	s.reportScanFailure("heimdall", "/srv/anvils/heimdall", blockedErr())
-	s.reportScanFailure("retired", "/srv/anvils/retired", blockedErr())
+	s.reportScanFailure(context.Background(), "heimdall", "/srv/anvils/heimdall", blockedErr())
+	s.reportScanFailure(context.Background(), "retired", "/srv/anvils/retired", blockedErr())
 
 	s.pruneBlocked(map[string]string{"heimdall": "/srv/anvils/heimdall"})
 
@@ -266,13 +266,13 @@ func TestPruneBlockedDropsDeregisteredAnvils(t *testing.T) {
 	assert.Contains(t, store.rows, "heimdall")
 }
 
-// TestBlockedDetailNamesTheAnvilAndTheEvidence covers the seam the sibling bead
-// (Forge-0uvl) takes over: what the escalation SAYS. It must already carry the
-// checkout, git's own words, and the fact that the anvil is unscanned rather
-// than up to date.
+// TestBlockedDetailNamesTheAnvilAndTheEvidence covers what the escalation SAYS.
+// It must carry the anvil, the checkout, git's own words, and the fact that the
+// anvil is unscanned rather than up to date.
 func TestBlockedDetailNamesTheAnvilAndTheEvidence(t *testing.T) {
-	detail := blockedFailureDetail("heimdall", "/srv/anvils/heimdall", blockedErr())
+	detail := blockedFailureDetail(context.Background(), "heimdall", "/srv/anvils/heimdall", blockedErr())
 
+	assert.Contains(t, detail, "heimdall")
 	assert.Contains(t, detail, "/srv/anvils/heimdall")
 	assert.Contains(t, detail, "You are not currently on a branch")
 	assert.Contains(t, detail, "not being scanned")
@@ -361,7 +361,7 @@ func TestScanAnvilEscalatesAndClearsAgainstARealCheckout(t *testing.T) {
 func TestTransientEvidenceIsSanitisedToo(t *testing.T) {
 	s, store, events := newTestScanner()
 
-	s.reportScanFailure("heimdall", "/srv/anvils/heimdall", &gitError{
+	s.reportScanFailure(context.Background(), "heimdall", "/srv/anvils/heimdall", &gitError{
 		Args:   []string{"fetch", "origin", "main"},
 		Stderr: "remote: \x1b]0;pwned\x07\x1b[31mdenied\x1b[0m\nfatal: could not read from remote repository",
 		Err:    errors.New("exit status 128"),
@@ -383,7 +383,7 @@ func TestTransientEvidenceIsSanitisedToo(t *testing.T) {
 func TestTransientEventIsBounded(t *testing.T) {
 	s, _, events := newTestScanner()
 
-	s.reportScanFailure("heimdall", "/srv/anvils/heimdall", &gitError{
+	s.reportScanFailure(context.Background(), "heimdall", "/srv/anvils/heimdall", &gitError{
 		Args:   []string{"fetch", "origin", "main"},
 		Stderr: "error: connection refused " + strings.Repeat("x", maxFailureDetailBytes*3),
 		Err:    errors.New("exit status 128"),

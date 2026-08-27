@@ -1,6 +1,7 @@
 package depcheck
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"strings"
@@ -36,7 +37,7 @@ const evidenceEllipsis = "…"
 // which is how an anvil went unscanned for weeks with the evidence in the log
 // the whole time. Instead the anvil gets a needs-attention entry, one event
 // naming the condition, and silence until the condition CHANGES or clears.
-func (s *Scanner) reportScanFailure(name, path string, err error) {
+func (s *Scanner) reportScanFailure(ctx context.Context, name, path string, err error) {
 	kind := classifyGitError(err)
 
 	if kind != gitFailureBlocked {
@@ -55,7 +56,11 @@ func (s *Scanner) reportScanFailure(name, path string, err error) {
 		return
 	}
 
-	s.escalateBlocked(name, gitFailureSignature(name, kind, failureEvidence(err)), blockedFailureDetail(name, path, err))
+	// The signature is still taken from git's evidence alone, never from the
+	// enumerated detail: the blocking paths are what the operator READS, and a
+	// tree whose modified set shifts by one file between two runs is the same
+	// condition, which a signature over the detail would re-escalate nightly.
+	s.escalateBlocked(name, gitFailureSignature(name, kind, failureEvidence(err)), blockedFailureDetail(ctx, name, path, err))
 }
 
 // escalateBlocked raises the anvil's blocking condition with the operator, or
@@ -65,9 +70,8 @@ func (s *Scanner) reportScanFailure(name, path string, err error) {
 // condition produce the same signature, and the store answers whether it has
 // seen it. detail is the human-readable content of the escalation and is
 // deliberately the only thing this function does not decide — it is built by
-// blockedFailureDetail, which is the seam the sibling bead (Forge-0uvl)
-// replaces with enumerated blocking paths and a remediation command without
-// touching classification or suppression.
+// blockedFailureDetail, which enumerates the blocking paths and names the
+// remediation command without touching classification or suppression.
 //
 // A store that cannot answer escalates: an operator told twice about a real
 // blockage is a nuisance, an operator never told is the bug being fixed.
@@ -150,26 +154,32 @@ func (s *Scanner) pruneBlocked(anvils map[string]string) {
 }
 
 // blockedFailureDetail renders the operator-facing description of a blocked
-// scan: what is blocked, what git said, and what state it leaves the anvil in.
+// scan: which anvil stopped being scanned, the paths an operator can recognise
+// the condition by, the one command that resolves it, and — last, under its own
+// label — git's raw output as the evidence for all of it.
 //
-// This is the seam the message-detail sibling bead (Forge-0uvl) owns. It is a
-// single function taking the anvil, its checkout and the error precisely so
-// that enumerating the blocking paths and naming the remediation command is a
-// change to this body alone — the classification above it and the suppression
-// beside it read only its output, never its shape.
-func blockedFailureDetail(anvil, path string, err error) string {
+// This is the one seam the message content lives on. It takes the anvil, its
+// checkout and the error precisely so that enumerating the blocking paths and
+// naming the remediation command is a change to this body alone: the
+// classification above it and the suppression beside it read only its output,
+// never its shape.
+//
+// The path enumeration is best-effort by construction. `git status` in a
+// checkout already known to be in a bad state is exactly the command that might
+// also fail, and an escalation with no path list is worth far more than no
+// escalation at all — so a failure here is logged and the message is built
+// without it.
+func blockedFailureDetail(ctx context.Context, anvil, path string, err error) string {
 	evidence := failureEvidence(err)
-	var b strings.Builder
-	fmt.Fprintf(&b, "Its dependency manifests cannot be read from the upstream ref, so the anvil is not being scanned at all "+
-		"(it is unscanned, not up to date). This will repeat identically on every scheduled run until the checkout is fixed. ")
-	if path != "" {
-		fmt.Fprintf(&b, "Checkout: %s. ", path)
+
+	var paths []string
+	if dirty, dirtyErr := dirtyPaths(ctx, path); dirtyErr != nil {
+		log.Printf("[depcheck] %s: could not enumerate blocking paths for the escalation: %v", anvil, dirtyErr)
+	} else {
+		paths = dirty
 	}
-	if evidence != "" {
-		fmt.Fprintf(&b, "git said: %s. ", evidence)
-	}
-	b.WriteString("Forge clears this entry automatically once the anvil scans again.")
-	return b.String()
+
+	return blockedMessage(anvil, path, paths, evidence)
 }
 
 // failureEvidence renders git's own words for a failure, bounded and stripped
