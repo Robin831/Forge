@@ -1002,24 +1002,35 @@ func TestActivityStream_BusDeliversUnder100ms(t *testing.T) {
 	// The handler is now in the live select loop, so this measures exactly the
 	// publish→flush→client path the design point is about.
 	//
-	// It is measured over several publishes and compared on the BEST one. A
-	// single timed sample measures the runner as much as the code: one
+	// It is measured over several publishes, and all but one of them must be
+	// fast. A single timed sample measures the runner as much as the code: one
 	// descheduling of the reader goroutine on a loaded CI box put an otherwise
 	// healthy path at 131ms and failed the build on scheduler noise, which is
 	// the same failure the warmup barrier above was added to remove — just
-	// moved from startup into the measurement itself. The design point is a
-	// claim about what the path CAN do (delivery is not gated on a poll
-	// interval), so a floor answers it and cannot be inflated by a stall,
-	// whereas a max over a noisy sample reports the worst hiccup of the host.
-	// Every sample still has to beat the 2s poll the Bus replaced, so a real
-	// regression back to polling fails on all of them rather than none.
+	// moved from startup into the measurement itself. Tolerating ONE slow
+	// sample absorbs that stall while keeping the property the design point
+	// actually claims: live delivery is fast every time, not merely capable of
+	// being fast once.
+	//
+	// A bound on the FASTEST sample would give up exactly that. Every
+	// regression this test exists to catch leaves some path intact and slows
+	// the rest — a flush deferred behind a batching timer that only applies
+	// when the client is mid-write, a partial fallback to the poll path, a
+	// subscription that intermittently misses the live emit and is rescued by
+	// the next poll — so four samples over budget and one under would pass a
+	// floor. The 2s per-sample deadline below cannot stand in for it either:
+	// 2s IS the legacy poll interval, so a delivery that meets it has not been
+	// shown to come from the Bus at all.
 	const (
-		samples    = 5
-		busBudget  = 100 * time.Millisecond
-		pollBudget = 2 * time.Second
+		samples = 5
+		// One stall, no more: enough for a descheduled reader goroutine,
+		// not enough for a path that is slow in general.
+		toleratedSlow = 1
+		busBudget     = 100 * time.Millisecond
+		pollBudget    = 2 * time.Second
 	)
 
-	var best time.Duration
+	latencies := make([]time.Duration, 0, samples)
 	for i := 0; i < samples; i++ {
 		msg := fmt.Sprintf("live-%d", i)
 		start := time.Now()
@@ -1035,9 +1046,7 @@ func TestActivityStream_BusDeliversUnder100ms(t *testing.T) {
 					// Ignore any residual replay/backlog delivery.
 					continue
 				}
-				if latency := s.at.Sub(start); i == 0 || latency < best {
-					best = latency
-				}
+				latencies = append(latencies, s.at.Sub(start))
 				delivered = true
 			case <-deadline:
 				t.Fatalf("%s not delivered within %s", msg, pollBudget)
@@ -1045,8 +1054,15 @@ func TestActivityStream_BusDeliversUnder100ms(t *testing.T) {
 		}
 	}
 
-	if best > busBudget {
-		t.Fatalf("fastest of %d live events delivered in %s, want < %s", samples, best, busBudget)
+	slow := 0
+	for _, latency := range latencies {
+		if latency > busBudget {
+			slow++
+		}
+	}
+	if slow > toleratedSlow {
+		t.Fatalf("%d of %d live events delivered slower than %s (latencies: %v); at most %d may be, "+
+			"so a path that is fast only sometimes is a failure", slow, samples, busBudget, latencies, toleratedSlow)
 	}
 }
 

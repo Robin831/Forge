@@ -27,7 +27,15 @@ const defaultRemote = "origin"
 
 // gitTimeout bounds each individual git invocation. Only the fetch talks to the
 // network; the rest are local object reads.
-const gitTimeout = 30 * time.Second
+//
+// It is a var rather than a const solely so a test can shorten it. The one
+// thing this deadline does that nothing else covers is kill a command that has
+// already STARTED — the case withContextErr exists for, and the one an
+// already-expired parent context cannot reproduce, since exec short-circuits
+// such a context at Start and reports its error verbatim. Reaching it needs a
+// real command that outlives a deadline this package sets, so the deadline has
+// to be settable. Nothing outside the tests writes it.
+var gitTimeout = 30 * time.Second
 
 // upstream names the remote branch an anvil's checkout tracks, and the
 // remote-tracking ref its contents are read from.

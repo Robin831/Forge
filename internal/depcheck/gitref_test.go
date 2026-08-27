@@ -3,10 +3,12 @@ package depcheck
 import (
 	"context"
 	"errors"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -422,4 +424,109 @@ func TestRunGitReportsAnExpiredContext(t *testing.T) {
 	require.Error(t, err)
 	assert.ErrorIs(t, err, context.DeadlineExceeded)
 	assert.Equal(t, gitFailureTransient, classifyGitError(err))
+}
+
+// setGitTimeout shortens runGit's per-command deadline for one test.
+func setGitTimeout(t *testing.T, d time.Duration) {
+	t.Helper()
+	prev := gitTimeout
+	gitTimeout = d
+	t.Cleanup(func() { gitTimeout = prev })
+}
+
+// hangingListener accepts TCP connections on loopback and answers nothing,
+// returning its address.
+//
+// It is what makes a real git command hang without a shell, a sleep binary or a
+// fake git on PATH: `git fetch git://<addr>/x` connects, sends its request and
+// blocks forever reading the ref advertisement. An unroutable address would not
+// do — the host's network stack can turn that into a prompt connect error, i.e.
+// a command that finishes on its own rather than one the deadline has to kill.
+func hangingListener(t *testing.T) string {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+
+	var (
+		mu     sync.Mutex
+		conns  []net.Conn
+		closed bool
+	)
+	t.Cleanup(func() {
+		_ = ln.Close()
+		mu.Lock()
+		defer mu.Unlock()
+		closed = true
+		for _, c := range conns {
+			_ = c.Close()
+		}
+	})
+
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			// Hold it open and say nothing. Accepting rather than refusing is
+			// the point: git must get past connect and then wait.
+			mu.Lock()
+			if closed {
+				_ = conn.Close()
+			} else {
+				conns = append(conns, conn)
+			}
+			mu.Unlock()
+		}
+	}()
+
+	return ln.Addr().String()
+}
+
+// TestRunGitKilledByItsOwnDeadline is the case withContextErr exists for, and
+// the only one that pins its WIRING rather than the helper: a git command that
+// STARTS and is then killed when runGit's own gitTimeout expires, while the
+// parent context is still live.
+//
+// The distinction matters because the two cheaper tests above cannot make it.
+// TestWithContextErrAttachesTheDeadline and TestKilledGitCommandIsTransient
+// call the helper directly with a hand-built error, so they never touch runGit;
+// TestRunGitReportsAnExpiredContext does go through runGit, but with a context
+// that is already done, which exec short-circuits at Start by returning
+// ctx.Err() verbatim — the branch withContextErr deliberately leaves alone. So
+// none of them notice runGit passing the PARENT context to withContextErr
+// instead of the per-command one, which reinstates the original bug exactly: a
+// fetch killed by gitTimeout under a live parent has ctx.Err() == nil, nothing
+// is attached, and "signal: killed" matches no pattern and is classified
+// unknown.
+func TestRunGitKilledByItsOwnDeadline(t *testing.T) {
+	requireGit(t)
+	dir := newOriginAndClone(t, map[string]string{"go.mod": "module example.com/x\n"})
+
+	addr := hangingListener(t)
+	setGitTimeout(t, 500*time.Millisecond)
+
+	parent, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	start := time.Now()
+	_, err := runGit(parent, dir, "fetch", "git://"+addr+"/x.git", "main")
+	elapsed := time.Since(start)
+	require.Error(t, err)
+
+	require.NoError(t, parent.Err(),
+		"the parent context must still be live: the kill has to come from runGit's own deadline, not from above it")
+	assert.Less(t, elapsed, 30*time.Second, "the per-command deadline is what ended the fetch")
+
+	// exec reports a killed child as its exit status. Getting an *exec.ExitError
+	// back is the proof the command actually started and was killed, rather than
+	// being refused at Start with the context's error verbatim.
+	var exitErr *exec.ExitError
+	require.ErrorAs(t, err, &exitErr,
+		"the fetch must have STARTED and been killed, which is the only path through withContextErr's wrap")
+
+	assert.ErrorIs(t, err, context.DeadlineExceeded,
+		"the deadline the command died on must survive as a cause, or the classifier has only the kill to go on")
+	assert.Equal(t, gitFailureTransient, classifyGitError(err),
+		"a fetch killed by its own timeout is a retry next run, never an unclassifiable failure")
 }
