@@ -27,7 +27,15 @@ const defaultRemote = "origin"
 
 // gitTimeout bounds each individual git invocation. Only the fetch talks to the
 // network; the rest are local object reads.
-const gitTimeout = 30 * time.Second
+//
+// It is a var rather than a const solely so a test can shorten it. The one
+// thing this deadline does that nothing else covers is kill a command that has
+// already STARTED — the case withContextErr exists for, and the one an
+// already-expired parent context cannot reproduce, since exec short-circuits
+// such a context at Start and reports its error verbatim. Reaching it needs a
+// real command that outlives a deadline this package sets, so the deadline has
+// to be settable. Nothing outside the tests writes it.
+var gitTimeout = 30 * time.Second
 
 // upstream names the remote branch an anvil's checkout tracks, and the
 // remote-tracking ref its contents are read from.
@@ -37,9 +45,47 @@ type upstream struct {
 	Ref    string // e.g. "origin/main" — the local remote-tracking ref
 }
 
-// runGit executes one git command in repoDir and returns its stdout. Errors
-// carry the combined output so the caller (and the failure classifier that
-// reads these messages) sees git's own words rather than "exit status 1".
+// gitError is a failed git invocation: which command, what git said, and the
+// underlying exec error.
+//
+// Its Error() renders exactly the sentence runGit used to build by hand, so
+// every existing log line and event message is byte-identical. What it adds is
+// Stderr as a FIELD: the failure classifier decides between a transient and a
+// blocked condition by matching git's own words, and reading them back out of a
+// formatted sentence means re-parsing a string this package wrote — the
+// arrangement that breaks the first time a wrapper adds a prefix.
+type gitError struct {
+	Args   []string // the git arguments, without the leading "git"
+	Stderr string   // git's own output, trimmed; stdout when stderr was empty
+	Err    error    // the exec error (exit status, context deadline, ...)
+}
+
+func (e *gitError) Error() string {
+	if e.Stderr == "" {
+		return fmt.Sprintf("git %s: %v", strings.Join(e.Args, " "), e.Err)
+	}
+	return fmt.Sprintf("git %s: %v: %s", strings.Join(e.Args, " "), e.Err, e.Stderr)
+}
+
+// Unwrap exposes the exec error so errors.Is finds context.DeadlineExceeded and
+// friends through the wrapper.
+func (e *gitError) Unwrap() error { return e.Err }
+
+// gitStderr returns git's own output for a failed command, or "" for an error
+// that did not come from runGit. It is the one reader of gitError.Stderr, so a
+// caller never has to know whether the error it holds is wrapped.
+func gitStderr(err error) string {
+	var ge *gitError
+	if errors.As(err, &ge) {
+		return ge.Stderr
+	}
+	return ""
+}
+
+// runGit executes one git command in repoDir and returns its stdout. A failure
+// comes back as a *gitError carrying git's own output as a field, so the caller
+// (and classifyGitFailure, which reads it) sees git's words rather than
+// "exit status 1".
 func runGit(ctx context.Context, repoDir string, args ...string) ([]byte, error) {
 	cmdCtx, cancel := context.WithTimeout(ctx, gitTimeout)
 	defer cancel()
@@ -50,8 +96,11 @@ func runGit(ctx context.Context, repoDir string, args ...string) ([]byte, error)
 	// CleanGitEnv strips only the repo-location variables, so the host's locale
 	// survives and git's diagnostics are gettext-translated: pin them to C so an
 	// error this package logs or an event it writes reads the same on every host.
-	// Nothing here BRANCHES on that text — see blobExists — but a message a
-	// German-locale daemon writes into the event log is nobody's diagnostic.
+	// classifyGitFailure now BRANCHES on that text as well — git reports a
+	// blocked tree with a bare non-zero exit and nothing else — so this pin is
+	// what makes matching it sound, rather than only what keeps a German-locale
+	// daemon's event log legible. Where an exit code can answer instead, it
+	// still does: see blobExists.
 	cmd.Env = append(executil.CleanGitEnv(), "LC_ALL=C", "LANG=C")
 
 	var stdout, stderr bytes.Buffer
@@ -63,12 +112,33 @@ func runGit(ctx context.Context, repoDir string, args ...string) ([]byte, error)
 		if detail == "" {
 			detail = strings.TrimSpace(stdout.String())
 		}
-		if detail == "" {
-			return stdout.Bytes(), fmt.Errorf("git %s: %w", strings.Join(args, " "), err)
-		}
-		return stdout.Bytes(), fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, detail)
+		return stdout.Bytes(), &gitError{Args: args, Stderr: detail, Err: withContextErr(cmdCtx, err)}
 	}
 	return stdout.Bytes(), nil
+}
+
+// withContextErr attaches the reason a command's context ended to the error the
+// run itself reported.
+//
+// exec.CommandContext kills the child when the deadline expires and reports the
+// kill ("signal: killed") — never the deadline — and the expired context is not
+// folded in anywhere else, so the reason the command died is otherwise
+// unrecoverable. Left unattached, a fetch that ran past gitTimeout came back as
+// a message matching no pattern and was classified gitFailureUnknown; wrapped,
+// errors.Is finds context.DeadlineExceeded through gitError.Unwrap and
+// isTimeoutError classifies it as the transient failure it is.
+//
+// Both causes are wrapped rather than one replacing the other: the exec error
+// is what an operator reading the log line recognises, and the context error is
+// what the classifier tests for. A context that is still live, or one whose
+// error the run already reported (exec returns it verbatim for a context
+// already done at Start), is left alone.
+func withContextErr(ctx context.Context, err error) error {
+	ctxErr := ctx.Err()
+	if err == nil || ctxErr == nil || errors.Is(err, ctxErr) {
+		return err
+	}
+	return fmt.Errorf("%w (%w)", err, ctxErr)
 }
 
 // resolveUpstream reports the remote branch this checkout tracks. The upstream

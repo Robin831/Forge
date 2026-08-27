@@ -54,9 +54,26 @@ type CheckResult struct {
 // this before it touches an anvil's node_modules.
 type PreviewLivenessFunc func(anvil string) string
 
+// eventSink records one entry in the activity feed. It is the subset of
+// state.DB the scanner writes events through, so the escalation path can be
+// driven in a test without a SQLite file.
+type eventSink interface {
+	LogEvent(typ state.EventType, message, beadID, anvil string) error
+}
+
+// failureStore persists which blocking condition an anvil has already been
+// escalated for. See state.DepcheckFailure for why the answer has to outlive
+// the process: the whole point is that the NEXT run stays quiet.
+type failureStore interface {
+	RecordDepcheckFailure(f state.DepcheckFailure) (bool, error)
+	ClearDepcheckFailure(anvil string) (bool, error)
+	PruneDepcheckFailures(keep []string) error
+}
+
 // Scanner checks anvils for outdated dependencies across all supported ecosystems.
 type Scanner struct {
-	db          *state.DB
+	events      eventSink
+	failures    failureStore
 	interval    time.Duration
 	timeout     time.Duration
 	anvilPaths  map[string]string // anvil name -> path
@@ -64,20 +81,56 @@ type Scanner struct {
 	mu          sync.RWMutex
 }
 
+// minScanTimeout is the floor on the per-ecosystem scan timeout. It is a floor
+// rather than a suggestion because Scanner.timeout is used as a DEADLINE, not
+// as a descriptor: scanGo derives its context from it and the .NET and npm
+// scans hand it to their own runners, so a zero duration is an already-expired
+// deadline that kills `go list -m -u -json all` before it starts and reports
+// every ecosystem as "context deadline exceeded".
+const minScanTimeout = 1 * time.Minute
+
 // New creates a dependency check scanner.
 func New(db *state.DB, interval, timeout time.Duration, anvilPaths map[string]string) *Scanner {
 	if interval < 1*time.Hour {
 		interval = 1 * time.Hour
 	}
-	if timeout < 1*time.Minute {
-		timeout = 1 * time.Minute
+	s := newScanner(db)
+	s.interval = interval
+	if timeout > s.timeout {
+		s.timeout = timeout
 	}
-	return &Scanner{
-		db:         db,
-		interval:   interval,
-		timeout:    timeout,
-		anvilPaths: anvilPaths,
+	s.anvilPaths = anvilPaths
+	return s
+}
+
+// newScanner builds a scanner that can scan: its two database-backed
+// capabilities, and the timeout floor every ecosystem scan runs under. It is
+// separate from New because the on-demand dispatch path builds a scanner
+// without the periodic loop's interval and its configured timeout — but NOT
+// without a usable timeout, which is why the floor is applied here rather than
+// in New: a scanner built without one runs every ecosystem scan against an
+// expired deadline.
+//
+// Both paths must also agree on the assignment below: a nil *state.DB stored in
+// an interface is not a nil interface, so assigning it unguarded would defeat
+// every nil check at the call sites and turn a scanner built without a database
+// into a panic.
+func newScanner(db *state.DB) *Scanner {
+	s := &Scanner{timeout: minScanTimeout}
+	if db != nil {
+		s.events = db
+		s.failures = db
 	}
+	return s
+}
+
+// emit records an event, tolerating a scanner built without a database (which
+// is every unit test that drives a scan without one).
+func (s *Scanner) emit(typ state.EventType, message, beadID, anvil string) {
+	if s.events == nil {
+		return
+	}
+	_ = s.events.LogEvent(typ, message, beadID, anvil)
 }
 
 // UpdateAnvilPaths replaces the set of anvils to scan. This is safe to call
@@ -122,7 +175,7 @@ func (s *Scanner) UpdateAnvilTags(_ map[string]string) {}
 // Run starts the periodic check loop. Blocks until ctx is canceled.
 func (s *Scanner) Run(ctx context.Context) error {
 	log.Printf("[depcheck] Starting dependency checker (interval: %s, timeout: %s)", s.interval, s.timeout)
-	_ = s.db.LogEvent(state.EventDepcheckStarted,
+	s.emit(state.EventDepcheckStarted,
 		fmt.Sprintf("Dependency checker started (interval: %s)", s.interval), "", "")
 
 	// Initial check
@@ -152,6 +205,8 @@ func (s *Scanner) ScanAll(ctx context.Context) {
 	s.mu.RUnlock()
 
 	log.Printf("[depcheck] Checking %d anvils for outdated dependencies", len(anvils))
+
+	s.pruneBlocked(anvils)
 
 	for name, path := range anvils {
 		if ctx.Err() != nil {
@@ -219,12 +274,16 @@ func (s *Scanner) ecosystemScanners() []ecosystemScanner {
 func (s *Scanner) scanAnvil(ctx context.Context, name, path string) {
 	src, err := s.refSourceFor(ctx, name, path)
 	if err != nil {
-		msg := fmt.Sprintf("could not read dependency manifests for anvil %s from its upstream ref — skipping depcheck to avoid stale results: %v",
-			name, err)
-		log.Printf("[depcheck] %s", msg)
-		_ = s.db.LogEvent(state.EventDepcheckFailed, msg, "", name)
+		// The git plumbing is where the two failure classes live and where the
+		// nightly-identical-event problem was observed, so this is the one path
+		// that classifies. An ecosystem scan that fails below keeps reporting
+		// per-run, since its errors are the ecosystem tool's rather than git's.
+		s.reportScanFailure(name, path, err)
 		return
 	}
+	// Reading the manifests is the proof that whatever blocked an earlier scan
+	// is gone, so it is what withdraws the entry — no other path can know.
+	s.clearBlocked(name)
 
 	var allResults []*CheckResult
 	for _, sc := range s.ecosystemScanners() {
@@ -239,7 +298,7 @@ func (s *Scanner) scanAnvil(ctx context.Context, name, path string) {
 
 		if result.Error != nil {
 			log.Printf("[depcheck] Error checking %s (%s): %v", name, sc.name, result.Error)
-			_ = s.db.LogEvent(state.EventDepcheckFailed,
+			s.emit(state.EventDepcheckFailed,
 				fmt.Sprintf("Dependency check failed for %s (%s): %v", name, sc.name, result.Error), "", name)
 			continue
 		}
@@ -247,14 +306,14 @@ func (s *Scanner) scanAnvil(ctx context.Context, name, path string) {
 		total := len(result.Patch) + len(result.Minor) + len(result.Major)
 		if total == 0 {
 			log.Printf("[depcheck] %s (%s): all dependencies up to date", name, sc.name)
-			_ = s.db.LogEvent(state.EventDepcheckPassed,
+			s.emit(state.EventDepcheckPassed,
 				fmt.Sprintf("All %s dependencies up to date in %s", sc.name, name), "", name)
 			continue
 		}
 
 		log.Printf("[depcheck] %s (%s): %d outdated (%d patch, %d minor, %d major)",
 			name, sc.name, total, len(result.Patch), len(result.Minor), len(result.Major))
-		_ = s.db.LogEvent(state.EventDepcheckFound,
+		s.emit(state.EventDepcheckFound,
 			fmt.Sprintf("Found %d outdated %s dependencies in %s (%d patch, %d minor, %d major)",
 				total, sc.name, name, len(result.Patch), len(result.Minor), len(result.Major)),
 			"", name)
@@ -348,7 +407,7 @@ func (s *Scanner) findOrCreateConsolidatedBead(ctx context.Context, allResults [
 	existing, err := findConsolidatedBead(ctx, anvilPath)
 	if err != nil {
 		log.Printf("[depcheck] %s: could not query existing beads — skipping bead creation: %v", anvilName, err)
-		_ = s.db.LogEvent(state.EventDepcheckFailed,
+		s.emit(state.EventDepcheckFailed,
 			fmt.Sprintf("Skipped bead creation for %s — could not query existing beads: %v", anvilName, err), "", anvilName)
 		return
 	}
@@ -393,7 +452,7 @@ func (s *Scanner) createConsolidatedBead(ctx context.Context, allResults []*Chec
 	output, err := cmd.Output()
 	if err != nil {
 		log.Printf("[depcheck] %s: failed to create consolidated bead: %v: %s", anvilName, err, stderr.String())
-		_ = s.db.LogEvent(state.EventDepcheckFailed,
+		s.emit(state.EventDepcheckFailed,
 			fmt.Sprintf("Failed to create consolidated dep bead for %s: %v", anvilName, err), "", anvilName)
 		return
 	}
@@ -407,11 +466,11 @@ func (s *Scanner) createConsolidatedBead(ctx context.Context, allResults []*Chec
 	_ = executil.DecodeJSON(output, &created)
 	if created.ID != "" {
 		log.Printf("[depcheck] %s: created consolidated bead %s", anvilName, created.ID)
-		_ = s.db.LogEvent(state.EventDepcheckBeadCreated,
+		s.emit(state.EventDepcheckBeadCreated,
 			fmt.Sprintf("Created consolidated dep bead for %s: %s", anvilName, created.ID), "", anvilName)
 	} else {
 		log.Printf("[depcheck] %s: created consolidated dep bead %q: %s", anvilName, title, strings.TrimSpace(string(output)))
-		_ = s.db.LogEvent(state.EventDepcheckBeadCreated,
+		s.emit(state.EventDepcheckBeadCreated,
 			fmt.Sprintf("Created consolidated dep bead for %s: %s", anvilName, title), "", anvilName)
 	}
 }
@@ -451,11 +510,11 @@ func (s *Scanner) updateConsolidatedBead(ctx context.Context, existing *bdBead, 
 	out, err := cmd.Output()
 	if err != nil {
 		log.Printf("[depcheck] %s: failed to update consolidated bead %s: %v: %s", anvilName, existing.ID, err, stderr.String())
-		_ = s.db.LogEvent(state.EventDepcheckFailed,
+		s.emit(state.EventDepcheckFailed,
 			fmt.Sprintf("Failed to update consolidated dep bead for %s: %v", anvilName, err), "", anvilName)
 		return
 	}
 	log.Printf("[depcheck] %s: updated consolidated bead %s: %s", anvilName, existing.ID, strings.TrimSpace(string(out)))
-	_ = s.db.LogEvent(state.EventDepcheckBeadCreated,
+	s.emit(state.EventDepcheckBeadCreated,
 		fmt.Sprintf("Updated consolidated dep bead for %s: %s", anvilName, existing.ID), "", anvilName)
 }

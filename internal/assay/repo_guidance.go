@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/Robin831/Forge/internal/textfmt"
 )
 
 // repoGuidanceFile is the conventional filename Assay reads from the anvil root
@@ -36,7 +38,7 @@ func loadRepoGuidance(anvilPath string) string {
 		return ""
 	}
 	if len(s) > maxRepoGuidanceBytes {
-		s = truncateRunes(s, maxRepoGuidanceBytes) + "\n\n...[REVIEW.md truncated]..."
+		s = textfmt.TruncateRunes(s, maxRepoGuidanceBytes) + "\n\n...[REVIEW.md truncated]..."
 	}
 	return s
 }

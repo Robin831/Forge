@@ -106,6 +106,7 @@ const (
 	AttentionStalled                            // Worker stalled (no log activity)
 	AttentionAnvilWedged                        // Anvil's beads database is mid-merge with unresolved conflicts
 	AttentionSelfDeploy                         // Self-deploy deferred, failed, or rolled back — the binary is not the merged code
+	AttentionDepcheckBlocked                    // Anvil's dependency scan is blocked by a git condition that repeats every run
 )
 
 // NeedsAttentionItem represents a bead requiring human attention.
@@ -135,6 +136,12 @@ func (i NeedsAttentionItem) IsAnvil() bool { return i.Kind == state.AttentionKin
 // daemon running something other than the merged code.
 func (i NeedsAttentionItem) IsDeploy() bool { return i.Kind == state.AttentionKindDeploy }
 
+// IsDepcheckBlocked reports whether this entry describes an anvil whose
+// dependency scan cannot read its manifests at all.
+func (i NeedsAttentionItem) IsDepcheckBlocked() bool {
+	return i.Kind == state.AttentionKindDepcheck
+}
+
 // IsBeadScoped reports whether this entry identifies a bead (or its PR) and so
 // supports the bead-scoped actions: retry, dismiss, notes, description. The
 // non-bead kinds carry an empty bead ID, so every action path must branch on
@@ -147,6 +154,9 @@ func (i NeedsAttentionItem) IsBeadScoped() bool { return i.Kind == state.Attenti
 func nonBeadAttentionHint(item NeedsAttentionItem) string {
 	if item.IsDeploy() {
 		return fmt.Sprintf("%s — fix the deploy and merge again; this clears on the next successful self-deploy", item.Title)
+	}
+	if item.IsDepcheckBlocked() {
+		return fmt.Sprintf("Anvil %s cannot be scanned for dependency updates — fix the checkout's git state; this clears on the next successful scan", item.Anvil)
 	}
 	return fmt.Sprintf("Anvil %s is wedged — resolve the beads merge conflict; this clears automatically", item.Anvil)
 }
@@ -3975,6 +3985,8 @@ func attentionReasonIcon(cat AttentionReason) string {
 		return lipgloss.NewStyle().Foreground(colorDanger).Render("⛔ WEDGED")
 	case AttentionSelfDeploy:
 		return lipgloss.NewStyle().Foreground(colorDanger).Render("⚙ DEPLOY")
+	case AttentionDepcheckBlocked:
+		return lipgloss.NewStyle().Foreground(colorWarning).Render("⛔ DEPCHECK")
 	default:
 		return lipgloss.NewStyle().Foreground(colorMuted).Render("⚠ UNKNOWN")
 	}

@@ -30,7 +30,7 @@ func FindOrCreateBeadID(ctx context.Context, db *state.DB, anvilName, anvilPath 
 	}
 
 	// No bead yet — run the dependency scan to find outdated packages.
-	s := &Scanner{db: db}
+	s := newScanner(db)
 	results := s.ScanAnvilDeps(ctx, anvilName, anvilPath)
 
 	var firstScanErr error
