@@ -185,6 +185,27 @@ type PassReport struct {
 	// is the unit that budget is written in; see turnCounter for why the
 	// provider's own num_turns is not.
 	Turns int
+	// ToolCalls is how many tool calls the pass made, and FilesRead how many
+	// distinct files it opened, summed over every provider session it took —
+	// the CostUSD convention, not the Turns one, because what they measure is
+	// how much this pass explored and a re-prompt's or a retry's exploration
+	// was explored and paid for too.
+	//
+	// They exist because Turns is a weak proxy for the question that matters,
+	// which is whether a pass read any code at all. A pass that answers in one
+	// or two turns emitted its JSON without calling a tool: it treated the diff
+	// as the whole world, which for the security and repo-specific passes was
+	// the majority outcome and cost real findings — an endpoint missing the
+	// permission filter its siblings apply, or an unsynchronized cache reached
+	// from a parallel loop in another file, is invisible in a diff and obvious
+	// two files away. Turns cannot separate that from a pass that read three
+	// files and answered; ToolCalls=0 says it outright.
+	//
+	// Zero for a backend that streams no structured tool events, which is
+	// indistinguishable here from a pass that used no tool — so both are
+	// omitted together from the rendered telemetry (see RenderPassTelemetry).
+	ToolCalls int
+	FilesRead int
 	// TerminationReason is how the pass ended: "" when it answered, else the
 	// same label FailedPasses carries (a provider result subtype where there
 	// is one, e.g. "error_max_turns").
@@ -552,6 +573,8 @@ func Review(ctx context.Context, req ReviewRequest, db *state.DB, cfg Config) (*
 		Findings:            0,
 		CostUSD:             triageRes.usage.EstimatedCostUSD,
 		Turns:               triageRes.turns,
+		ToolCalls:           triageRes.toolCalls,
+		FilesRead:           triageRes.filesRead,
 		Attempts:            1,
 		CacheCreationTokens: triageRes.usage.CacheWriteTokens,
 		CacheReadTokens:     triageRes.usage.CacheReadTokens,
@@ -623,6 +646,8 @@ func Review(ctx context.Context, req ReviewRequest, db *state.DB, cfg Config) (*
 			Findings:            len(o.findings),
 			CostUSD:             o.usage.EstimatedCostUSD,
 			Turns:               o.turns,
+			ToolCalls:           o.toolCalls,
+			FilesRead:           o.filesRead,
 			TerminationReason:   o.failure.Reason,
 			Attempts:            o.attempts,
 			Retried:             o.retried,

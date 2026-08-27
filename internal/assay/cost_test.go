@@ -327,7 +327,7 @@ func TestCostStopErrorCarriesEveryTokenColumn(t *testing.T) {
 	}
 	// And it survives the projection every cost sink reads it through, so the
 	// row that lands is the whole session, not its dollars alone.
-	u, turns := passErrorTelemetry(perr)
+	u, turns, _ := passErrorTelemetry(perr)
 	if u.InputTokens != 800_000 || u.OutputTokens != 12 || u.CacheWriteTokens != 900 || u.CacheReadTokens != 61500 || turns != 2 {
 		t.Errorf("passErrorTelemetry = {%+v turns:%d}; want the tracker's whole accounting", u, turns)
 	}

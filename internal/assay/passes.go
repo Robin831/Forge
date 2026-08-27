@@ -145,6 +145,10 @@ type PassOutput struct {
 	// and they are what scopes a retry's diff (see buildRetryMods). Nothing
 	// branches on them on the success path.
 	OpenedFiles []string
+	// ToolCalls is how many tool_use blocks the session streamed, counted
+	// whether or not the tool named a file. Zero for a backend that streams no
+	// structured tool events. Telemetry: nothing branches on it.
+	ToolCalls int
 }
 
 // usage projects the session's counters onto the cost.Usage every cost sink
@@ -323,6 +327,11 @@ type PassError struct {
 	// exactly the one whose retry wants to know what it was reading, and a
 	// failed session has no other way to say.
 	OpenedFiles []string
+	// ToolCalls is how many tool_use blocks the failed session streamed,
+	// carried for the same reason Turns is: a pass that failed having made no
+	// tool call and one that failed halfway through reading the repository are
+	// different failures, and the reason label alone says neither.
+	ToolCalls int
 }
 
 func (e *PassError) Error() string { return e.Message }
@@ -440,10 +449,12 @@ func newSmithRunner(cfg Config, req ReviewRequest) PassRunner {
 		// the opened-file tracker share the same hook.
 		//
 		// Unlike the other two, the file tracker is installed unconditionally:
-		// what a session opened is knowable only while it streams, and the
-		// session that needs it — one about to die on turns — does not announce
-		// itself in advance. The callback is the only cost, since smith parses
-		// these events either way.
+		// what a session opened, and whether it opened anything at all, is
+		// knowable only while it streams — and neither the session that needs
+		// the list (one about to die on turns) nor the pass that answers from
+		// the diff without a single tool call announces itself in advance. The
+		// callback is the only cost, since smith parses these events either
+		// way.
 		//
 		// The turn counter is installed unconditionally for the same reason: how many messages a session took is knowable
 		// only while it streams, and it is the one figure that can be compared
@@ -467,7 +478,7 @@ func newSmithRunner(cfg Config, req ReviewRequest) PassRunner {
 			req.OnPassLog(proc.LogPath)
 		}
 		out, err := sessionOutcome(pass, tracker, turns, proc.Wait(), pv)
-		return withOpenedFiles(out, err, files.paths())
+		return withSessionTools(out, err, files)
 	}
 }
 
@@ -919,6 +930,13 @@ type passResult struct {
 	// about how close any single session came to the --max-turns budget, which
 	// is the number the budget is tuned against.
 	turns int
+	// toolCalls is how many tool calls every session of the pass made together,
+	// and filesRead how many distinct files they opened between them. Both are
+	// cumulative, on usage's terms rather than turns': they measure how much
+	// this pass explored, and exploration a re-prompt or a retry paid for was
+	// still exploration. See PassReport.ToolCalls.
+	toolCalls int
+	filesRead int
 	// failure is the classified termination, derived once here so nothing
 	// downstream re-runs classifyPassError on the same error. Its zero value
 	// (empty Name and Reason) means the pass answered.
@@ -988,10 +1006,18 @@ func runDeepPass(ctx context.Context, runner PassRunner, cfg Config, req ReviewR
 	}
 	in := retryInputs{prompt: prompt, diff: scopedDiff, turns: passTurnBudget(cfg)}
 
+	// opened is the union of what every attempt read, which is what filesRead
+	// counts. The retry below is still scoped from the failing attempt's own
+	// list: that one is evidence about where THAT session thought the risk was,
+	// while this one is telemetry about the pass as a whole.
+	var opened []string
 	for attempt := 1; attempt <= 1+maxTurnsRetries; attempt++ {
 		a := runPassAttempt(ctx, runner, req, p, in)
 		res.usage.Add(a.usage)
 		res.turns = a.turns
+		res.toolCalls += a.toolCalls
+		opened = mergeOpenedFiles(opened, a.openedFiles)
+		res.filesRead = len(opened)
 		res.attempts = attempt
 		res.findings = a.findings
 		res.err = a.err
@@ -1043,6 +1069,11 @@ type attemptResult struct {
 	usage    cost.Usage
 	turns    int
 	sessions int
+	// toolCalls is how many tool calls every session of the attempt made
+	// together. It is summed rather than taken from the final session, on the
+	// same terms as usage: the question it answers is how much this pass
+	// explored, and a strict-JSON re-prompt's exploration was paid for too.
+	toolCalls int
 	// openedFiles are the files the attempt's sessions read, as the provider
 	// reported them. On a turn-budget failure they are what scopes the retry's
 	// diff; empty otherwise, and empty for any backend that streams no tool
@@ -1068,11 +1099,12 @@ func runPassAttempt(ctx context.Context, runner PassRunner, req ReviewRequest, p
 
 	out, err := runner(ctx, p.Name, p.Tier, prompt)
 	if err != nil {
-		u, turns := passErrorTelemetry(err)
+		u, turns, calls := passErrorTelemetry(err)
 		return attemptResult{
 			usage:       u,
 			turns:       turns,
 			sessions:    1,
+			toolCalls:   calls,
 			openedFiles: passErrorFiles(err),
 			err:         err,
 		}
@@ -1081,6 +1113,7 @@ func runPassAttempt(ctx context.Context, runner PassRunner, req ReviewRequest, p
 		usage:       out.usage(),
 		turns:       out.Turns,
 		sessions:    1,
+		toolCalls:   out.ToolCalls,
 		openedFiles: out.OpenedFiles,
 	}
 
@@ -1090,15 +1123,17 @@ func runPassAttempt(ctx context.Context, runner PassRunner, req ReviewRequest, p
 		out2, err2 := runner(ctx, p.Name, p.Tier, prompt+"\n\n"+strictJSONReminder)
 		res.sessions = 2
 		if err2 != nil {
-			u2, turns2 := passErrorTelemetry(err2)
+			u2, turns2, calls2 := passErrorTelemetry(err2)
 			res.usage.Add(u2)
 			res.turns = turns2
+			res.toolCalls += calls2
 			res.openedFiles = mergeOpenedFiles(res.openedFiles, passErrorFiles(err2))
 			res.err = err2
 			return res
 		}
 		res.usage.Add(out2.usage())
 		res.turns = out2.Turns
+		res.toolCalls += out2.ToolCalls
 		res.openedFiles = mergeOpenedFiles(res.openedFiles, out2.OpenedFiles)
 		findings, perr = parseFindings(out2.Text)
 		if perr != nil {
@@ -1126,7 +1161,7 @@ func runPassAttempt(ctx context.Context, runner PassRunner, req ReviewRequest, p
 // undercount is the safe direction for numbers feeding a spend limit's
 // denominator and a cache-redundancy measurement; a fabricated one would make
 // either say whatever the fabrication said.
-func passErrorTelemetry(err error) (u cost.Usage, turns int) {
+func passErrorTelemetry(err error) (u cost.Usage, turns, toolCalls int) {
 	var pe *PassError
 	if errors.As(err, &pe) {
 		return cost.Usage{
@@ -1135,9 +1170,9 @@ func passErrorTelemetry(err error) (u cost.Usage, turns int) {
 			CacheReadTokens:  pe.CacheReadTokens,
 			CacheWriteTokens: pe.CacheCreationTokens,
 			EstimatedCostUSD: pe.CostUSD,
-		}, pe.Turns
+		}, pe.Turns, pe.ToolCalls
 	}
-	return cost.Usage{}, 0
+	return cost.Usage{}, 0, 0
 }
 
 // passErrorFiles reports the files a failed session opened, where the error

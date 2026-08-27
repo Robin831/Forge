@@ -85,7 +85,7 @@ func RenderStatusText(status RunStatus, completed, total int, failed []PassFailu
 // RenderPassTelemetry renders the per-pass turn and prompt-cache telemetry of a
 // run as one line:
 //
-//	pass=triage turns=3 term=success cache_w=41200 cache_r=0, pass=logic turns=12 term=success cache_w=41500 cache_r=0 primer=1, pass=security turns=6 term=success cache_w=900 cache_r=41500
+//	pass=triage turns=3 term=success cache_w=41200 cache_r=0, pass=logic turns=12 term=success tools=9 files=4 cache_w=41500 cache_r=0 primer=1, pass=security turns=6 term=success tools=5 files=3 cache_w=900 cache_r=41500
 //
 // It is additive — a separate field on the Assay log line, never a change to
 // the coverage status text — so nothing that reads the existing line breaks.
@@ -94,6 +94,16 @@ func RenderStatusText(status RunStatus, completed, total int, failed []PassFailu
 // termination it names. retry is only present when a pass was actually re-run
 // (retry=1) or earned a re-run it did not get (retry=skipped), since those are
 // the rare cases worth spotting.
+//
+// tools/files are how many tool calls the pass made and how many distinct files
+// it opened, summed over its sessions. They are here because turns is a weak
+// proxy for the only question that matters about a pass's coverage — whether it
+// read any code — and a pass answering in one turn from diff text alone is
+// indistinguishable, by turns, from a cheap pass that did its job. They are
+// omitted together when both are zero, which covers a backend that streams no
+// structured tool events as well as a pass that genuinely used no tool; the
+// two are one value here, and inventing a distinction between them would be
+// inventing evidence.
 //
 // cache_w/cache_r are the pass's prompt-cache write and read token counts, and
 // are omitted together when the provider reported neither — a backend with no
@@ -125,6 +135,9 @@ func RenderPassTelemetry(passes []PassReport) string {
 			// in the coverage text (both are just a failed pass). This is the
 			// one place it shows.
 			s += " retry=skipped"
+		}
+		if p.ToolCalls > 0 || p.FilesRead > 0 {
+			s += fmt.Sprintf(" tools=%d files=%d", p.ToolCalls, p.FilesRead)
 		}
 		if p.CacheCreationTokens > 0 || p.CacheReadTokens > 0 {
 			s += fmt.Sprintf(" cache_w=%d cache_r=%d", p.CacheCreationTokens, p.CacheReadTokens)

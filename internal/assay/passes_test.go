@@ -281,16 +281,21 @@ func TestFileTrackerIsBounded(t *testing.T) {
 	}
 }
 
-// TestWithOpenedFilesAttachesToTheFailure pins the carrier that matters: a
+// TestWithSessionToolsAttachesToTheFailure pins the carrier that matters: a
 // session that died on turns has no PassOutput to hang its file list on, so it
 // has to ride out on the error.
-func TestWithOpenedFilesAttachesToTheFailure(t *testing.T) {
+func TestWithSessionToolsAttachesToTheFailure(t *testing.T) {
 	perr := newPassError("logic", ReasonMaxTurns, "out of turns", nil)
-	if _, err := withOpenedFiles(PassOutput{}, perr, []string{"/w/a.go"}); err != perr {
-		t.Fatalf("withOpenedFiles replaced the error: %v", err)
+	tr := newFileTracker()
+	tr.observe(toolEvent(t, `[{"type":"tool_use","name":"Read","input":{"file_path":"/w/a.go"}}]`))
+	if _, err := withSessionTools(PassOutput{}, perr, tr); err != perr {
+		t.Fatalf("withSessionTools replaced the error: %v", err)
 	}
 	if len(perr.OpenedFiles) != 1 || perr.OpenedFiles[0] != "/w/a.go" {
 		t.Errorf("PassError.OpenedFiles = %v; want [/w/a.go]", perr.OpenedFiles)
+	}
+	if perr.ToolCalls != 1 {
+		t.Errorf("PassError.ToolCalls = %d; want 1", perr.ToolCalls)
 	}
 	if got := passErrorFiles(perr); len(got) != 1 {
 		t.Errorf("passErrorFiles = %v; want the attached list", got)
@@ -299,9 +304,30 @@ func TestWithOpenedFilesAttachesToTheFailure(t *testing.T) {
 		t.Errorf("passErrorFiles(foreign error) = %v; want nil", got)
 	}
 
-	out, err := withOpenedFiles(PassOutput{Text: "{}"}, nil, []string{"/w/a.go"})
-	if err != nil || len(out.OpenedFiles) != 1 {
+	out, err := withSessionTools(PassOutput{Text: "{}"}, nil, tr)
+	if err != nil || len(out.OpenedFiles) != 1 || out.ToolCalls != 1 {
 		t.Errorf("success path: out = %+v err = %v", out, err)
+	}
+}
+
+// TestWithSessionToolsCountsToolsThatNameNoFile is the whole reason the call
+// count is not derived from the file list: a session that only grepped or ran a
+// command explored, and reporting it as a session that never used a tool is the
+// exact misreading this telemetry exists to prevent.
+func TestWithSessionToolsCountsToolsThatNameNoFile(t *testing.T) {
+	tr := newFileTracker()
+	tr.observe(toolEvent(t, `[{"type":"tool_use","name":"Bash","input":{"command":"ls"}}]`))
+	tr.observe(toolEvent(t, `[{"type":"tool_use","name":"Grep","input":{"pattern":"x"}}]`))
+
+	out, err := withSessionTools(PassOutput{Text: "{}"}, nil, tr)
+	if err != nil {
+		t.Fatalf("withSessionTools: %v", err)
+	}
+	if out.ToolCalls != 2 {
+		t.Errorf("ToolCalls = %d; want 2", out.ToolCalls)
+	}
+	if len(out.OpenedFiles) != 0 {
+		t.Errorf("OpenedFiles = %v; want none — neither tool named a file", out.OpenedFiles)
 	}
 }
 
@@ -439,6 +465,27 @@ func TestRetrySkippedRendersInTelemetry(t *testing.T) {
 	got = RenderPassTelemetry([]PassReport{{Name: "logic", Turns: 4, Attempts: 1}})
 	if strings.Contains(got, "retry") {
 		t.Errorf("RenderPassTelemetry = %q; want no retry field", got)
+	}
+}
+
+// TestToolCallsRenderInTelemetry pins the field the whole exploration question
+// is answered by. A pass that answered in two turns having made no tool call
+// reviewed the diff text and nothing else; by turns alone it is
+// indistinguishable from a cheap pass that did its job, so tools=0 has to be
+// visible on the line.
+func TestToolCallsRenderInTelemetry(t *testing.T) {
+	got := RenderPassTelemetry([]PassReport{
+		{Name: "security", Turns: 7, Attempts: 1, ToolCalls: 9, FilesRead: 4},
+	})
+	if !strings.Contains(got, "tools=9 files=4") {
+		t.Errorf("RenderPassTelemetry = %q; want it to carry tools=9 files=4", got)
+	}
+	// A pass that used no tool, and a backend that streams no tool events, are
+	// one value here — so both are omitted rather than rendered as a zero that
+	// claims to know which of the two happened.
+	got = RenderPassTelemetry([]PassReport{{Name: "security", Turns: 2, Attempts: 1}})
+	if strings.Contains(got, "tools=") || strings.Contains(got, "files=") {
+		t.Errorf("RenderPassTelemetry = %q; want no tool fields when nothing was observed", got)
 	}
 }
 

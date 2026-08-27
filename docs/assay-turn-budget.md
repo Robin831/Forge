@@ -159,3 +159,40 @@ PY
 
 The daemon log's own `pass=… turns=…` fields are the cheaper source and are now
 in the right unit, but they only go back as far as the current retention window.
+
+## Addendum — `tools=` / `files=` (Forge-q2qz)
+
+Turns turned out to be a weak proxy for the question the budget work kept
+circling: not *how much* a pass explored, but whether it explored **at all**. A
+pass that terminates in one or two turns produced its JSON without calling a
+tool — it never opened a file, and by the turn count alone that is
+indistinguishable from a cheap pass that read what it needed and answered.
+
+Across the 20 most recent runs on the skybert forge (2026-08-27) the split was:
+
+| pass | mean turns | runs at ≤2 turns |
+|---|---|---|
+| triage | 1.0 | 20 (by design) |
+| security | 2.5 | 13 |
+| repo-specific | 9.8 | 7 |
+| tests-missing | 11.7 | 1 |
+| logic | 12.9 | 1 |
+| conventions | 13.7 | 1 |
+
+Two passes were reviewing diff text and nothing else, which is how an endpoint
+missing the per-resource permission filter its siblings apply, and an
+unsynchronized cache reached from a `Parallel.ForEach` in another file, are both
+reviewed and both missed — neither is visible in a hunk, and both are obvious
+one file away. The cause was the prompt, not the cap: `security.md` closed with
+*"Do not speculate about code you cannot see"*, written against hallucination
+and read as an instruction to stay inside the diff. `logic.md` carried no such
+clause and averaged 12.9 turns against the same budget.
+
+`RenderPassTelemetry` now carries `tools=<calls> files=<distinct paths>` per
+pass, summed over the pass's sessions (the `CostUSD` convention, not the
+final-session `turns=` one — a re-prompt's or a retry's exploration was
+exploration too). Both are omitted when both are zero, since a pass that used no
+tool and a backend that streams no structured tool events are one value here.
+
+That makes the script above unnecessary for this question: `tools=0` on a
+completed pass says outright what a low `turns=` only hinted at.
