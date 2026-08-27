@@ -278,14 +278,28 @@ func planRetryInputs(base retryInputs, mods retryMods, build func(unifiedDiff st
 	return next, true
 }
 
-// fileTracker records the files one pass session opened, read off the
-// provider's tool-use events as they stream.
+// fileTracker records what one pass session did with its tools: which files it
+// opened, and how many tool calls it made at all, read off the provider's
+// tool-use events as they stream.
 //
-// It exists for the retry: the files a session chose to open are the only
-// in-band evidence of where it thought this diff's risk was, and a session that
-// died on turns never got to say so any other way. A backend that streams no
-// structured tool events yields an empty list, and the retry is then modified
-// by budget and instruction alone.
+// The file list exists for the retry: the files a session chose to open are the
+// only in-band evidence of where it thought this diff's risk was, and a session
+// that died on turns never got to say so any other way. A backend that streams
+// no structured tool events yields an empty list, and the retry is then
+// modified by budget and instruction alone.
+//
+// The call count exists for telemetry, and it is deliberately not derivable
+// from the file list: a pass that greps, lists a directory or runs a command
+// has explored without naming a file_path, and a pass that made no tool call at
+// all answered from the diff text alone. That second case is the one worth
+// seeing — it is what the security pass was doing on the majority of runs, and
+// the turn count was only ever a weak proxy for it (see PassReport.ToolCalls).
+// It keeps counting past maxTrackedFiles, since it is one int and the runaway
+// session is exactly the one whose size is worth knowing.
+//
+// What this tracker counts is the Claude-shaped stream, and a zero from it is
+// therefore not yet an answer: observedToolCalls is where a backend that
+// reports the same figure another way is folded back in.
 //
 // It is written from the provider's stdout reader goroutine and read from the
 // pass goroutine, so it is guarded.
@@ -293,6 +307,7 @@ type fileTracker struct {
 	mu    sync.Mutex
 	seen  map[string]struct{}
 	order []string
+	calls int
 }
 
 func newFileTracker() *fileTracker { return &fileTracker{} }
@@ -313,7 +328,8 @@ type toolUseEnvelope struct {
 	} `json:"content"`
 }
 
-// observe records any file named by ev. Safe to call from the stream reader.
+// observe records the tool calls ev carries and any file they name. Safe to
+// call from the stream reader.
 func (t *fileTracker) observe(ev smith.StreamEvent) {
 	if t == nil || ev.Type != "assistant" || len(ev.Message) == 0 {
 		return
@@ -326,8 +342,17 @@ func (t *fileTracker) observe(ev smith.StreamEvent) {
 		if c.Type != "tool_use" {
 			continue
 		}
+		t.addCall()
 		t.add(c.Input.FilePath)
 	}
+}
+
+// addCall counts one tool_use block. A block naming no file still counts: the
+// question this figure answers is whether the session used its tools at all.
+func (t *fileTracker) addCall() {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.calls++
 }
 
 func (t *fileTracker) add(path string) {
@@ -361,24 +386,82 @@ func (t *fileTracker) paths() []string {
 	return append([]string(nil), t.order...)
 }
 
-// withOpenedFiles attaches the files a session opened to whichever of its two
+// toolCalls returns how many tool_use blocks the session streamed. A nil
+// tracker, and a backend that streams no per-message tool events, report 0 —
+// which is why callers resolve the figure through observedToolCalls rather than
+// reading this one directly: for a backend that reports its tool calls
+// elsewhere (Gemini, in its result event) the zero here is a gap in the
+// derivation, not a session that used no tool.
+func (t *fileTracker) toolCalls() int {
+	if t == nil {
+		return 0
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.calls
+}
+
+// observedToolCalls resolves the tool-call figure a session reports: the count
+// read off the stream when there is one, else whatever the provider reported in
+// its own result accounting.
+//
+// It is observedTurns' rule applied to the other stream-derived figure, and for
+// the same reason — a telemetry field that cannot be derived must degrade to
+// the old number, never to zero. fileTracker counts Claude-shaped tool_use
+// content blocks off assistant events; Gemini streams none of those and reports
+// the session's tool calls once, in its result event
+// (smith.StreamStats.ToolCalls), so a Gemini-backed pass that read ten files
+// would otherwise report 0 — indistinguishable from a Claude pass that read
+// nothing, which is the exact confusion this counter was added to remove.
+//
+// The file LIST has no such fallback, because there is nothing to fall back to:
+// Gemini's stats carry a count and no paths. So FilesRead stays 0 for that
+// backend while ToolCalls does not, which is why the two are separate fields
+// and why neither implies the other.
+func observedToolCalls(t *fileTracker, res *smith.Result) int {
+	if n := t.toolCalls(); n > 0 {
+		return n
+	}
+	if res != nil && res.GeminiStats != nil {
+		return res.GeminiStats.ToolCalls
+	}
+	return 0
+}
+
+// withSessionTools attaches what a session did with its tools — the files it
+// opened and the number of tool calls it made — to whichever of its two
 // outcomes carries it out.
 //
-// The error path is the one that matters: a session that ends on
-// error_max_turns is exactly the session whose retry wants to know what it
+// The error path is the one that matters for the file list: a session that ends
+// on error_max_turns is exactly the session whose retry wants to know what it
 // read, and the only carrier it has is the PassError. The success path is
 // populated for symmetry and for telemetry; nothing branches on it.
-func withOpenedFiles(out PassOutput, err error, files []string) (PassOutput, error) {
-	if len(files) == 0 {
-		return out, err
-	}
+//
+// The call count rides along on both paths for the same reason it is counted
+// separately from the files: a session that explored without opening anything
+// (a grep, a directory listing, a command) has an empty file list and a
+// non-zero count, and folding the two would report it as a session that never
+// used a tool.
+//
+// res is the finished session's result, and is here only so the count can fall
+// back to the provider's own figure (observedToolCalls) for a backend that
+// streams no per-message tool events. It may be nil, which reports the
+// tracker's count alone.
+func withSessionTools(out PassOutput, err error, t *fileTracker, res *smith.Result) (PassOutput, error) {
+	files, calls := t.paths(), observedToolCalls(t, res)
 	if err != nil {
 		var pe *PassError
 		if errors.As(err, &pe) {
-			pe.OpenedFiles = files
+			pe.ToolCalls = calls
+			if len(files) > 0 {
+				pe.OpenedFiles = files
+			}
 		}
 		return out, err
 	}
-	out.OpenedFiles = files
+	out.ToolCalls = calls
+	if len(files) > 0 {
+		out.OpenedFiles = files
+	}
 	return out, nil
 }

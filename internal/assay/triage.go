@@ -33,6 +33,16 @@ type triageRun struct {
 	usage cost.Usage
 	// turns is the recorded (final) session's turn count.
 	turns int
+	// toolCalls is how many tool calls every session of the pass made together,
+	// cumulative like usage rather than final-session like turns. Triage is
+	// expected to report zero — it reads the diff and answers — which is
+	// precisely why the figure is carried: a triage pass that starts opening
+	// files is scoping work that has stopped being cheap.
+	toolCalls int
+	// filesRead is how many distinct files those sessions opened between them,
+	// carried beside toolCalls so the rendered line cannot report a pass that
+	// opened files as having opened none.
+	filesRead int
 }
 
 // runTriage runs the scoping pass. Like the deep passes it parses strict JSON
@@ -60,25 +70,36 @@ func runTriage(ctx context.Context, runner PassRunner, cfg Config, req ReviewReq
 
 	out, err := runner(ctx, passTriage.Name, passTriage.Tier, prompt)
 	if err != nil {
-		u, turns := passErrorTelemetry(err)
-		return triageRun{usage: u, turns: turns}, err
+		// One session has run, so its own list IS the union — there is nothing
+		// earlier to merge with. The paths below, which do merge, are the ones
+		// reached after a session has already produced a PassOutput.
+		u, turns, calls := passErrorTelemetry(err)
+		return triageRun{usage: u, turns: turns, toolCalls: calls,
+			filesRead: len(passErrorFiles(err))}, err
 	}
+	opened := out.OpenedFiles
 	run := triageRun{
-		usage: out.usage(),
-		turns: out.Turns,
+		usage:     out.usage(),
+		turns:     out.Turns,
+		toolCalls: out.ToolCalls,
+		filesRead: len(opened),
 	}
 
 	res, perr := parseTriage(out.Text)
 	if perr != nil {
 		out2, err2 := runner(ctx, passTriage.Name, passTriage.Tier, prompt+"\n\n"+strictJSONReminder)
 		if err2 != nil {
-			u2, turns2 := passErrorTelemetry(err2)
+			u2, turns2, calls2 := passErrorTelemetry(err2)
 			run.usage.Add(u2)
 			run.turns = turns2
+			run.toolCalls += calls2
+			run.filesRead = len(mergeOpenedFiles(opened, passErrorFiles(err2)))
 			return run, err2
 		}
 		run.usage.Add(out2.usage())
 		run.turns = out2.Turns
+		run.toolCalls += out2.ToolCalls
+		run.filesRead = len(mergeOpenedFiles(opened, out2.OpenedFiles))
 		res, perr = parseTriage(out2.Text)
 		if perr != nil {
 			return run, fmt.Errorf("assay pass %s: invalid JSON output after retry: %w", passTriage.Name, perr)

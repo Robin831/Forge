@@ -159,3 +159,89 @@ PY
 
 The daemon log's own `pass=… turns=…` fields are the cheaper source and are now
 in the right unit, but they only go back as far as the current retention window.
+
+## Addendum — `tools=` / `files=` (Forge-q2qz)
+
+Turns turned out to be a weak proxy for the question the budget work kept
+circling: not *how much* a pass explored, but whether it explored **at all**. A
+pass that terminates in one or two turns produced its JSON without calling a
+tool — it never opened a file, and by the turn count alone that is
+indistinguishable from a cheap pass that read what it needed and answered.
+
+Across the 20 most recent runs on the skybert forge (2026-08-27) the split was:
+
+| pass | mean turns | runs at ≤2 turns |
+|---|---|---|
+| triage | 1.0 | 20 (by design) |
+| security | 2.5 | 13 |
+| repo-specific | 9.8 | 7 |
+| tests-missing | 11.7 | 1 |
+| logic | 12.9 | 1 |
+| conventions | 13.7 | 1 |
+
+Two passes were reviewing diff text and nothing else, which is how an endpoint
+missing the per-resource permission filter its siblings apply, and an
+unsynchronized cache reached from a `Parallel.ForEach` in another file, are both
+reviewed and both missed — neither is visible in a hunk, and both are obvious
+one file away. The cause was the prompt, not the cap: `security.md` closed with
+*"Do not speculate about code you cannot see"*, written against hallucination
+and read as an instruction to stay inside the diff. `logic.md` carried no such
+clause and averaged 12.9 turns against the same budget.
+
+`RenderPassTelemetry` now carries `tools=<calls> files=<distinct paths>` per
+pass. `tools=` is summed over the pass's sessions (the `CostUSD` convention, not
+the final-session `turns=` one — a re-prompt's or a retry's exploration was
+exploration too); `files=` is the size of the deduplicated union of what those
+sessions opened, since "how many files did this pass read" is a question about a
+set.
+
+`tools=0` **is** rendered — it is the whole point of the field — whenever it can
+be told apart from a missing measurement. On one pass alone it cannot: a pass
+that made no tool call and a backend that reports no tool telemetry are the same
+zero. The run resolves it, since one run is one provider: if any pass of the run
+reported a non-zero count, a sibling's zero is a genuine "never opened
+anything". Where no pass in the run reported one, the fields are omitted
+together rather than printed as zeros that claim to know which case it was. (A
+backend that reports its tool calls somewhere other than per-message — Gemini,
+in its result event — is folded back in by `observedToolCalls` before any of
+this, so it counts as measured.)
+
+That makes the script above unnecessary for this question: `tools=0` on a
+completed pass says outright what a low `turns=` only hinted at.
+
+## Addendum — do 16 turns and $1.50 still hold? (Forge-q2qz)
+
+Teaching two passes to explore raises the question this file exists for, since
+both bounds were measured against the behaviour that change replaces.
+
+**The turn cap (`assayMaxTurns` = 16).** Logic is the worked precedent: it
+carries no anti-reading clause, averages 12.9 turns against this budget, and its
+`error_max_turns` rate is part of what set the number. Moving security (2.5) and
+repo-specific (9.8) into that regime is the intent of the change, so two more
+passes will sit where logic sits — a mean four turns under the cap, on a
+distribution whose right tail cannot be read off the log (see the censoring
+argument above). The cap is deliberately not raised here on a prediction: a turn
+exhaustion is **recoverable**, since `error_max_turns` earns one modified retry
+(halved budget, an "answer now" instruction, and the diff scoped to the files
+the dead session opened), so an under-sized cap costs money and a slower pass
+rather than coverage.
+
+**The spend ceiling (`assay.max_cost_per_pass_usd` = $1.50/session).** This is
+the bound that bites, because `ReasonMaxCost` is terminal by design — never
+retried, since a re-run buys the identical runaway at full price — so a pass
+killed on spend counts as failed and its coverage drops out of the run. A
+security pass that used to answer in ~2 turns and now reads files like logic
+does is a materially larger session, and on the largest PRs the plausible
+failure is that the pass Assay just taught to read is the one that gets stopped.
+It is left at $1.50 for the same reason the cap is left at 16 — there is no
+post-change data yet, and a bound moved on a guess is exactly what this file was
+written to prevent — but it is the number to watch first.
+
+**Re-measure rather than re-guess** (Forge-sra6). The telemetry added in the
+same commit is what answers it: per-pass `turns=`/`tools=`/`files=`, the
+`error_max_turns` and `error_max_cost` rates for security and repo-specific
+specifically, and `forge assay stats` for the per-run cost. Act if either the
+two passes start exhausting their turn budget materially more often than logic
+does, or any pass reaches `error_max_cost` at all — the first says the cap is
+too low for the work now asked of them, the second says the ceiling is removing
+coverage silently. Record whatever the new distribution turns out to be here.

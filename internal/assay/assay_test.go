@@ -35,6 +35,12 @@ type stubResp struct {
 	// it is what scopes the retry's diff; set it on err responses via
 	// PassError.OpenedFiles instead, which is the carrier a failed session has.
 	opened []string
+	// toolCalls is how many tool calls the session made, which a pass sums over
+	// its sessions while folding opened into a deduplicated union — two
+	// conventions that a scripted runner has to be able to produce separately,
+	// or no Review-level test can tell a sum from an assignment. Like opened it
+	// has no channel on an err response: set PassError.ToolCalls there.
+	toolCalls int
 	// tokensIn and tokensOut are the session's plain token counts, summed the
 	// same way — they are what the run's usage carries to the cost tables.
 	tokensIn  int
@@ -98,6 +104,7 @@ func (r *scriptRunner) run(ctx context.Context, pass, _, prompt string) (PassOut
 		CacheCreationTokens: resp.cacheW,
 		CacheReadTokens:     resp.cacheR,
 		OpenedFiles:         resp.opened,
+		ToolCalls:           resp.toolCalls,
 	}, nil
 }
 

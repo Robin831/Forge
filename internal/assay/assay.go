@@ -162,11 +162,14 @@ type Finding struct {
 
 // PassReport captures per-pass execution metadata for observability.
 //
-// The telemetry half (Turns/TerminationReason/Attempts/Retried) exists so the
-// turn budget can be tuned against real runs: a pass that ends on
-// error_max_turns having burned the whole budget on a nine-line diff is
-// exploring, not reading a large change, and only the per-pass numbers say
-// which of the two happened.
+// The telemetry half (Turns/TerminationReason/Attempts/Retried, plus
+// ToolCalls/FilesRead) exists so the turn budget can be tuned against real
+// runs: a pass that ends on error_max_turns having burned the whole budget on a
+// nine-line diff is exploring, not reading a large change, and only the
+// per-pass numbers say which of the two happened. The two accumulation
+// conventions in that half are deliberate and differ per field — Turns is the
+// final session's, CostUSD and ToolCalls are summed over sessions, FilesRead is
+// the size of their deduplicated union — so each field says which it uses.
 type PassReport struct {
 	// Name is the pass identifier (e.g. "logic").
 	Name string
@@ -185,6 +188,42 @@ type PassReport struct {
 	// is the unit that budget is written in; see turnCounter for why the
 	// provider's own num_turns is not.
 	Turns int
+	// ToolCalls is how many tool calls the pass made, SUMMED over every
+	// provider session it took — a strict-JSON re-prompt and a turn-budget
+	// retry alike, and failed sessions as well as successful ones. That is the
+	// CostUSD convention rather than the Turns one, because what it measures is
+	// how much this pass explored, and exploration a re-prompt or a retry paid
+	// for was still exploration.
+	//
+	// Both fields exist because Turns is a weak proxy for the question that
+	// matters, which is whether a pass read any code at all. A pass that
+	// answers in one or two turns emitted its JSON without calling a tool: it
+	// treated the diff as the whole world, which for the security and
+	// repo-specific passes was the majority outcome and cost real findings — an
+	// endpoint missing the permission filter its siblings apply, or an
+	// unsynchronized cache reached from a parallel loop in another file, is
+	// invisible in a diff and obvious two files away. Turns cannot separate
+	// that from a pass that read three files and answered; ToolCalls=0 says it
+	// outright.
+	//
+	// Zero where the count could be established and was genuinely nil, and zero
+	// again for a backend that reports no tool telemetry at all — the two are
+	// one value on a single pass, which is why RenderPassTelemetry decides
+	// between them at the level of the RUN (see there).
+	ToolCalls int
+	// FilesRead is how many DISTINCT files those sessions opened between them:
+	// the size of the deduplicated union, not a sum, so two sessions that each
+	// read the same three files report 3 rather than 6 (runDeepPass merges the
+	// lists with mergeOpenedFiles and reports len of the union; runPassAttempt
+	// and runTriage merge their re-prompt's list the same way). It is the
+	// cumulative field ToolCalls is — every session of the pass contributes —
+	// and only the fold differs, because "how many files did this pass read"
+	// is a question about a set.
+	//
+	// Zero for a backend that names no file in its tool events, which includes
+	// one that reports a tool-call COUNT but no per-call file path: ToolCalls
+	// can be non-zero here while this stays 0.
+	FilesRead int
 	// TerminationReason is how the pass ended: "" when it answered, else the
 	// same label FailedPasses carries (a provider result subtype where there
 	// is one, e.g. "error_max_turns").
@@ -228,6 +267,26 @@ type PassReport struct {
 	// the pass whose large CacheCreationTokens is expected rather than a
 	// regression.
 	Primer bool
+	// Provider is the kind of backend that ran the pass ("claude", "copilot",
+	// "gemini"), resolved from the Config's per-tier hints exactly as the
+	// session itself was.
+	//
+	// It is here for one reason: what a zero in ToolCalls/FilesRead MEANS is a
+	// property of the backend, not of the pass or of the run. A run is not one
+	// provider — triage resolves its own from assay.triage_provider and falls
+	// back to the review provider only when that is empty — so with
+	// triage_provider: claude and review_provider: copilot, triage streams
+	// tool_use blocks Forge can count while the five deep passes stream plain
+	// text carrying no tool telemetry at all. Reading triage's non-zero count
+	// as proof that the whole run's zeros are measurements would render
+	// tools=0 for all five, which says they answered from diff text alone: the
+	// exact false signal the counter exists to report truthfully.
+	// RenderPassTelemetry therefore groups by this field.
+	//
+	// Empty for a PassReport assembled without one, which groups all such
+	// passes together — the run-level reading, which is right whenever a run
+	// does turn out to be one provider.
+	Provider string
 }
 
 // ReviewResult is the outcome of a Review.
@@ -552,9 +611,12 @@ func Review(ctx context.Context, req ReviewRequest, db *state.DB, cfg Config) (*
 		Findings:            0,
 		CostUSD:             triageRes.usage.EstimatedCostUSD,
 		Turns:               triageRes.turns,
+		ToolCalls:           triageRes.toolCalls,
+		FilesRead:           triageRes.filesRead,
 		Attempts:            1,
 		CacheCreationTokens: triageRes.usage.CacheWriteTokens,
 		CacheReadTokens:     triageRes.usage.CacheReadTokens,
+		Provider:            string(cfg.providerFor(passTriage.Tier).Kind),
 	})
 
 	scoped := scopeDiffToFiles(filtered, triage.ReviewFiles)
@@ -623,6 +685,8 @@ func Review(ctx context.Context, req ReviewRequest, db *state.DB, cfg Config) (*
 			Findings:            len(o.findings),
 			CostUSD:             o.usage.EstimatedCostUSD,
 			Turns:               o.turns,
+			ToolCalls:           o.toolCalls,
+			FilesRead:           o.filesRead,
 			TerminationReason:   o.failure.Reason,
 			Attempts:            o.attempts,
 			Retried:             o.retried,
@@ -630,6 +694,7 @@ func Review(ctx context.Context, req ReviewRequest, db *state.DB, cfg Config) (*
 			CacheCreationTokens: o.usage.CacheWriteTokens,
 			CacheReadTokens:     o.usage.CacheReadTokens,
 			Primer:              i == primerPass,
+			Provider:            string(cfg.providerFor(deepPasses[i].Tier).Kind),
 		})
 		if o.err != nil {
 			passErrors = append(passErrors, o.err.Error())

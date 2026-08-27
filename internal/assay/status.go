@@ -85,7 +85,7 @@ func RenderStatusText(status RunStatus, completed, total int, failed []PassFailu
 // RenderPassTelemetry renders the per-pass turn and prompt-cache telemetry of a
 // run as one line:
 //
-//	pass=triage turns=3 term=success cache_w=41200 cache_r=0, pass=logic turns=12 term=success cache_w=41500 cache_r=0 primer=1, pass=security turns=6 term=success cache_w=900 cache_r=41500
+//	pass=triage turns=3 term=success tools=0 files=0 cache_w=41200 cache_r=0, pass=logic turns=12 term=success tools=9 files=4 cache_w=41500 cache_r=0 primer=1, pass=security turns=6 term=success tools=5 files=3 cache_w=900 cache_r=41500
 //
 // It is additive — a separate field on the Assay log line, never a change to
 // the coverage status text — so nothing that reads the existing line breaks.
@@ -94,6 +94,33 @@ func RenderStatusText(status RunStatus, completed, total int, failed []PassFailu
 // termination it names. retry is only present when a pass was actually re-run
 // (retry=1) or earned a re-run it did not get (retry=skipped), since those are
 // the rare cases worth spotting.
+//
+// tools/files are how many tool calls the pass made and how many distinct files
+// it opened. They are here because turns is a weak proxy for the only question
+// that matters about a pass's coverage — whether it read any code — and a pass
+// answering in one turn from diff text alone is indistinguishable, by turns,
+// from a cheap pass that did its job.
+//
+// tools=0 is therefore the single most useful line this renderer can produce,
+// and it is rendered whenever it can be told apart from a missing measurement.
+// On one pass alone it cannot: a pass that made no tool call and a backend that
+// reports no tool telemetry at all are the same zero. What resolves it is the
+// BACKEND — if any pass running on the same provider reported a non-zero count
+// then that provider demonstrably reports the figure, and a sibling's zero is a
+// genuine "this pass never opened anything". Where no pass on a provider
+// reported one, that provider's passes omit the fields together rather than
+// render them as zeros: that is the case where the number is unknown, and
+// printing tools=0 there would be inventing evidence.
+//
+// The grouping is per provider and not per run because a run is not one
+// provider: triage resolves its own from assay.triage_provider (Config.providerFor)
+// and only falls back to the review provider when that is unset. With
+// triage_provider: claude over review_provider: copilot, triage streams
+// tool_use blocks Forge counts while Copilot's plain-text stream carries no
+// tool telemetry at all — read at the level of the run, triage's count would
+// print tools=0 for all five deep passes, i.e. claim they answered from diff
+// text alone. Passes carrying no PassReport.Provider group together, which is
+// the old run-level reading and is right whenever a run is in fact one backend.
 //
 // cache_w/cache_r are the pass's prompt-cache write and read token counts, and
 // are omitted together when the provider reported neither — a backend with no
@@ -108,6 +135,15 @@ func RenderStatusText(status RunStatus, completed, total int, failed []PassFailu
 func RenderPassTelemetry(passes []PassReport) string {
 	if len(passes) == 0 {
 		return ""
+	}
+	// Whether a zero is a measurement is a property of the BACKEND, not of a
+	// pass and not of the run: see the doc comment. Establishing it costs one
+	// pass over the slice.
+	measured := make(map[string]bool, 2)
+	for _, p := range passes {
+		if p.ToolCalls > 0 || p.FilesRead > 0 {
+			measured[p.Provider] = true
+		}
 	}
 	parts := make([]string, 0, len(passes))
 	for _, p := range passes {
@@ -125,6 +161,9 @@ func RenderPassTelemetry(passes []PassReport) string {
 			// in the coverage text (both are just a failed pass). This is the
 			// one place it shows.
 			s += " retry=skipped"
+		}
+		if measured[p.Provider] {
+			s += fmt.Sprintf(" tools=%d files=%d", p.ToolCalls, p.FilesRead)
 		}
 		if p.CacheCreationTokens > 0 || p.CacheReadTokens > 0 {
 			s += fmt.Sprintf(" cache_w=%d cache_r=%d", p.CacheCreationTokens, p.CacheReadTokens)

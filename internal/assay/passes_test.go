@@ -281,16 +281,21 @@ func TestFileTrackerIsBounded(t *testing.T) {
 	}
 }
 
-// TestWithOpenedFilesAttachesToTheFailure pins the carrier that matters: a
+// TestWithSessionToolsAttachesToTheFailure pins the carrier that matters: a
 // session that died on turns has no PassOutput to hang its file list on, so it
 // has to ride out on the error.
-func TestWithOpenedFilesAttachesToTheFailure(t *testing.T) {
+func TestWithSessionToolsAttachesToTheFailure(t *testing.T) {
 	perr := newPassError("logic", ReasonMaxTurns, "out of turns", nil)
-	if _, err := withOpenedFiles(PassOutput{}, perr, []string{"/w/a.go"}); err != perr {
-		t.Fatalf("withOpenedFiles replaced the error: %v", err)
+	tr := newFileTracker()
+	tr.observe(toolEvent(t, `[{"type":"tool_use","name":"Read","input":{"file_path":"/w/a.go"}}]`))
+	if _, err := withSessionTools(PassOutput{}, perr, tr, nil); err != perr {
+		t.Fatalf("withSessionTools replaced the error: %v", err)
 	}
 	if len(perr.OpenedFiles) != 1 || perr.OpenedFiles[0] != "/w/a.go" {
 		t.Errorf("PassError.OpenedFiles = %v; want [/w/a.go]", perr.OpenedFiles)
+	}
+	if perr.ToolCalls != 1 {
+		t.Errorf("PassError.ToolCalls = %d; want 1", perr.ToolCalls)
 	}
 	if got := passErrorFiles(perr); len(got) != 1 {
 		t.Errorf("passErrorFiles = %v; want the attached list", got)
@@ -299,9 +304,30 @@ func TestWithOpenedFilesAttachesToTheFailure(t *testing.T) {
 		t.Errorf("passErrorFiles(foreign error) = %v; want nil", got)
 	}
 
-	out, err := withOpenedFiles(PassOutput{Text: "{}"}, nil, []string{"/w/a.go"})
-	if err != nil || len(out.OpenedFiles) != 1 {
+	out, err := withSessionTools(PassOutput{Text: "{}"}, nil, tr, nil)
+	if err != nil || len(out.OpenedFiles) != 1 || out.ToolCalls != 1 {
 		t.Errorf("success path: out = %+v err = %v", out, err)
+	}
+}
+
+// TestWithSessionToolsCountsToolsThatNameNoFile is the whole reason the call
+// count is not derived from the file list: a session that only grepped or ran a
+// command explored, and reporting it as a session that never used a tool is the
+// exact misreading this telemetry exists to prevent.
+func TestWithSessionToolsCountsToolsThatNameNoFile(t *testing.T) {
+	tr := newFileTracker()
+	tr.observe(toolEvent(t, `[{"type":"tool_use","name":"Bash","input":{"command":"ls"}}]`))
+	tr.observe(toolEvent(t, `[{"type":"tool_use","name":"Grep","input":{"pattern":"x"}}]`))
+
+	out, err := withSessionTools(PassOutput{Text: "{}"}, nil, tr, nil)
+	if err != nil {
+		t.Fatalf("withSessionTools: %v", err)
+	}
+	if out.ToolCalls != 2 {
+		t.Errorf("ToolCalls = %d; want 2", out.ToolCalls)
+	}
+	if len(out.OpenedFiles) != 0 {
+		t.Errorf("OpenedFiles = %v; want none — neither tool named a file", out.OpenedFiles)
 	}
 }
 
@@ -439,6 +465,281 @@ func TestRetrySkippedRendersInTelemetry(t *testing.T) {
 	got = RenderPassTelemetry([]PassReport{{Name: "logic", Turns: 4, Attempts: 1}})
 	if strings.Contains(got, "retry") {
 		t.Errorf("RenderPassTelemetry = %q; want no retry field", got)
+	}
+}
+
+// TestToolCallsRenderInTelemetry pins the field the whole exploration question
+// is answered by. A pass that answered in two turns having made no tool call
+// reviewed the diff text and nothing else; by turns alone it is
+// indistinguishable from a cheap pass that did its job, so tools=0 has to be
+// visible on the line.
+func TestToolCallsRenderInTelemetry(t *testing.T) {
+	got := RenderPassTelemetry([]PassReport{
+		{Name: "security", Turns: 7, Attempts: 1, ToolCalls: 9, FilesRead: 4},
+	})
+	if !strings.Contains(got, "tools=9 files=4") {
+		t.Errorf("RenderPassTelemetry = %q; want it to carry tools=9 files=4", got)
+	}
+	// The motivating case: a pass that made no tool call at all, alongside a
+	// pass on the same backend that did. That sibling's non-zero count proves
+	// the backend reports the figure, so this zero is a measurement — which is
+	// the whole point of the counter and must be on the line. (Same backend is
+	// the operative condition; TestToolTelemetryIsGatedPerProviderNotPerRun
+	// covers the run that spans two.)
+	got = RenderPassTelemetry([]PassReport{
+		{Name: "logic", Turns: 12, Attempts: 1, ToolCalls: 9, FilesRead: 4},
+		{Name: "security", Turns: 2, Attempts: 1},
+	})
+	if !strings.Contains(got, "tools=0 files=0") {
+		t.Errorf("RenderPassTelemetry = %q; want tools=0 files=0 for the pass that used no tool", got)
+	}
+	// Where NO pass of the run reported a count, the zero is a backend that
+	// reports no tool telemetry — indistinguishable, at this level, from a run
+	// in which nothing was read — so the fields are omitted rather than
+	// rendered as zeros that claim to know which of the two happened.
+	got = RenderPassTelemetry([]PassReport{
+		{Name: "logic", Turns: 12, Attempts: 1},
+		{Name: "security", Turns: 2, Attempts: 1},
+	})
+	if strings.Contains(got, "tools=") || strings.Contains(got, "files=") {
+		t.Errorf("RenderPassTelemetry = %q; want no tool fields when the run observed none", got)
+	}
+	// A pass that only ever grepped names no file: files=0 alongside a non-zero
+	// tools= is a real reading, not a missing measurement.
+	got = RenderPassTelemetry([]PassReport{{Name: "security", Turns: 5, Attempts: 1, ToolCalls: 3}})
+	if !strings.Contains(got, "tools=3 files=0") {
+		t.Errorf("RenderPassTelemetry = %q; want tools=3 files=0", got)
+	}
+}
+
+// TestToolTelemetryIsGatedPerProviderNotPerRun pins the premise the zero-vs-
+// unknown decision actually rests on. A run is NOT one provider: triage
+// resolves its own from assay.triage_provider and falls back to the review
+// provider only when that is unset, so triage_provider: claude over
+// review_provider: copilot is a shipped configuration in which one run spans
+// two backends — and Copilot's plain-text stream carries no tool_use blocks for
+// fileTracker and no GeminiStats for observedToolCalls to fall back on.
+//
+// Read at the level of the run, triage's genuine count would license
+// "tools=0 files=0" on all five deep passes: a claim that they answered from
+// diff text alone, which is the exact false signal the counter was added to
+// report truthfully. The gate is therefore per provider.
+func TestToolTelemetryIsGatedPerProviderNotPerRun(t *testing.T) {
+	got := RenderPassTelemetry([]PassReport{
+		{Name: "triage", Turns: 3, Attempts: 1, Provider: "claude", ToolCalls: 4, FilesRead: 2},
+		{Name: "logic", Turns: 12, Attempts: 1, Provider: "copilot"},
+		{Name: "security", Turns: 2, Attempts: 1, Provider: "copilot"},
+	})
+	if !strings.Contains(got, "pass=triage turns=3 term=success tools=4 files=2") {
+		t.Errorf("RenderPassTelemetry = %q; want triage's own measured count on the line", got)
+	}
+	if strings.Contains(got, "tools=0") || strings.Contains(got, "files=0") {
+		t.Errorf("RenderPassTelemetry = %q; the copilot passes reported no tool telemetry, so a zero there is unknown, not measured", got)
+	}
+	// The mirror image: the backend that reports nothing is the one with the
+	// count, and the passes that CAN be measured still say so.
+	got = RenderPassTelemetry([]PassReport{
+		{Name: "triage", Turns: 3, Attempts: 1, Provider: "copilot"},
+		{Name: "logic", Turns: 12, Attempts: 1, Provider: "claude", ToolCalls: 9, FilesRead: 4},
+		{Name: "security", Turns: 2, Attempts: 1, Provider: "claude"},
+	})
+	if !strings.Contains(got, "pass=security turns=2 term=success tools=0 files=0") {
+		t.Errorf("RenderPassTelemetry = %q; want tools=0 files=0 for the claude pass that used no tool", got)
+	}
+	if !strings.Contains(got, "pass=triage turns=3 term=success,") {
+		t.Errorf("RenderPassTelemetry = %q; want no tool fields on the copilot pass", got)
+	}
+}
+
+// TestPassReportsCarryTheirProvider is the other half of that gate: the
+// grouping is only as good as the field, and a PassReport assembled without one
+// silently restores the run-level reading.
+func TestPassReportsCarryTheirProvider(t *testing.T) {
+	script := map[string][]stubResp{passTriage.Name: {{text: triageJSON(t, nil, "")}}}
+	for _, p := range deepPasses {
+		script[p.Name] = []stubResp{{text: findingsJSON(t, nil)}}
+	}
+	cfg := DefaultConfig().WithRunner(newScriptRunner(script).run)
+	cfg.TriageProvider = "copilot"
+	cfg.ReviewProvider = "claude"
+
+	res, err := Review(context.Background(), testRequest(), openTestDB(t), cfg)
+	if err != nil {
+		t.Fatalf("Review: %v", err)
+	}
+	for _, p := range res.Passes {
+		want := "claude"
+		if p.Name == passTriage.Name {
+			want = "copilot"
+		}
+		if p.Provider != want {
+			t.Errorf("pass %s Provider = %q; want %q", p.Name, p.Provider, want)
+		}
+	}
+}
+
+// TestToolCallsFallBackToTheProvidersOwnCount is observedTurns' rule for the
+// other stream-derived figure: a backend Forge cannot count tool calls for
+// reports whatever the provider itself reported, never zero. Gemini streams no
+// per-message tool_use blocks and puts the session's tool-call count in its
+// result event, so without the fallback a Gemini pass that read ten files is
+// indistinguishable from a Claude pass that read nothing.
+func TestToolCallsFallBackToTheProvidersOwnCount(t *testing.T) {
+	res := &smith.Result{GeminiStats: &smith.StreamStats{ToolCalls: 7}}
+
+	// Nothing counted off the stream: the provider's figure stands in.
+	out, err := withSessionTools(PassOutput{Text: "{}"}, nil, newFileTracker(), res)
+	if err != nil {
+		t.Fatalf("withSessionTools: %v", err)
+	}
+	if out.ToolCalls != 7 {
+		t.Errorf("ToolCalls = %d; want the provider's 7", out.ToolCalls)
+	}
+	if len(out.OpenedFiles) != 0 {
+		t.Errorf("OpenedFiles = %v; want none — Gemini's stats carry a count and no paths", out.OpenedFiles)
+	}
+
+	// The counted figure wins where there is one: it is the derived number the
+	// fallback exists to stand in for, not the other way round.
+	tr := newFileTracker()
+	tr.observe(toolEvent(t, `[{"type":"tool_use","name":"Read","input":{"file_path":"/w/a.go"}}]`))
+	out, err = withSessionTools(PassOutput{Text: "{}"}, nil, tr, res)
+	if err != nil {
+		t.Fatalf("withSessionTools: %v", err)
+	}
+	if out.ToolCalls != 1 {
+		t.Errorf("ToolCalls = %d; want the counted 1", out.ToolCalls)
+	}
+
+	// The failure path carries it too — a session that died on turns was billed
+	// for the exploration that killed it.
+	perr := newPassError("logic", ReasonMaxTurns, "out of turns", nil)
+	if _, err := withSessionTools(PassOutput{}, perr, newFileTracker(), res); err != perr {
+		t.Fatalf("withSessionTools replaced the error: %v", err)
+	}
+	if perr.ToolCalls != 7 {
+		t.Errorf("PassError.ToolCalls = %d; want the provider's 7", perr.ToolCalls)
+	}
+
+	// A backend that reports neither, and a nil result, report nothing.
+	if n := observedToolCalls(newFileTracker(), nil); n != 0 {
+		t.Errorf("observedToolCalls(nothing) = %d; want 0", n)
+	}
+	if n := observedToolCalls(newFileTracker(), &smith.Result{}); n != 0 {
+		t.Errorf("observedToolCalls(no stats) = %d; want 0", n)
+	}
+}
+
+// TestPassToolTelemetryAccumulatesAcrossSessions pins the convention the two
+// counters chose, at the level where a regression is invisible: a pass's
+// tool calls are SUMMED over its sessions while its files are the size of their
+// deduplicated union. An implementation that assigned instead of adding, or
+// that recomputed the file count from the last session's list alone, still
+// renders a plausible smaller number — tools=4 files=2 instead of tools=7
+// files=3 — and under-reports exactly the exploration this telemetry measures.
+//
+// The case here is the strict-JSON re-prompt: one attempt, two sessions, and
+// the second reads one file the first already read. 4+3 calls is 7; a, b, c is
+// 3 files, not 4.
+func TestPassToolTelemetryAccumulatesAcrossSessions(t *testing.T) {
+	script := map[string][]stubResp{passTriage.Name: {{text: triageJSON(t, nil, "")}}}
+	for _, p := range deepPasses {
+		script[p.Name] = []stubResp{{text: findingsJSON(t, nil)}}
+	}
+	script["logic"] = []stubResp{
+		{text: "not json", toolCalls: 4, opened: []string{"/w/a.go", "/w/b.go"}},
+		{text: findingsJSON(t, nil), turns: 5, toolCalls: 3, opened: []string{"/w/b.go", "/w/c.go"}},
+	}
+
+	runner := newScriptRunner(script)
+	res, err := Review(context.Background(), testRequest(), openTestDB(t), DefaultConfig().WithRunner(runner.run))
+	if err != nil {
+		t.Fatalf("Review: %v", err)
+	}
+	rep := passReport(res, "logic")
+	if rep == nil {
+		t.Fatal("no PassReport for logic")
+	}
+	if rep.ToolCalls != 7 {
+		t.Errorf("ToolCalls = %d; want 7 — both sessions' calls summed", rep.ToolCalls)
+	}
+	if rep.FilesRead != 3 {
+		t.Errorf("FilesRead = %d; want 3 — the union of the two lists, with b.go counted once", rep.FilesRead)
+	}
+}
+
+// TestPassToolTelemetryAccumulatesAcrossRetries is the same property over the
+// other multi-session path — the turn-budget retry, whose first session is a
+// FAILURE and therefore carries its counts out on the PassError rather than on
+// a PassOutput. It also pins the field that deliberately does not accumulate:
+// Turns stays the final attempt's, because it is the number the --max-turns
+// budget is compared against and a sum would say nothing about either session.
+func TestPassToolTelemetryAccumulatesAcrossRetries(t *testing.T) {
+	failed := maxTurnsErr("logic", 12, 0.25)
+	failed.ToolCalls = 6
+	failed.OpenedFiles = []string{"/w/a.go"}
+
+	script := map[string][]stubResp{passTriage.Name: {{text: triageJSON(t, nil, "")}}}
+	for _, p := range deepPasses {
+		script[p.Name] = []stubResp{{text: findingsJSON(t, nil)}}
+	}
+	script["logic"] = []stubResp{
+		{err: failed},
+		{text: findingsJSON(t, nil), turns: 5, toolCalls: 2, opened: []string{"/w/a.go", "/w/b.go"}},
+	}
+
+	runner := newScriptRunner(script)
+	res, err := Review(context.Background(), testRequest(), openTestDB(t), DefaultConfig().WithRunner(runner.run))
+	if err != nil {
+		t.Fatalf("Review: %v", err)
+	}
+	rep := passReport(res, "logic")
+	if rep == nil {
+		t.Fatal("no PassReport for logic")
+	}
+	if !rep.Retried {
+		t.Fatal("the pass was not retried; the script no longer exercises the path")
+	}
+	if rep.ToolCalls != 8 {
+		t.Errorf("ToolCalls = %d; want 8 — the dead session explored and was billed for it", rep.ToolCalls)
+	}
+	if rep.FilesRead != 2 {
+		t.Errorf("FilesRead = %d; want 2 — a.go read by both attempts counts once", rep.FilesRead)
+	}
+	if rep.Turns != 5 {
+		t.Errorf("Turns = %d; want the final attempt's 5 — turns is not cumulative", rep.Turns)
+	}
+}
+
+// TestRunTriageKeepsTheFirstSessionsFilesWhenTheRetryFails pins triage's error
+// path, which is the one place the union could quietly collapse to a single
+// session's list: the strict-JSON re-prompt dies, so the only PassOutput the
+// pass ever produced is the first session's, and reporting the failure's files
+// alone would erase what the run actually read.
+//
+// It drives runTriage directly because a triage failure aborts the run before
+// any PassReport is assembled — Review has nothing to assert on here.
+func TestRunTriageKeepsTheFirstSessionsFilesWhenTheRetryFails(t *testing.T) {
+	failed := maxTurnsErr(passTriage.Name, 9, 0.05)
+	failed.ToolCalls = 2
+	failed.OpenedFiles = []string{"/w/b.go", "/w/c.go"}
+
+	runner := newScriptRunner(map[string][]stubResp{
+		passTriage.Name: {
+			{text: "not json", toolCalls: 3, opened: []string{"/w/a.go", "/w/b.go"}},
+			{err: failed},
+		},
+	})
+
+	run, err := runTriage(context.Background(), runner.run, DefaultConfig(), testRequest(), testRequest().Diff)
+	if err == nil {
+		t.Fatal("expected the strict-JSON re-prompt's failure to surface")
+	}
+	if run.toolCalls != 5 {
+		t.Errorf("toolCalls = %d; want 5 — both sessions", run.toolCalls)
+	}
+	if run.filesRead != 3 {
+		t.Errorf("filesRead = %d; want 3 — a, b and c, with b counted once", run.filesRead)
 	}
 }
 
