@@ -51,7 +51,24 @@ func (d *Deployer) failPull(ctx context.Context, what string, err error, out ...
 		return d.fail("%s: %w: %s", what, err, evidence)
 	}
 
-	detail := d.blockedPullDetail(ctx, what, evidence)
+	return d.failPullBlocked(ctx, what, gitfail.CauseOf(evidence), evidence)
+}
+
+// failPullBlocked escalates a pull stopped by the checkout's own state, with the
+// cause supplied rather than re-derived.
+//
+// It is separate from failPull because a caller can KNOW the condition without
+// git having said so. refuseUnmergedTree has probed the index and the sequencer
+// refs, which is stronger evidence than any sentence — and git's sentence for a
+// staged-but-uncommitted merge ("You have not concluded your merge") is one no
+// pattern set is guaranteed to model. Routing that through Classify would let a
+// wording decide whether a condition that reproduces on every merge is escalated
+// or retried quietly forever, which is what ReasonPullBlocked exists to prevent.
+//
+// evidence may be empty: a caller that established the condition itself has
+// nothing of git's to quote, and blockedPullDetail simply omits the section.
+func (d *Deployer) failPullBlocked(ctx context.Context, what string, cause gitfail.Cause, evidence string) error {
+	detail := d.blockedPullDetail(ctx, what, cause, evidence)
 	d.emit(EventFailed, detail)
 	d.raiseAttention(DeployEvent{Reason: ReasonPullBlocked, Detail: detail})
 	return fmt.Errorf("selfdeploy: %w: %s", ErrPullBlocked, detail)
@@ -83,9 +100,7 @@ func (d *Deployer) failStashRetained(stash string, paths []string, detail string
 // its own label. git's sentence is evidence for a claim, not the claim, and
 // "fatal: You are not currently on a branch" as the opening of a Needs Attention
 // row says nothing about what is no longer being deployed or what to do.
-func (d *Deployer) blockedPullDetail(ctx context.Context, what, evidence string) string {
-	cause := gitfail.CauseOf(evidence)
-
+func (d *Deployer) blockedPullDetail(ctx context.Context, what string, cause gitfail.Cause, evidence string) string {
 	var paths []string
 	if cause.InvolvesWorkingTree() {
 		paths = d.blockingPaths(ctx)

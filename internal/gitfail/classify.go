@@ -91,6 +91,12 @@ var BlockedPatterns = []string{
 	"fix conflicts and run",
 	"unmerged files",
 	"needs merge",
+	// The same tree once the conflicts have been staged but not committed:
+	// the index is back at stage 0 and only the sequencer state says the
+	// operation is unfinished. git covers merge, cherry-pick and revert with
+	// one sentence ("You have not concluded your merge (MERGE_HEAD exists)"),
+	// so one substring covers all three.
+	"you have not concluded your",
 	// A rebase/pull refused by the tree's own state.
 	"cannot pull with rebase",
 	"you have unstaged changes",

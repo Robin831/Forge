@@ -28,6 +28,11 @@ type fakeCommander struct {
 	// Empty means an empty stack, which is what a clean tree leaves behind and
 	// so what every test that is not about stashing wants.
 	stash string
+	// unmerged and sequencer are what the two conflict probes report: the
+	// `ls-files --unmerged` entries, and the sequencer refs `rev-list` resolves.
+	// Both empty is a checkout in the middle of nothing.
+	unmerged  string
+	sequencer string
 }
 
 func (f *fakeCommander) Run(_ context.Context, dir, name string, args ...string) ([]byte, error) {
@@ -53,12 +58,16 @@ func (f *fakeCommander) Run(_ context.Context, dir, name string, args ...string)
 		return []byte(f.stash), nil
 	}
 
-	// Emulate the unmerged-index probe, which also exits 0 either way: empty
-	// output is an index with no conflicts in it, which is what every test that
-	// is not about a mid-merge checkout wants. Without this the fake's catch-all
-	// "ok" reads as three unmerged entries and every deploy refuses to pull.
+	// Emulate the two conflict probes, both of which exit 0 either way: empty
+	// output is a checkout in the middle of nothing, which is what every test
+	// that is not about a mid-merge one wants. Without this the fake's catch-all
+	// "ok" reads as unmerged entries (or a live MERGE_HEAD) and every deploy
+	// refuses to pull. unmerged/sequencer let a test say otherwise.
 	if name == "git" && len(args) > 0 && args[0] == "ls-files" {
-		return nil, nil
+		return []byte(f.unmerged), nil
+	}
+	if name == "git" && len(args) > 0 && args[0] == "rev-list" {
+		return []byte(f.sequencer), nil
 	}
 
 	// Emulate `git rev-parse HEAD` so the deploy can stamp a build SHA.

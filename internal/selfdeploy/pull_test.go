@@ -408,10 +408,19 @@ func TestPullBlockedByAnUnmergedTreeEscalates(t *testing.T) {
 	if !strings.HasPrefix(ev.Detail, "Forge is no longer self-deploying:") {
 		t.Errorf("detail does not lead with what stopped:\n%s", ev.Detail)
 	}
-	for _, want := range []string{repo, "merge --abort", "git output:"} {
+	// The evidence must be the PULL's refusal, not the stash's. Both are blocked
+	// and both map to CauseUnmerged, so every other assertion here passes for
+	// code that stashed the conflicted index first and merely happened to be
+	// running a git that refused ("<path>: needs merge") — which is the whole
+	// version-dependence this change removes. Only a deploy that reached the
+	// pull with the tree untouched can quote this sentence.
+	for _, want := range []string{repo, "merge --abort", "git output:", "Pulling is not possible"} {
 		if !strings.Contains(ev.Detail, want) {
 			t.Errorf("escalation detail does not mention %q:\n%s", want, ev.Detail)
 		}
+	}
+	if strings.Contains(ev.Detail, "needs merge") {
+		t.Errorf("the detail quotes the STASH's refusal, so the conflicted index was set aside first:\n%s", ev.Detail)
 	}
 	if len(ev.Detail) > maxDeployDetailBytes {
 		t.Errorf("detail is %d bytes, over the %d bound", len(ev.Detail), maxDeployDetailBytes)
@@ -725,5 +734,216 @@ func TestPullTreatsAnInterloperOnACleanTreeAsNothingToRestore(t *testing.T) {
 	}
 	if len(em.events) != 0 {
 		t.Errorf("nothing of ours was stashed, so nothing may be escalated: %+v", em.events)
+	}
+}
+
+// fakePullDeployer wires a Deployer over a fake Commander for the pull cases
+// that must hold on EVERY git, not just the one the test host happens to ship.
+//
+// The real-git tests above are the right shape for claims about what git does
+// with a stash; they are the wrong shape for the claim this change is actually
+// making, which is that Forge never issues the stash at all. git 2.43 refuses to
+// stash an unmerged index by itself, so a real-git test asserting "no stash
+// entry was left behind" passes just as well with the refusal deleted — and the
+// bug being fixed (git 2.55 stashing it happily) is reproducible on no git this
+// suite is guaranteed to meet. The fake records every command, so the absence of
+// `git stash push` can be asserted directly and is version-independent.
+func fakePullDeployer(t *testing.T, cmd *fakeCommander) (*Deployer, *fakeSink, *fakeEmitter) {
+	t.Helper()
+	sink := &fakeSink{}
+	em := &fakeEmitter{}
+	d := New(
+		Config{RepoPath: t.TempDir(), BinaryPath: filepath.Join(t.TempDir(), "forge"), Branch: "main"},
+		cmd, &fakeRestarter{}, sink, nil,
+		WithEmitter(em),
+		WithLogger(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))),
+	)
+	return d, sink, em
+}
+
+// TestPullNeverStashesAConflictedTree is the version-independent form of the
+// refusal: whatever this host's git would make of an unmerged index, Forge does
+// not hand it one. Both shapes of a half-finished operation are covered — the
+// conflicts still in the index, and the conflicts staged with only the sequencer
+// ref left to say the merge is unfinished — because only the first is one git
+// itself refuses to stash.
+func TestPullNeverStashesAConflictedTree(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		unmerged  string
+		sequencer string
+	}{
+		{
+			name:     "conflicts unresolved in the index",
+			unmerged: "100644 d00491fd7e5bb6fa28c517a0bb32b8b506539d4d 1\tapp.go",
+		},
+		{
+			// `git add` on each conflicted path clears the unmerged entries, so
+			// the index reads exactly like a plain dirty tree. Every git stashes
+			// this one, and the reset a stash performs is what destroys
+			// MERGE_HEAD: the fast-forward then goes through and the operator's
+			// merge silently becomes a one-parent diff.
+			name:      "conflicts staged but not committed",
+			sequencer: "ff7ac2b1baa3c59c174de28b58a796fa5e3b4253",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cmd := &fakeCommander{
+				unmerged:  tc.unmerged,
+				sequencer: tc.sequencer,
+				failOn:    map[string]error{"git pull": errors.New("exit status 128")},
+			}
+			d, sink, em := fakePullDeployer(t, cmd)
+
+			err := d.pullSource(context.Background())
+			if !errors.Is(err, ErrPullBlocked) {
+				t.Fatalf("error = %v, want it to unwrap to ErrPullBlocked", err)
+			}
+			if cmd.ran("git stash push") {
+				t.Error("the deploy set a half-finished merge aside")
+			}
+			if ev := em.only(t); ev.Reason != ReasonPullBlocked {
+				t.Errorf("Reason = %q, want %q", ev.Reason, ReasonPullBlocked)
+			}
+			if !sink.has(EventFailed) {
+				t.Error("a blocked pull must also reach the event log")
+			}
+		})
+	}
+}
+
+// TestPullEscalatesAConflictedTreeGitDidNotRefuse pins the defensive exit: git
+// accepting a fast-forward over a checkout mid-conflict is a thing no version of
+// it does, and there is correspondingly no git output to classify. The tree
+// still holds somebody's half-finished merge, so the deploy must abandon —
+// and must ESCALATE, because the condition reproduces on every merge until the
+// checkout is touched. Deciding that from git's silence is what would leave it
+// deferring quietly forever.
+func TestPullEscalatesAConflictedTreeGitDidNotRefuse(t *testing.T) {
+	cmd := &fakeCommander{unmerged: "100644 abc123 1\tapp.go"}
+	d, sink, em := fakePullDeployer(t, cmd)
+
+	err := d.pullSource(context.Background())
+	if !errors.Is(err, ErrPullBlocked) {
+		t.Fatalf("error = %v, want it to unwrap to ErrPullBlocked", err)
+	}
+	if cmd.ran("git stash push") {
+		t.Error("the deploy set a conflicted tree aside")
+	}
+	ev := em.only(t)
+	if ev.Reason != ReasonPullBlocked {
+		t.Fatalf("Reason = %q, want %q", ev.Reason, ReasonPullBlocked)
+	}
+	if !strings.Contains(ev.Detail, "did not refuse the fast-forward") {
+		t.Errorf("detail does not say git accepted the pull:\n%s", ev.Detail)
+	}
+	// No git output exists to quote, so the section must be omitted rather than
+	// rendered empty — and the remediation still has to be the one the probe
+	// earned, not the diagnostic fallback.
+	if strings.Contains(ev.Detail, "git output:") {
+		t.Errorf("detail quotes git output there is none of:\n%s", ev.Detail)
+	}
+	if !strings.Contains(ev.Detail, "merge --abort") {
+		t.Errorf("detail does not carry the unmerged remediation:\n%s", ev.Detail)
+	}
+	if !sink.has(EventFailed) {
+		t.Error("the refusal must also reach the event log")
+	}
+}
+
+// TestPullAbortsWhenTheConflictProbeFails: a probe that cannot answer must not
+// be read as "the checkout is in the middle of nothing". Doing so would fall
+// straight through to the stash path and set a conflicted tree aside — the exact
+// outcome the probe exists to prevent — so a failed probe aborts the deploy
+// before anything is touched.
+func TestPullAbortsWhenTheConflictProbeFails(t *testing.T) {
+	for _, probe := range []string{"git ls-files", "git rev-list"} {
+		t.Run(probe, func(t *testing.T) {
+			cmd := &fakeCommander{failOn: map[string]error{probe: errors.New("exit status 128")}}
+			d, _, em := fakePullDeployer(t, cmd)
+
+			err := d.pullSource(context.Background())
+			if err == nil {
+				t.Fatal("pullSource must abort when the merge-state probe fails")
+			}
+			if cmd.ran("git stash push") {
+				t.Error("the deploy stashed past a probe that could not answer")
+			}
+			if cmd.ran("git pull") {
+				t.Error("the deploy pulled past a probe that could not answer")
+			}
+			// The probe failing says nothing about the checkout, so there is no
+			// condition to name and nothing for an operator to run: it stays a
+			// retried failure rather than a Needs Attention entry.
+			if len(em.events) != 0 {
+				t.Errorf("an unclassifiable probe failure escalated %+v", em.events)
+			}
+		})
+	}
+}
+
+// TestPullBlockedByAStagedMergeEscalates is the same claim against real git: a
+// merge whose conflicts have been resolved with `git add` but not committed
+// leaves no unmerged index entries at all, so it used to read as a plain dirty
+// tree. `git stash push` on it succeeds on every git, and the reset it performs
+// deletes MERGE_HEAD — after which the fast-forward is accepted and the pop puts
+// the resolution back as ordinary modifications. The operator's merge survives
+// as text and loses its second parent, silently.
+func TestPullBlockedByAStagedMergeEscalates(t *testing.T) {
+	repo, upstream := upstreamRepo(t)
+
+	gitBin(t, repo, "checkout", "-b", "side")
+	write(t, repo, "app.go", "package main\n\nconst version = 3\n")
+	gitBin(t, repo, "commit", "-am", "side change")
+	gitBin(t, repo, "checkout", "main")
+	write(t, repo, "app.go", "package main\n\nconst version = 4\n")
+	gitBin(t, repo, "commit", "-am", "main change")
+	if out, err := tryGit(t, repo, "merge", "side"); err == nil {
+		t.Fatalf("expected the merge to conflict, got: %s", out)
+	}
+	// Resolve and stage, which is the normal state between `git add` and
+	// `git commit`.
+	write(t, repo, "app.go", "package main\n\nconst version = 5\n")
+	gitBin(t, repo, "add", "app.go")
+	if unmerged := gitBin(t, repo, "ls-files", "--unmerged"); unmerged != "" {
+		t.Fatalf("the fixture still has unmerged entries, so it is not the staged case: %s", unmerged)
+	}
+	mergeHead := gitBin(t, repo, "rev-parse", "--verify", "MERGE_HEAD")
+
+	pushUpstream(t, upstream, "other.go", "package main\n\nconst other = 2\n")
+	before := gitBin(t, repo, "rev-parse", "HEAD")
+
+	d, sink, em := pullDeployer(t, repo)
+	err := d.pullSource(context.Background())
+	if !errors.Is(err, ErrPullBlocked) {
+		t.Fatalf("error = %v, want it to unwrap to ErrPullBlocked", err)
+	}
+
+	// The merge the operator was part-way through is exactly where they left it:
+	// same second parent, same staged resolution, nothing on the stash stack.
+	if got, gErr := tryGit(t, repo, "rev-parse", "--verify", "MERGE_HEAD"); gErr != nil || got != mergeHead {
+		t.Errorf("MERGE_HEAD = %q (err %v), want the merge still in progress at %s", got, gErr, mergeHead)
+	}
+	if after := gitBin(t, repo, "rev-parse", "HEAD"); after != before {
+		t.Errorf("the deploy pulled over a half-finished merge: HEAD moved to %s", after)
+	}
+	if got := read(t, repo, "app.go"); !strings.Contains(got, "version = 5") {
+		t.Errorf("app.go = %q, want the operator's staged resolution untouched", got)
+	}
+	if n := stashCount(t, repo); n != 0 {
+		t.Errorf("the deploy left %d stash entries behind, want the merge untouched", n)
+	}
+
+	ev := em.only(t)
+	if ev.Reason != ReasonPullBlocked {
+		t.Errorf("Reason = %q, want %q", ev.Reason, ReasonPullBlocked)
+	}
+	for _, want := range []string{repo, "merge --abort"} {
+		if !strings.Contains(ev.Detail, want) {
+			t.Errorf("escalation detail does not mention %q:\n%s", want, ev.Detail)
+		}
+	}
+	if !sink.has(EventFailed) {
+		t.Error("a blocked pull must also reach the event log")
 	}
 }

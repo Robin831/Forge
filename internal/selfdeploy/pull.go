@@ -62,20 +62,23 @@ var ErrPullBlocked = errors.New("pull blocked by the checkout's own state")
 // have CONSUMED it, and anything else aborts the deploy with the ref in the
 // message.
 //
-// The one tree that is never stashed is a conflicted one (refuseUnmergedTree):
-// what git makes of an unmerged index differs by version, and setting somebody's
-// half-finished merge aside is not a thing a deploy may do quietly.
+// The one tree that is never stashed is a conflicted one (conflictedState +
+// refuseUnmergedTree): setting somebody's half-finished merge aside is not a
+// thing a deploy may do quietly. Which is not a claim about unmerged INDEX
+// entries — those are only the visible half. Once the conflicts are staged the
+// index reads clean and it is the stash's own reset that destroys the merge, on
+// every git there is.
 //
 // The tree is left exactly as it was found on every failure path: either the
 // changes are back in the working tree, or they are in a named stash and the
 // error says so. It never both fails and leaves a stash unmentioned.
 func (d *Deployer) pullSource(ctx context.Context) error {
-	unmerged, err := d.hasUnmergedEntries(ctx)
+	state, err := d.conflictedState(ctx)
 	if err != nil {
 		return err
 	}
-	if unmerged {
-		return d.refuseUnmergedTree(ctx)
+	if state != "" {
+		return d.refuseUnmergedTree(ctx, state)
 	}
 
 	stash, err := d.stashLocalChanges(ctx)
@@ -101,51 +104,109 @@ func (d *Deployer) pullSource(ctx context.Context) error {
 	return d.restoreStash(ctx, stash)
 }
 
-// hasUnmergedEntries reports whether the checkout's index holds conflicts from a
-// merge, rebase or cherry-pick somebody is in the middle of.
+// sequencerRefs are the pseudo-refs git writes for an operation that has begun
+// and not been concluded. They are what remains once the conflicts have been
+// staged: `git add` clears the unmerged index entries, and from that moment
+// these are the only record that a merge, cherry-pick or revert is still
+// half-finished.
 //
-// `ls-files --unmerged` rather than a message match: an unmerged index is a fact
-// about the index, which git reports the same way on every version and in every
-// locale, unlike the sentence a command refusing to touch one happens to print.
-// It exits 0 whether or not there are entries, so any non-zero exit is a real
-// failure to report — the same property stashTop relies on for-each-ref for.
-func (d *Deployer) hasUnmergedEntries(ctx context.Context) (bool, error) {
+// REBASE_HEAD is deliberately NOT among them, even though a conflicted rebase
+// writes it. Unlike the three below, git does not remove it when the rebase
+// concludes — it is left pointing at the last commit replayed — so a checkout
+// where a rebase has ever run carries it forever, and probing it would refuse
+// every deploy from then on. A rebase's own conflicts keep the index unmerged,
+// so `ls-files --unmerged` covers the state that matters; and a rebase stopped
+// mid-way leaves HEAD detached, which git refuses the pull over and gitfail
+// already classifies as blocked.
+var sequencerRefs = []string{"MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD"}
+
+// conflictedState reports what the checkout is in the middle of, as a phrase for
+// the operator-facing message, or "" when it is in the middle of nothing.
+//
+// Two probes, because one conflicted checkout can be in either of two shapes and
+// only the first is visible in the index:
+//
+//   - `ls-files --unmerged` lists stage 1/2/3 entries — a merge, rebase or
+//     cherry-pick whose conflicts are still unresolved in the tree.
+//   - `rev-list --ignore-missing` over the sequencer refs catches the same
+//     operation once its conflicts have been STAGED but not committed, which is
+//     the ordinary state between `git add` and `git commit`. There the index is
+//     back at stage 0 and the first probe reports nothing, so the tree used to
+//     read as a plain dirty one and be stashed — and `git stash push` resets the
+//     tree, which DELETES MERGE_HEAD. The fast-forward then goes through, the
+//     pop puts the resolved contents back as ordinary modifications, and the
+//     merge the operator was part-way through has quietly become a plain diff:
+//     committing it produces a commit with one parent where they were building
+//     one with two, and nothing anywhere says it happened.
+//
+// Both are facts about `.git` rather than sentences git prints, so neither
+// depends on git's version or the host's locale — which is the property the
+// whole refusal rests on. And both exit 0 whether or not they find anything, so
+// any non-zero exit is a real failure to report rather than an absence to read
+// past: the same property stashTop relies on for-each-ref for.
+func (d *Deployer) conflictedState(ctx context.Context) (string, error) {
 	out, err := d.git(ctx, "ls-files", "--unmerged")
 	if err != nil {
-		return false, d.failPull(ctx, "could not read the checkout's merge state before the pull", err, out)
+		return "", d.failPull(ctx, "could not read the checkout's merge state before the pull", err, out)
 	}
-	return out != "", nil
+	if out != "" {
+		return "left mid-merge, with conflicts still unresolved in the index", nil
+	}
+
+	args := append([]string{"rev-list", "--no-walk", "--ignore-missing"}, sequencerRefs...)
+	out, err = d.git(ctx, args...)
+	if err != nil {
+		return "", d.failPull(ctx, "could not read the checkout's merge state before the pull", err, out)
+	}
+	if out != "" {
+		return "in the middle of a merge, cherry-pick or revert whose conflicts are resolved but not committed", nil
+	}
+	return "", nil
 }
 
 // refuseUnmergedTree abandons a deploy whose checkout is mid-conflict, without
 // touching the stash.
 //
-// A conflicted index is not a local modification the deploy is entitled to set
-// aside. The resolution somebody is part-way through lives in that index and
-// nowhere else — no commit holds it — and what a stash makes of it is a matter
-// of git's version: git 2.43 refuses to stash an unmerged index at all
-// ("<path>: needs merge"), while 2.55 stashes it happily, which drops the merge
-// state, lets the fast-forward through, and pops conflict markers back over the
-// pulled tree. That deploy then rebuilds Forge from a tree full of `<<<<<<<`,
-// and the operator's half-finished merge is a stash entry nobody mentioned.
+// A half-finished merge is not a local modification the deploy is entitled to
+// set aside. The resolution somebody is part-way through lives in the index and
+// the sequencer state and nowhere else — no commit holds it — and what a stash
+// makes of it is a matter of git's version: git 2.43 refuses to stash an
+// unmerged index at all ("<path>: needs merge"), while 2.55 stashes it happily,
+// which drops the merge state, lets the fast-forward through, and pops conflict
+// markers back over the pulled tree. That deploy then rebuilds Forge from a tree
+// full of `<<<<<<<`, and the operator's half-finished merge is a stash entry
+// nobody mentioned. A tree whose conflicts are already staged needs no version
+// disagreement at all: every git stashes it, and the reset that stash performs
+// is what deletes MERGE_HEAD.
 //
-// So the stash is skipped entirely and the pull is attempted as the tree stands.
-// git refuses it in its own words — "Pulling is not possible because you have
-// unmerged files" — which is the evidence failPull classifies as blocked and
-// escalates with `merge --abort` in front of the operator. Deriving the message
-// from git's refusal rather than writing one here is what keeps the remediation
-// tied to the same text the operator is shown.
-func (d *Deployer) refuseUnmergedTree(ctx context.Context) error {
-	if err := d.fastForward(ctx); err != nil {
-		return err
+// So the stash is skipped entirely and the pull is attempted as the tree stands,
+// because git's own refusal is the best evidence to quote back — "Pulling is not
+// possible because you have unmerged files", or "You have not concluded your
+// merge (MERGE_HEAD exists)".
+//
+// What is NOT left to git's wording is whether this is escalated. conflictedState
+// has already established a fact that gitfail classifies as blocked by
+// definition, and it reproduces on every merge until an operator touches the
+// checkout; letting a sentence decide would mean a message no BlockedPatterns
+// entry happens to match is retried quietly forever while the daemon runs its
+// old binary — the exact failure ReasonPullBlocked exists to close. So both
+// exits raise it, with the cause this function knows rather than one re-derived
+// from text.
+func (d *Deployer) refuseUnmergedTree(ctx context.Context, state string) error {
+	what := fmt.Sprintf("the checkout is %s, which a deploy may not set aside to pull over", state)
+
+	out, err := d.git(ctx, "pull", "--ff-only", "origin", d.cfg.Branch)
+	if err == nil {
+		// git accepted a fast-forward over a checkout it has refused one for
+		// since long before any version Forge supports. Nothing concluded that
+		// operation, so the tree still holds the half-finished work and must not
+		// be built from — and there is no git output to quote, which is exactly
+		// why the escalation rests on the probe rather than on the message.
+		return d.failPullBlocked(ctx, what+", and git did not refuse the fast-forward, so the tree it "+
+			"left cannot be trusted to build from", gitfail.CauseUnmerged, "")
 	}
-	// git accepted a fast-forward over an unmerged index, which no version of it
-	// does. Nothing resolved those entries, so the tree still holds conflict
-	// markers and must not be built from; it is reported as an ordinary failure
-	// rather than escalated, since a condition nothing models is one an operator
-	// cannot be given a command for.
-	return d.fail("selfdeploy: the checkout %s holds unmerged files but the fast-forward was not refused, "+
-		"so the tree cannot be trusted to build from", d.cfg.RepoPath)
+	return d.failPullBlocked(ctx, what, gitfail.CauseUnmerged,
+		gitfail.Sanitize(firstNonEmpty(out, err.Error()), maxEvidenceBytes))
 }
 
 // stashLocalChanges sets the working tree's modifications aside and returns the

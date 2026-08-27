@@ -38,6 +38,7 @@ var CausePatterns = []struct {
 	{"fix conflicts and run", CauseUnmerged},
 	{"unmerged files", CauseUnmerged},
 	{"needs merge", CauseUnmerged},
+	{"you have not concluded your", CauseUnmerged},
 
 	{"local changes to the following files would be overwritten", CauseDirtyTree},
 	{"would be overwritten by merge", CauseDirtyTree},

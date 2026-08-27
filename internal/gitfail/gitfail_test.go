@@ -109,3 +109,30 @@ func TestClassifyTreatsAnUnmodelledMessageAsUnknown(t *testing.T) {
 		t.Errorf("Classify of nothing = %v, want Unknown", got)
 	}
 }
+
+// TestAnUnconcludedSequencerOperationIsBlocked pins the one refusal a checkout
+// reaches once its conflicts have been STAGED. The index is back at stage 0 by
+// then, so nothing about it is unmerged and none of the conflict patterns match
+// git's sentence — yet the condition reproduces on every run until somebody
+// concludes or abandons the operation, which is exactly what Blocked means. Read
+// as Unknown it would be treated as transient and retried silently forever.
+//
+// The three sentences are git's own, verbatim, for the three operations that
+// leave a sequencer ref behind.
+func TestAnUnconcludedSequencerOperationIsBlocked(t *testing.T) {
+	for _, msg := range []string{
+		"error: You have not concluded your merge (MERGE_HEAD exists).",
+		"error: You have not concluded your cherry-pick (CHERRY_PICK_HEAD exists).",
+		"error: You have not concluded your revert (REVERT_HEAD exists).",
+	} {
+		if got := Classify(msg, errors.New("exit status 128")); got != Blocked {
+			t.Errorf("Classify(%q) = %v, want Blocked", msg, got)
+		}
+		// And it is the same condition to an operator as an unmerged index, so
+		// it earns the same recoverable `merge --abort` remediation rather than
+		// the diagnostic fallback.
+		if got := CauseOf(msg); got != CauseUnmerged {
+			t.Errorf("CauseOf(%q) = %v, want CauseUnmerged", msg, got)
+		}
+	}
+}
