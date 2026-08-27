@@ -20,13 +20,12 @@ import (
 // response is the one depcheck already had — log it, write depcheck_failed,
 // and try again on the next run.
 //
-// A BLOCKED failure will not. A detached HEAD has no upstream to fetch, a
-// remote that does not resolve does not start resolving, a ref the fetch cannot
-// lock stays locked. Every run reproduces it exactly, which is what made the
-// old behaviour useless: the same depcheck_failed line every night is
-// indistinguishable from noise, and the anvil silently stopped being scanned
-// for weeks. A blocked failure is escalated ONCE and then suppressed until the
-// condition changes.
+// A BLOCKED failure will not. A detached HEAD has no upstream to fetch, a tree
+// left mid-merge stays unmerged, a ref the fetch cannot lock stays locked. Every
+// run reproduces it exactly, which is what made the old behaviour useless: the
+// same depcheck_failed line every night is indistinguishable from noise, and
+// the anvil silently stopped being scanned for weeks. A blocked failure is
+// escalated ONCE and then suppressed until the condition changes.
 //
 // gitFailureUnknown is the zero value and is treated as transient at every call
 // site. That is the fail-safe direction: an unrecognised message keeps the old
@@ -62,10 +61,10 @@ func (k gitFailureKind) String() string {
 // Matched lowercased, as substrings, so the surrounding path or ref name in
 // git's line does not have to be modelled.
 var blockedPatterns = []string{
-	// A pull's refusal. depcheck no longer pulls, but quench, burnish and an
-	// operator's own `git pull` in the anvil all produce it, and the classifier
-	// is the package's answer to "is this worth escalating" rather than to
-	// "which command produced it".
+	// A pull's refusal. depcheck no longer pulls, so nothing it runs produces
+	// these directly — but a fetch into a checkout an operator left mid-pull
+	// reports the same tree state, and the classifier answers "is this worth
+	// escalating" rather than "which command produced it".
 	"local changes to the following files would be overwritten",
 	"would be overwritten by merge",
 	"would be overwritten by checkout",

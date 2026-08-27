@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/Robin831/Forge/internal/state"
 	"github.com/Robin831/Forge/internal/termtext"
@@ -175,7 +176,30 @@ func failureEvidence(err error) string {
 	clean := termtext.Line(strings.TrimSpace(raw))
 	clean = strings.Join(strings.Fields(clean), " ")
 	if len(clean) > maxFailureDetailBytes {
-		clean = clean[:maxFailureDetailBytes] + "…"
+		clean = truncateRunes(clean, maxFailureDetailBytes) + "…"
 	}
 	return clean
+}
+
+// truncateRunes returns at most maxBytes bytes of s, cutting back to the last
+// rune boundary rather than through a multi-byte sequence.
+//
+// The bound has to be in bytes (it is what a row and a feed line are sized in),
+// but the text is git's — and git's is partly the remote's, since a server-side
+// hook's rejection message is echoed verbatim — so it is neither ASCII by
+// construction nor Forge's to re-encode. A plain slice at a byte index leaves a
+// half-written rune at the end, which is stored in the needs-attention row and
+// rendered into the activity feed as a replacement character at best.
+//
+// It is a local copy of the same helper assay keeps rather than a shared one,
+// for the same reason: the dependency would run the wrong way.
+func truncateRunes(s string, maxBytes int) string {
+	if len(s) <= maxBytes {
+		return s
+	}
+	cut := maxBytes
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut]
 }

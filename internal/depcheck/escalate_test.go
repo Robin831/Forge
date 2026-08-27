@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -301,6 +302,25 @@ func TestFailureEvidenceIsSanitisedAndBounded(t *testing.T) {
 	assert.Equal(t, "resolving upstream: no upstream tracking ref",
 		failureEvidence(fmt.Errorf("resolving upstream: %w", ErrNoUpstream)))
 	assert.Empty(t, failureEvidence(nil))
+}
+
+// TestFailureEvidenceCutsOnARuneBoundary pins the truncation against text that
+// is not ASCII. git's output is partly the remote's — a server-side hook's
+// rejection message is echoed verbatim — so the byte the bound lands on is
+// routinely mid-rune, and a plain slice there stores an invalid tail in the
+// needs-attention row and renders it as a replacement character.
+func TestFailureEvidenceCutsOnARuneBoundary(t *testing.T) {
+	// "é" is two bytes, so every odd byte index inside the run splits one.
+	for _, pad := range []int{0, 1} {
+		stderr := strings.Repeat("x", pad) + strings.Repeat("é", maxFailureDetailBytes)
+		got := failureEvidence(&gitError{Args: []string{"fetch"}, Stderr: stderr, Err: errors.New("exit status 1")})
+
+		assert.True(t, utf8.ValidString(got), "pad=%d: truncated evidence must stay valid UTF-8", pad)
+		assert.LessOrEqual(t, len(got), maxFailureDetailBytes+len("…"))
+		assert.True(t, strings.HasSuffix(got, "…"), "pad=%d: a truncated line is marked as one", pad)
+		// The cut backs off at most one rune, so nothing else is lost.
+		assert.Greater(t, len(got), maxFailureDetailBytes-utf8.UTFMax)
+	}
 }
 
 // TestScanAnvilEscalatesAndClearsAgainstARealCheckout drives the whole path

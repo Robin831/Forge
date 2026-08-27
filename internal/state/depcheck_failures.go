@@ -11,7 +11,9 @@ import (
 // DepcheckFailure is one anvil whose dependency scan is BLOCKED: a git failure
 // that will produce the identical failure on every run until an operator
 // changes something about the checkout (a detached HEAD with no upstream, a
-// remote that does not resolve, a ref the fetch cannot lock).
+// tree left mid-merge, a ref the fetch cannot lock). A failure a later run has
+// a real chance of getting past — DNS, a timeout, a refused connection — is
+// transient and never reaches this table.
 //
 // It is persisted for a different reason than deploy_failures is. A blocked
 // scan is not silent — it writes a depcheck_failed event every run — and that

@@ -74,9 +74,10 @@ func gitStderr(err error) string {
 	return ""
 }
 
-// runGit executes one git command in repoDir and returns its stdout. Errors
-// carry the combined output so the caller (and the failure classifier that
-// reads these messages) sees git's own words rather than "exit status 1".
+// runGit executes one git command in repoDir and returns its stdout. A failure
+// comes back as a *gitError carrying git's own output as a field, so the caller
+// (and classifyGitFailure, which reads it) sees git's words rather than
+// "exit status 1".
 func runGit(ctx context.Context, repoDir string, args ...string) ([]byte, error) {
 	cmdCtx, cancel := context.WithTimeout(ctx, gitTimeout)
 	defer cancel()
@@ -87,8 +88,11 @@ func runGit(ctx context.Context, repoDir string, args ...string) ([]byte, error)
 	// CleanGitEnv strips only the repo-location variables, so the host's locale
 	// survives and git's diagnostics are gettext-translated: pin them to C so an
 	// error this package logs or an event it writes reads the same on every host.
-	// Nothing here BRANCHES on that text — see blobExists — but a message a
-	// German-locale daemon writes into the event log is nobody's diagnostic.
+	// classifyGitFailure now BRANCHES on that text as well — git reports a
+	// blocked tree with a bare non-zero exit and nothing else — so this pin is
+	// what makes matching it sound, rather than only what keeps a German-locale
+	// daemon's event log legible. Where an exit code can answer instead, it
+	// still does: see blobExists.
 	cmd.Env = append(executil.CleanGitEnv(), "LC_ALL=C", "LANG=C")
 
 	var stdout, stderr bytes.Buffer
