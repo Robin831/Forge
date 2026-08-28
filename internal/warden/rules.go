@@ -189,6 +189,67 @@ func (rf *RulesFile) AddRule(r Rule) bool {
 	return true
 }
 
+// AddRuleDistinct appends a rule the way AddRule does, except that an ID
+// already present in the file is only grounds for dropping the rule when the
+// rule itself is the same one: same category, pattern and check. A rule whose
+// ID collides but whose substance differs is added under a suffixed ID and
+// the ID it was given is returned.
+//
+// AddRule's plain by-ID skip is right for re-learning a rule that is already
+// on file and wrong for two distinct rules that happen to share an ID, which
+// is a routine outcome rather than a corrupt input: a learned rule's ID is
+// written by whichever distillation session produced it, so two sessions
+// reading two different comments on one PR can label them both
+// `log-filename-must-match`. Dropped, the second rule's content is gone with
+// nothing said about it — and it is exactly the rule the intra-batch
+// consolidation pass exists to fold into the first, which it can only do if
+// both are in the file to be clustered.
+//
+// Returns the ID under which the rule was stored and whether it was added.
+func (rf *RulesFile) AddRuleDistinct(r Rule) (string, bool) {
+	taken := make(map[string]struct{}, len(rf.Rules))
+	for _, existing := range rf.Rules {
+		taken[existing.ID] = struct{}{}
+		if existing.ID != r.ID {
+			continue
+		}
+		if sameSubstance(existing, r) {
+			return existing.ID, false
+		}
+	}
+	if _, clash := taken[r.ID]; clash {
+		r.ID = distinctRuleID(r.ID, taken)
+	}
+	if r.Added == "" {
+		r.Added = time.Now().Format("2006-01-02")
+	}
+	rf.Rules = append(rf.Rules, r)
+	return r.ID, true
+}
+
+// sameSubstance reports whether two rules say the same thing, which is the
+// test for "this rule is already on file" once the ID alone is not one.
+func sameSubstance(a, b Rule) bool {
+	return strings.TrimSpace(a.Category) == strings.TrimSpace(b.Category) &&
+		strings.TrimSpace(a.Pattern) == strings.TrimSpace(b.Pattern) &&
+		strings.TrimSpace(a.Check) == strings.TrimSpace(b.Check)
+}
+
+// distinctRuleID returns base with the lowest numeric suffix that is not in
+// taken. An empty base is given one, since "" is a legal YAML value and an
+// unnamed rule cannot be addressed by anything later.
+func distinctRuleID(base string, taken map[string]struct{}) string {
+	if strings.TrimSpace(base) == "" {
+		base = "rule"
+	}
+	for i := 2; ; i++ {
+		candidate := fmt.Sprintf("%s-%d", base, i)
+		if _, clash := taken[candidate]; !clash {
+			return candidate
+		}
+	}
+}
+
 // RemoveRule removes a rule by ID. Returns true if a rule was removed.
 func (rf *RulesFile) RemoveRule(id string) bool {
 	for i, r := range rf.Rules {

@@ -302,11 +302,12 @@ in the active rules file.`,
 			AnvilName:        anvilName,
 			Consolidator:     warden.DefaultConsolidationRunner(),
 			DedupThreshold:   cfg.Settings.Warden.ResolvedDedupThreshold(),
+			OverlapThreshold: cfg.Settings.Warden.ResolvedOverlapThreshold(),
 			ArchiveAfterDays: cfg.Settings.Warden.ResolvedArchiveAfterDays(),
 		}
 
-		fmt.Fprintf(os.Stderr, "Running three-pass consolidation against %s (dedup_threshold=%.2f, archive_after_days=%d)...\n",
-			anvilName, opts.DedupThreshold, opts.ArchiveAfterDays)
+		fmt.Fprintf(os.Stderr, "Running three-pass consolidation against %s (dedup_threshold=%.2f, overlap_threshold=%.2f, archive_after_days=%d)...\n",
+			anvilName, opts.DedupThreshold, opts.OverlapThreshold, opts.ArchiveAfterDays)
 
 		result, err := smelter.ConsolidateAnvil(rootCtx, opts)
 		if err != nil {
@@ -326,6 +327,12 @@ in the active rules file.`,
 		}
 		if n := len(result.Passes.Backfilled); n > 0 {
 			fmt.Printf("Backfilled:      %d rule(s)\n", n)
+		}
+		if len(result.Passes.Contradictions) > 0 {
+			// Printed to stderr, and never folded into the change summary
+			// above: nothing was written for these, and a human has to pick
+			// which convention the codebase actually follows.
+			fmt.Fprintf(os.Stderr, "\n%s\n", warden.FormatContradictions(result.Passes.Contradictions))
 		}
 		if !result.Passes.HasChanges() {
 			fmt.Println("No changes — active rules file already at steady state.")

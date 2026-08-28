@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/Robin831/Forge/internal/textfmt"
 	"github.com/Robin831/Forge/internal/warden"
 )
 
@@ -29,6 +30,13 @@ type PassResults struct {
 	// Backfilled lists the IDs of rules whose Paths field was populated by
 	// Pass 3 from the changed files of the rule's source PR(s).
 	Backfilled []string
+
+	// Contradictions holds pairs of rules from one source PR that prescribe
+	// opposite orderings. They are reported, never resolved — see
+	// warden.Contradiction — so they are deliberately NOT part of
+	// HasChanges: a batch whose only finding is a contradiction has an
+	// unchanged rules file and nothing to commit.
+	Contradictions []warden.Contradiction
 }
 
 // HasChanges reports whether at least one pass produced an outcome. When
@@ -41,9 +49,9 @@ func (p PassResults) HasChanges() bool {
 // buildCommitMessage renders the single commit message used for the
 // forge/warden-learn-batch/<anvil> PR. The message has a one-line subject
 // summarizing what happened (kept short for git log readability) followed
-// by up to four labeled sections — "Added:", "Consolidated:", "Archived:",
-// "Backfilled:" — each listing the affected rule identifiers. Sections with
-// no entries are omitted. The subject always ends in "[no-changelog]" so the
+// by up to five labeled sections — "Added:", "Consolidated:", "Archived:",
+// "Backfilled:" and "Contradictions:" — each listing the affected rule
+// identifiers. Sections with no entries are omitted. The subject always ends in "[no-changelog]" so the
 // changelog validator skips this PR.
 func buildCommitMessage(passes PassResults) string {
 	subject := buildCommitSubject(passes)
@@ -80,7 +88,7 @@ func buildCommitSubject(passes PassResults) string {
 	return "forge: " + strings.Join(parts, ", ") + " [no-changelog]"
 }
 
-// buildCommitBody renders the four labeled sections. Sections with no
+// buildCommitBody renders the five labeled sections. Sections with no
 // entries are omitted entirely so the body stays compact when only one
 // pass produced changes.
 func buildCommitBody(passes PassResults) string {
@@ -95,6 +103,11 @@ func buildCommitBody(passes PassResults) string {
 		sections = append(sections, s)
 	}
 	if s := formatBackfilledSection(passes.Backfilled); s != "" {
+		sections = append(sections, s)
+	}
+	// Last, and phrased as unfinished work: a contradiction is the one thing
+	// in this message the smelter did not act on.
+	if s := formatContradictionsSection(passes.Contradictions); s != "" {
 		sections = append(sections, s)
 	}
 	return strings.Join(sections, "\n\n")
@@ -119,7 +132,10 @@ func formatConsolidatedSection(summary []warden.MergeResult) string {
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "Consolidated: %d cluster(s)\n", len(summary))
 	for _, r := range summary {
-		cat := r.Category
+		// A category is model-authored too: distillRule keeps whatever the
+		// provider's JSON returned and nothing downstream validates a
+		// character of it, so it gets the same closed alphabet as an ID.
+		cat := safeRuleID(r.Category)
 		if cat == "" {
 			cat = "(no category)"
 		}
@@ -129,6 +145,34 @@ func formatConsolidatedSection(summary []warden.MergeResult) string {
 		}
 		fmt.Fprintf(&sb, "- [%s] %s ← %s (sim=%.2f)\n",
 			cat, displayID(r.Merged.ID), strings.Join(replacedDisplay, ", "), r.MaxSimilarity)
+	}
+	return strings.TrimRight(sb.String(), "\n")
+}
+
+// formatContradictionsSection renders the pairs the smelter found and did
+// not act on, as the last section of the commit body.
+//
+// It builds the bullets here rather than calling warden.FormatContradictions
+// for the same reason buildPRBody does: that renderer prints
+// Contradiction.Detail, which contradictionDetail interpolates the two rule
+// IDs and the source reference into with %s. All three are model output —
+// distillRule keeps whatever id the provider's JSON returned and
+// AddRuleDistinct validates no character of it — and this message reaches
+// `git commit -m` on a branch that is opened as a PR against main, where an
+// ID carrying "\n\nCloses #123" or a "Co-authored-by:" line would forge
+// structure in a commit Forge authors, and any extra section forges content
+// in the message a reviewer reads to decide whether to merge the batch.
+//
+// Kind is one of warden's own constants, so it is printed as it stands.
+func formatContradictionsSection(cs []warden.Contradiction) string {
+	if len(cs) == 0 {
+		return ""
+	}
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "Contradictions: %d pair(s) — NOT resolved, a human must pick the convention\n", len(cs))
+	for _, c := range cs {
+		fmt.Fprintf(&sb, "- [%s] %s and %s (both from %s) %s\n",
+			c.Kind, displayID(c.A.ID), displayID(c.B.ID), safeRuleID(c.Source), c.Kind.Disagreement())
 	}
 	return strings.TrimRight(sb.String(), "\n")
 }
@@ -161,13 +205,72 @@ func formatBackfilledSection(ids []string) string {
 	return strings.TrimRight(sb.String(), "\n")
 }
 
-// displayID renders an empty rule ID as "(no id)" so the bullet list does
-// not contain dangling "- " entries when a rule arrives without an ID.
+// displayID renders a rule ID for a commit message or a PR body: sanitized,
+// with an empty one rendered as "(no id)" so the bullet list does not
+// contain dangling "- " entries when a rule arrives without an ID.
+//
+// Sanitized because a rule ID is not Forge's text. distillRule unmarshals a
+// learned rule from the model's JSON and keeps whatever `id` it returned,
+// the distillation prompt is built from Copilot's comments on a
+// contributor's PR, and LoadRules/AddRule/AddRuleDistinct validate no
+// character of it. These bullets are published under Forge's own GitHub
+// identity — `gh pr create --body` — so an ID carrying a backtick, a
+// newline, an `@org/team` or an HTML comment would break out of its code
+// span, forge further body sections or mass-notify a team.
+//
+// The alphabet is closed rather than escaped, the same treatment
+// diff.SafePath gives an elided filename and for the same reason: the
+// injection never needs to break the fence, only to be read as an
+// instruction. A rule ID is kebab-case by construction, so nothing
+// legitimate is lost.
 func displayID(id string) string {
-	if id == "" {
+	safe := safeRuleID(id)
+	if safe == "" {
 		return "(no id)"
 	}
-	return id
+	return safe
+}
+
+// maxRuleIDBytes bounds a rendered ID. A learned ID is a short kebab-case
+// slug; anything longer is a model that ignored the contract, and an
+// unbounded one is a single bullet that pushes the rest of the body out of
+// view. Bytes and runes are the same count here — the alphabet safeRuleID
+// leaves behind is ASCII by construction.
+const maxRuleIDBytes = 120
+
+// safeRuleID reduces s to the closed alphabet [A-Za-z0-9._/:#-], collapsing
+// every other run to a single "?", and truncates it at a rune boundary.
+// Returns "" for an empty or all-whitespace input so displayID can render
+// the "(no id)" placeholder rather than a lone "?".
+//
+// It is the renderer for a rule's SOURCE too, which is why ":" and "#" are
+// in the alphabet: a source reference is `copilot:PR#708`, and reducing it
+// to `copilot?PR?708` would mangle every legitimate one to guard against two
+// characters that cannot do anything here — neither closes a code span, and
+// "#" only opens a heading at the start of a line, which is a position no
+// input can reach once every line break has been collapsed. The space is
+// deliberately NOT in the alphabet: it is what a forged bullet or a fake
+// parenthetical needs to read as structure.
+func safeRuleID(s string) string {
+	if strings.TrimSpace(s) == "" {
+		return ""
+	}
+	var sb strings.Builder
+	lastQ := false
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9',
+			r == '.', r == '_', r == '/', r == '-', r == ':', r == '#':
+			sb.WriteRune(r)
+			lastQ = false
+		default:
+			if !lastQ {
+				sb.WriteByte('?')
+				lastQ = true
+			}
+		}
+	}
+	return textfmt.TruncateRunes(sb.String(), maxRuleIDBytes)
 }
 
 // buildPRBody renders the PR description for the smelter batch PR, describing
@@ -187,6 +290,16 @@ func buildPRBody(passes PassResults) string {
 	}
 	if n := len(passes.Backfilled); n > 0 {
 		lines = append(lines, fmt.Sprintf("- %d rule(s) with paths backfilled from PR changed files.", n))
+	}
+	if n := len(passes.Contradictions); n > 0 {
+		lines = append(lines, "", fmt.Sprintf("**%d contradictory rule pair(s) need a human decision.** Each pair was learned from one source PR and prescribes opposite orderings, so the Warden flags an implementation whichever convention it follows. Nothing was merged or dropped for them:", n))
+		for _, c := range passes.Contradictions {
+			// Every field but Kind is model-authored: the two IDs come out
+			// of the distillation JSON and Source out of the rule's own
+			// source list. Kind is one of this package's own constants.
+			lines = append(lines, fmt.Sprintf("- `%s` vs `%s` (%s, %s)",
+				displayID(c.A.ID), displayID(c.B.ID), safeRuleID(c.Source), c.Kind))
+		}
 	}
 	lines = append(lines, "", "Generated by the Forge Smelter.")
 	return strings.Join(lines, "\n")
@@ -208,6 +321,9 @@ func passResultsSummary(passes PassResults) string {
 	}
 	if n := len(passes.Backfilled); n > 0 {
 		parts = append(parts, fmt.Sprintf("%d backfilled", n))
+	}
+	if n := len(passes.Contradictions); n > 0 {
+		parts = append(parts, fmt.Sprintf("%d contradiction(s) flagged", n))
 	}
 	if len(parts) == 0 {
 		return "no changes"

@@ -180,7 +180,12 @@ func MergeRule(cluster []Rule, category, pattern, check, suggestedID string, exi
 
 // pickMergedID chooses an ID for the merged rule. It prefers a non-empty
 // AI-suggested ID, falls back to "merged-<first-id>" when none is given,
-// and appends "-N" if the chosen ID collides with existing rules.
+// and defers to distinctRuleID for the collision suffix.
+//
+// The suffix loop is distinctRuleID's and not a second copy of it: a rule
+// added from the pending queue and a rule created by a merge are named by
+// one rule, so a change to the scheme (padding, separator, a cap on
+// attempts) cannot be applied to one path and missed on the other.
 func pickMergedID(suggested string, cluster []Rule, existingIDs map[string]struct{}) string {
 	base := strings.TrimSpace(suggested)
 	if base == "" {
@@ -193,12 +198,7 @@ func pickMergedID(suggested string, cluster []Rule, existingIDs map[string]struc
 	if _, clash := existingIDs[base]; !clash {
 		return base
 	}
-	for i := 2; ; i++ {
-		candidate := fmt.Sprintf("%s-%d", base, i)
-		if _, clash := existingIDs[candidate]; !clash {
-			return candidate
-		}
-	}
+	return distinctRuleID(base, existingIDs)
 }
 
 // Consolidate runs the full consolidation pass over rf.Rules: it groups
@@ -208,9 +208,18 @@ func pickMergedID(suggested string, cluster []Rule, existingIDs map[string]struc
 // archive them. The summary slice lists one MergeResult per consolidated
 // cluster, suitable for inclusion in a commit message.
 //
+// threshold is the Jaccard criterion and the ONLY criterion this form
+// applies. It deliberately does not pair it with DefaultOverlapThreshold:
+// every caller of this function passes a single tuned number and has no way
+// to say "and also merge by containment at 0.55", so silently adding the
+// second criterion would merge rules on a measure the caller never opted
+// into — including for an operator who raised the number precisely to
+// suppress merging. A caller wanting both criteria says so through
+// ConsolidateWithParams, which is what every production path does.
+//
 // Behaviour notes:
 //   - Categories with fewer than 2 rules are skipped (no clustering possible).
-//   - When threshold <= 0, the pass is a no-op (returns nil, nil, nil).
+//   - When threshold <= 0, the WHOLE pass is a no-op (returns nil, nil, nil).
 //   - When runner returns an error for a specific cluster the cluster is
 //     skipped (logged via the returned error slice) so a single AI failure
 //     does not block other consolidations from completing.
@@ -218,66 +227,370 @@ func pickMergedID(suggested string, cluster []Rule, existingIDs map[string]struc
 // runner may be nil; the default aiRunner is used in that case. Callers
 // wanting a specific warden-stage provider chain should pass a runner built
 // for that chain (e.g. via DefaultConsolidationRunner).
+//
+// No production code calls this: the smelter flush and `forge warden
+// consolidate` both go through ConsolidateWithParams so the overlap
+// criterion is explicit at the call site. It is retained as the one-knob
+// form for tests and for callers that genuinely want Jaccard alone.
 func Consolidate(ctx context.Context, repoDir string, rf *RulesFile, threshold float64, runner ConsolidationRunner) (replaced []Rule, summary []MergeResult, errs []error) {
-	if rf == nil || threshold <= 0 || len(rf.Rules) < 2 {
+	if threshold <= 0 {
+		return nil, nil, nil
+	}
+	return ConsolidateWithParams(ctx, repoDir, rf, DedupParams{Jaccard: threshold}, runner)
+}
+
+// ConsolidateWithParams is Consolidate with both near-duplicate criteria
+// supplied explicitly, and is the form every production path uses.
+//
+// A zero DedupParams (neither criterion positive) is a no-op: with no
+// criterion active no pair of rules can be judged a near-duplicate, so the
+// O(n²) walk cannot return anything. The Smelter's own off switch is
+// stricter than that — a non-positive Jaccard threshold skips the pass
+// outright, so the overlap criterion is never applied on its own from
+// configuration.
+func ConsolidateWithParams(ctx context.Context, repoDir string, rf *RulesFile, params DedupParams, runner ConsolidationRunner) (replaced []Rule, summary []MergeResult, errs []error) {
+	if rf == nil || params.IsZero() || len(rf.Rules) < 2 {
 		return nil, nil, nil
 	}
 
-	catOrder, byCat := GroupRulesByCategory(rf.Rules)
+	catOrder, byCat, posByCat := groupRulePositionsByCategory(rf.Rules)
 
-	// Track which rule IDs are removed so we can rebuild rf.Rules in
-	// stable order after all clusters are processed.
-	removed := make(map[string]struct{})
-	var merged []Rule
-
-	// Set of currently active IDs (excludes removed) for collision checking
-	// when picking the merged ID.
-	activeIDs := make(map[string]struct{}, len(rf.Rules))
-	for _, r := range rf.Rules {
-		if r.ID != "" {
-			activeIDs[r.ID] = struct{}{}
-		}
-	}
-
+	var clusters []categorizedCluster
 	for _, cat := range catOrder {
 		rules := byCat[cat]
 		if len(rules) < 2 {
 			continue
 		}
-		clusters := ClusterByJaccard(rules, threshold)
-		for _, c := range clusters {
-			pattern, check, suggestedID, err := DistillMergedRule(ctx, repoDir, c.Rules, runner)
-			if err != nil {
-				errs = append(errs, fmt.Errorf("consolidating cluster (category=%s, size=%d): %w", cat, len(c.Rules), err))
-				continue
-			}
-
-			// Pick the merged ID while the cluster members' IDs are still in
-			// activeIDs so the merged rule always gets an ID distinct from every
-			// replaced rule. Reusing a replaced ID would create a self-referential
-			// archive entry (superseded_by == own ID). Remove the replaced IDs
-			// from activeIDs only after the merged rule's ID has been chosen.
-			mergedRule := MergeRule(c.Rules, cat, pattern, check, suggestedID, activeIDs)
-			activeIDs[mergedRule.ID] = struct{}{}
-			for _, mem := range c.Rules {
-				delete(activeIDs, mem.ID)
-			}
-
-			ids := make([]string, 0, len(c.Rules))
-			for _, mem := range c.Rules {
-				removed[mem.ID] = struct{}{}
-				replaced = append(replaced, mem)
-				ids = append(ids, mem.ID)
-			}
-			merged = append(merged, mergedRule)
-
-			summary = append(summary, MergeResult{
-				Merged:        mergedRule,
-				ReplacedIDs:   ids,
-				Category:      cat,
-				MaxSimilarity: c.MaxSimilarity,
+		positions := posByCat[cat]
+		for _, c := range ClusterNearDuplicates(rules, params) {
+			clusters = append(clusters, categorizedCluster{
+				Cluster:   c,
+				Category:  cat,
+				Positions: mapPositions(positions, c.Indices),
 			})
 		}
+	}
+
+	return applyClusters(ctx, repoDir, rf, clusters, runner)
+}
+
+// ConsolidateBatch is the intra-batch pass: it clusters ONLY the rules named
+// by batchIDs — the ones this smelter run is adding — against each other, and
+// it does so ACROSS categories.
+//
+// It exists because the whole-file pass cannot stand in for it. That pass
+// partitions by category first, and a batch's near-duplicates routinely do
+// not share one: PR #682 landed eight distillations of "the documented log
+// filename must match what the code produces" spread over `style`,
+// `documentation`, `testing` and `other`, five of "the atomicity comment must
+// match reality", and four of "delete the handle only if you still own it" —
+// 90 rules holding 16 clusters, every duplicate a copy in every Warden prompt
+// and a slot spent out of the MaxRules cap. Two of those clusters carried
+// directly contradictory guidance, so the Warden would have flagged an
+// implementation whichever convention it followed (see DetectContradictions).
+//
+// Clustering across categories is safe here in a way it would not be for the
+// whole file: the members are rules the same run is introducing, no reviewer
+// has ever seen them, and merging them changes nothing that was already in
+// effect. The merged rule takes the cluster's most common category (ties
+// broken by first appearance), which keeps it landing in a category the
+// category filter selects for on the majority members' file types — but not
+// necessarily on the minority's, which is why splitSecurityBoundary refuses
+// the one crossing where that trade loses coverage outright.
+//
+// Rules in rf that are not named by batchIDs are neither clustered nor
+// touched — deduping the batch against the existing file stays the whole-file
+// pass's job, and doing both here would merge a brand-new rule into an
+// established one behind the same log line.
+func ConsolidateBatch(ctx context.Context, repoDir string, rf *RulesFile, batchIDs []string, params DedupParams, runner ConsolidationRunner) (replaced []Rule, summary []MergeResult, errs []error) {
+	if rf == nil || params.IsZero() || len(batchIDs) < 2 {
+		return nil, nil, nil
+	}
+
+	inBatch := make(map[string]struct{}, len(batchIDs))
+	for _, id := range batchIDs {
+		if id != "" {
+			inBatch[id] = struct{}{}
+		}
+	}
+	if len(inBatch) < 2 {
+		return nil, nil, nil
+	}
+
+	// Walk rf.Rules rather than batchIDs so the clustering input is in the
+	// file's own order: the merge is deterministic for a given file, and a
+	// caller that hands over the same IDs in a different order gets the same
+	// clusters and the same merged rule.
+	//
+	// An ID is only a usable handle on a rule while it names exactly one, and
+	// nothing guarantees that: a rule's ID is written by whichever
+	// distillation session produced it, and the rules file is ordinary
+	// tracked YAML that a merge or a hand edit can leave holding two rules
+	// under one ID. Selecting by ID would then pull a rule this flush never
+	// added into the batch and — because the removal was by ID too — delete
+	// both of them from the file while archiving one, which is one distinct
+	// rule silently lost per collision. So a colliding ID is excluded from
+	// the batch entirely and reported: this pass leaves the pair exactly as
+	// it found them rather than guessing which one it was handed.
+	counts := make(map[string]int, len(rf.Rules))
+	for _, r := range rf.Rules {
+		if _, ok := inBatch[r.ID]; ok {
+			counts[r.ID]++
+		}
+	}
+	ambiguous := make([]string, 0)
+	for id, n := range counts {
+		if n > 1 {
+			ambiguous = append(ambiguous, id)
+		}
+	}
+	if len(ambiguous) > 0 {
+		sort.Strings(ambiguous)
+		for _, id := range ambiguous {
+			errs = append(errs, fmt.Errorf("intra-batch consolidation: rule id %q names %d rules in the file; excluded from the batch rather than merged by ID", id, counts[id]))
+		}
+	}
+
+	var batch []Rule
+	var positions []int
+	for i, r := range rf.Rules {
+		if _, ok := inBatch[r.ID]; !ok {
+			continue
+		}
+		if counts[r.ID] > 1 {
+			continue
+		}
+		batch = append(batch, r)
+		positions = append(positions, i)
+	}
+	if len(batch) < 2 {
+		return nil, nil, errs
+	}
+
+	var clusters []categorizedCluster
+	for _, c := range ClusterNearDuplicates(batch, params) {
+		for _, sub := range splitSecurityBoundary(c, params) {
+			clusters = append(clusters, categorizedCluster{
+				Cluster:   sub,
+				Category:  dominantCategory(sub.Rules),
+				Positions: mapPositions(positions, sub.Indices),
+			})
+		}
+	}
+
+	replaced, summary, applyErrs := applyClusters(ctx, repoDir, rf, clusters, runner)
+	return replaced, summary, append(errs, applyErrs...)
+}
+
+// securityCategory is the one category a cross-category merge may not move a
+// rule out of. See splitSecurityBoundary.
+const securityCategory = "security"
+
+// splitSecurityBoundary divides a cross-category cluster into its security
+// members and its non-security ones, dropping either side that is left with
+// fewer than two rules. A cluster that does not straddle the boundary is
+// returned unchanged.
+//
+// It exists because the merged rule's category is not cosmetic — it is a
+// review-time gate. FilterRules drops a rule whose canonical category is not
+// in the set categoriesForFile derives for the changed files, and those sets
+// are narrow: a `.ts`/`.tsx`/`.css` diff selects {ui, style, other} and a
+// `.cs` diff selects everything EXCEPT testing and ui. So a batch that
+// learns one `security` rule alongside two near-duplicate `testing` ones —
+// exactly the shape this pass exists to collapse, since the same check
+// arrives under a different model-chosen category each session — would merge
+// to dominantCategory `testing` and stop being reviewed on the next .NET
+// diff, where the original security rule would have applied. Nothing in the
+// commit message would say so: it reports a consolidation, not a change of
+// scope.
+//
+// Splitting and not promoting, because the reverse move loses coverage too:
+// a `ui` rule relabelled `security` disappears from every `.ts` diff. The
+// only reclassification-free answer is to leave the two sides as separate
+// rules, which costs one unmerged duplicate and keeps both rules landing
+// wherever they landed before. MergeRule unions Paths for the same reason —
+// "the merged rule still applies wherever its parents applied" — and the
+// category is the one selector that union cannot preserve.
+//
+// Non-security members keep clustering with each other, so the batch's
+// ordinary duplicates still collapse; only the boundary itself is refused.
+//
+// Each surviving side is RE-CLUSTERED rather than returned as it stands,
+// because ClusterNearDuplicates unions transitively: a cluster is a
+// connected component, not a clique, so removing a member can remove the
+// only edge that held the rest together. A batch holding X (testing),
+// S (security) and Y (testing) with X~S and S~Y above the threshold but
+// X~Y below both criteria is one component; partitioned by category alone
+// it would hand [X, Y] to applyClusters and merge two rules the
+// near-duplicate test had explicitly declined to join — a merge on no
+// evidence at all, and irreversible from the reviewer's point of view. The
+// mirror case is a `sec` side of two security rules bridged by a
+// non-security member. Re-running the clusterer over each side answers
+// both: what comes back is whatever components survive the removal, which
+// may be none.
+func splitSecurityBoundary(c Cluster, p DedupParams) []Cluster {
+	var sec, other Cluster
+	sec.MaxSimilarity, other.MaxSimilarity = c.MaxSimilarity, c.MaxSimilarity
+	for i, r := range c.Rules {
+		if strings.TrimSpace(strings.ToLower(r.Category)) == securityCategory {
+			sec.Rules = append(sec.Rules, r)
+			sec.Indices = append(sec.Indices, c.Indices[i])
+			continue
+		}
+		other.Rules = append(other.Rules, r)
+		other.Indices = append(other.Indices, c.Indices[i])
+	}
+	if len(sec.Rules) == 0 || len(other.Rules) == 0 {
+		return []Cluster{c}
+	}
+	var out []Cluster
+	out = append(out, reclusterPartition(sec, p)...)
+	out = append(out, reclusterPartition(other, p)...)
+	return out
+}
+
+// reclusterPartition re-runs the near-duplicate clustering over one side of
+// a split and remaps each resulting cluster's local indices back onto the
+// indices the partition was carrying, so a member's identity survives the
+// round trip. MaxSimilarity is taken from the sub-cluster rather than
+// inherited from the parent: the pair that set the parent's score may have
+// been the very edge the split removed.
+func reclusterPartition(part Cluster, p DedupParams) []Cluster {
+	if len(part.Rules) < 2 {
+		return nil
+	}
+	var out []Cluster
+	for _, sub := range ClusterNearDuplicates(part.Rules, p) {
+		out = append(out, Cluster{
+			Rules:         sub.Rules,
+			Indices:       mapPositions(part.Indices, sub.Indices),
+			MaxSimilarity: sub.MaxSimilarity,
+		})
+	}
+	return out
+}
+
+// categorizedCluster is a cluster plus the category its merged rule will
+// carry. The whole-file pass takes it from the partition it clustered
+// within; the batch pass derives it from the members.
+type categorizedCluster struct {
+	Cluster
+	Category string
+	// Positions are the members' indices into rf.Rules — the identity
+	// applyClusters removes and archives by. Cluster.Indices is relative to
+	// whatever subset was clustered (one category's rules, or the batch), so
+	// it cannot be used against the file directly.
+	Positions []int
+}
+
+// mapPositions translates cluster-local indices into the positions of the
+// slice the clustered subset was drawn from.
+func mapPositions(subsetPositions, indices []int) []int {
+	out := make([]int, 0, len(indices))
+	for _, ix := range indices {
+		out = append(out, subsetPositions[ix])
+	}
+	return out
+}
+
+// groupRulePositionsByCategory is GroupRulesByCategory plus, for each
+// category, the positions in rules that its members came from. The two are
+// built in one walk so a member and its position can never come apart.
+func groupRulePositionsByCategory(rules []Rule) (order []string, byCat map[string][]Rule, posByCat map[string][]int) {
+	byCat = make(map[string][]Rule)
+	posByCat = make(map[string][]int)
+	for i, r := range rules {
+		if _, ok := byCat[r.Category]; !ok {
+			order = append(order, r.Category)
+		}
+		byCat[r.Category] = append(byCat[r.Category], r)
+		posByCat[r.Category] = append(posByCat[r.Category], i)
+	}
+	return order, byCat, posByCat
+}
+
+// dominantCategory returns the most frequent category among rules, breaking
+// ties by first appearance so the result is stable for a given input order.
+func dominantCategory(rules []Rule) string {
+	counts := make(map[string]int, len(rules))
+	var order []string
+	for _, r := range rules {
+		if _, seen := counts[r.Category]; !seen {
+			order = append(order, r.Category)
+		}
+		counts[r.Category]++
+	}
+	best := ""
+	bestN := -1
+	for _, cat := range order {
+		if counts[cat] > bestN {
+			best, bestN = cat, counts[cat]
+		}
+	}
+	return best
+}
+
+// applyClusters distills and merges each cluster, rewrites rf.Rules, and
+// returns the superseded rules plus the per-cluster summary. It is the one
+// implementation both consolidation passes share, so neither can pick a
+// merged ID, order the rebuilt file or archive a replaced rule differently
+// from the other.
+func applyClusters(ctx context.Context, repoDir string, rf *RulesFile, clusters []categorizedCluster, runner ConsolidationRunner) (replaced []Rule, summary []MergeResult, errs []error) {
+	if len(clusters) == 0 {
+		return nil, nil, nil
+	}
+
+	// Track which rule POSITIONS are removed so we can rebuild rf.Rules in
+	// stable order after all clusters are processed. Positions and not IDs:
+	// two rules in one file can carry the same ID, and removing by ID drops
+	// every one of them while archiving only the member the cluster held.
+	removed := make(map[int]struct{})
+	var merged []Rule
+
+	// Every ID the file has held during this run, for collision checking
+	// when picking a merged rule's ID. A replaced rule's ID is never
+	// released: reusing it would produce a self-referential archive entry
+	// (superseded_by == own ID), and where the file holds a duplicate it
+	// would hand the merged rule an ID a surviving rule still carries.
+	usedIDs := make(map[string]struct{}, len(rf.Rules))
+	for _, r := range rf.Rules {
+		if r.ID != "" {
+			usedIDs[r.ID] = struct{}{}
+		}
+	}
+
+	for _, cc := range clusters {
+		if len(cc.Positions) != len(cc.Rules) {
+			// A cluster whose members cannot be located in rf.Rules is not
+			// one this pass may act on: removing it would have to fall back
+			// to matching by ID, which is the ambiguity Positions exists to
+			// remove.
+			errs = append(errs, fmt.Errorf("consolidating cluster (category=%s, size=%d): %d member position(s) supplied", cc.Category, len(cc.Rules), len(cc.Positions)))
+			continue
+		}
+		pattern, check, suggestedID, err := DistillMergedRule(ctx, repoDir, cc.Rules, runner)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("consolidating cluster (category=%s, size=%d): %w", cc.Category, len(cc.Rules), err))
+			continue
+		}
+
+		mergedRule := MergeRule(cc.Rules, cc.Category, pattern, check, suggestedID, usedIDs)
+		usedIDs[mergedRule.ID] = struct{}{}
+
+		ids := make([]string, 0, len(cc.Rules))
+		for i, mem := range cc.Rules {
+			removed[cc.Positions[i]] = struct{}{}
+			replaced = append(replaced, mem)
+			ids = append(ids, mem.ID)
+		}
+		merged = append(merged, mergedRule)
+
+		summary = append(summary, MergeResult{
+			Merged:        mergedRule,
+			ReplacedIDs:   ids,
+			Category:      cc.Category,
+			MaxSimilarity: cc.MaxSimilarity,
+		})
 	}
 
 	if len(merged) == 0 {
@@ -286,9 +599,9 @@ func Consolidate(ctx context.Context, repoDir string, rf *RulesFile, threshold f
 
 	// Rebuild rf.Rules: keep original order minus removed, then append
 	// merged rules at the end so the active file remains diff-readable.
-	newRules := make([]Rule, 0, len(rf.Rules)-len(replaced)+len(merged))
-	for _, r := range rf.Rules {
-		if _, gone := removed[r.ID]; gone {
+	newRules := make([]Rule, 0, len(rf.Rules)-len(removed)+len(merged))
+	for i, r := range rf.Rules {
+		if _, gone := removed[i]; gone {
 			continue
 		}
 		newRules = append(newRules, r)

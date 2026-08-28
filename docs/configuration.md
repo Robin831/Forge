@@ -128,6 +128,7 @@ settings:
     max_rules_per_review: 30
     archive_after_days: 180
     dedup_threshold: 0.6
+    overlap_threshold: 0.55
 
 # AI pull-request review (top-level, sibling of settings). See the Assay section.
 assay:
@@ -896,7 +897,8 @@ settings:
     filter_category: true      # filter by Rule.Category against the extension→category map
     filter_pattern_grep: true  # substring-match ≥4-char words from Rule.Pattern against the diff
     archive_after_days: 180    # Smelter staleness sweep threshold; 0 = default 180; negative disables
-    dedup_threshold: 0.6       # similarity score above which duplicate rules are archived; 0 = default 0.6
+    dedup_threshold: 0.6       # Jaccard score above which duplicate rules are archived; 0 = default 0.6; negative turns BOTH consolidation passes off
+    overlap_threshold: 0.55    # containment score, the second duplicate criterion; 0 = default 0.55; negative disables it
 ```
 
 | Field | Type | Default | Description |
@@ -907,7 +909,56 @@ settings:
 | `warden.filter_category` | bool | `true` | Enables filtering by each rule's `Category` against the in-code extension → category map. |
 | `warden.filter_pattern_grep` | bool | `true` | Enables substring matching of ≥4-character words from each rule's `Pattern` against the diff. |
 | `warden.archive_after_days` | int | `180` | Staleness threshold (days) used by the Smelter's Pass 2 sweep: a rule older than this with no recent source activity is archived with reason `stale`. `0` (or omit) uses the default of `180`; a negative value disables the pass ("never archive"). |
-| `warden.dedup_threshold` | float | `0.6` | Similarity score (0.0–1.0) above which two active rules are treated as duplicates and the older entry is archived with reason `duplicate`. `0` (or omit) uses the default of `0.6`. |
+| `warden.dedup_threshold` | float | `0.6` | Jaccard similarity (0.0–1.0) above which two active rules are treated as duplicates and the older entry is archived with reason `duplicate`. `0` (or omit) uses the default of `0.6`; a **negative** value turns **both** consolidation passes off — `overlap_threshold` is never applied on its own, so this is the single off switch for consolidation. The disable is negative and not `0` for the same reason `archive_after_days`' is: `0` is the field's zero value, so an unset setting and an explicit `dedup_threshold: 0` are indistinguishable by the time either reaches the daemon, and reading that as "off" would disable consolidation for every deployment that never configured it. |
+| `warden.overlap_threshold` | float | `0.55` | The second duplicate criterion: the share of the **shorter** rule's vocabulary that also appears in the longer one (`\|A ∩ B\| / min(\|A\|, \|B\|)`). Two rules are near-duplicates when **either** criterion fires. `0` (or omit) uses the default of `0.55`; a negative value disables the criterion, leaving Jaccard alone. |
+
+### Why two duplicate criteria
+
+Jaccard divides by the union of both rules' vocabularies, so a terse
+restatement of a verbose rule cannot score above `|short| / |long|` however
+complete the containment is. Measured over this repository's own 727-rule
+`.forge/warden-rules.yaml`, the shipped `dedup_threshold` of `0.6` clusters
+**nothing** — not one pair out of 263,901 — while the file demonstrably holds
+three separate rules all saying "a doc comment must match the implementation".
+Genuine near-duplicates there score 0.28–0.50 on Jaccard, so the only Jaccard
+threshold that fires is one low enough to also merge rules that merely share a
+topic. The overlap coefficient separates the two populations: at `0.55` it
+finds 17 clusters over the same file, every one of them a real duplicate.
+
+### Two consolidation passes
+
+The Smelter runs consolidation twice per flush, and the two differ in **what
+they cluster** and **whether they respect categories**:
+
+1. **Intra-batch** — only the rules this flush is adding, clustered against
+   each other and **across** categories. A learned rule's category is picked by
+   whichever distillation session produced it, so one check routinely arrives
+   as `style`, `documentation` and `other` in the same batch; a per-category
+   pass cannot see that cluster at all. This is what stops a batch shipping
+   eight restatements of one check.
+2. **Whole-file** — every rule in the file, clustered **within** each category.
+   Merging across categories here would change what the category filter selects
+   for every future review, so it stays per-category.
+
+Both use the same two criteria and both archive what they replace with reason
+`duplicate` and a `superseded_by` pointer.
+
+### Contradictory rules
+
+After both passes the Smelter reports — and never resolves — pairs of rules
+learned from the **same source PR** that prescribe opposite orderings: one says
+a callback is invoked while the lock is held and the other says the lock is
+released first, or one persists before clearing a flag and the other clears the
+flag first. Both rules reach the checklist, so the Warden flags an
+implementation whichever convention it follows and the finding carries no
+information.
+
+Nothing is merged or dropped for them: which ordering a codebase wants is a
+reading of the code, not of the two sentences. The pairs are logged, recorded
+as a `smelter_flushed` event, listed in the batch PR's commit message under
+`Contradictions:` and called out in the PR body, so whoever reviews the batch
+settles them. `forge warden consolidate <anvil>` prints the same list to
+stderr.
 
 ## Assay — AI Pull-Request Review
 

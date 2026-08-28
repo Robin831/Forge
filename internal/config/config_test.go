@@ -1465,6 +1465,7 @@ func TestLoad_WardenSettings_Default(t *testing.T) {
 	assert.True(t, cfg.Settings.Warden.IsFilterPatternGrepEnabled())
 	assert.Equal(t, 180, cfg.Settings.Warden.ResolvedArchiveAfterDays())
 	assert.InDelta(t, 0.6, cfg.Settings.Warden.ResolvedDedupThreshold(), 1e-9)
+	assert.InDelta(t, 0.55, cfg.Settings.Warden.ResolvedOverlapThreshold(), 1e-9)
 }
 
 func TestLoad_WardenSettings_Custom(t *testing.T) {
@@ -1480,6 +1481,7 @@ settings:
     filter_pattern_grep: false
     archive_after_days: 90
     dedup_threshold: 0.8
+    overlap_threshold: 0.7
 `
 	require.NoError(t, os.WriteFile(cfgPath, []byte(content), 0o644))
 
@@ -1492,6 +1494,40 @@ settings:
 	assert.False(t, cfg.Settings.Warden.IsFilterPatternGrepEnabled())
 	assert.Equal(t, 90, cfg.Settings.Warden.ResolvedArchiveAfterDays())
 	assert.InDelta(t, 0.8, cfg.Settings.Warden.ResolvedDedupThreshold(), 1e-9)
+	assert.InDelta(t, 0.7, cfg.Settings.Warden.ResolvedOverlapThreshold(), 1e-9)
+}
+
+// TestWardenSettings_OverlapThresholdCanBeDisabled: a negative value is
+// returned as-is so the caller can read it as "disable the overlap
+// criterion", leaving Jaccard as the only near-duplicate test.
+func TestWardenSettings_OverlapThresholdCanBeDisabled(t *testing.T) {
+	w := WardenSettings{OverlapThreshold: -1}
+	assert.InDelta(t, -1.0, w.ResolvedOverlapThreshold(), 1e-9)
+}
+
+// The off switch for consolidation as a whole has to be reachable from a
+// config file, which is what a zero-means-off reading could never be: zero
+// is the field's zero value, so an unset setting and an explicit
+// `dedup_threshold: 0` arrive here as one number and disabling on it would
+// turn consolidation off for every deployment that never configured it.
+// A negative value is the switch, and it must survive Load.
+func TestLoad_WardenDedupThresholdDisablesOnNegative(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "forge.yaml")
+	require.NoError(t, os.WriteFile(cfgPath, []byte("settings:\n  warden:\n    dedup_threshold: -1\n"), 0o644))
+
+	cfg, err := Load(cfgPath)
+	require.NoError(t, err)
+	assert.InDelta(t, -1.0, cfg.Settings.Warden.ResolvedDedupThreshold(), 1e-9,
+		"a negative dedup_threshold must reach the smelter as the off switch")
+
+	// An explicit zero is indistinguishable from unset and so resolves to
+	// the shipped default, NOT to "off".
+	zeroPath := filepath.Join(dir, "zero.yaml")
+	require.NoError(t, os.WriteFile(zeroPath, []byte("settings:\n  warden:\n    dedup_threshold: 0\n"), 0o644))
+	zeroCfg, err := Load(zeroPath)
+	require.NoError(t, err)
+	assert.InDelta(t, DefaultWardenDedupThreshold, zeroCfg.Settings.Warden.ResolvedDedupThreshold(), 1e-9)
 }
 
 func TestTemperStepConfig_VerifyNoConflictMarkersRoundTrip(t *testing.T) {

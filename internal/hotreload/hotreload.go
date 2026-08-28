@@ -403,6 +403,30 @@ func applyChanges(old, new *config.Config) []string {
 			old.Settings.CopilotWardenSampleRate, new.Settings.CopilotWardenSampleRate))
 	}
 
+	// The smelter resolves all three of its knobs through a closure at flush
+	// time precisely so an edit takes effect without a restart — but a
+	// closure only ever sees the config the watcher swapped in, and nothing
+	// is swapped in unless applyChanges reports a change. Without these
+	// three entries the knobs were reloadable in shape and inert in fact.
+	//
+	// Compared through the Resolved* helpers, so an edit between two
+	// spellings of one effective value (unset and an explicit 0.6) reports
+	// no change, which is what a reload log line should say.
+	if old.Settings.Warden.ResolvedDedupThreshold() != new.Settings.Warden.ResolvedDedupThreshold() {
+		changes = append(changes, fmt.Sprintf("warden.dedup_threshold: %.2f → %.2f",
+			old.Settings.Warden.ResolvedDedupThreshold(), new.Settings.Warden.ResolvedDedupThreshold()))
+	}
+
+	if old.Settings.Warden.ResolvedOverlapThreshold() != new.Settings.Warden.ResolvedOverlapThreshold() {
+		changes = append(changes, fmt.Sprintf("warden.overlap_threshold: %.2f → %.2f",
+			old.Settings.Warden.ResolvedOverlapThreshold(), new.Settings.Warden.ResolvedOverlapThreshold()))
+	}
+
+	if old.Settings.Warden.ResolvedArchiveAfterDays() != new.Settings.Warden.ResolvedArchiveAfterDays() {
+		changes = append(changes, fmt.Sprintf("warden.archive_after_days: %d → %d",
+			old.Settings.Warden.ResolvedArchiveAfterDays(), new.Settings.Warden.ResolvedArchiveAfterDays()))
+	}
+
 	oldSmelterEnabled := old.Settings.IsSmelterEnabled()
 	newSmelterEnabled := new.Settings.IsSmelterEnabled()
 	if oldSmelterEnabled != newSmelterEnabled {
