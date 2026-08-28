@@ -427,8 +427,18 @@ func (s *Smelter) buildFlushRules(ctx context.Context, wtPath, anvilName string,
 			flushedIDs = append(flushedIDs, pr.ID)
 			continue
 		}
-		if rf.AddRule(rule) {
-			addedIDs = append(addedIDs, rule.ID)
+		// AddRuleDistinct and not AddRule: two pending rules can carry one
+		// ID (each is named by whichever distillation session wrote it), and
+		// a plain by-ID skip deletes the second one's content from the queue
+		// without saying so — including in the case the intra-batch pass
+		// exists for, where the two are restatements the pass would have
+		// merged had both been in the file to cluster.
+		storedID, added := rf.AddRuleDistinct(rule)
+		if added {
+			if storedID != rule.ID {
+				log.Printf("[smelter] Rule id %q for %s already names a different rule — stored as %q", rule.ID, anvilName, storedID)
+			}
+			addedIDs = append(addedIDs, storedID)
 		}
 		flushedIDs = append(flushedIDs, pr.ID)
 	}
@@ -456,6 +466,15 @@ func (s *Smelter) buildFlushRules(ctx context.Context, wtPath, anvilName string,
 	// two sets are disjoint by construction and no rule can be archived twice.
 	consolidationSummary = append(batchSummary, consolidationSummary...)
 	archived = append(batchReplaced, archived...)
+
+	// The whole-file pass runs after the batch one and can merge a rule this
+	// flush added — or a rule the batch pass just produced — into an
+	// established one. Added must name what is actually in the file being
+	// committed, so it is filtered against rf here rather than at either
+	// pass: a pass only knows about its own merges, and an Added list naming
+	// a rule the next pass superseded is a commit message describing a file
+	// that was never written.
+	addedIDs = surviving(addedIDs, rf)
 
 	// Pass 2 staleness archive: move rules that have aged past the configured
 	// threshold and have had no recent source activity into the archive store
@@ -493,6 +512,35 @@ func (s *Smelter) buildFlushRules(ctx context.Context, wtPath, anvilName string,
 		archived:   archived,
 		flushedIDs: flushedIDs,
 	}, nil
+}
+
+// surviving filters ids down to those still present in rf, preserving order
+// and dropping repeats. It is what keeps PassResults.Added a statement about
+// the committed rules file rather than about the pending queue.
+func surviving(ids []string, rf *warden.RulesFile) []string {
+	if len(ids) == 0 || rf == nil {
+		return nil
+	}
+	present := make(map[string]struct{}, len(rf.Rules))
+	for _, r := range rf.Rules {
+		present[r.ID] = struct{}{}
+	}
+	out := make([]string, 0, len(ids))
+	seen := make(map[string]struct{}, len(ids))
+	for _, id := range ids {
+		if _, ok := present[id]; !ok {
+			continue
+		}
+		if _, dup := seen[id]; dup {
+			continue
+		}
+		seen[id] = struct{}{}
+		out = append(out, id)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // dedupParams resolves the two near-duplicate criteria at flush time.
@@ -544,6 +592,15 @@ func (s *Smelter) runBatchConsolidation(ctx context.Context, wtPath, anvilName s
 	replaced, summary, errs := warden.ConsolidateBatch(ctx, wtPath, rf, addedIDs, params, s.consolidator)
 	for _, e := range errs {
 		log.Printf("[smelter] intra-batch consolidation error for %s: %v", anvilName, e)
+	}
+	if len(errs) > 0 {
+		// Into the feed and not only the log: every one of these is a rule
+		// the pass declined to touch, so the batch ships with a duplicate
+		// the run was supposed to collapse and nothing else would say so.
+		_ = s.db.LogEvent(state.EventSmelterFailed,
+			fmt.Sprintf("%s during intra-batch consolidation for %s (first: %v)",
+				textfmt.Count(len(errs), "error"), anvilName, errs[0]),
+			"", anvilName)
 	}
 	if len(summary) == 0 {
 		return addedIDs, nil, nil

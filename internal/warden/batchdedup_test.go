@@ -378,3 +378,147 @@ func TestConsolidate_ZeroThresholdStaysOff(t *testing.T) {
 	assert.Zero(t, calls)
 	assert.Len(t, rf.Rules, 8)
 }
+
+// --- Rule identity: an ID is not a handle on a rule --------------------------
+
+// TestConsolidateBatch_DuplicateIDIsExcludedNotCollapsed pins the identity
+// the batch pass acts on.
+//
+// The rules file is ordinary tracked YAML: a merge, a hand edit or two
+// distillation sessions naming their output the same thing can leave two
+// distinct rules under one ID. Selected by ID, the batch pass pulled BOTH
+// into the batch — and removed both from the file when the cluster merged,
+// while archiving only the member the cluster actually held. The unrelated
+// rule was deleted with no archive entry, no summary line and nothing in the
+// log: one rule of coverage gone per collision, invisible until a review
+// stopped mentioning the thing.
+//
+// A colliding ID is now excluded from the batch and reported. The pass
+// cannot tell which of the two it was handed, so it touches neither.
+func TestConsolidateBatch_DuplicateIDIsExcludedNotCollapsed(t *testing.T) {
+	batch := logFilenameCluster()
+	require.GreaterOrEqual(t, len(batch), 3)
+
+	// An established rule about something else entirely, sharing an ID with
+	// the first batch member. Its vocabulary does not overlap the cluster's,
+	// so it can never be clustered on its own merits.
+	bystander := Rule{
+		ID:       batch[0].ID,
+		Category: "security",
+		Pattern:  "A tar archive is extracted without inspecting each entry's type header",
+		Check:    "Verify symlink and device entries are rejected before extraction",
+		Source:   SourceList{"copilot:PR#4001"},
+		Added:    "2026-01-01",
+	}
+
+	rf := &RulesFile{Rules: append([]Rule{bystander}, batch...)}
+	before := len(rf.Rules)
+	ids := make([]string, len(batch))
+	for i, r := range batch {
+		ids[i] = r.ID
+	}
+
+	calls := 0
+	replaced, summary, errs := ConsolidateBatch(context.Background(), t.TempDir(), rf, ids,
+		shippedParams(), mergeStub(t, "log-filename-doc-drift", "documented log filename", "verify it matches the code", &calls))
+
+	// The collision is reported rather than swallowed.
+	require.Len(t, errs, 1)
+	assert.Contains(t, errs[0].Error(), batch[0].ID)
+
+	// The bystander is still in the file, byte for byte.
+	var found int
+	for _, r := range rf.Rules {
+		if r.ID == bystander.ID && r.Check == bystander.Check {
+			found++
+			assert.Equal(t, bystander, r)
+		}
+	}
+	assert.Equal(t, 1, found, "the rule sharing an ID with a batch member must survive untouched")
+
+	// Nothing left the file without being archived: every rule that is gone
+	// is in replaced.
+	assert.Equal(t, before-len(replaced)+len(summary), len(rf.Rules),
+		"the file shrinks by exactly what was archived, plus the merged rules")
+	for _, r := range replaced {
+		assert.NotEqual(t, bystander.Check, r.Check, "the bystander is never archived, because it is never removed")
+	}
+
+	// The rest of the batch still consolidates — one collision does not
+	// disable the pass.
+	require.Len(t, summary, 1)
+	assert.NotContains(t, summary[0].ReplacedIDs, batch[0].ID)
+}
+
+// TestConsolidateWithParams_RemovesByPositionNotID is the same invariant for
+// the whole-file pass, which partitions by category and so could remove a
+// same-ID rule sitting in a different category from the one it merged.
+func TestConsolidateWithParams_RemovesByPositionNotID(t *testing.T) {
+	cluster := logFilenameCluster()
+	for i := range cluster {
+		cluster[i].Category = "style" // one category, so the whole-file pass sees them
+	}
+
+	bystander := Rule{
+		ID:       cluster[0].ID,
+		Category: "security", // a different partition entirely
+		Pattern:  "A query is assembled by concatenating request parameters into SQL text",
+		Check:    "Verify the query binds parameters rather than concatenating strings",
+		Source:   SourceList{"copilot:PR#4002"},
+		Added:    "2026-01-01",
+	}
+
+	rf := &RulesFile{Rules: append([]Rule{bystander}, cluster...)}
+	calls := 0
+	_, summary, errs := ConsolidateWithParams(context.Background(), t.TempDir(), rf,
+		shippedParams(), mergeStub(t, "log-filename-doc-drift", "documented log filename", "verify it matches the code", &calls))
+
+	assert.Empty(t, errs)
+	require.Len(t, summary, 1)
+
+	var survived bool
+	for _, r := range rf.Rules {
+		if r.Category == "security" && r.Check == bystander.Check {
+			survived = true
+		}
+	}
+	assert.True(t, survived, "a rule in another category sharing an ID with a merged one must not be removed")
+}
+
+// TestAddRuleDistinct_KeepsTwoRulesUnderOneID covers the other end of the
+// same problem: the pending queue.
+//
+// AddRule skips by ID, so the second of two distinct rules named the same
+// thing was dropped from the queue with its content and nothing said about
+// it — and it is exactly the rule the intra-batch pass exists to fold into
+// the first, which it can only do if both are in the file to be clustered.
+func TestAddRuleDistinct_KeepsTwoRulesUnderOneID(t *testing.T) {
+	first := Rule{ID: "log-filename", Category: "style", Pattern: "p1", Check: "c1"}
+	second := Rule{ID: "log-filename", Category: "documentation", Pattern: "p2", Check: "c2"}
+
+	rf := &RulesFile{}
+
+	id, added := rf.AddRuleDistinct(first)
+	assert.True(t, added)
+	assert.Equal(t, "log-filename", id)
+
+	id, added = rf.AddRuleDistinct(second)
+	assert.True(t, added, "a distinct rule is kept even when its ID is taken")
+	assert.Equal(t, "log-filename-2", id)
+	require.Len(t, rf.Rules, 2)
+	assert.Equal(t, "c2", rf.Rules[1].Check)
+
+	// Re-learning the very same rule is still a no-op, which is what the
+	// by-ID skip was right about.
+	id, added = rf.AddRuleDistinct(first)
+	assert.False(t, added)
+	assert.Equal(t, "log-filename", id)
+	assert.Len(t, rf.Rules, 2)
+
+	// A third distinct collision keeps counting up rather than clobbering.
+	third := Rule{ID: "log-filename", Category: "testing", Pattern: "p3", Check: "c3"}
+	id, added = rf.AddRuleDistinct(third)
+	assert.True(t, added)
+	assert.Equal(t, "log-filename-3", id)
+	assert.Len(t, rf.Rules, 3)
+}

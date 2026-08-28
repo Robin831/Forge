@@ -110,6 +110,11 @@ func learnAndFlush(t *testing.T, s *Smelter, db *state.DB, anvil, dir string, ru
 			built.passes.Consolidated, built.passes.Archived))
 	}
 
+	// flushAnvil drains the queue once the passes have run; the helper does
+	// too, so a test can flush twice and have the second flush see only what
+	// it just learned.
+	require.NoError(t, db.DeletePendingRules(built.flushedIDs))
+
 	onDisk, err := warden.LoadRules(dir)
 	require.NoError(t, err)
 	return built.passes, onDisk
@@ -315,4 +320,139 @@ func TestFlush_DedupDisabledWritesEveryRestatement(t *testing.T) {
 	assert.Zero(t, calls)
 	assert.Len(t, onDisk.Rules, 8)
 	assert.FileExists(t, filepath.Join(dir, warden.RulesFileName))
+}
+
+// TestFlush_TwoPendingRulesUnderOneIDBothReachTheFile is the queue end of the
+// same identity problem the batch pass has at the file end.
+//
+// A learned rule's ID is written by whichever distillation session produced
+// it, so two sessions reading two comments on one PR routinely label them the
+// same thing. AddRule skipped the second by ID: its content was deleted from
+// the queue with nothing in the log, no archive entry and no line in the
+// commit message — and it was precisely the rule the intra-batch pass exists
+// to fold into the first, which it can only do if both are in the file to be
+// clustered.
+//
+// Both now reach the file, so the pass sees the cluster and merges it: eight
+// restatements arriving under two IDs still commit as one rule.
+func TestFlush_TwoPendingRulesUnderOneIDBothReachTheFile(t *testing.T) {
+	db := openTestDB(t)
+	dir := t.TempDir()
+	calls := 0
+	s := batchSmelter(t, db, "log-filename-doc-drift", &calls)
+
+	learned := logFilenameRestatements(8)
+	// Two sessions, one ID: every rule keeps its own wording and its own
+	// source PR, but they arrive named from a pool of two.
+	for i := range learned {
+		learned[i].ID = fmt.Sprintf("log-filename-doc-drift-%d", i%2)
+		learned[i].Check = fmt.Sprintf("%s (variant %d)", learned[i].Check, i)
+	}
+
+	passes, onDisk := learnAndFlush(t, s, db, "anvil-a", dir, learned)
+
+	require.Len(t, onDisk.Rules, 1, "eight restatements under two IDs still commit as one rule")
+	require.Len(t, passes.Consolidated, 1)
+	assert.Len(t, passes.Consolidated[0].ReplacedIDs, 8,
+		"all eight are accounted for — none was dropped for sharing an ID")
+
+	// Every source PR is still named, which is the check that says no rule's
+	// content was silently discarded on the way in.
+	wantSources := make([]string, 0, len(learned))
+	for _, r := range learned {
+		wantSources = append(wantSources, r.Source[0])
+	}
+	assert.ElementsMatch(t, wantSources, []string(onDisk.Rules[0].Source))
+
+	// And each is recoverable from the archive.
+	archive, err := warden.LoadArchive(warden.ArchivePath(dir))
+	require.NoError(t, err)
+	assert.Len(t, archive.Rules, 8)
+}
+
+// TestFlush_ReLearningTheSameRuleIsStillANoOp is the other side of it. The
+// by-ID skip was right about one thing — a rule already on file must not be
+// added a second time — and keeping distinct rules must not cost that.
+func TestFlush_ReLearningTheSameRuleIsStillANoOp(t *testing.T) {
+	db := openTestDB(t)
+	dir := t.TempDir()
+	calls := 0
+	s := batchSmelter(t, db, "unused", &calls)
+
+	learned := distinctRules(3)
+	_, onDisk := learnAndFlush(t, s, db, "anvil-a", dir, learned)
+	require.Len(t, onDisk.Rules, 3)
+
+	passes, onDisk := learnAndFlush(t, s, db, "anvil-a", dir, learned)
+	assert.Len(t, onDisk.Rules, 3, "re-learning the identical rules adds nothing")
+	assert.Empty(t, passes.Added)
+	assert.False(t, passes.HasChanges(), "an unchanged file is not a commit")
+}
+
+// TestFlush_AddedNamesTheCommittedFileAfterTheWholeFilePass covers the
+// hand-off between the two consolidation passes.
+//
+// The batch pass runs first and reports the merged rule it produced as an
+// added rule. The whole-file pass then runs and can merge that very rule into
+// an established one — after which the reported Added list named a rule that
+// is not in the file being committed. Added is a statement about the
+// committed rules file, so it is resolved against rf after every pass rather
+// than by either pass alone, which only knows about its own merges.
+func TestFlush_AddedNamesTheCommittedFileAfterTheWholeFilePass(t *testing.T) {
+	db := openTestDB(t)
+	dir := t.TempDir()
+
+	// An established rule on the same check as the batch, already committed.
+	established := logFilenameRestatements(1)[0]
+	established.ID = "established-log-filename-rule"
+	established.Category = "style" // the category the batch merge will land in
+	established.Added = "2026-01-01"
+	established.Source = warden.SourceList{"copilot:PR#100"}
+	require.NoError(t, warden.SaveRules(dir, &warden.RulesFile{Rules: []warden.Rule{established}}))
+
+	// The batch merge produces "log-filename-doc-drift"; the whole-file pass
+	// then merges that with the established rule into "final-log-filename".
+	merges := 0
+	s := New(db, time.Hour, map[string]string{},
+		WithConsolidator(func(context.Context, string, string) ([]byte, error) {
+			merges++
+			id := "log-filename-doc-drift"
+			if merges > 1 {
+				id = "final-log-filename"
+			}
+			return json.Marshal(map[string]string{
+				"id":      id,
+				"pattern": "A doc comment describes the generated log filename format produced by the surrounding code",
+				"check":   "Verify the documented log filename format matches exactly what the code produces, including the timestamp unit and any sequence suffix",
+			})
+		}),
+		WithDedupThreshold(func() float64 { return 0.6 }),
+		WithOverlapThreshold(func() float64 { return warden.DefaultOverlapThreshold }),
+	)
+
+	passes, onDisk := learnAndFlush(t, s, db, "anvil-a", dir, logFilenameRestatements(8))
+
+	require.Equal(t, 2, merges, "the batch pass merges, then the whole-file pass merges its output with the established rule")
+	require.Len(t, onDisk.Rules, 1)
+	assert.Equal(t, "final-log-filename", onDisk.Rules[0].ID)
+
+	assert.NotContains(t, passes.Added, "log-filename-doc-drift",
+		"Added must not name a rule the next pass superseded")
+	for _, id := range passes.Added {
+		assert.Equal(t, "final-log-filename", id)
+	}
+	assert.True(t, passes.HasChanges(), "the consolidations are still a change worth committing")
+
+	// The intermediate merged rule left the file, so it is in the archive
+	// too — nothing is removed without a record of what replaced it.
+	archive, err := warden.LoadArchive(warden.ArchivePath(dir))
+	require.NoError(t, err)
+	var sawIntermediate bool
+	for _, ar := range archive.Rules {
+		if ar.Rule.ID == "log-filename-doc-drift" {
+			sawIntermediate = true
+			assert.Equal(t, "final-log-filename", ar.SupersededBy)
+		}
+	}
+	assert.True(t, sawIntermediate, "the batch pass's output is archived when the whole-file pass replaces it")
 }

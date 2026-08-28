@@ -241,7 +241,7 @@ func ConsolidateWithParams(ctx context.Context, repoDir string, rf *RulesFile, p
 		return nil, nil, nil
 	}
 
-	catOrder, byCat := GroupRulesByCategory(rf.Rules)
+	catOrder, byCat, posByCat := groupRulePositionsByCategory(rf.Rules)
 
 	var clusters []categorizedCluster
 	for _, cat := range catOrder {
@@ -249,8 +249,13 @@ func ConsolidateWithParams(ctx context.Context, repoDir string, rf *RulesFile, p
 		if len(rules) < 2 {
 			continue
 		}
+		positions := posByCat[cat]
 		for _, c := range ClusterNearDuplicates(rules, params) {
-			clusters = append(clusters, categorizedCluster{Cluster: c, Category: cat})
+			clusters = append(clusters, categorizedCluster{
+				Cluster:   c,
+				Category:  cat,
+				Positions: mapPositions(positions, c.Indices),
+			})
 		}
 	}
 
@@ -302,22 +307,63 @@ func ConsolidateBatch(ctx context.Context, repoDir string, rf *RulesFile, batchI
 	// file's own order: the merge is deterministic for a given file, and a
 	// caller that hands over the same IDs in a different order gets the same
 	// clusters and the same merged rule.
-	var batch []Rule
+	//
+	// An ID is only a usable handle on a rule while it names exactly one, and
+	// nothing guarantees that: a rule's ID is written by whichever
+	// distillation session produced it, and the rules file is ordinary
+	// tracked YAML that a merge or a hand edit can leave holding two rules
+	// under one ID. Selecting by ID would then pull a rule this flush never
+	// added into the batch and — because the removal was by ID too — delete
+	// both of them from the file while archiving one, which is one distinct
+	// rule silently lost per collision. So a colliding ID is excluded from
+	// the batch entirely and reported: this pass leaves the pair exactly as
+	// it found them rather than guessing which one it was handed.
+	counts := make(map[string]int, len(rf.Rules))
 	for _, r := range rf.Rules {
 		if _, ok := inBatch[r.ID]; ok {
-			batch = append(batch, r)
+			counts[r.ID]++
 		}
 	}
+	ambiguous := make([]string, 0)
+	for id, n := range counts {
+		if n > 1 {
+			ambiguous = append(ambiguous, id)
+		}
+	}
+	if len(ambiguous) > 0 {
+		sort.Strings(ambiguous)
+		for _, id := range ambiguous {
+			errs = append(errs, fmt.Errorf("intra-batch consolidation: rule id %q names %d rules in the file; excluded from the batch rather than merged by ID", id, counts[id]))
+		}
+	}
+
+	var batch []Rule
+	var positions []int
+	for i, r := range rf.Rules {
+		if _, ok := inBatch[r.ID]; !ok {
+			continue
+		}
+		if counts[r.ID] > 1 {
+			continue
+		}
+		batch = append(batch, r)
+		positions = append(positions, i)
+	}
 	if len(batch) < 2 {
-		return nil, nil, nil
+		return nil, nil, errs
 	}
 
 	var clusters []categorizedCluster
 	for _, c := range ClusterNearDuplicates(batch, params) {
-		clusters = append(clusters, categorizedCluster{Cluster: c, Category: dominantCategory(c.Rules)})
+		clusters = append(clusters, categorizedCluster{
+			Cluster:   c,
+			Category:  dominantCategory(c.Rules),
+			Positions: mapPositions(positions, c.Indices),
+		})
 	}
 
-	return applyClusters(ctx, repoDir, rf, clusters, runner)
+	replaced, summary, applyErrs := applyClusters(ctx, repoDir, rf, clusters, runner)
+	return replaced, summary, append(errs, applyErrs...)
 }
 
 // categorizedCluster is a cluster plus the category its merged rule will
@@ -326,6 +372,37 @@ func ConsolidateBatch(ctx context.Context, repoDir string, rf *RulesFile, batchI
 type categorizedCluster struct {
 	Cluster
 	Category string
+	// Positions are the members' indices into rf.Rules — the identity
+	// applyClusters removes and archives by. Cluster.Indices is relative to
+	// whatever subset was clustered (one category's rules, or the batch), so
+	// it cannot be used against the file directly.
+	Positions []int
+}
+
+// mapPositions translates cluster-local indices into the positions of the
+// slice the clustered subset was drawn from.
+func mapPositions(subsetPositions, indices []int) []int {
+	out := make([]int, 0, len(indices))
+	for _, ix := range indices {
+		out = append(out, subsetPositions[ix])
+	}
+	return out
+}
+
+// groupRulePositionsByCategory is GroupRulesByCategory plus, for each
+// category, the positions in rules that its members came from. The two are
+// built in one walk so a member and its position can never come apart.
+func groupRulePositionsByCategory(rules []Rule) (order []string, byCat map[string][]Rule, posByCat map[string][]int) {
+	byCat = make(map[string][]Rule)
+	posByCat = make(map[string][]int)
+	for i, r := range rules {
+		if _, ok := byCat[r.Category]; !ok {
+			order = append(order, r.Category)
+		}
+		byCat[r.Category] = append(byCat[r.Category], r)
+		posByCat[r.Category] = append(posByCat[r.Category], i)
+	}
+	return order, byCat, posByCat
 }
 
 // dominantCategory returns the most frequent category among rules, breaking
@@ -359,41 +436,46 @@ func applyClusters(ctx context.Context, repoDir string, rf *RulesFile, clusters 
 		return nil, nil, nil
 	}
 
-	// Track which rule IDs are removed so we can rebuild rf.Rules in
-	// stable order after all clusters are processed.
-	removed := make(map[string]struct{})
+	// Track which rule POSITIONS are removed so we can rebuild rf.Rules in
+	// stable order after all clusters are processed. Positions and not IDs:
+	// two rules in one file can carry the same ID, and removing by ID drops
+	// every one of them while archiving only the member the cluster held.
+	removed := make(map[int]struct{})
 	var merged []Rule
 
-	// Set of currently active IDs (excludes removed) for collision checking
-	// when picking the merged ID.
-	activeIDs := make(map[string]struct{}, len(rf.Rules))
+	// Every ID the file has held during this run, for collision checking
+	// when picking a merged rule's ID. A replaced rule's ID is never
+	// released: reusing it would produce a self-referential archive entry
+	// (superseded_by == own ID), and where the file holds a duplicate it
+	// would hand the merged rule an ID a surviving rule still carries.
+	usedIDs := make(map[string]struct{}, len(rf.Rules))
 	for _, r := range rf.Rules {
 		if r.ID != "" {
-			activeIDs[r.ID] = struct{}{}
+			usedIDs[r.ID] = struct{}{}
 		}
 	}
 
 	for _, cc := range clusters {
+		if len(cc.Positions) != len(cc.Rules) {
+			// A cluster whose members cannot be located in rf.Rules is not
+			// one this pass may act on: removing it would have to fall back
+			// to matching by ID, which is the ambiguity Positions exists to
+			// remove.
+			errs = append(errs, fmt.Errorf("consolidating cluster (category=%s, size=%d): %d member position(s) supplied", cc.Category, len(cc.Rules), len(cc.Positions)))
+			continue
+		}
 		pattern, check, suggestedID, err := DistillMergedRule(ctx, repoDir, cc.Rules, runner)
 		if err != nil {
 			errs = append(errs, fmt.Errorf("consolidating cluster (category=%s, size=%d): %w", cc.Category, len(cc.Rules), err))
 			continue
 		}
 
-		// Pick the merged ID while the cluster members' IDs are still in
-		// activeIDs so the merged rule always gets an ID distinct from every
-		// replaced rule. Reusing a replaced ID would create a self-referential
-		// archive entry (superseded_by == own ID). Remove the replaced IDs
-		// from activeIDs only after the merged rule's ID has been chosen.
-		mergedRule := MergeRule(cc.Rules, cc.Category, pattern, check, suggestedID, activeIDs)
-		activeIDs[mergedRule.ID] = struct{}{}
-		for _, mem := range cc.Rules {
-			delete(activeIDs, mem.ID)
-		}
+		mergedRule := MergeRule(cc.Rules, cc.Category, pattern, check, suggestedID, usedIDs)
+		usedIDs[mergedRule.ID] = struct{}{}
 
 		ids := make([]string, 0, len(cc.Rules))
-		for _, mem := range cc.Rules {
-			removed[mem.ID] = struct{}{}
+		for i, mem := range cc.Rules {
+			removed[cc.Positions[i]] = struct{}{}
 			replaced = append(replaced, mem)
 			ids = append(ids, mem.ID)
 		}
@@ -413,9 +495,9 @@ func applyClusters(ctx context.Context, repoDir string, rf *RulesFile, clusters 
 
 	// Rebuild rf.Rules: keep original order minus removed, then append
 	// merged rules at the end so the active file remains diff-readable.
-	newRules := make([]Rule, 0, len(rf.Rules)-len(replaced)+len(merged))
-	for _, r := range rf.Rules {
-		if _, gone := removed[r.ID]; gone {
+	newRules := make([]Rule, 0, len(rf.Rules)-len(removed)+len(merged))
+	for i, r := range rf.Rules {
+		if _, gone := removed[i]; gone {
 			continue
 		}
 		newRules = append(newRules, r)

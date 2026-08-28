@@ -83,7 +83,14 @@ func RuleWordBag(r Rule) TokenSet {
 // near-duplicates. MaxSimilarity is the highest Jaccard score observed
 // between any pair in the cluster (useful for surfacing diagnostics).
 type Cluster struct {
-	Rules         []Rule
+	Rules []Rule
+	// Indices are the positions in the slice handed to the clusterer that
+	// Rules were taken from, in the same order. They are what identifies a
+	// cluster member: a rule's ID is written by whichever distillation
+	// session produced it and two rules can carry the same one, so a caller
+	// that removes cluster members from a file by ID removes every rule
+	// sharing that ID — including one the cluster never contained.
+	Indices       []int
 	MaxSimilarity float64
 }
 
@@ -312,10 +319,12 @@ func ClusterNearDuplicates(rules []Rule, p DedupParams) []Cluster {
 		}
 		c := Cluster{
 			Rules:         make([]Rule, 0, len(b.members)),
+			Indices:       make([]int, 0, len(b.members)),
 			MaxSimilarity: maxSim[root],
 		}
 		for _, ix := range b.members {
 			c.Rules = append(c.Rules, rules[ix])
+			c.Indices = append(c.Indices, ix)
 		}
 		out = append(out, c)
 	}
