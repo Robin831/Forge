@@ -116,6 +116,15 @@ func fetchChangedFilesViaGH(ctx context.Context, repoDir string, prNum int) ([]s
 	return files, nil
 }
 
+// extGlobPrefix is the shape globsFromExtensions emits: one doublestar glob
+// per file extension. It is a constant rather than a literal inside the loop
+// below because rulelang.go classifies an inferred glob by testing for it —
+// a glob carrying it names an extension and can be compared against the
+// PR-derived set, anything else (a directory glob like changelog.d/**) cannot.
+// Written twice, a change to the emitted shape would silently move every
+// extension glob into the directory branch instead of failing to compile.
+const extGlobPrefix = "**/*."
+
 // globsFromExtensions returns the unique doublestar globs derived from the
 // extensions of files. Files without an extension are skipped. The result is
 // sorted so the field encoded into warden-rules.yaml is deterministic across
@@ -128,7 +137,7 @@ func globsFromExtensions(files []string) []string {
 		if ext == "" || ext == "." {
 			continue
 		}
-		seen["**/*"+ext] = struct{}{}
+		seen[extGlobPrefix+strings.TrimPrefix(ext, ".")] = struct{}{}
 	}
 	if len(seen) == 0 {
 		return nil
@@ -139,6 +148,12 @@ func globsFromExtensions(files []string) []string {
 	}
 	sort.Strings(globs)
 	return globs
+}
+
+// prFetchResult caches the outcome of a single gh API call for one PR.
+type prFetchResult struct {
+	files []string
+	err   error
 }
 
 // runPathsBackfill iterates the active rules in rf and, for each rule whose
@@ -156,12 +171,6 @@ func globsFromExtensions(files []string) []string {
 // Returns the IDs of rules whose Paths was populated, in the order they were
 // visited. The caller can use len() to obtain the count for logging or the
 // list itself to render the "Backfilled:" section of the smelter commit.
-// prFetchResult caches the outcome of a single gh API call for one PR.
-type prFetchResult struct {
-	files []string
-	err   error
-}
-
 func (s *Smelter) runPathsBackfill(ctx context.Context, wtPath, anvilName string, rf *warden.RulesFile) []string {
 	return pathsBackfill(ctx, wtPath, anvilName, rf)
 }
@@ -232,6 +241,16 @@ func pathsBackfill(ctx context.Context, wtPath, anvilName string, rf *warden.Rul
 		}
 		rule.Paths = globs
 		updated = append(updated, rule.ID)
+		// Name the languages the rule's own text was read as naming: the globs
+		// alone cannot say whether a rule was narrowed by its language or fell
+		// back to the PR's extensions, which is the one thing worth knowing
+		// when a backfilled rule stops firing.
+		langs := inferredLanguageNames(ruleText(*rule))
+		if len(langs) == 0 {
+			langs = []string{"none"}
+		}
+		log.Printf("[smelter] paths backfill: rule %s on %s -> %s (languages: %s)",
+			rule.ID, anvilName, strings.Join(globs, ", "), strings.Join(langs, ", "))
 	}
 	return updated
 }

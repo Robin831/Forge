@@ -85,6 +85,74 @@ func TestInferRuleGlobs(t *testing.T) {
 	}
 }
 
+// TestInferRuleGlobsIgnoresGenericProse is the false-positive boundary of
+// languageSignals, and the assertion that fails first if a signal is ever
+// broadened back to a bare English word. Each of these rules is
+// language-agnostic or about the frontend, and each was attributed to Go (or
+// to the frontend) by the `nil`, `defer`, `chan` and `props` signals this
+// table used to carry — a misfire with no symptom, since a rule gated on a
+// language its diffs never contain simply stops appearing in reviews.
+func TestInferRuleGlobsIgnoresGenericProse(t *testing.T) {
+	cases := []struct {
+		name string
+		rule warden.Rule
+	}{
+		{
+			name: "defer in ordinary review prose",
+			rule: warden.Rule{
+				Pattern: "do not defer validation to the client",
+				Check:   "validate in the form component before submit",
+			},
+		},
+		{
+			name: "nil in ordinary review prose",
+			rule: warden.Rule{
+				Pattern: "avoid rendering a nil value",
+				Check:   "guard the optional field",
+			},
+		},
+		{
+			name: "chan as an abbreviation, not the keyword",
+			rule: warden.Rule{
+				Pattern: "channel names in the UI must be escaped",
+				Check:   "escape the chan name",
+			},
+		},
+		{
+			name: "props without any other frontend token",
+			rule: warden.Rule{
+				Pattern: "props drilled through three levels",
+				Check:   "pass them explicitly instead",
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Nil(t, inferRuleGlobs(ruleText(tc.rule)),
+				"generic review prose must not be read as naming a language")
+		})
+	}
+}
+
+// TestGlobsForRuleNeverGatesOnAnUncorroboratedLanguage pins the consequence of
+// a misfire: even if a signal is broadened and fires on a rule the source PR's
+// files contradict, the rule must come out gated on what the PR actually
+// touched — never on the language it never contained, which warden.FilterRules
+// turns into a rule that silently never fires again.
+func TestGlobsForRuleNeverGatesOnAnUncorroboratedLanguage(t *testing.T) {
+	tsFiles := []string{"web/src/App.tsx", "web/src/api/prs.ts"}
+	goRule := warden.Rule{
+		Pattern: "map mutated from a goroutine",
+		Check:   "hold a sync.Mutex across the write",
+	}
+
+	got := globsForRule(goRule, tsFiles)
+	assert.Equal(t, []string{"**/*.ts", "**/*.tsx"}, got)
+	assert.NotContains(t, got, "**/*.go",
+		"a language the PR's own files contradict must not become the rule's gate")
+}
+
 func TestGlobsForRule(t *testing.T) {
 	goRule := warden.Rule{
 		Pattern: "shared map mutated from a goroutine",
@@ -101,6 +169,10 @@ func TestGlobsForRule(t *testing.T) {
 	genericRule := warden.Rule{
 		Pattern: "magic number in a conditional",
 		Check:   "name it as a constant",
+	}
+	goChangelogRule := warden.Rule{
+		Pattern: "exported function added with no changelog fragment",
+		Check:   "every .go change that is user visible needs one",
 	}
 
 	cases := []struct {
@@ -128,10 +200,22 @@ func TestGlobsForRule(t *testing.T) {
 			want:  []string{"**/*.ts"},
 		},
 		{
-			name:  "changelog rule from a mixed PR keeps the directory glob",
+			name:  "changelog rule adds the directory glob to the PR-derived set",
 			rule:  changelogRule,
 			files: []string{"internal/daemon/poll.go", "web/src/App.tsx", "changelog.d/Forge-abc1.md"},
-			want:  []string{"changelog.d/**"},
+			want:  []string{"**/*.go", "**/*.md", "**/*.tsx", "changelog.d/**"},
+		},
+		{
+			name:  "changelog glob is dropped when the source PR touched no fragment",
+			rule:  changelogRule,
+			files: []string{"internal/daemon/poll.go"},
+			want:  []string{"**/*.go"},
+		},
+		{
+			name:  "a directory glob is additive to a corroborated language glob",
+			rule:  goChangelogRule,
+			files: []string{"internal/daemon/poll.go", "web/src/App.tsx", "changelog.d/Forge-abc1.md"},
+			want:  []string{"**/*.go", "changelog.d/**"},
 		},
 		{
 			name:  "no signal falls back to the PR-derived set",
@@ -140,10 +224,10 @@ func TestGlobsForRule(t *testing.T) {
 			want:  []string{"**/*.go", "**/*.md"},
 		},
 		{
-			name:  "inferred language the PR never touched is kept rather than emptied",
+			name:  "inferred language the PR never touched falls back to the PR's own set",
 			rule:  goRule,
 			files: []string{"web/src/api/prs.ts"},
-			want:  []string{"**/*.go"},
+			want:  []string{"**/*.ts"},
 		},
 		{
 			name:  "no files and no signal yields nothing",
