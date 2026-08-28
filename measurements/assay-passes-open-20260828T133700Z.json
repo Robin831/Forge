@@ -1,0 +1,4442 @@
+[
+ {
+  "ts": "2026-08-11T07:08:22.162+02:00",
+  "pr": "824",
+  "pass": "triage",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-11T07:08:22.162+02:00",
+  "pr": "824",
+  "pass": "logic",
+  "turns": 9,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-11T07:08:22.162+02:00",
+  "pr": "824",
+  "pass": "security",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-11T07:08:22.162+02:00",
+  "pr": "824",
+  "pass": "conventions",
+  "turns": 13,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-11T07:08:22.162+02:00",
+  "pr": "824",
+  "pass": "tests-missing",
+  "turns": 10,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-11T07:08:22.162+02:00",
+  "pr": "824",
+  "pass": "repo-specific",
+  "turns": 16,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-11T07:21:38.035+02:00",
+  "pr": "824",
+  "pass": "triage",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-11T07:21:38.035+02:00",
+  "pr": "824",
+  "pass": "logic",
+  "turns": 9,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-11T07:21:38.035+02:00",
+  "pr": "824",
+  "pass": "security",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-11T07:21:38.035+02:00",
+  "pr": "824",
+  "pass": "conventions",
+  "turns": 13,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-11T07:21:38.035+02:00",
+  "pr": "824",
+  "pass": "tests-missing",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-11T07:21:38.035+02:00",
+  "pr": "824",
+  "pass": "repo-specific",
+  "turns": 17,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-14T06:56:57.775+02:00",
+  "pr": "825",
+  "pass": "triage",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-14T06:56:57.775+02:00",
+  "pr": "825",
+  "pass": "logic",
+  "turns": 9,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-14T06:56:57.775+02:00",
+  "pr": "825",
+  "pass": "security",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-14T06:56:57.775+02:00",
+  "pr": "825",
+  "pass": "conventions",
+  "turns": 8,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-14T06:56:57.775+02:00",
+  "pr": "825",
+  "pass": "tests-missing",
+  "turns": 7,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-14T06:56:57.775+02:00",
+  "pr": "825",
+  "pass": "repo-specific",
+  "turns": 11,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": "1"
+ },
+ {
+  "ts": "2026-08-14T07:30:08.322+02:00",
+  "pr": "825",
+  "pass": "triage",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-14T07:30:08.322+02:00",
+  "pr": "825",
+  "pass": "logic",
+  "turns": 4,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-14T07:30:08.322+02:00",
+  "pr": "825",
+  "pass": "security",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-14T07:30:08.322+02:00",
+  "pr": "825",
+  "pass": "conventions",
+  "turns": 9,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-14T07:30:08.322+02:00",
+  "pr": "825",
+  "pass": "tests-missing",
+  "turns": 10,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-14T07:30:08.322+02:00",
+  "pr": "825",
+  "pass": "repo-specific",
+  "turns": 10,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-17T11:54:13.086+02:00",
+  "pr": "826",
+  "pass": "triage",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-17T11:54:13.086+02:00",
+  "pr": "826",
+  "pass": "logic",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-17T11:54:13.086+02:00",
+  "pr": "826",
+  "pass": "security",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-17T11:54:13.086+02:00",
+  "pr": "826",
+  "pass": "conventions",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-17T11:54:13.086+02:00",
+  "pr": "826",
+  "pass": "tests-missing",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-17T11:54:13.086+02:00",
+  "pr": "826",
+  "pass": "repo-specific",
+  "turns": 7,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-17T12:09:10.757+02:00",
+  "pr": "965",
+  "pass": "triage",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-17T12:09:10.757+02:00",
+  "pr": "965",
+  "pass": "logic",
+  "turns": 4,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-17T12:09:10.757+02:00",
+  "pr": "965",
+  "pass": "security",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-17T12:09:10.757+02:00",
+  "pr": "965",
+  "pass": "conventions",
+  "turns": 9,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-17T12:09:10.757+02:00",
+  "pr": "965",
+  "pass": "tests-missing",
+  "turns": 11,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-17T12:09:10.757+02:00",
+  "pr": "965",
+  "pass": "repo-specific",
+  "turns": 7,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-17T12:32:48.224+02:00",
+  "pr": "965",
+  "pass": "triage",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-17T12:32:48.224+02:00",
+  "pr": "965",
+  "pass": "logic",
+  "turns": 14,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-17T12:32:48.224+02:00",
+  "pr": "965",
+  "pass": "security",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-17T12:32:48.224+02:00",
+  "pr": "965",
+  "pass": "conventions",
+  "turns": 10,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-17T12:32:48.224+02:00",
+  "pr": "965",
+  "pass": "tests-missing",
+  "turns": 11,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-17T12:32:48.224+02:00",
+  "pr": "965",
+  "pass": "repo-specific",
+  "turns": 12,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-17T12:33:52.974+02:00",
+  "pr": "966",
+  "pass": "triage",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-17T12:33:52.974+02:00",
+  "pr": "966",
+  "pass": "logic",
+  "turns": 2,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-17T12:33:52.974+02:00",
+  "pr": "966",
+  "pass": "security",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-17T12:33:52.974+02:00",
+  "pr": "966",
+  "pass": "conventions",
+  "turns": 5,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-17T12:33:52.974+02:00",
+  "pr": "966",
+  "pass": "tests-missing",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-17T12:33:52.974+02:00",
+  "pr": "966",
+  "pass": "repo-specific",
+  "turns": 3,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-17T13:08:06.040+02:00",
+  "pr": "828",
+  "pass": "triage",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-17T13:08:06.040+02:00",
+  "pr": "828",
+  "pass": "logic",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-17T13:08:06.040+02:00",
+  "pr": "828",
+  "pass": "security",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-17T13:08:06.040+02:00",
+  "pr": "828",
+  "pass": "conventions",
+  "turns": 4,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-17T13:08:06.040+02:00",
+  "pr": "828",
+  "pass": "tests-missing",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-17T13:08:06.040+02:00",
+  "pr": "828",
+  "pass": "repo-specific",
+  "turns": 3,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-17T13:11:33.949+02:00",
+  "pr": "827",
+  "pass": "triage",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-17T13:11:33.949+02:00",
+  "pr": "827",
+  "pass": "logic",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-17T13:11:33.949+02:00",
+  "pr": "827",
+  "pass": "security",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-17T13:11:33.949+02:00",
+  "pr": "827",
+  "pass": "conventions",
+  "turns": 7,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-17T13:11:33.949+02:00",
+  "pr": "827",
+  "pass": "tests-missing",
+  "turns": 14,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-17T13:11:33.949+02:00",
+  "pr": "827",
+  "pass": "repo-specific",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": "1"
+ },
+ {
+  "ts": "2026-08-17T13:22:06.070+02:00",
+  "pr": "966",
+  "pass": "triage",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-17T13:22:06.070+02:00",
+  "pr": "966",
+  "pass": "logic",
+  "turns": 7,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-17T13:22:06.070+02:00",
+  "pr": "966",
+  "pass": "security",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-17T13:22:06.070+02:00",
+  "pr": "966",
+  "pass": "conventions",
+  "turns": 7,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-17T13:22:06.070+02:00",
+  "pr": "966",
+  "pass": "tests-missing",
+  "turns": 2,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-17T13:22:06.070+02:00",
+  "pr": "966",
+  "pass": "repo-specific",
+  "turns": 10,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-17T13:30:13.650+02:00",
+  "pr": "827",
+  "pass": "triage",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-17T13:30:13.650+02:00",
+  "pr": "827",
+  "pass": "logic",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-17T13:30:13.650+02:00",
+  "pr": "827",
+  "pass": "security",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-17T13:30:13.650+02:00",
+  "pr": "827",
+  "pass": "conventions",
+  "turns": 6,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-17T13:30:13.650+02:00",
+  "pr": "827",
+  "pass": "tests-missing",
+  "turns": 5,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-17T13:30:13.650+02:00",
+  "pr": "827",
+  "pass": "repo-specific",
+  "turns": 10,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-17T13:59:48.373+02:00",
+  "pr": "967",
+  "pass": "triage",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-17T13:59:48.373+02:00",
+  "pr": "967",
+  "pass": "logic",
+  "turns": 7,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-17T13:59:48.373+02:00",
+  "pr": "967",
+  "pass": "security",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-17T13:59:48.373+02:00",
+  "pr": "967",
+  "pass": "conventions",
+  "turns": 6,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-17T13:59:48.373+02:00",
+  "pr": "967",
+  "pass": "tests-missing",
+  "turns": 10,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-17T13:59:48.373+02:00",
+  "pr": "967",
+  "pass": "repo-specific",
+  "turns": 11,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-17T14:06:55.189+02:00",
+  "pr": "967",
+  "pass": "triage",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-17T14:06:55.189+02:00",
+  "pr": "967",
+  "pass": "logic",
+  "turns": 5,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-17T14:06:55.189+02:00",
+  "pr": "967",
+  "pass": "security",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-17T14:06:55.189+02:00",
+  "pr": "967",
+  "pass": "conventions",
+  "turns": 4,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-17T14:06:55.189+02:00",
+  "pr": "967",
+  "pass": "tests-missing",
+  "turns": 5,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-17T14:06:55.189+02:00",
+  "pr": "967",
+  "pass": "repo-specific",
+  "turns": 5,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-18T11:55:19.056+02:00",
+  "pr": "829",
+  "pass": "triage",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-18T11:55:19.056+02:00",
+  "pr": "829",
+  "pass": "logic",
+  "turns": 4,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-18T11:55:19.056+02:00",
+  "pr": "829",
+  "pass": "security",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-18T11:55:19.056+02:00",
+  "pr": "829",
+  "pass": "conventions",
+  "turns": 5,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-18T11:55:19.056+02:00",
+  "pr": "829",
+  "pass": "tests-missing",
+  "turns": 7,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-18T11:55:19.056+02:00",
+  "pr": "829",
+  "pass": "repo-specific",
+  "turns": 5,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-18T12:00:17.115+02:00",
+  "pr": "829",
+  "pass": "triage",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-18T12:00:17.115+02:00",
+  "pr": "829",
+  "pass": "logic",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-18T12:00:17.115+02:00",
+  "pr": "829",
+  "pass": "security",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-18T12:00:17.115+02:00",
+  "pr": "829",
+  "pass": "conventions",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-18T12:00:17.115+02:00",
+  "pr": "829",
+  "pass": "tests-missing",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-18T12:00:17.115+02:00",
+  "pr": "829",
+  "pass": "repo-specific",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-18T12:31:40.839+02:00",
+  "pr": "830",
+  "pass": "triage",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-18T12:31:40.839+02:00",
+  "pr": "830",
+  "pass": "logic",
+  "turns": 12,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-18T12:31:40.839+02:00",
+  "pr": "830",
+  "pass": "security",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-18T12:31:40.839+02:00",
+  "pr": "830",
+  "pass": "conventions",
+  "turns": 8,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-18T12:31:40.839+02:00",
+  "pr": "830",
+  "pass": "tests-missing",
+  "turns": 7,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-18T12:31:40.839+02:00",
+  "pr": "830",
+  "pass": "repo-specific",
+  "turns": 13,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-18T12:53:34.611+02:00",
+  "pr": "830",
+  "pass": "triage",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-18T12:53:34.611+02:00",
+  "pr": "830",
+  "pass": "logic",
+  "turns": 13,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-18T12:53:34.611+02:00",
+  "pr": "830",
+  "pass": "security",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-18T12:53:34.611+02:00",
+  "pr": "830",
+  "pass": "conventions",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-18T12:53:34.611+02:00",
+  "pr": "830",
+  "pass": "tests-missing",
+  "turns": 6,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-18T12:53:34.611+02:00",
+  "pr": "830",
+  "pass": "repo-specific",
+  "turns": 10,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-18T12:59:37.840+02:00",
+  "pr": "831",
+  "pass": "triage",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-18T12:59:37.840+02:00",
+  "pr": "831",
+  "pass": "logic",
+  "turns": 11,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": "1"
+ },
+ {
+  "ts": "2026-08-18T12:59:37.840+02:00",
+  "pr": "831",
+  "pass": "security",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-18T12:59:37.840+02:00",
+  "pr": "831",
+  "pass": "conventions",
+  "turns": 10,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-18T12:59:37.840+02:00",
+  "pr": "831",
+  "pass": "tests-missing",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-18T12:59:37.840+02:00",
+  "pr": "831",
+  "pass": "repo-specific",
+  "turns": 13,
+  "term": "error_max_turns",
+  "tools": null,
+  "files": null,
+  "retry": "1"
+ },
+ {
+  "ts": "2026-08-18T13:30:24.445+02:00",
+  "pr": "831",
+  "pass": "triage",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-18T13:30:24.445+02:00",
+  "pr": "831",
+  "pass": "logic",
+  "turns": 11,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": "1"
+ },
+ {
+  "ts": "2026-08-18T13:30:24.445+02:00",
+  "pr": "831",
+  "pass": "security",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-18T13:30:24.445+02:00",
+  "pr": "831",
+  "pass": "conventions",
+  "turns": 12,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-18T13:30:24.445+02:00",
+  "pr": "831",
+  "pass": "tests-missing",
+  "turns": 6,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-18T13:30:24.445+02:00",
+  "pr": "831",
+  "pass": "repo-specific",
+  "turns": 17,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-18T14:12:30.839+02:00",
+  "pr": "832",
+  "pass": "triage",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-18T14:12:30.839+02:00",
+  "pr": "832",
+  "pass": "logic",
+  "turns": 7,
+  "term": "rate_limited",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-18T14:12:30.839+02:00",
+  "pr": "832",
+  "pass": "security",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-18T14:12:30.839+02:00",
+  "pr": "832",
+  "pass": "conventions",
+  "turns": 8,
+  "term": "rate_limited",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-18T14:12:30.839+02:00",
+  "pr": "832",
+  "pass": "tests-missing",
+  "turns": 7,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-18T14:12:30.839+02:00",
+  "pr": "832",
+  "pass": "repo-specific",
+  "turns": 12,
+  "term": "rate_limited",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-18T16:24:31.950+02:00",
+  "pr": "832",
+  "pass": "triage",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-18T16:24:31.950+02:00",
+  "pr": "832",
+  "pass": "logic",
+  "turns": 8,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-18T16:24:31.950+02:00",
+  "pr": "832",
+  "pass": "security",
+  "turns": 3,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-18T16:24:31.950+02:00",
+  "pr": "832",
+  "pass": "conventions",
+  "turns": 5,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-18T16:24:31.950+02:00",
+  "pr": "832",
+  "pass": "tests-missing",
+  "turns": 8,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-18T16:24:31.950+02:00",
+  "pr": "832",
+  "pass": "repo-specific",
+  "turns": 9,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-19T13:20:04.882+02:00",
+  "pr": "833",
+  "pass": "triage",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-19T13:20:04.882+02:00",
+  "pr": "833",
+  "pass": "logic",
+  "turns": 6,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-19T13:20:04.882+02:00",
+  "pr": "833",
+  "pass": "security",
+  "turns": 3,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-19T13:20:04.882+02:00",
+  "pr": "833",
+  "pass": "conventions",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-19T13:20:04.882+02:00",
+  "pr": "833",
+  "pass": "tests-missing",
+  "turns": 7,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-19T13:20:04.882+02:00",
+  "pr": "833",
+  "pass": "repo-specific",
+  "turns": 9,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-19T13:31:49.475+02:00",
+  "pr": "833",
+  "pass": "triage",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-19T13:31:49.475+02:00",
+  "pr": "833",
+  "pass": "logic",
+  "turns": 2,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-19T13:31:49.475+02:00",
+  "pr": "833",
+  "pass": "security",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-19T13:31:49.475+02:00",
+  "pr": "833",
+  "pass": "conventions",
+  "turns": 3,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-19T13:31:49.475+02:00",
+  "pr": "833",
+  "pass": "tests-missing",
+  "turns": 2,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-19T13:31:49.475+02:00",
+  "pr": "833",
+  "pass": "repo-specific",
+  "turns": 3,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-19T14:28:59.802+02:00",
+  "pr": "834",
+  "pass": "triage",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-19T14:28:59.802+02:00",
+  "pr": "834",
+  "pass": "logic",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": "1"
+ },
+ {
+  "ts": "2026-08-19T14:28:59.802+02:00",
+  "pr": "834",
+  "pass": "security",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-19T14:28:59.802+02:00",
+  "pr": "834",
+  "pass": "conventions",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-19T14:28:59.802+02:00",
+  "pr": "834",
+  "pass": "tests-missing",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-19T14:28:59.802+02:00",
+  "pr": "834",
+  "pass": "repo-specific",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-19T14:37:32.678+02:00",
+  "pr": "835",
+  "pass": "triage",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-19T14:37:32.678+02:00",
+  "pr": "835",
+  "pass": "logic",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-19T14:37:32.678+02:00",
+  "pr": "835",
+  "pass": "security",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-19T14:37:32.678+02:00",
+  "pr": "835",
+  "pass": "conventions",
+  "turns": 9,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-19T14:37:32.678+02:00",
+  "pr": "835",
+  "pass": "tests-missing",
+  "turns": 6,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-19T14:37:32.678+02:00",
+  "pr": "835",
+  "pass": "repo-specific",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-19T14:47:44.684+02:00",
+  "pr": "834",
+  "pass": "triage",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-19T14:47:44.684+02:00",
+  "pr": "834",
+  "pass": "logic",
+  "turns": 3,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-19T14:47:44.684+02:00",
+  "pr": "834",
+  "pass": "security",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-19T14:47:44.684+02:00",
+  "pr": "834",
+  "pass": "conventions",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-19T14:47:44.684+02:00",
+  "pr": "834",
+  "pass": "tests-missing",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-19T14:47:44.684+02:00",
+  "pr": "834",
+  "pass": "repo-specific",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-19T14:49:21.325+02:00",
+  "pr": "836",
+  "pass": "triage",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-19T14:49:21.325+02:00",
+  "pr": "836",
+  "pass": "logic",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-19T14:49:21.325+02:00",
+  "pr": "836",
+  "pass": "security",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-19T14:49:21.325+02:00",
+  "pr": "836",
+  "pass": "conventions",
+  "turns": 7,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-19T14:49:21.325+02:00",
+  "pr": "836",
+  "pass": "tests-missing",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-19T14:49:21.325+02:00",
+  "pr": "836",
+  "pass": "repo-specific",
+  "turns": 8,
+  "term": "rate_limited",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-19T16:26:22.529+02:00",
+  "pr": "838",
+  "pass": "triage",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-19T16:26:22.529+02:00",
+  "pr": "838",
+  "pass": "logic",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-19T16:26:22.529+02:00",
+  "pr": "838",
+  "pass": "security",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-19T16:26:22.529+02:00",
+  "pr": "838",
+  "pass": "conventions",
+  "turns": 4,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-19T16:26:22.529+02:00",
+  "pr": "838",
+  "pass": "tests-missing",
+  "turns": 5,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-19T16:26:22.529+02:00",
+  "pr": "838",
+  "pass": "repo-specific",
+  "turns": 6,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-19T16:33:19.762+02:00",
+  "pr": "838",
+  "pass": "triage",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-19T16:33:19.762+02:00",
+  "pr": "838",
+  "pass": "logic",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-19T16:33:19.762+02:00",
+  "pr": "838",
+  "pass": "security",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-19T16:33:19.762+02:00",
+  "pr": "838",
+  "pass": "conventions",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-19T16:33:19.762+02:00",
+  "pr": "838",
+  "pass": "tests-missing",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-19T16:33:19.762+02:00",
+  "pr": "838",
+  "pass": "repo-specific",
+  "turns": 3,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-19T16:51:06.538+02:00",
+  "pr": "834",
+  "pass": "triage",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-19T16:51:06.538+02:00",
+  "pr": "834",
+  "pass": "logic",
+  "turns": 3,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-19T16:51:06.538+02:00",
+  "pr": "834",
+  "pass": "security",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-19T16:51:06.538+02:00",
+  "pr": "834",
+  "pass": "conventions",
+  "turns": 3,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-19T16:51:06.538+02:00",
+  "pr": "834",
+  "pass": "tests-missing",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-19T16:51:06.538+02:00",
+  "pr": "834",
+  "pass": "repo-specific",
+  "turns": 3,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-19T17:13:56.679+02:00",
+  "pr": "836",
+  "pass": "triage",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-19T17:13:56.679+02:00",
+  "pr": "836",
+  "pass": "logic",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-19T17:13:56.679+02:00",
+  "pr": "836",
+  "pass": "security",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-19T17:13:56.679+02:00",
+  "pr": "836",
+  "pass": "conventions",
+  "turns": 7,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-19T17:13:56.679+02:00",
+  "pr": "836",
+  "pass": "tests-missing",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-19T17:13:56.679+02:00",
+  "pr": "836",
+  "pass": "repo-specific",
+  "turns": 9,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-19T17:26:26.887+02:00",
+  "pr": "840",
+  "pass": "triage",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-19T17:26:26.887+02:00",
+  "pr": "840",
+  "pass": "logic",
+  "turns": 16,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-19T17:26:26.887+02:00",
+  "pr": "840",
+  "pass": "security",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-19T17:26:26.887+02:00",
+  "pr": "840",
+  "pass": "conventions",
+  "turns": 10,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-19T17:26:26.887+02:00",
+  "pr": "840",
+  "pass": "tests-missing",
+  "turns": 15,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-19T17:26:26.887+02:00",
+  "pr": "840",
+  "pass": "repo-specific",
+  "turns": 13,
+  "term": "error_max_turns",
+  "tools": null,
+  "files": null,
+  "retry": "1"
+ },
+ {
+  "ts": "2026-08-19T17:33:19.202+02:00",
+  "pr": "841",
+  "pass": "triage",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-19T17:33:19.202+02:00",
+  "pr": "841",
+  "pass": "logic",
+  "turns": 3,
+  "term": "rate_limited",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-19T17:33:19.202+02:00",
+  "pr": "841",
+  "pass": "security",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-19T17:33:19.202+02:00",
+  "pr": "841",
+  "pass": "conventions",
+  "turns": 3,
+  "term": "rate_limited",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-19T17:33:19.202+02:00",
+  "pr": "841",
+  "pass": "tests-missing",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-19T17:33:19.202+02:00",
+  "pr": "841",
+  "pass": "repo-specific",
+  "turns": 5,
+  "term": "rate_limited",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-20T06:15:24.507+02:00",
+  "pr": "682",
+  "pass": "triage",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-20T06:15:24.507+02:00",
+  "pr": "682",
+  "pass": "logic",
+  "turns": 2,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-20T06:15:24.507+02:00",
+  "pr": "682",
+  "pass": "security",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-20T06:15:24.507+02:00",
+  "pr": "682",
+  "pass": "conventions",
+  "turns": 4,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-20T06:15:24.507+02:00",
+  "pr": "682",
+  "pass": "tests-missing",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-20T06:15:24.507+02:00",
+  "pr": "682",
+  "pass": "repo-specific",
+  "turns": 3,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-20T06:30:55.148+02:00",
+  "pr": "859",
+  "pass": "triage",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-20T06:30:55.148+02:00",
+  "pr": "859",
+  "pass": "logic",
+  "turns": 2,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-20T06:30:55.148+02:00",
+  "pr": "859",
+  "pass": "security",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-20T06:30:55.148+02:00",
+  "pr": "859",
+  "pass": "conventions",
+  "turns": 3,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-20T06:30:55.148+02:00",
+  "pr": "859",
+  "pass": "tests-missing",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-20T06:30:55.148+02:00",
+  "pr": "859",
+  "pass": "repo-specific",
+  "turns": 2,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-20T06:34:24.037+02:00",
+  "pr": "682",
+  "pass": "triage",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-20T06:34:24.037+02:00",
+  "pr": "682",
+  "pass": "logic",
+  "turns": 5,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-20T06:34:24.037+02:00",
+  "pr": "682",
+  "pass": "security",
+  "turns": 2,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-20T06:34:24.037+02:00",
+  "pr": "682",
+  "pass": "conventions",
+  "turns": 7,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-20T06:34:24.037+02:00",
+  "pr": "682",
+  "pass": "tests-missing",
+  "turns": 3,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-20T06:34:24.037+02:00",
+  "pr": "682",
+  "pass": "repo-specific",
+  "turns": 11,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-20T06:57:09.371+02:00",
+  "pr": "859",
+  "pass": "triage",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-20T06:57:09.371+02:00",
+  "pr": "859",
+  "pass": "logic",
+  "turns": 7,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-20T06:57:09.371+02:00",
+  "pr": "859",
+  "pass": "security",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-20T06:57:09.371+02:00",
+  "pr": "859",
+  "pass": "conventions",
+  "turns": 7,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-20T06:57:09.371+02:00",
+  "pr": "859",
+  "pass": "tests-missing",
+  "turns": 6,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-20T06:57:09.371+02:00",
+  "pr": "859",
+  "pass": "repo-specific",
+  "turns": 8,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-20T13:37:22.111+02:00",
+  "pr": "846",
+  "pass": "triage",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-20T13:37:22.111+02:00",
+  "pr": "846",
+  "pass": "logic",
+  "turns": 6,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-20T13:37:22.111+02:00",
+  "pr": "846",
+  "pass": "security",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-20T13:37:22.111+02:00",
+  "pr": "846",
+  "pass": "conventions",
+  "turns": 2,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-20T13:37:22.111+02:00",
+  "pr": "846",
+  "pass": "tests-missing",
+  "turns": 4,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-20T13:37:22.111+02:00",
+  "pr": "846",
+  "pass": "repo-specific",
+  "turns": 7,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-20T13:52:46.078+02:00",
+  "pr": "846",
+  "pass": "triage",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-20T13:52:46.078+02:00",
+  "pr": "846",
+  "pass": "logic",
+  "turns": 7,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-20T13:52:46.078+02:00",
+  "pr": "846",
+  "pass": "security",
+  "turns": 2,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-20T13:52:46.078+02:00",
+  "pr": "846",
+  "pass": "conventions",
+  "turns": 3,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-20T13:52:46.078+02:00",
+  "pr": "846",
+  "pass": "tests-missing",
+  "turns": 5,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-20T13:52:46.078+02:00",
+  "pr": "846",
+  "pass": "repo-specific",
+  "turns": 3,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-25T13:24:51.203+02:00",
+  "pr": "848",
+  "pass": "triage",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-25T13:24:51.203+02:00",
+  "pr": "848",
+  "pass": "logic",
+  "turns": 7,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-25T13:24:51.203+02:00",
+  "pr": "848",
+  "pass": "security",
+  "turns": 2,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-25T13:24:51.203+02:00",
+  "pr": "848",
+  "pass": "conventions",
+  "turns": 4,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-25T13:24:51.203+02:00",
+  "pr": "848",
+  "pass": "tests-missing",
+  "turns": 5,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-25T13:24:51.203+02:00",
+  "pr": "848",
+  "pass": "repo-specific",
+  "turns": 8,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-25T13:37:59.354+02:00",
+  "pr": "848",
+  "pass": "triage",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-25T13:37:59.354+02:00",
+  "pr": "848",
+  "pass": "logic",
+  "turns": 5,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-25T13:37:59.354+02:00",
+  "pr": "848",
+  "pass": "security",
+  "turns": 2,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-25T13:37:59.354+02:00",
+  "pr": "848",
+  "pass": "conventions",
+  "turns": 5,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-25T13:37:59.354+02:00",
+  "pr": "848",
+  "pass": "tests-missing",
+  "turns": 7,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-25T13:37:59.354+02:00",
+  "pr": "848",
+  "pass": "repo-specific",
+  "turns": 7,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-25T13:53:33.179+02:00",
+  "pr": "849",
+  "pass": "triage",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-25T13:53:33.179+02:00",
+  "pr": "849",
+  "pass": "logic",
+  "turns": 4,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-25T13:53:33.179+02:00",
+  "pr": "849",
+  "pass": "security",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-25T13:53:33.179+02:00",
+  "pr": "849",
+  "pass": "conventions",
+  "turns": 3,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-25T13:53:33.179+02:00",
+  "pr": "849",
+  "pass": "tests-missing",
+  "turns": 3,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-25T13:53:33.179+02:00",
+  "pr": "849",
+  "pass": "repo-specific",
+  "turns": 3,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-25T13:59:23.240+02:00",
+  "pr": "849",
+  "pass": "triage",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-25T13:59:23.240+02:00",
+  "pr": "849",
+  "pass": "logic",
+  "turns": 2,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-25T13:59:23.240+02:00",
+  "pr": "849",
+  "pass": "security",
+  "turns": 2,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-25T13:59:23.240+02:00",
+  "pr": "849",
+  "pass": "conventions",
+  "turns": 3,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-25T13:59:23.240+02:00",
+  "pr": "849",
+  "pass": "tests-missing",
+  "turns": 2,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-25T13:59:23.240+02:00",
+  "pr": "849",
+  "pass": "repo-specific",
+  "turns": 2,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-25T14:15:00.012+02:00",
+  "pr": "850",
+  "pass": "triage",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-25T14:15:00.012+02:00",
+  "pr": "850",
+  "pass": "logic",
+  "turns": 9,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-25T14:15:00.012+02:00",
+  "pr": "850",
+  "pass": "security",
+  "turns": 2,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-25T14:15:00.012+02:00",
+  "pr": "850",
+  "pass": "conventions",
+  "turns": 4,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-25T14:15:00.012+02:00",
+  "pr": "850",
+  "pass": "tests-missing",
+  "turns": 6,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-25T14:15:00.012+02:00",
+  "pr": "850",
+  "pass": "repo-specific",
+  "turns": 5,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-25T14:32:56.460+02:00",
+  "pr": "851",
+  "pass": "triage",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-25T14:32:56.460+02:00",
+  "pr": "851",
+  "pass": "logic",
+  "turns": 11,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": "1"
+ },
+ {
+  "ts": "2026-08-25T14:32:56.460+02:00",
+  "pr": "851",
+  "pass": "security",
+  "turns": 6,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-25T14:32:56.460+02:00",
+  "pr": "851",
+  "pass": "conventions",
+  "turns": 8,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-25T14:32:56.460+02:00",
+  "pr": "851",
+  "pass": "tests-missing",
+  "turns": 12,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-25T14:32:56.460+02:00",
+  "pr": "851",
+  "pass": "repo-specific",
+  "turns": 13,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-25T14:37:01.199+02:00",
+  "pr": "850",
+  "pass": "triage",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-25T14:37:01.199+02:00",
+  "pr": "850",
+  "pass": "logic",
+  "turns": 16,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-25T14:37:01.199+02:00",
+  "pr": "850",
+  "pass": "security",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-25T14:37:01.199+02:00",
+  "pr": "850",
+  "pass": "conventions",
+  "turns": 8,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-25T14:37:01.199+02:00",
+  "pr": "850",
+  "pass": "tests-missing",
+  "turns": 12,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-25T14:37:01.199+02:00",
+  "pr": "850",
+  "pass": "repo-specific",
+  "turns": 15,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": "1"
+ },
+ {
+  "ts": "2026-08-25T14:40:55.329+02:00",
+  "pr": "852",
+  "pass": "triage",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-25T14:40:55.329+02:00",
+  "pr": "852",
+  "pass": "logic",
+  "turns": 6,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-25T14:40:55.329+02:00",
+  "pr": "852",
+  "pass": "security",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-25T14:40:55.329+02:00",
+  "pr": "852",
+  "pass": "conventions",
+  "turns": 4,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-25T14:40:55.329+02:00",
+  "pr": "852",
+  "pass": "tests-missing",
+  "turns": 13,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-25T14:40:55.329+02:00",
+  "pr": "852",
+  "pass": "repo-specific",
+  "turns": 15,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-25T14:47:14.228+02:00",
+  "pr": "851",
+  "pass": "triage",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-25T14:47:14.228+02:00",
+  "pr": "851",
+  "pass": "logic",
+  "turns": 12,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-25T14:47:14.228+02:00",
+  "pr": "851",
+  "pass": "security",
+  "turns": 6,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-25T14:47:14.228+02:00",
+  "pr": "851",
+  "pass": "conventions",
+  "turns": 5,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-25T14:47:14.228+02:00",
+  "pr": "851",
+  "pass": "tests-missing",
+  "turns": 8,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-25T14:47:14.228+02:00",
+  "pr": "851",
+  "pass": "repo-specific",
+  "turns": 12,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-25T14:52:17.395+02:00",
+  "pr": "852",
+  "pass": "triage",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-25T14:52:17.395+02:00",
+  "pr": "852",
+  "pass": "logic",
+  "turns": 9,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-25T14:52:17.395+02:00",
+  "pr": "852",
+  "pass": "security",
+  "turns": 3,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-25T14:52:17.395+02:00",
+  "pr": "852",
+  "pass": "conventions",
+  "turns": 7,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-25T14:52:17.395+02:00",
+  "pr": "852",
+  "pass": "tests-missing",
+  "turns": 10,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-25T14:52:17.395+02:00",
+  "pr": "852",
+  "pass": "repo-specific",
+  "turns": 11,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-25T15:00:35.940+02:00",
+  "pr": "853",
+  "pass": "triage",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-25T15:00:35.940+02:00",
+  "pr": "853",
+  "pass": "logic",
+  "turns": 13,
+  "term": "error_max_turns",
+  "tools": null,
+  "files": null,
+  "retry": "1"
+ },
+ {
+  "ts": "2026-08-25T15:00:35.940+02:00",
+  "pr": "853",
+  "pass": "security",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-25T15:00:35.940+02:00",
+  "pr": "853",
+  "pass": "conventions",
+  "turns": 7,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-25T15:00:35.940+02:00",
+  "pr": "853",
+  "pass": "tests-missing",
+  "turns": 13,
+  "term": "error_max_turns",
+  "tools": null,
+  "files": null,
+  "retry": "1"
+ },
+ {
+  "ts": "2026-08-25T15:00:35.940+02:00",
+  "pr": "853",
+  "pass": "repo-specific",
+  "turns": 13,
+  "term": "error_max_turns",
+  "tools": null,
+  "files": null,
+  "retry": "1"
+ },
+ {
+  "ts": "2026-08-25T15:16:18.028+02:00",
+  "pr": "853",
+  "pass": "triage",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-25T15:16:18.028+02:00",
+  "pr": "853",
+  "pass": "logic",
+  "turns": 13,
+  "term": "error_max_turns",
+  "tools": null,
+  "files": null,
+  "retry": "1"
+ },
+ {
+  "ts": "2026-08-25T15:16:18.028+02:00",
+  "pr": "853",
+  "pass": "security",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-25T15:16:18.028+02:00",
+  "pr": "853",
+  "pass": "conventions",
+  "turns": 15,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": "1"
+ },
+ {
+  "ts": "2026-08-25T15:16:18.028+02:00",
+  "pr": "853",
+  "pass": "tests-missing",
+  "turns": 13,
+  "term": "error_max_turns",
+  "tools": null,
+  "files": null,
+  "retry": "1"
+ },
+ {
+  "ts": "2026-08-25T15:16:18.028+02:00",
+  "pr": "853",
+  "pass": "repo-specific",
+  "turns": 13,
+  "term": "error_max_turns",
+  "tools": null,
+  "files": null,
+  "retry": "1"
+ },
+ {
+  "ts": "2026-08-26T16:27:02.256+02:00",
+  "pr": "969",
+  "pass": "triage",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-26T16:27:02.256+02:00",
+  "pr": "969",
+  "pass": "logic",
+  "turns": 12,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-26T16:27:02.256+02:00",
+  "pr": "969",
+  "pass": "security",
+  "turns": 7,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-26T16:27:02.256+02:00",
+  "pr": "969",
+  "pass": "conventions",
+  "turns": 8,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-26T16:27:02.256+02:00",
+  "pr": "969",
+  "pass": "tests-missing",
+  "turns": 16,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-26T16:27:02.256+02:00",
+  "pr": "969",
+  "pass": "repo-specific",
+  "turns": 9,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-26T16:33:27.220+02:00",
+  "pr": "970",
+  "pass": "triage",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-26T16:33:27.220+02:00",
+  "pr": "970",
+  "pass": "logic",
+  "turns": 6,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-26T16:33:27.220+02:00",
+  "pr": "970",
+  "pass": "security",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-26T16:33:27.220+02:00",
+  "pr": "970",
+  "pass": "conventions",
+  "turns": 6,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-26T16:33:27.220+02:00",
+  "pr": "970",
+  "pass": "tests-missing",
+  "turns": 9,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-26T16:33:27.220+02:00",
+  "pr": "970",
+  "pass": "repo-specific",
+  "turns": 5,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-26T16:38:24.672+02:00",
+  "pr": "969",
+  "pass": "triage",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-26T16:38:24.672+02:00",
+  "pr": "969",
+  "pass": "logic",
+  "turns": 10,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-26T16:38:24.672+02:00",
+  "pr": "969",
+  "pass": "security",
+  "turns": 7,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-26T16:38:24.672+02:00",
+  "pr": "969",
+  "pass": "conventions",
+  "turns": 11,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-26T16:38:24.672+02:00",
+  "pr": "969",
+  "pass": "tests-missing",
+  "turns": 10,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-26T16:38:24.672+02:00",
+  "pr": "969",
+  "pass": "repo-specific",
+  "turns": 9,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-26T16:42:09.286+02:00",
+  "pr": "970",
+  "pass": "triage",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-26T16:42:09.286+02:00",
+  "pr": "970",
+  "pass": "logic",
+  "turns": 4,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-26T16:42:09.286+02:00",
+  "pr": "970",
+  "pass": "security",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-26T16:42:09.286+02:00",
+  "pr": "970",
+  "pass": "conventions",
+  "turns": 4,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-26T16:42:09.286+02:00",
+  "pr": "970",
+  "pass": "tests-missing",
+  "turns": 6,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-26T16:42:09.286+02:00",
+  "pr": "970",
+  "pass": "repo-specific",
+  "turns": 14,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-26T17:23:19.833+02:00",
+  "pr": "971",
+  "pass": "triage",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-26T17:23:19.833+02:00",
+  "pr": "971",
+  "pass": "logic",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": "1"
+ },
+ {
+  "ts": "2026-08-26T17:23:19.833+02:00",
+  "pr": "971",
+  "pass": "security",
+  "turns": 2,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-26T17:23:19.833+02:00",
+  "pr": "971",
+  "pass": "conventions",
+  "turns": 16,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-26T17:23:19.833+02:00",
+  "pr": "971",
+  "pass": "tests-missing",
+  "turns": 10,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-26T17:23:19.833+02:00",
+  "pr": "971",
+  "pass": "repo-specific",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": "1"
+ },
+ {
+  "ts": "2026-08-26T17:39:12.885+02:00",
+  "pr": "971",
+  "pass": "triage",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-26T17:39:12.885+02:00",
+  "pr": "971",
+  "pass": "logic",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": "1"
+ },
+ {
+  "ts": "2026-08-26T17:39:12.885+02:00",
+  "pr": "971",
+  "pass": "security",
+  "turns": 2,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-26T17:39:12.885+02:00",
+  "pr": "971",
+  "pass": "conventions",
+  "turns": 16,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-26T17:39:12.885+02:00",
+  "pr": "971",
+  "pass": "tests-missing",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": "1"
+ },
+ {
+  "ts": "2026-08-26T17:39:12.885+02:00",
+  "pr": "971",
+  "pass": "repo-specific",
+  "turns": 16,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-26T18:12:52.819+02:00",
+  "pr": "972",
+  "pass": "triage",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-26T18:12:52.819+02:00",
+  "pr": "972",
+  "pass": "logic",
+  "turns": 9,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-26T18:12:52.819+02:00",
+  "pr": "972",
+  "pass": "security",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-26T18:12:52.819+02:00",
+  "pr": "972",
+  "pass": "conventions",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": "1"
+ },
+ {
+  "ts": "2026-08-26T18:12:52.819+02:00",
+  "pr": "972",
+  "pass": "tests-missing",
+  "turns": 5,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-26T18:12:52.819+02:00",
+  "pr": "972",
+  "pass": "repo-specific",
+  "turns": 14,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-26T18:25:48.057+02:00",
+  "pr": "972",
+  "pass": "triage",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-26T18:25:48.057+02:00",
+  "pr": "972",
+  "pass": "logic",
+  "turns": 11,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-26T18:25:48.057+02:00",
+  "pr": "972",
+  "pass": "security",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-26T18:25:48.057+02:00",
+  "pr": "972",
+  "pass": "conventions",
+  "turns": 5,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-26T18:25:48.057+02:00",
+  "pr": "972",
+  "pass": "tests-missing",
+  "turns": 6,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-26T18:25:48.057+02:00",
+  "pr": "972",
+  "pass": "repo-specific",
+  "turns": 10,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-26T18:53:23.167+02:00",
+  "pr": "973",
+  "pass": "triage",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-26T18:53:23.167+02:00",
+  "pr": "973",
+  "pass": "logic",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": "1"
+ },
+ {
+  "ts": "2026-08-26T18:53:23.167+02:00",
+  "pr": "973",
+  "pass": "security",
+  "turns": 4,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-26T18:53:23.167+02:00",
+  "pr": "973",
+  "pass": "conventions",
+  "turns": 14,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-26T18:53:23.167+02:00",
+  "pr": "973",
+  "pass": "tests-missing",
+  "turns": 9,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-26T18:53:23.167+02:00",
+  "pr": "973",
+  "pass": "repo-specific",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": "1"
+ },
+ {
+  "ts": "2026-08-26T19:11:52.420+02:00",
+  "pr": "973",
+  "pass": "triage",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-26T19:11:52.420+02:00",
+  "pr": "973",
+  "pass": "logic",
+  "turns": 12,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-26T19:11:52.420+02:00",
+  "pr": "973",
+  "pass": "security",
+  "turns": 3,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-26T19:11:52.420+02:00",
+  "pr": "973",
+  "pass": "conventions",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": "1"
+ },
+ {
+  "ts": "2026-08-26T19:11:52.420+02:00",
+  "pr": "973",
+  "pass": "tests-missing",
+  "turns": 9,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-26T19:11:52.420+02:00",
+  "pr": "973",
+  "pass": "repo-specific",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": "1"
+ },
+ {
+  "ts": "2026-08-27T11:01:49.210+02:00",
+  "pr": "869",
+  "pass": "triage",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-27T11:01:49.210+02:00",
+  "pr": "869",
+  "pass": "logic",
+  "turns": 12,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-27T11:01:49.210+02:00",
+  "pr": "869",
+  "pass": "security",
+  "turns": 3,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-27T11:01:49.210+02:00",
+  "pr": "869",
+  "pass": "conventions",
+  "turns": 14,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-27T11:01:49.210+02:00",
+  "pr": "869",
+  "pass": "tests-missing",
+  "turns": 10,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-27T11:01:49.210+02:00",
+  "pr": "869",
+  "pass": "repo-specific",
+  "turns": 12,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-27T11:20:46.453+02:00",
+  "pr": "869",
+  "pass": "triage",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-27T11:20:46.453+02:00",
+  "pr": "869",
+  "pass": "logic",
+  "turns": 8,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-27T11:20:46.453+02:00",
+  "pr": "869",
+  "pass": "security",
+  "turns": 4,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-27T11:20:46.453+02:00",
+  "pr": "869",
+  "pass": "conventions",
+  "turns": 6,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-27T11:20:46.453+02:00",
+  "pr": "869",
+  "pass": "tests-missing",
+  "turns": 8,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-27T11:20:46.453+02:00",
+  "pr": "869",
+  "pass": "repo-specific",
+  "turns": 8,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-27T12:06:49.329+02:00",
+  "pr": "870",
+  "pass": "triage",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-27T12:06:49.329+02:00",
+  "pr": "870",
+  "pass": "logic",
+  "turns": 10,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-27T12:06:49.329+02:00",
+  "pr": "870",
+  "pass": "security",
+  "turns": 6,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-27T12:06:49.329+02:00",
+  "pr": "870",
+  "pass": "conventions",
+  "turns": 5,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-27T12:06:49.329+02:00",
+  "pr": "870",
+  "pass": "tests-missing",
+  "turns": 12,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-27T12:06:49.329+02:00",
+  "pr": "870",
+  "pass": "repo-specific",
+  "turns": 16,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-27T12:22:23.536+02:00",
+  "pr": "870",
+  "pass": "triage",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-27T12:22:23.536+02:00",
+  "pr": "870",
+  "pass": "logic",
+  "turns": 15,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-27T12:22:23.536+02:00",
+  "pr": "870",
+  "pass": "security",
+  "turns": 3,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-27T12:22:23.536+02:00",
+  "pr": "870",
+  "pass": "conventions",
+  "turns": 13,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-27T12:22:23.536+02:00",
+  "pr": "870",
+  "pass": "tests-missing",
+  "turns": 14,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-27T12:22:23.536+02:00",
+  "pr": "870",
+  "pass": "repo-specific",
+  "turns": 13,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-27T12:31:12.650+02:00",
+  "pr": "870",
+  "pass": "triage",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-27T12:31:12.650+02:00",
+  "pr": "870",
+  "pass": "logic",
+  "turns": 3,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-27T12:31:12.650+02:00",
+  "pr": "870",
+  "pass": "security",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-27T12:31:12.650+02:00",
+  "pr": "870",
+  "pass": "conventions",
+  "turns": 3,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-27T12:31:12.650+02:00",
+  "pr": "870",
+  "pass": "tests-missing",
+  "turns": 3,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-27T12:31:12.650+02:00",
+  "pr": "870",
+  "pass": "repo-specific",
+  "turns": 5,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-27T13:05:10.010+02:00",
+  "pr": "871",
+  "pass": "triage",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-27T13:05:10.010+02:00",
+  "pr": "871",
+  "pass": "logic",
+  "turns": 15,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-27T13:05:10.010+02:00",
+  "pr": "871",
+  "pass": "security",
+  "turns": 6,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-27T13:05:10.010+02:00",
+  "pr": "871",
+  "pass": "conventions",
+  "turns": 11,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-27T13:05:10.010+02:00",
+  "pr": "871",
+  "pass": "tests-missing",
+  "turns": 7,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-27T13:05:10.010+02:00",
+  "pr": "871",
+  "pass": "repo-specific",
+  "turns": 8,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-27T13:25:55.156+02:00",
+  "pr": "871",
+  "pass": "triage",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-27T13:25:55.156+02:00",
+  "pr": "871",
+  "pass": "logic",
+  "turns": 5,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-27T13:25:55.156+02:00",
+  "pr": "871",
+  "pass": "security",
+  "turns": 3,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-27T13:25:55.156+02:00",
+  "pr": "871",
+  "pass": "conventions",
+  "turns": 13,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-27T13:25:55.156+02:00",
+  "pr": "871",
+  "pass": "tests-missing",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": "1"
+ },
+ {
+  "ts": "2026-08-27T13:25:55.156+02:00",
+  "pr": "871",
+  "pass": "repo-specific",
+  "turns": 6,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-27T14:25:09.087+02:00",
+  "pr": "872",
+  "pass": "triage",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-27T14:25:09.087+02:00",
+  "pr": "872",
+  "pass": "logic",
+  "turns": 12,
+  "term": "error_max_cost",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-27T14:25:09.087+02:00",
+  "pr": "872",
+  "pass": "security",
+  "turns": 5,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-27T14:25:09.087+02:00",
+  "pr": "872",
+  "pass": "conventions",
+  "turns": 13,
+  "term": "error_max_cost",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-27T14:25:09.087+02:00",
+  "pr": "872",
+  "pass": "tests-missing",
+  "turns": 13,
+  "term": "error_max_cost",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-27T14:25:09.087+02:00",
+  "pr": "872",
+  "pass": "repo-specific",
+  "turns": 13,
+  "term": "error_max_cost",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-27T14:38:05.869+02:00",
+  "pr": "873",
+  "pass": "triage",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-27T14:38:05.869+02:00",
+  "pr": "873",
+  "pass": "logic",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": "1"
+ },
+ {
+  "ts": "2026-08-27T14:38:05.869+02:00",
+  "pr": "873",
+  "pass": "security",
+  "turns": 10,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-27T14:38:05.869+02:00",
+  "pr": "873",
+  "pass": "conventions",
+  "turns": 10,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-27T14:38:05.869+02:00",
+  "pr": "873",
+  "pass": "tests-missing",
+  "turns": 12,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-27T14:38:05.869+02:00",
+  "pr": "873",
+  "pass": "repo-specific",
+  "turns": 13,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-27T14:40:05.420+02:00",
+  "pr": "872",
+  "pass": "triage",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-27T14:40:05.420+02:00",
+  "pr": "872",
+  "pass": "logic",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": "1"
+ },
+ {
+  "ts": "2026-08-27T14:40:05.420+02:00",
+  "pr": "872",
+  "pass": "security",
+  "turns": 3,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-27T14:40:05.420+02:00",
+  "pr": "872",
+  "pass": "conventions",
+  "turns": 12,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-27T14:40:05.420+02:00",
+  "pr": "872",
+  "pass": "tests-missing",
+  "turns": 9,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-27T14:40:05.420+02:00",
+  "pr": "872",
+  "pass": "repo-specific",
+  "turns": 15,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-27T14:55:03.717+02:00",
+  "pr": "873",
+  "pass": "triage",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-27T14:55:03.717+02:00",
+  "pr": "873",
+  "pass": "logic",
+  "turns": 16,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-27T14:55:03.717+02:00",
+  "pr": "873",
+  "pass": "security",
+  "turns": 7,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-27T14:55:03.717+02:00",
+  "pr": "873",
+  "pass": "conventions",
+  "turns": 10,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-27T14:55:03.717+02:00",
+  "pr": "873",
+  "pass": "tests-missing",
+  "turns": 14,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-27T14:55:03.717+02:00",
+  "pr": "873",
+  "pass": "repo-specific",
+  "turns": 15,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-27T15:05:45.148+02:00",
+  "pr": "872",
+  "pass": "triage",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-27T15:05:45.148+02:00",
+  "pr": "872",
+  "pass": "logic",
+  "turns": 3,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-27T15:05:45.148+02:00",
+  "pr": "872",
+  "pass": "security",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-27T15:05:45.148+02:00",
+  "pr": "872",
+  "pass": "conventions",
+  "turns": 3,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-27T15:05:45.148+02:00",
+  "pr": "872",
+  "pass": "tests-missing",
+  "turns": 4,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ },
+ {
+  "ts": "2026-08-27T15:05:45.148+02:00",
+  "pr": "872",
+  "pass": "repo-specific",
+  "turns": 1,
+  "term": "success",
+  "tools": null,
+  "files": null,
+  "retry": null
+ }
+]
