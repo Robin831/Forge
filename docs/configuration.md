@@ -502,7 +502,7 @@ applied. The auto-detector now attaches a conservative glob set per ecosystem:
 | Detected | Steps | Default `paths` |
 |----------|-------|-----------------|
 | Go (`go.mod`) | `build`, `vet`, `golangci-lint`, `test`, `race` | `**/*.go`, `**/go.mod`, `**/go.sum`, `go.work`, `go.work.sum`, `**/testdata/**`, `**/*.s`, `**/*.c`, `**/*.h`, `**/.golangci.*`, plus every `//go:embed` target found in the worktree |
-| .NET (`*.sln` / `*/*.csproj`) | `build`, `test` | `**/*.cs`, `**/*.csproj`, `**/*.vb`, `**/*.vbproj`, `**/*.fs`, `**/*.fsproj`, `**/*.sln`, `**/*.slnx`, `**/*.props`, `**/*.targets`, `**/appsettings*.json`, `**/*.razor`, `**/*.cshtml`, `**/*.resx`, `**/nuget.config`, `**/NuGet.config`, `**/packages.lock.json`, `**/global.json`, `**/TestData/**`, `**/testdata/**`, `**/Fixtures/**`, `**/fixtures/**` |
+| .NET (a solution or project file at any depth) | `build`, `test` (per-project `<path>:build` / `<path>:test` for every project when there is no solution) | `**/*.cs`, `**/*.csproj`, `**/*.vb`, `**/*.vbproj`, `**/*.fs`, `**/*.fsproj`, `**/*.sln`, `**/*.slnx`, `**/*.props`, `**/*.targets`, `**/appsettings*.json`, `**/*.razor`, `**/*.cshtml`, `**/*.resx`, `**/nuget.config`, `**/NuGet.config`, `**/packages.lock.json`, `**/global.json`, `**/TestData/**`, `**/testdata/**`, `**/Fixtures/**`, `**/fixtures/**` |
 | Node in a subdirectory (`web/`, `frontend/`, `client/`, `app/`, `ui/`) | `<dir>:lint`, `<dir>:test` | `<dir>/**` |
 | Node at the repository root | `lint`, `test` | *(none — always run)* |
 
@@ -511,6 +511,26 @@ one step that did not need to run, a miss costs a verification that reports PASS
 over code it never looked at. A Node project at the ROOT is left ungated for the
 same reason — "everything under the root" is the whole repository, so there is no
 conservative subset to gate on.
+
+**.NET projects are found at any depth.** Detection walks the worktree (skipping
+`bin`, `obj`, `node_modules`, `vendor`, `packages` and `.git`, to a bounded
+depth) instead of asking `filepath.Glob` for `**/*.csproj` — a pattern that
+matched exactly one directory level, so a repository laid out as
+`src/Api/Api.csproj` with no root solution was not detected as .NET at all and
+fell through to the "No build system detected" step. The entry point is chosen
+in one order: the shallowest solution anywhere in the tree (it covers every
+project it references), else every discovered project in its own
+`<path>:build` / `<path>:test` step — no project is dropped, since a build that
+skips one reports PASS over code nothing compiled. The one bare-command case is
+a lone project or solution at the worktree root, which `dotnet` resolves by
+itself; every other target is named on the command line, because `dotnet build`
+with no argument fails with MSB1003 when its working directory holds no target
+and MSB1011 when it holds several. Only projects carrying a test **runner**
+(`Microsoft.NET.Test.Sdk`, `Microsoft.Testing.Platform`, or a VSTest adapter
+such as `xunit.runner.visualstudio`) get a `test` step, and an explicit
+`<IsTestProject>` in the project file overrides that either way: `dotnet test`
+against a project it cannot run — a shared xunit helper library, say — exits
+non-zero and fails the whole verification.
 
 **Embedded assets are discovered, not guessed.** `go build` compiles whatever a
 package binds in with `//go:embed`, and those files (prompts, templates, SQL, a
