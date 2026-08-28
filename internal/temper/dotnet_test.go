@@ -24,6 +24,27 @@ const testProject = `<Project Sdk="Microsoft.NET.Sdk">
   <ItemGroup>
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.11.1" />
     <PackageReference Include="xunit" Version="2.9.0" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2" />
+  </ItemGroup>
+</Project>`
+
+// helperLibrary is the shape that made the old marker list over-match: a
+// shared library of test utilities. It references xunit to compile against it
+// and carries no runner, so `dotnet test` has nothing to execute here.
+const helperLibrary = `<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <PackageReference Include="xunit.abstractions" Version="2.0.3" />
+    <PackageReference Include="xunit.extensibility.core" Version="2.9.0" />
+  </ItemGroup>
+</Project>`
+
+// optedOutHelper carries the test SDK — the way a shared fixture project
+// compiles against the framework — and says outright that it is not a test
+// project.
+const optedOutHelper = `<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><IsTestProject>false</IsTestProject></PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.11.1" />
   </ItemGroup>
 </Project>`
 
@@ -149,4 +170,116 @@ func TestScanDotnet_ShallowestSolutionFirst(t *testing.T) {
 	layout := scanDotnet(dir)
 	require.Len(t, layout.solutions, 3)
 	assert.Equal(t, "top/A.sln", layout.solutions[0])
+}
+
+// TestDetectSteps_DotnetRootProjectDoesNotHideDeeperOnes: a project at the root
+// used to end the selection, so every project below it was silently dropped and
+// Temper reported PASS with them never built and their tests never run.
+func TestDetectSteps_DotnetRootProjectDoesNotHideDeeperOnes(t *testing.T) {
+	dir := t.TempDir()
+	writeProject(t, dir, "Root.csproj", libraryProject)
+	writeProject(t, dir, "src/Api/Api.csproj", libraryProject)
+	writeProject(t, dir, "tests/Api.Tests/Api.Tests.csproj", testProject)
+
+	steps := detectSteps(dir, nil, false)
+	names := stepNames(steps)
+
+	assert.Contains(t, names, "Root:build")
+	assert.Contains(t, names, "src/Api/Api:build")
+	assert.Contains(t, names, "tests/Api.Tests/Api.Tests:build")
+	assert.Contains(t, names, "tests/Api.Tests/Api.Tests:test")
+
+	// With more than one target in play the root one is named too: a bare
+	// `dotnet build` in a directory holding several targets fails with MSB1011.
+	for _, s := range steps {
+		if s.Name == "Root:build" {
+			assert.Equal(t, []string{"build", "--no-restore", "Root.csproj"}, s.Args)
+		}
+	}
+}
+
+// TestDetectSteps_DotnetLoneRootProjectKeepsBareCommands pins the one case a
+// bare command is still correct.
+func TestDetectSteps_DotnetLoneRootProjectKeepsBareCommands(t *testing.T) {
+	dir := t.TempDir()
+	writeProject(t, dir, "App.csproj", testProject)
+
+	steps := detectSteps(dir, nil, false)
+	require.ElementsMatch(t, []string{"build", "test"}, stepNames(steps))
+	for _, s := range steps {
+		switch s.Name {
+		case "build":
+			assert.Equal(t, []string{"build", "--no-restore"}, s.Args)
+		case "test":
+			assert.Equal(t, []string{"test", "--no-build"}, s.Args)
+		}
+	}
+}
+
+// TestDetectSteps_DotnetRootSolutionBesideRootProjectIsNamed: two targets in
+// the root directory make a bare `dotnet build` ambiguous (MSB1011), so the
+// solution is named even though it sits at the root.
+func TestDetectSteps_DotnetRootSolutionBesideRootProjectIsNamed(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "App.sln"), []byte(""), 0o644))
+	writeProject(t, dir, "App.csproj", libraryProject)
+
+	steps := detectSteps(dir, nil, false)
+	require.ElementsMatch(t, []string{"build", "test"}, stepNames(steps))
+	for _, s := range steps {
+		assert.Equal(t, "App.sln", s.Args[len(s.Args)-1], "step %q must name the solution", s.Name)
+	}
+}
+
+// TestIsTestProject_SharedHelperLibraryIsNotTested: a library referencing the
+// framework's own packages is not runnable by `dotnet test`, which exits
+// non-zero over it and fails the whole verification.
+func TestIsTestProject_SharedHelperLibraryIsNotTested(t *testing.T) {
+	dir := t.TempDir()
+	writeProject(t, dir, "tests/Shared/Shared.Testing.csproj", helperLibrary)
+	writeProject(t, dir, "tests/Api.Tests/Api.Tests.csproj", testProject)
+
+	names := stepNames(detectSteps(dir, nil, false))
+
+	assert.Contains(t, names, "tests/Shared/Shared.Testing:build")
+	assert.NotContains(t, names, "tests/Shared/Shared.Testing:test",
+		"a shared xunit helper library carries no runner and must not be tested")
+	assert.Contains(t, names, "tests/Api.Tests/Api.Tests:test")
+}
+
+// TestIsTestProject_ExplicitPropertyWins: `<IsTestProject>` settles the
+// question in both directions, over any package reference.
+func TestIsTestProject_ExplicitPropertyWins(t *testing.T) {
+	dir := t.TempDir()
+	writeProject(t, dir, "tests/Fixtures/Fixtures.csproj", optedOutHelper)
+	writeProject(t, dir, "tests/Custom/Custom.csproj",
+		`<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><IsTestProject>true</IsTestProject></PropertyGroup></Project>`)
+
+	names := stepNames(detectSteps(dir, nil, false))
+
+	assert.NotContains(t, names, "tests/Fixtures/Fixtures:test",
+		"a project that declares IsTestProject=false must not be handed to dotnet test")
+	assert.Contains(t, names, "tests/Custom/Custom:test")
+}
+
+func TestDeclaredIsTestProject(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		content string
+		value   bool
+		ok      bool
+	}{
+		{"absent", "<project></project>", false, false},
+		{"true", "<istestproject>true</istestproject>", true, true},
+		{"false", "<istestproject>false</istestproject>", false, true},
+		{"padded", "<istestproject> true </istestproject>", true, true},
+		{"expression", "<istestproject>$(buildingtests)</istestproject>", false, false},
+		{"unterminated", "<istestproject>true", false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			value, ok := declaredIsTestProject(tc.content)
+			assert.Equal(t, tc.ok, ok)
+			assert.Equal(t, tc.value, value)
+		})
+	}
 }

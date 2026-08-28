@@ -65,19 +65,31 @@ const dotnetScanMaxDepth = 8
 // this is not one, and is treated as a non-test project rather than read.
 const maxProjectFileScanSize = 1 << 20 // 1 MiB
 
-// testProjectMarkers are the strings (matched lowercased) that identify a
-// project `dotnet test` can run. A project carrying none of them is built but
-// never tested: `dotnet test` on a project with no test framework exits
-// non-zero, so testing every discovered project would turn a detected .NET
-// repository into a guaranteed Temper failure.
-var testProjectMarkers = []string{
-	"<istestproject>true",
+// testRunnerMarkers are the strings (matched lowercased) whose presence in a
+// project file means `dotnet test` has something to run.
+//
+// Every one of them names a test RUNNER — the VSTest SDK, a VSTest adapter, or
+// the newer Microsoft.Testing.Platform. The framework's own assertion packages
+// are deliberately absent: a shared test-helper LIBRARY references `xunit`,
+// `xunit.abstractions` or `nunit` exactly as a test project does, and matching
+// those handed every such library to `dotnet test`, which then fails the whole
+// verification over a project that was never meant to be run. A runner package
+// is referenced only by a project that is itself executed.
+//
+// A framework this list does not name costs a project that is built and not
+// tested, which is the safe direction: the opposite is a guaranteed Temper
+// failure on every run.
+var testRunnerMarkers = []string{
 	"microsoft.net.test.sdk",
-	"xunit",
-	"nunit",
-	"mstest",
-	"tunit",
+	"microsoft.testing.platform",
+	"xunit.runner.visualstudio",
+	"nunit3testadapter",
+	"mstest.testadapter",
 }
+
+// isTestProjectProperty is the MSBuild property that settles the question
+// outright, in either direction.
+const isTestProjectProperty = "<istestproject>"
 
 // dotnetLayout is what a scan of the worktree found: solution files and
 // project files, both as slash-separated paths relative to the worktree root,
@@ -170,34 +182,47 @@ func sortShallowestFirst(paths []string) {
 // dotnetSteps returns the auto-detected .NET build/test steps for a worktree,
 // or nil when it holds no .NET project.
 //
-// The target is named explicitly unless it sits at the root, because that is
-// the only place `dotnet` finds it on its own:
+// The entry point is chosen in one order:
 //
-//   - a solution (the shallowest one) covers every project it references, so
-//     it is preferred over the projects whenever one exists;
-//   - failing that, each discovered project is built in its own step, and
-//     only the ones carrying a test framework are also tested.
+//   - the shallowest SOLUTION, where one exists: it covers every project it
+//     references, so building it builds them all;
+//   - failing that, EVERY discovered project in its own `<path>:build` step,
+//     with a `<path>:test` step for each one a test runner can execute. Every
+//     project is named, because a build that skips one reports PASS over code
+//     nothing compiled — which is the failure this whole scan exists to close;
+//   - the one exception is a lone project at the worktree root, which keeps
+//     the bare step names and commands Temper has always generated.
+//
+// A target is named on the command line unless it is that lone root one:
+// `dotnet build` with no argument resolves a target in its working directory,
+// failing with MSB1003 when there is none and MSB1011 when there is more than
+// one, so a bare command is safe only where the root holds exactly one.
 func dotnetSteps(worktreePath string) []Step {
 	layout := scanDotnet(worktreePath)
 	if layout.empty() {
 		return nil
 	}
 
+	bareOK := layout.singleRootTarget()
+
 	if len(layout.solutions) > 0 {
-		return dotnetTargetSteps("", layout.solutions[0], true)
+		sln := layout.solutions[0]
+		if len(layout.solutions) > 1 {
+			log.Printf("[temper] %s holds %d solution files — building the shallowest (%s)",
+				worktreePath, len(layout.solutions), sln)
+		}
+		return dotnetTargetSteps("", sln, bareOK && isRootPath(sln), true)
 	}
 
-	// A project at the root is the one case `dotnet build` resolves by
-	// itself, and the whole worktree is its scope — so it is built alone
-	// even if projects sit deeper too, exactly as before this scan existed.
-	if isRootPath(layout.projects[0]) {
-		return dotnetTargetSteps("", layout.projects[0], isTestProject(worktreePath, layout.projects[0]))
+	if len(layout.projects) == 1 && isRootPath(layout.projects[0]) {
+		proj := layout.projects[0]
+		return dotnetTargetSteps("", proj, bareOK, isTestProject(worktreePath, proj))
 	}
 
 	var steps []Step
 	for _, proj := range layout.projects {
 		label := strings.TrimSuffix(proj, filepath.Ext(proj))
-		steps = append(steps, dotnetTargetSteps(label+":", proj, isTestProject(worktreePath, proj))...)
+		steps = append(steps, dotnetTargetSteps(label+":", proj, false, isTestProject(worktreePath, proj))...)
 	}
 	if len(layout.projects) > 1 {
 		log.Printf("[temper] %s has %d .NET projects and no solution file — building each one separately",
@@ -206,17 +231,33 @@ func dotnetSteps(worktreePath string) []Step {
 	return steps
 }
 
+// singleRootTarget reports whether the worktree root holds exactly one file
+// `dotnet build` would resolve on its own. With two — a solution beside a
+// project, or two solutions — a bare command fails with MSB1011, so the target
+// has to be named even though it sits at the root.
+func (l dotnetLayout) singleRootTarget() bool {
+	n := 0
+	for _, group := range [][]string{l.solutions, l.projects} {
+		for _, p := range group {
+			if isRootPath(p) {
+				n++
+			}
+		}
+	}
+	return n == 1
+}
+
 // dotnetTargetSteps builds the build (and, when the target is testable, test)
 // steps for one solution or project.
 //
-// The target is passed as an argument rather than by setting Step.Dir, since
-// a directory holding two project files is ambiguous to `dotnet build` while
-// a named file never is. A target at the worktree root is passed no argument
-// at all, which keeps the steps of an ordinary single-solution repository
+// The target is passed as an argument rather than by setting Step.Dir, since a
+// directory holding two project files is ambiguous to `dotnet build` while a
+// named file never is. Only a `bare` target is passed no argument at all,
+// which keeps the steps of an ordinary single-solution repository
 // byte-identical to the ones Temper has always generated.
-func dotnetTargetSteps(prefix, target string, testable bool) []Step {
+func dotnetTargetSteps(prefix, target string, bare, testable bool) []Step {
 	var arg []string
-	if !isRootPath(target) {
+	if !bare {
 		arg = []string{filepath.FromSlash(target)}
 	}
 
@@ -245,30 +286,73 @@ func isRootPath(rel string) bool {
 	return !strings.Contains(rel, "/")
 }
 
-// isTestProject reports whether a project file references a test framework.
+// isTestProject reports whether `dotnet test` can run a project.
 //
 // The question is asked of the project file rather than of its name because
 // the answer decides whether `dotnet test` runs against it, and `dotnet test`
-// on a project with no test framework fails. A file that cannot be read is
+// on a project with no test runner fails. A file that cannot be read is
 // reported as a non-test project: not testing a test project loses coverage
 // the build step still partly covers, while testing a library guarantees a
 // failed verification on every run.
+//
+// An explicit `<IsTestProject>` wins over everything else in both directions.
+// `false` is the documented way a shared test-helper library opts out while
+// still referencing the test SDK it compiles against, so reading the package
+// references alone would test exactly the projects whose authors said not to.
 func isTestProject(worktreePath, rel string) bool {
-	f, err := os.Open(filepath.Join(worktreePath, filepath.FromSlash(rel)))
-	if err != nil {
+	content, ok := readProjectFile(worktreePath, rel)
+	if !ok {
 		return false
 	}
-	defer f.Close()
-
-	data, err := io.ReadAll(io.LimitReader(f, maxProjectFileScanSize))
-	if err != nil {
-		return false
+	if declared, ok := declaredIsTestProject(content); ok {
+		return declared
 	}
-	content := strings.ToLower(string(data))
-	for _, marker := range testProjectMarkers {
+	for _, marker := range testRunnerMarkers {
 		if strings.Contains(content, marker) {
 			return true
 		}
 	}
 	return false
+}
+
+// readProjectFile returns a project file's contents lowercased, bounded by
+// maxProjectFileScanSize. A file that cannot be read reports !ok rather than
+// an empty string, so a read failure is never mistaken for a file that simply
+// says nothing.
+func readProjectFile(worktreePath, rel string) (string, bool) {
+	f, err := os.Open(filepath.Join(worktreePath, filepath.FromSlash(rel)))
+	if err != nil {
+		return "", false
+	}
+	defer f.Close()
+
+	data, err := io.ReadAll(io.LimitReader(f, maxProjectFileScanSize))
+	if err != nil {
+		return "", false
+	}
+	return strings.ToLower(string(data)), true
+}
+
+// declaredIsTestProject reads an explicit `<IsTestProject>` value out of a
+// lowercased project file. Anything other than a plain `true`/`false` is
+// reported as absent — an MSBuild expression (`$(BuildingTests)`) is not a
+// value this can evaluate, and guessing at one is how a library ends up handed
+// to `dotnet test`.
+func declaredIsTestProject(content string) (value bool, ok bool) {
+	i := strings.Index(content, isTestProjectProperty)
+	if i < 0 {
+		return false, false
+	}
+	rest := content[i+len(isTestProjectProperty):]
+	end := strings.Index(rest, "<")
+	if end < 0 {
+		return false, false
+	}
+	switch strings.TrimSpace(rest[:end]) {
+	case "true":
+		return true, true
+	case "false":
+		return false, true
+	}
+	return false, false
 }
