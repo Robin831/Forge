@@ -92,8 +92,13 @@ func categoriesForFile(path string) map[string]bool {
 			"performance": true, "style": true, "other": true,
 		}
 	case strings.HasSuffix(lower, ".tsx"),
-		strings.HasSuffix(lower, ".ts"),
-		strings.HasSuffix(lower, ".css"):
+		strings.HasSuffix(lower, ".ts"):
+		// TypeScript is a full application language, not just a styling
+		// surface: a frontend-scoped rule categorised security, performance,
+		// error-handling, concurrency or testing must reach a frontend-only
+		// diff, so every canonical category is relevant here.
+		return allCanonicalCategories()
+	case strings.HasSuffix(lower, ".css"):
 		return map[string]bool{"ui": true, "style": true, "other": true}
 	case strings.HasSuffix(lower, ".yaml"),
 		strings.HasSuffix(lower, ".yml"),
