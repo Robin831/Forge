@@ -1,0 +1,2 @@
+category: Fixed
+- **Smelter paths backfill is rule-aware** - Backfilled Warden rule `paths` are now derived from the language the rule's own pattern/check text names, intersected with the extensions the source PR touched, instead of every extension the PR happened to include. A Go rule learned from a mixed Go+frontend PR no longer carries `**/*.ts`/`**/*.md`, which had made the path-glob filter stop narrowing anything. Rules whose text names no language keep the old PR-derived set. (Forge-w0f6)

@@ -144,7 +144,7 @@ func globsFromExtensions(files []string) []string {
 // runPathsBackfill iterates the active rules in rf and, for each rule whose
 // Paths field is empty and whose Source carries one or more copilot:PR#N
 // tokens, fetches the changed files for those PRs and populates Paths with
-// the derived file-extension globs.
+// the globs globsForRule derives from those files and the rule's own text.
 //
 // Idempotency: rules whose Paths is already populated are skipped, so a
 // repeated flush is a no-op for the same rule.
@@ -222,7 +222,11 @@ func pathsBackfill(ctx context.Context, wtPath, anvilName string, rf *warden.Rul
 			continue
 		}
 
-		globs := globsFromExtensions(allFiles)
+		// Derived from the rule's own text as well as the PR's files: the PR
+		// says which extensions were touched, the rule says which language it
+		// is about, and only the intersection is a path filter that narrows
+		// anything. See globsForRule.
+		globs := globsForRule(*rule, allFiles)
 		if len(globs) == 0 {
 			continue
 		}
