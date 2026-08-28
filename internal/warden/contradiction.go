@@ -38,6 +38,20 @@ type Contradiction struct {
 	Detail string
 }
 
+// ContradictionKey is the identity of a pair: its two rule IDs in the order
+// Contradiction already stores them. DetectContradictions dedupes one scan
+// on it — two rules sharing several sources are one contradiction, not one
+// per shared source — and it is exported so a caller suppressing already
+// reported pairs across runs keys on exactly the same thing, rather than on
+// a second notion of "the same pair" that could disagree with this one.
+//
+// The Source is deliberately not in the key. A pair does not become a new
+// contradiction because a later distillation session added another shared
+// source reference to one of its rules.
+func ContradictionKey(c Contradiction) string {
+	return c.A.ID + "\x00" + c.B.ID
+}
+
 // ContradictionKind identifies the axis on which two rules disagree.
 type ContradictionKind string
 
@@ -65,11 +79,17 @@ const minTopicOverlap = 0.20
 // a subject pair that appears in neither.
 var sentenceSplit = regexp.MustCompile(`[.;:!?\n]+`)
 
-// beforeRe and afterRe capture the two sides of an explicit ordering claim.
-// The capture windows are bounded to claimWindow characters so a claim
-// cannot absorb the whole clause: fifteen words away from the ordering word
-// are no longer the operations being ordered, and letting them in is what
-// makes two unrelated rules from one PR look like they cross.
+// claimWindow is how many characters on either side of an ordering word are
+// read as the operations being ordered. Fifteen words away from "before" is
+// no longer part of the claim, and letting it in is what makes two unrelated
+// rules from one PR look like they cross.
+const claimWindow = 80
+
+// beforeRe and afterRe capture the two sides of an explicit ordering claim,
+// each side bounded to claimWindow characters so a claim cannot absorb the
+// whole clause. The bound is interpolated rather than written twice per
+// pattern: as four literals it was four places one number had to agree with
+// itself, and the doc comment already named a constant that did not exist.
 //
 // `after` is the only synonym on the second list. `once` and `following`
 // were tried and removed: both are far more often adverb and preposition
@@ -77,8 +97,8 @@ var sentenceSplit = regexp.MustCompile(`[.;:!?\n]+`)
 // "the following fields"), and each one they matched produced a claim whose
 // operands were the two halves of a sentence that ordered nothing.
 var (
-	beforeRe = regexp.MustCompile(`(?i)(.{0,80})\b(?:before|prior to|ahead of)\b(.{0,80})`)
-	afterRe  = regexp.MustCompile(`(?i)(.{0,80})\bafter\b(.{0,80})`)
+	beforeRe = regexp.MustCompile(fmt.Sprintf(`(?i)(.{0,%d})\b(?:before|prior to|ahead of)\b(.{0,%d})`, claimWindow, claimWindow))
+	afterRe  = regexp.MustCompile(fmt.Sprintf(`(?i)(.{0,%d})\bafter\b(.{0,%d})`, claimWindow, claimWindow))
 )
 
 // claimBoilerplate is dropped from a sequence claim's operands. Every check
@@ -291,15 +311,16 @@ func DetectContradictions(rules []Rule) []Contradiction {
 			if b.ID < a.ID {
 				a, b = b, a
 			}
-			key := a.ID + "\x00" + b.ID
+			c := Contradiction{
+				A: a, B: b, Source: shared, Kind: kind,
+				Detail: contradictionDetail(kind, a, b, shared),
+			}
+			key := ContradictionKey(c)
 			if _, dup := seen[key]; dup {
 				continue
 			}
 			seen[key] = struct{}{}
-			out = append(out, Contradiction{
-				A: a, B: b, Source: shared, Kind: kind,
-				Detail: contradictionDetail(kind, a, b, shared),
-			})
+			out = append(out, c)
 		}
 	}
 

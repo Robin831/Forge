@@ -456,3 +456,190 @@ func TestFlush_AddedNamesTheCommittedFileAfterTheWholeFilePass(t *testing.T) {
 	}
 	assert.True(t, sawIntermediate, "the batch pass's output is archived when the whole-file pass replaces it")
 }
+
+// The two passes chain: the batch pass merges A and B into M and puts M in
+// the file, and the whole-file pass then clusters M with an established C.
+// Both merges happened and all four originals are archived, but announcing
+// them as two independent entries puts M in the commit message as a rule
+// that was created and is not in the file the message describes.
+func TestFoldSupersededMerges(t *testing.T) {
+	mkResult := func(mergedID string, replaced ...string) warden.MergeResult {
+		return warden.MergeResult{Merged: warden.Rule{ID: mergedID}, ReplacedIDs: replaced}
+	}
+
+	t.Run("splices a superseded batch merge into the whole-file one", func(t *testing.T) {
+		summary := []warden.MergeResult{
+			mkResult("M", "A", "B"),
+			mkResult("N", "M", "C"),
+		}
+		rf := &warden.RulesFile{Rules: []warden.Rule{{ID: "N"}}}
+
+		out := foldSupersededMerges(summary, rf)
+
+		require.Len(t, out, 1, "M is not in the file, so it must not be announced as created")
+		assert.Equal(t, "N", out[0].Merged.ID)
+		// M is kept in the list because M IS in the archive write — the
+		// bullet and the archive must name the same set.
+		assert.Equal(t, []string{"M", "A", "B", "C"}, out[0].ReplacedIDs)
+	})
+
+	t.Run("leaves an untouched pair of merges alone", func(t *testing.T) {
+		summary := []warden.MergeResult{mkResult("M", "A", "B"), mkResult("N", "C", "D")}
+		rf := &warden.RulesFile{Rules: []warden.Rule{{ID: "M"}, {ID: "N"}}}
+
+		out := foldSupersededMerges(summary, rf)
+
+		require.Len(t, out, 2)
+		assert.Equal(t, []string{"A", "B"}, out[0].ReplacedIDs)
+		assert.Equal(t, []string{"C", "D"}, out[1].ReplacedIDs)
+	})
+
+	t.Run("keeps an entry whose merged rule vanished for some other reason", func(t *testing.T) {
+		// Nothing in the flush removes a rule between the two passes, so an
+		// absence no later entry accounts for is not something to silently
+		// drop — it is the thing the fold exists to make legible.
+		summary := []warden.MergeResult{mkResult("M", "A", "B"), mkResult("N", "C", "D")}
+		rf := &warden.RulesFile{Rules: []warden.Rule{{ID: "N"}}}
+
+		out := foldSupersededMerges(summary, rf)
+
+		require.Len(t, out, 2)
+		assert.Equal(t, "M", out[0].Merged.ID)
+	})
+
+	t.Run("only a LATER entry can absorb an earlier one", func(t *testing.T) {
+		// An entry can only be replaced by a pass that ran after the one
+		// that made it; matching backwards would fold a merge into its own
+		// predecessor.
+		summary := []warden.MergeResult{mkResult("N", "M", "C"), mkResult("M", "A", "B")}
+		rf := &warden.RulesFile{Rules: []warden.Rule{{ID: "N"}}}
+
+		out := foldSupersededMerges(summary, rf)
+
+		require.Len(t, out, 2)
+		assert.Equal(t, []string{"M", "C"}, out[0].ReplacedIDs)
+	})
+}
+
+// A rule ID is model output — distillRule keeps whatever `id` the JSON
+// carried, and the distillation prompt is built from Copilot's comments on a
+// contributor's PR — and these bullets are published under Forge's own
+// GitHub identity. So the ID reaches the body through a closed alphabet, not
+// an escape: the injection never needs to break the code span, only to be
+// read as an instruction.
+func TestSafeRuleID(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"ordinary kebab-case id passes through", "log-filename-doc-drift", "log-filename-doc-drift"},
+		{"dots, slashes and underscores are kept", "pkg/sub_dir.v2-rule", "pkg/sub_dir.v2-rule"},
+		{"backticks cannot break out of the code span", "id`; rm -rf /", "id?rm?-rf?/"},
+		{"a newline cannot forge a further body section", "id\n\n## Approved", "id?##?Approved"},
+		{"a team mention cannot notify anybody", "@org/team-rule", "?org/team-rule"},
+		{"an HTML comment cannot hide content", "id<!-- hidden -->", "id?--?hidden?--?"},
+		{"empty stays empty for the (no id) placeholder", "   ", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, safeRuleID(tc.in))
+		})
+	}
+
+	t.Run("bounded", func(t *testing.T) {
+		assert.Len(t, safeRuleID(strings.Repeat("a", maxRuleIDBytes*3)), maxRuleIDBytes)
+	})
+
+	t.Run("displayID renders an unnamed rule rather than a lone marker", func(t *testing.T) {
+		assert.Equal(t, "(no id)", displayID(""))
+		assert.Equal(t, "(no id)", displayID("\t "))
+	})
+}
+
+// The contradiction bullets are the first identifier from a learned rule to
+// reach the published PR body; every field but Kind is model-authored.
+func TestBuildPRBodySanitizesContradictionIDs(t *testing.T) {
+	body := buildPRBody(PassResults{
+		Contradictions: []warden.Contradiction{{
+			A:      warden.Rule{ID: "good-rule"},
+			B:      warden.Rule{ID: "bad`rule\n@org/team"},
+			Source: "copilot:PR#682\n- forged bullet",
+			Kind:   warden.ContradictionLockScope,
+		}},
+	})
+
+	assert.Contains(t, body, "- `good-rule` vs `bad?rule?org/team` (copilot:PR#682?-?forged?bullet, lock-scope)")
+	assert.NotContains(t, body, "@org/team-")
+	for _, line := range strings.Split(body, "\n") {
+		assert.NotContains(t, line, "forged bullet", "model text must not survive as its own line")
+	}
+}
+
+// A contradiction is reported and never resolved, and the scan is over the
+// whole rules file, so the set found on each flush is monotonic: without
+// suppression every flush re-announces everything the last one did, one
+// WARNING line and one feed row per pair, forever, with no verb to dismiss
+// one.
+func TestContradictionAnnouncer(t *testing.T) {
+	pair := func(a, b string) warden.Contradiction {
+		return warden.Contradiction{A: warden.Rule{ID: a}, B: warden.Rule{ID: b}}
+	}
+	first, second := pair("a", "b"), pair("c", "d")
+
+	var ann contradictionAnnouncer
+
+	assert.Len(t, ann.unannounced("munin", []warden.Contradiction{first, second}), 2)
+	assert.Empty(t, ann.unannounced("munin", []warden.Contradiction{first, second}),
+		"a second flush finding the same pairs must announce nothing")
+
+	third := pair("e", "f")
+	fresh := ann.unannounced("munin", []warden.Contradiction{first, second, third})
+	require.Len(t, fresh, 1, "only the newly discovered pair is news")
+	assert.Equal(t, "e", fresh[0].A.ID)
+
+	// The memory is per anvil: two anvils holding the same pair of rule IDs
+	// are two conditions, each with its own operator.
+	assert.Len(t, ann.unannounced("hugin", []warden.Contradiction{first}), 1)
+
+	// Source is not part of the identity — a pair does not become new
+	// because a later session added another shared source reference.
+	resourced := first
+	resourced.Source = "copilot:PR#999"
+	assert.Empty(t, ann.unannounced("munin", []warden.Contradiction{resourced}))
+}
+
+// The configured off switch, end to end through the closure the daemon
+// wires. `dedup_threshold: 0` cannot carry this meaning — it is the
+// setting's zero value, so an unset config and an explicit zero are one
+// number by the time they reach here — which is why the switch is negative.
+func TestDedupParamsOffSwitch(t *testing.T) {
+	db := openTestDB(t)
+
+	cases := []struct {
+		name    string
+		opts    []Option
+		wantOK  bool
+		wantJac float64
+	}{
+		{"no closure at all", nil, false, 0},
+		{"negative threshold disables both passes",
+			[]Option{WithDedupThreshold(func() float64 { return -1 })}, false, 0},
+		{"a positive threshold enables them",
+			[]Option{WithDedupThreshold(func() float64 { return 0.6 })}, true, 0.6},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := New(db, time.Hour, map[string]string{}, tc.opts...)
+			params, ok := s.dedupParams()
+			assert.Equal(t, tc.wantOK, ok)
+			assert.InDelta(t, tc.wantJac, params.Jaccard, 1e-9)
+			if ok {
+				assert.InDelta(t, warden.DefaultOverlapThreshold, params.Overlap, 1e-9,
+					"overlap falls back to the shipped default when no closure supplies one")
+			} else {
+				assert.True(t, params.IsZero(), "a disabled pass must hand out no active criterion at all")
+			}
+		})
+	}
+}

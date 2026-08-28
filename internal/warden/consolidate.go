@@ -180,7 +180,12 @@ func MergeRule(cluster []Rule, category, pattern, check, suggestedID string, exi
 
 // pickMergedID chooses an ID for the merged rule. It prefers a non-empty
 // AI-suggested ID, falls back to "merged-<first-id>" when none is given,
-// and appends "-N" if the chosen ID collides with existing rules.
+// and defers to distinctRuleID for the collision suffix.
+//
+// The suffix loop is distinctRuleID's and not a second copy of it: a rule
+// added from the pending queue and a rule created by a merge are named by
+// one rule, so a change to the scheme (padding, separator, a cap on
+// attempts) cannot be applied to one path and missed on the other.
 func pickMergedID(suggested string, cluster []Rule, existingIDs map[string]struct{}) string {
 	base := strings.TrimSpace(suggested)
 	if base == "" {
@@ -193,12 +198,7 @@ func pickMergedID(suggested string, cluster []Rule, existingIDs map[string]struc
 	if _, clash := existingIDs[base]; !clash {
 		return base
 	}
-	for i := 2; ; i++ {
-		candidate := fmt.Sprintf("%s-%d", base, i)
-		if _, clash := existingIDs[candidate]; !clash {
-			return candidate
-		}
-	}
+	return distinctRuleID(base, existingIDs)
 }
 
 // Consolidate runs the full consolidation pass over rf.Rules: it groups
@@ -208,17 +208,18 @@ func pickMergedID(suggested string, cluster []Rule, existingIDs map[string]struc
 // archive them. The summary slice lists one MergeResult per consolidated
 // cluster, suitable for inclusion in a commit message.
 //
-// threshold is the Jaccard criterion; it is paired with the shipped
-// DefaultOverlapThreshold so a terse restatement of a verbose rule — which
-// Jaccard cannot score above |small|/|large| however complete the
-// containment is — still clusters. See DedupParams.
+// threshold is the Jaccard criterion and the ONLY criterion this form
+// applies. It deliberately does not pair it with DefaultOverlapThreshold:
+// every caller of this function passes a single tuned number and has no way
+// to say "and also merge by containment at 0.55", so silently adding the
+// second criterion would merge rules on a measure the caller never opted
+// into — including for an operator who raised the number precisely to
+// suppress merging. A caller wanting both criteria says so through
+// ConsolidateWithParams, which is what every production path does.
 //
 // Behaviour notes:
 //   - Categories with fewer than 2 rules are skipped (no clustering possible).
 //   - When threshold <= 0, the WHOLE pass is a no-op (returns nil, nil, nil).
-//     The overlap criterion is not applied on its own: threshold is the
-//     configured off switch, and a zero that still merged rules by another
-//     measure would be an off switch that does not switch anything off.
 //   - When runner returns an error for a specific cluster the cluster is
 //     skipped (logged via the returned error slice) so a single AI failure
 //     does not block other consolidations from completing.
@@ -226,16 +227,27 @@ func pickMergedID(suggested string, cluster []Rule, existingIDs map[string]struc
 // runner may be nil; the default aiRunner is used in that case. Callers
 // wanting a specific warden-stage provider chain should pass a runner built
 // for that chain (e.g. via DefaultConsolidationRunner).
+//
+// No production code calls this: the smelter flush and `forge warden
+// consolidate` both go through ConsolidateWithParams so the overlap
+// criterion is explicit at the call site. It is retained as the one-knob
+// form for tests and for callers that genuinely want Jaccard alone.
 func Consolidate(ctx context.Context, repoDir string, rf *RulesFile, threshold float64, runner ConsolidationRunner) (replaced []Rule, summary []MergeResult, errs []error) {
 	if threshold <= 0 {
 		return nil, nil, nil
 	}
-	return ConsolidateWithParams(ctx, repoDir, rf, DedupParams{Jaccard: threshold, Overlap: DefaultOverlapThreshold}, runner)
+	return ConsolidateWithParams(ctx, repoDir, rf, DedupParams{Jaccard: threshold}, runner)
 }
 
 // ConsolidateWithParams is Consolidate with both near-duplicate criteria
-// supplied explicitly. Consolidate is the one-knob form that pairs the
-// configured Jaccard threshold with the shipped overlap default.
+// supplied explicitly, and is the form every production path uses.
+//
+// A zero DedupParams (neither criterion positive) is a no-op: with no
+// criterion active no pair of rules can be judged a near-duplicate, so the
+// O(n²) walk cannot return anything. The Smelter's own off switch is
+// stricter than that — a non-positive Jaccard threshold skips the pass
+// outright, so the overlap criterion is never applied on its own from
+// configuration.
 func ConsolidateWithParams(ctx context.Context, repoDir string, rf *RulesFile, params DedupParams, runner ConsolidationRunner) (replaced []Rule, summary []MergeResult, errs []error) {
 	if rf == nil || params.IsZero() || len(rf.Rules) < 2 {
 		return nil, nil, nil
@@ -281,8 +293,10 @@ func ConsolidateWithParams(ctx context.Context, repoDir string, rf *RulesFile, p
 // whole file: the members are rules the same run is introducing, no reviewer
 // has ever seen them, and merging them changes nothing that was already in
 // effect. The merged rule takes the cluster's most common category (ties
-// broken by first appearance) so it keeps landing in a category the category
-// filter selects for.
+// broken by first appearance), which keeps it landing in a category the
+// category filter selects for on the majority members' file types — but not
+// necessarily on the minority's, which is why splitSecurityBoundary refuses
+// the one crossing where that trade loses coverage outright.
 //
 // Rules in rf that are not named by batchIDs are neither clustered nor
 // touched — deduping the batch against the existing file stays the whole-file
@@ -355,15 +369,74 @@ func ConsolidateBatch(ctx context.Context, repoDir string, rf *RulesFile, batchI
 
 	var clusters []categorizedCluster
 	for _, c := range ClusterNearDuplicates(batch, params) {
-		clusters = append(clusters, categorizedCluster{
-			Cluster:   c,
-			Category:  dominantCategory(c.Rules),
-			Positions: mapPositions(positions, c.Indices),
-		})
+		for _, sub := range splitSecurityBoundary(c) {
+			clusters = append(clusters, categorizedCluster{
+				Cluster:   sub,
+				Category:  dominantCategory(sub.Rules),
+				Positions: mapPositions(positions, sub.Indices),
+			})
+		}
 	}
 
 	replaced, summary, applyErrs := applyClusters(ctx, repoDir, rf, clusters, runner)
 	return replaced, summary, append(errs, applyErrs...)
+}
+
+// securityCategory is the one category a cross-category merge may not move a
+// rule out of. See splitSecurityBoundary.
+const securityCategory = "security"
+
+// splitSecurityBoundary divides a cross-category cluster into its security
+// members and its non-security ones, dropping either side that is left with
+// fewer than two rules. A cluster that does not straddle the boundary is
+// returned unchanged.
+//
+// It exists because the merged rule's category is not cosmetic — it is a
+// review-time gate. FilterRules drops a rule whose canonical category is not
+// in the set categoriesForFile derives for the changed files, and those sets
+// are narrow: a `.ts`/`.tsx`/`.css` diff selects {ui, style, other} and a
+// `.cs` diff selects everything EXCEPT testing and ui. So a batch that
+// learns one `security` rule alongside two near-duplicate `testing` ones —
+// exactly the shape this pass exists to collapse, since the same check
+// arrives under a different model-chosen category each session — would merge
+// to dominantCategory `testing` and stop being reviewed on the next .NET
+// diff, where the original security rule would have applied. Nothing in the
+// commit message would say so: it reports a consolidation, not a change of
+// scope.
+//
+// Splitting and not promoting, because the reverse move loses coverage too:
+// a `ui` rule relabelled `security` disappears from every `.ts` diff. The
+// only reclassification-free answer is to leave the two sides as separate
+// rules, which costs one unmerged duplicate and keeps both rules landing
+// wherever they landed before. MergeRule unions Paths for the same reason —
+// "the merged rule still applies wherever its parents applied" — and the
+// category is the one selector that union cannot preserve.
+//
+// Non-security members keep clustering with each other, so the batch's
+// ordinary duplicates still collapse; only the boundary itself is refused.
+func splitSecurityBoundary(c Cluster) []Cluster {
+	var sec, other Cluster
+	sec.MaxSimilarity, other.MaxSimilarity = c.MaxSimilarity, c.MaxSimilarity
+	for i, r := range c.Rules {
+		if strings.TrimSpace(strings.ToLower(r.Category)) == securityCategory {
+			sec.Rules = append(sec.Rules, r)
+			sec.Indices = append(sec.Indices, c.Indices[i])
+			continue
+		}
+		other.Rules = append(other.Rules, r)
+		other.Indices = append(other.Indices, c.Indices[i])
+	}
+	if len(sec.Rules) == 0 || len(other.Rules) == 0 {
+		return []Cluster{c}
+	}
+	var out []Cluster
+	if len(sec.Rules) > 1 {
+		out = append(out, sec)
+	}
+	if len(other.Rules) > 1 {
+		out = append(out, other)
+	}
+	return out
 }
 
 // categorizedCluster is a cluster plus the category its merged rule will

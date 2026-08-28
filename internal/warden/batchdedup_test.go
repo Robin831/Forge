@@ -522,3 +522,126 @@ func TestAddRuleDistinct_KeepsTwoRulesUnderOneID(t *testing.T) {
 	assert.Equal(t, "log-filename-3", id)
 	assert.Len(t, rf.Rules, 3)
 }
+
+// securityBoundaryBatch is one check arriving under three model-chosen
+// categories — the shape the batch pass exists to collapse — except that one
+// of the three is `security`. All three say the same thing at the same
+// verbosity, so nothing but the category distinguishes them.
+func securityBoundaryBatch() []Rule {
+	const pattern = "an HTTP handler returns rows from a shared table without scoping them to the caller"
+	const check = "Verify the handler filters the query by the caller's own tenant id, since a shared table returns every tenant's rows to whoever asks"
+	return []Rule{
+		{ID: "tenant-scope-security", Category: "security", Pattern: pattern, Check: check, Source: SourceList{"copilot:PR#900"}, Added: "2026-08-18"},
+		{ID: "tenant-scope-testing", Category: "testing", Pattern: pattern, Check: check, Source: SourceList{"copilot:PR#900"}, Added: "2026-08-19"},
+		{ID: "tenant-scope-other", Category: "testing", Pattern: pattern, Check: check, Source: SourceList{"copilot:PR#900"}, Added: "2026-08-20"},
+	}
+}
+
+// A merged rule's category is a review-time gate, not a label: FilterRules
+// drops a rule whose canonical category is outside the set categoriesForFile
+// derives for the diff, and a .cs diff selects `security` while excluding
+// `testing`. So merging a lone security rule into a two-member testing
+// cluster would take the security check out of scope on the next .NET diff
+// and report it as a consolidation. The batch pass refuses that crossing.
+func TestConsolidateBatch_DoesNotMergeAcrossTheSecurityBoundary(t *testing.T) {
+	batch := securityBoundaryBatch()
+	rf := &RulesFile{Rules: batch}
+	ids := []string{"tenant-scope-security", "tenant-scope-testing", "tenant-scope-other"}
+
+	calls := 0
+	replaced, summary, errs := ConsolidateBatch(context.Background(), t.TempDir(), rf, ids,
+		shippedParams(), mergeStub(t, "tenant-scope-merged", "tenant scoping", "verify the query is scoped", &calls))
+
+	assert.Empty(t, errs)
+	// The two testing rules still collapse — only the boundary is refused.
+	require.Len(t, summary, 1)
+	assert.Equal(t, "testing", summary[0].Category)
+	assert.ElementsMatch(t, []string{"tenant-scope-testing", "tenant-scope-other"}, summary[0].ReplacedIDs)
+	assert.Len(t, replaced, 2)
+
+	// The security rule is untouched and still carries its category.
+	var kept *Rule
+	for i := range rf.Rules {
+		if rf.Rules[i].ID == "tenant-scope-security" {
+			kept = &rf.Rules[i]
+		}
+	}
+	require.NotNil(t, kept, "the security rule must survive the pass")
+	assert.Equal(t, "security", kept.Category, "a merge may not reclassify a security rule out of review scope")
+}
+
+// The refusal must not cost the batch its ordinary merges: with the security
+// member alone on its side of the boundary, the non-security members are
+// clustered exactly as they would have been.
+func TestSplitSecurityBoundary(t *testing.T) {
+	mk := func(cats ...string) Cluster {
+		var c Cluster
+		c.MaxSimilarity = 0.9
+		for i, cat := range cats {
+			c.Rules = append(c.Rules, Rule{ID: fmt.Sprintf("r%d", i), Category: cat})
+			c.Indices = append(c.Indices, i)
+		}
+		return c
+	}
+
+	t.Run("no security member is returned unchanged", func(t *testing.T) {
+		in := mk("style", "testing", "other")
+		out := splitSecurityBoundary(in)
+		require.Len(t, out, 1)
+		assert.Equal(t, in.Rules, out[0].Rules)
+		assert.Equal(t, in.Indices, out[0].Indices)
+	})
+
+	t.Run("all security members are returned unchanged", func(t *testing.T) {
+		in := mk("security", "security")
+		out := splitSecurityBoundary(in)
+		require.Len(t, out, 1)
+		assert.Len(t, out[0].Rules, 2)
+	})
+
+	t.Run("a lone security member drops out and the rest still merge", func(t *testing.T) {
+		out := splitSecurityBoundary(mk("security", "style", "testing"))
+		require.Len(t, out, 1, "the single security rule cannot form a cluster of its own")
+		assert.Equal(t, []int{1, 2}, out[0].Indices)
+		assert.Equal(t, 0.9, out[0].MaxSimilarity)
+	})
+
+	t.Run("both sides merge when both have two members", func(t *testing.T) {
+		out := splitSecurityBoundary(mk("security", "security", "style", "style"))
+		require.Len(t, out, 2)
+		assert.Equal(t, []int{0, 1}, out[0].Indices)
+		assert.Equal(t, []int{2, 3}, out[1].Indices)
+	})
+
+	t.Run("category matching is case- and space-insensitive", func(t *testing.T) {
+		out := splitSecurityBoundary(mk(" Security ", "style", "testing"))
+		require.Len(t, out, 1)
+		assert.Equal(t, []int{1, 2}, out[0].Indices, "a padded or capitalised category must not slip past the boundary")
+	})
+}
+
+// Consolidate is the one-knob form: it applies the Jaccard number it is
+// given and nothing else. Pairing it with DefaultOverlapThreshold would
+// merge rules on a criterion the caller never opted into — including for an
+// operator who raised the number precisely to suppress merging.
+func TestConsolidate_AppliesJaccardAlone(t *testing.T) {
+	rf := &RulesFile{Rules: logFilenameCluster()}
+	before := len(rf.Rules)
+
+	calls := 0
+	_, summary, errs := Consolidate(context.Background(), t.TempDir(), rf, 0.6,
+		mergeStub(t, "merged", "p", "c", &calls))
+
+	assert.Empty(t, errs)
+	assert.Empty(t, summary, "Jaccard at 0.6 clusters nothing on this corpus — the measured baseline this bead is built on")
+	assert.Equal(t, 0, calls)
+	assert.Len(t, rf.Rules, before)
+
+	// The same rules under both criteria do cluster, which is what makes the
+	// assertion above a statement about the criterion and not about the data.
+	rf2 := &RulesFile{Rules: logFilenameCluster()}
+	_, summary2, errs2 := ConsolidateWithParams(context.Background(), t.TempDir(), rf2,
+		DedupParams{Jaccard: 0.6, Overlap: DefaultOverlapThreshold}, mergeStub(t, "merged", "p", "c", &calls))
+	assert.Empty(t, errs2)
+	assert.NotEmpty(t, summary2)
+}

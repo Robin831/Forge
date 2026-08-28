@@ -182,3 +182,133 @@ func TestConsolidateAnvil_EventLoggerInvoked(t *testing.T) {
 	assert.Contains(t, events[0], "smelter_flushed:")
 	assert.Contains(t, events[0], "Archived 1 stale rule(s)")
 }
+
+// overlapOnlyPair is two rules the overlap criterion clusters and Jaccard
+// does not: the short rule's whole vocabulary sits inside the long one's, so
+// containment is 1.00 while Jaccard is |short| / |long| — the exact shape
+// the second criterion was added for, and the one a Jaccard-only pass cannot
+// see at any usable threshold.
+func overlapOnlyPair() []warden.Rule {
+	long := "the documented log filename must match the filename the code actually produces, " +
+		"including the rotation suffix and the directory the writer resolves at startup, " +
+		"because a stale document sends an operator to a path that holds nothing"
+	short := "the documented log filename must match the filename the code produces"
+	return []warden.Rule{
+		{ID: "verbose", Category: "style", Pattern: "documentation filename", Check: long, Source: warden.SourceList{"manual"}, Added: "2026-05-01"},
+		{ID: "terse", Category: "style", Pattern: "documentation filename", Check: short, Source: warden.SourceList{"manual"}, Added: "2026-05-02"},
+	}
+}
+
+// The `forge warden consolidate` path is the CLI's only route to the overlap
+// criterion, and it fails silently if the wiring regresses: dropping Overlap
+// from the DedupParams literal restores the measured "clusters nothing at
+// 0.6" behaviour with every other test in this file still green, because the
+// flush tests build their params through Smelter.dedupParams and never reach
+// this function.
+func TestConsolidateAnvil_OverlapThresholdDefaultsWhenUnset(t *testing.T) {
+	dir := t.TempDir()
+	writeRulesFile(t, dir, &warden.RulesFile{Rules: overlapOnlyPair()})
+
+	res, err := ConsolidateAnvil(context.Background(), ConsolidateOptions{
+		AnvilPath:      dir,
+		AnvilName:      "test",
+		Consolidator:   stubConsolidator(t, "merged-log-filename", "documentation filename", "the documented filename must match the code"),
+		DedupThreshold: 0.6,
+		// OverlapThreshold left at 0 — it must resolve to the shipped
+		// default rather than to "criterion disabled".
+	})
+	require.NoError(t, err)
+	require.NoError(t, res.FirstError)
+	require.Len(t, res.Passes.Consolidated, 1, "the pair must cluster on containment when overlap falls back to its default")
+	assert.ElementsMatch(t, []string{"verbose", "terse"}, res.Passes.Consolidated[0].ReplacedIDs)
+
+	active, err := warden.LoadRules(dir)
+	require.NoError(t, err)
+	require.Len(t, active.Rules, 1)
+	assert.Equal(t, "merged-log-filename", active.Rules[0].ID)
+}
+
+// The mirror case: a negative overlap threshold disables the criterion and
+// leaves Jaccard alone, which on this pair merges nothing. Without it the
+// test above would pass just as well against a pass that ignored the field.
+func TestConsolidateAnvil_NegativeOverlapThresholdDisablesTheCriterion(t *testing.T) {
+	dir := t.TempDir()
+	writeRulesFile(t, dir, &warden.RulesFile{Rules: overlapOnlyPair()})
+
+	res, err := ConsolidateAnvil(context.Background(), ConsolidateOptions{
+		AnvilPath:        dir,
+		AnvilName:        "test",
+		Consolidator:     stubConsolidator(t, "merged-log-filename", "p", "c"),
+		DedupThreshold:   0.6,
+		OverlapThreshold: -1,
+	})
+	require.NoError(t, err)
+	assert.Empty(t, res.Passes.Consolidated, "overlap disabled leaves the pair to Jaccard, which cannot score it")
+
+	active, err := warden.LoadRules(dir)
+	require.NoError(t, err)
+	assert.Len(t, active.Rules, 2)
+}
+
+// contradictoryPair is two rules from one source PR prescribing opposite
+// lock scopes for the same call — the shape DetectContradictions reports and
+// never resolves.
+func contradictoryPair() []warden.Rule {
+	return []warden.Rule{
+		{
+			ID: "invoke-cancel-under-lock", Category: "concurrency",
+			Pattern: "cancellation callback invoked from the registry",
+			Check:   "Invoke the cancellation callback under the lock so the registry cannot be mutated between the lookup and the call",
+			Source:  warden.SourceList{"copilot:PR#682"}, Added: "2026-05-01",
+			// Paths pre-set so the backfill pass has nothing to do: this
+			// test is about a run whose ONLY finding is a contradiction.
+			Paths: []string{"**/*.go"},
+		},
+		{
+			ID: "unlock-before-callback", Category: "concurrency",
+			Pattern: "cancellation callback invoked from the registry",
+			Check:   "Release the lock before invoking the cancellation callback so a callback that re-enters the registry cannot deadlock",
+			Source:  warden.SourceList{"copilot:PR#682"}, Added: "2026-05-02",
+			Paths: []string{"**/*.go"},
+		},
+	}
+}
+
+// Contradictions ride out on the CLI path too, and they must not make the
+// run look like it changed something: nothing is merged or dropped for a
+// pair, so the rules file is left byte-identical and HasChanges stays false.
+func TestConsolidateAnvil_ContradictionsSurfaceWithoutChangingRules(t *testing.T) {
+	dir := t.TempDir()
+	writeRulesFile(t, dir, &warden.RulesFile{Rules: contradictoryPair()})
+	before, err := os.ReadFile(warden.RulesPath(dir))
+	require.NoError(t, err)
+
+	var events []string
+	res, err := ConsolidateAnvil(context.Background(), ConsolidateOptions{
+		AnvilPath: dir,
+		AnvilName: "test",
+		EventLogger: func(name, msg string) {
+			events = append(events, name+":"+msg)
+		},
+	})
+	require.NoError(t, err)
+
+	require.Len(t, res.Passes.Contradictions, 1)
+	c := res.Passes.Contradictions[0]
+	assert.Equal(t, "invoke-cancel-under-lock", c.A.ID)
+	assert.Equal(t, "unlock-before-callback", c.B.ID)
+	assert.Equal(t, warden.ContradictionLockScope, c.Kind)
+
+	assert.False(t, res.Passes.HasChanges(), "a contradiction is reported, not resolved — there is nothing to persist")
+
+	after, err := os.ReadFile(warden.RulesPath(dir))
+	require.NoError(t, err)
+	assert.Equal(t, string(before), string(after), "the rules file must be untouched")
+
+	// Every other pass in ConsolidateAnvil reports its outcome through the
+	// event logger; before the shared reporter this one logged and nothing
+	// else, so the CLI path emitted no event where the daemon path did.
+	require.Len(t, events, 1)
+	assert.Contains(t, events[0], "smelter_flushed:")
+	assert.Contains(t, events[0], "1 contradictory rule pair")
+}

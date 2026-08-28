@@ -103,6 +103,15 @@ type Cluster struct {
 // (rules with no similar neighbours) are dropped. The order of returned
 // clusters mirrors the order of the first rule in each cluster as it
 // appeared in the input — stable for deterministic downstream processing.
+//
+// A non-positive threshold is a no-op and returns nil: with the criterion
+// disabled there is nothing to cluster ON, and unioning every pair (which
+// is what a literal reading of ">= 0" would do) is not a plausible reading
+// of "the operator turned dedup off".
+//
+// No production code calls this — every call site uses ClusterNearDuplicates
+// so the overlap criterion is explicit — but it is retained as the one-knob
+// form for tests and for callers that genuinely want Jaccard alone.
 func ClusterByJaccard(rules []Rule, threshold float64) []Cluster {
 	return ClusterNearDuplicates(rules, DedupParams{Jaccard: threshold})
 }

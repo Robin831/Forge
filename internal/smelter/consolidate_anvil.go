@@ -166,10 +166,13 @@ func ConsolidateAnvil(ctx context.Context, opts ConsolidateOptions) (Consolidate
 	// Contradictions are reported, never resolved, so they are computed last
 	// (over the rules as they will be written) and left out of HasChanges:
 	// a run whose only finding is a contradiction has nothing to persist.
-	contradictions := warden.DetectContradictions(rf.Rules)
-	for _, c := range contradictions {
-		log.Printf("[smelter] WARNING contradictory rules for %s: %s", opts.AnvilName, c.Detail)
-	}
+	//
+	// Through the same reporter the scheduled flush uses, so the log line and
+	// the feed event cannot come to differ between the two paths — and with
+	// no announcer, since this is a one-shot command: every pair is news to
+	// the operator who just typed `forge warden consolidate`, and suppressing
+	// across invocations is what the daemon's per-anvil memory is for.
+	contradictions := reportContradictions(opts.AnvilName, rf.Rules, nil, opts.EventLogger)
 
 	passes := PassResults{
 		Consolidated:   summary,

@@ -1505,6 +1505,31 @@ func TestWardenSettings_OverlapThresholdCanBeDisabled(t *testing.T) {
 	assert.InDelta(t, -1.0, w.ResolvedOverlapThreshold(), 1e-9)
 }
 
+// The off switch for consolidation as a whole has to be reachable from a
+// config file, which is what a zero-means-off reading could never be: zero
+// is the field's zero value, so an unset setting and an explicit
+// `dedup_threshold: 0` arrive here as one number and disabling on it would
+// turn consolidation off for every deployment that never configured it.
+// A negative value is the switch, and it must survive Load.
+func TestLoad_WardenDedupThresholdDisablesOnNegative(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "forge.yaml")
+	require.NoError(t, os.WriteFile(cfgPath, []byte("settings:\n  warden:\n    dedup_threshold: -1\n"), 0o644))
+
+	cfg, err := Load(cfgPath)
+	require.NoError(t, err)
+	assert.InDelta(t, -1.0, cfg.Settings.Warden.ResolvedDedupThreshold(), 1e-9,
+		"a negative dedup_threshold must reach the smelter as the off switch")
+
+	// An explicit zero is indistinguishable from unset and so resolves to
+	// the shipped default, NOT to "off".
+	zeroPath := filepath.Join(dir, "zero.yaml")
+	require.NoError(t, os.WriteFile(zeroPath, []byte("settings:\n  warden:\n    dedup_threshold: 0\n"), 0o644))
+	zeroCfg, err := Load(zeroPath)
+	require.NoError(t, err)
+	assert.InDelta(t, DefaultWardenDedupThreshold, zeroCfg.Settings.Warden.ResolvedDedupThreshold(), 1e-9)
+}
+
 func TestTemperStepConfig_VerifyNoConflictMarkersRoundTrip(t *testing.T) {
 	original := &TemperCommandsConfig{
 		Steps: []TemperStepConfig{

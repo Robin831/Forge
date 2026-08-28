@@ -296,3 +296,74 @@ func TestReportIgnored(t *testing.T) {
 		})
 	}
 }
+
+// The three warden knobs the smelter resolves through a closure at flush
+// time. A setting absent from applyChanges is never swapped in, so the
+// closure keeps reading the old value — silently: nothing errors and nothing
+// logs, the edit just does nothing. That is the bug these entries fix, so
+// deleting one must fail a test rather than pass a green suite.
+func TestApplyChanges_WardenSmelterThresholds(t *testing.T) {
+	cases := []struct {
+		name string
+		old  config.WardenSettings
+		new  config.WardenSettings
+		want string
+	}{
+		{
+			name: "dedup_threshold",
+			old:  config.WardenSettings{DedupThreshold: 0.6},
+			new:  config.WardenSettings{DedupThreshold: 0.45},
+			want: "warden.dedup_threshold: 0.60 → 0.45",
+		},
+		{
+			name: "dedup_threshold disabled",
+			old:  config.WardenSettings{DedupThreshold: 0.6},
+			new:  config.WardenSettings{DedupThreshold: -1},
+			want: "warden.dedup_threshold: 0.60 → -1.00",
+		},
+		{
+			name: "overlap_threshold",
+			old:  config.WardenSettings{OverlapThreshold: 0.55},
+			new:  config.WardenSettings{OverlapThreshold: 0.7},
+			want: "warden.overlap_threshold: 0.55 → 0.70",
+		},
+		{
+			name: "archive_after_days",
+			old:  config.WardenSettings{ArchiveAfterDays: 180},
+			new:  config.WardenSettings{ArchiveAfterDays: 30},
+			want: "warden.archive_after_days: 180 → 30",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			old := &config.Config{Settings: config.SettingsConfig{Warden: tc.old}}
+			new := &config.Config{Settings: config.SettingsConfig{Warden: tc.new}}
+
+			changes := applyChanges(old, new)
+
+			if !slices.Contains(changes, tc.want) {
+				t.Errorf("expected %q, got %v", tc.want, changes)
+			}
+		})
+	}
+}
+
+// The comparison is on the RESOLVED values, so two spellings of one
+// effective setting must not report a change: unset and an explicit default
+// are the same number by the time the smelter's closure sees them, and a
+// reload line claiming otherwise is a line an operator has to disprove.
+func TestApplyChanges_WardenSmelterThresholdsUnchangedWhenResolvedEqual(t *testing.T) {
+	old := &config.Config{Settings: config.SettingsConfig{Warden: config.WardenSettings{}}}
+	new := &config.Config{Settings: config.SettingsConfig{Warden: config.WardenSettings{
+		DedupThreshold:   config.DefaultWardenDedupThreshold,
+		OverlapThreshold: config.DefaultWardenOverlapThreshold,
+		ArchiveAfterDays: config.DefaultWardenArchiveAfterDays,
+	}}}
+
+	for _, c := range applyChanges(old, new) {
+		if strings.HasPrefix(c, "warden.") {
+			t.Errorf("unexpected change reported for a warden knob whose resolved value is unchanged: %s", c)
+		}
+	}
+}

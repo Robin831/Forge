@@ -1157,7 +1157,16 @@ type WardenSettings struct {
 	// DedupThreshold is the similarity score (0.0–1.0) above which two
 	// active rules are considered duplicates and the older entry is moved to
 	// the archive with reason "duplicate". Zero falls back to the default
-	// of 0.6.
+	// of DefaultWardenDedupThreshold; a NEGATIVE value turns consolidation
+	// off entirely — both the intra-batch and the whole-file pass, since
+	// OverlapThreshold is never applied on its own.
+	//
+	// Negative and not zero, because zero cannot carry that meaning: it is
+	// the zero value of the field, so an unset setting and an explicit
+	// `dedup_threshold: 0` are the same number by the time either reaches
+	// this struct, and mapping it to "off" would disable consolidation for
+	// every deployment that never configured it. ArchiveAfterDays reads its
+	// own disable the same way and for the same reason.
 	DedupThreshold float64 `mapstructure:"dedup_threshold" yaml:"dedup_threshold,omitempty"`
 	// OverlapThreshold is the second near-duplicate criterion: the share of
 	// the SHORTER rule's vocabulary that must also appear in the longer one
@@ -1167,38 +1176,57 @@ type WardenSettings struct {
 	// containment is. Measured over this repository's own 727-rule file,
 	// the shipped dedup_threshold of 0.6 clusters nothing at all while the
 	// file holds three separate copies of one rule. Zero falls back to the
-	// default of 0.55; a negative value disables the criterion, leaving
-	// Jaccard as the only test. Setting dedup_threshold to 0 still turns
-	// consolidation off entirely — this criterion is never applied alone.
+	// default of DefaultWardenOverlapThreshold; a negative value disables
+	// the criterion, leaving Jaccard as the only test. A NEGATIVE
+	// dedup_threshold still turns consolidation off entirely — this
+	// criterion is never applied alone.
 	OverlapThreshold float64 `mapstructure:"overlap_threshold" yaml:"overlap_threshold,omitempty"`
 }
 
+// The shipped defaults for the three Smelter knobs under settings.warden.
+// They are named constants rather than literals because each one is written
+// in three places — the viper default, DefaultConfig and the Resolved*
+// fallback below — and a default that disagrees with itself across those
+// three is a difference nothing would report.
+const (
+	// DefaultWardenArchiveAfterDays is the staleness sweep threshold in days.
+	DefaultWardenArchiveAfterDays = 180
+	// DefaultWardenDedupThreshold is the shipped Jaccard criterion.
+	DefaultWardenDedupThreshold = 0.6
+	// DefaultWardenOverlapThreshold is the shipped overlap (containment)
+	// criterion. It mirrors warden.DefaultOverlapThreshold, which config
+	// cannot import without a cycle.
+	DefaultWardenOverlapThreshold = 0.55
+)
+
 // ResolvedArchiveAfterDays returns the effective archive-after threshold in
-// days. Zero (unset) resolves to the default of 180; negative values are
-// returned as-is so callers can treat them as "never archive".
+// days. Zero (unset) resolves to DefaultWardenArchiveAfterDays; negative
+// values are returned as-is so callers can treat them as "never archive".
 func (w WardenSettings) ResolvedArchiveAfterDays() int {
 	if w.ArchiveAfterDays == 0 {
-		return 180
+		return DefaultWardenArchiveAfterDays
 	}
 	return w.ArchiveAfterDays
 }
 
 // ResolvedDedupThreshold returns the effective dedup-similarity threshold.
-// Zero (unset) resolves to the default of 0.6.
+// Zero (unset) resolves to DefaultWardenDedupThreshold; negative values are
+// returned as-is, which is how consolidation is switched off — see
+// WardenSettings.DedupThreshold for why the disable is negative and not zero.
 func (w WardenSettings) ResolvedDedupThreshold() float64 {
 	if w.DedupThreshold == 0 {
-		return 0.6
+		return DefaultWardenDedupThreshold
 	}
 	return w.DedupThreshold
 }
 
 // ResolvedOverlapThreshold returns the effective overlap-coefficient
-// threshold. Zero (unset) resolves to the shipped default of 0.55; negative
-// values are returned as-is so callers can treat them as "disable the
-// overlap criterion".
+// threshold. Zero (unset) resolves to DefaultWardenOverlapThreshold;
+// negative values are returned as-is so callers can treat them as "disable
+// the overlap criterion".
 func (w WardenSettings) ResolvedOverlapThreshold() float64 {
 	if w.OverlapThreshold == 0 {
-		return 0.55
+		return DefaultWardenOverlapThreshold
 	}
 	return w.OverlapThreshold
 }
@@ -2409,9 +2437,9 @@ func Defaults() Config {
 				FilterPathGlob:    boolPtr(true),
 				FilterCategory:    boolPtr(true),
 				FilterPatternGrep: boolPtr(true),
-				ArchiveAfterDays:  180,
-				DedupThreshold:    0.6,
-				OverlapThreshold:  0.55,
+				ArchiveAfterDays:  DefaultWardenArchiveAfterDays,
+				DedupThreshold:    DefaultWardenDedupThreshold,
+				OverlapThreshold:  DefaultWardenOverlapThreshold,
 			},
 			ForgeChat: ForgeChatSettings{
 				TurnTimeout: DefaultForgeChatTurnTimeout,
@@ -2511,9 +2539,9 @@ func Load(configFile string) (*Config, error) {
 	v.SetDefault("settings.warden.filter_path_glob", true)
 	v.SetDefault("settings.warden.filter_category", true)
 	v.SetDefault("settings.warden.filter_pattern_grep", true)
-	v.SetDefault("settings.warden.archive_after_days", 180)
-	v.SetDefault("settings.warden.dedup_threshold", 0.6)
-	v.SetDefault("settings.warden.overlap_threshold", 0.55)
+	v.SetDefault("settings.warden.archive_after_days", DefaultWardenArchiveAfterDays)
+	v.SetDefault("settings.warden.dedup_threshold", DefaultWardenDedupThreshold)
+	v.SetDefault("settings.warden.overlap_threshold", DefaultWardenOverlapThreshold)
 	v.SetDefault("settings.forgechat.turn_timeout", DefaultForgeChatTurnTimeout.String())
 
 	// Environment variable support: FORGE_SETTINGS_POLL_INTERVAL etc.
