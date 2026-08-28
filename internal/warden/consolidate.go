@@ -369,7 +369,7 @@ func ConsolidateBatch(ctx context.Context, repoDir string, rf *RulesFile, batchI
 
 	var clusters []categorizedCluster
 	for _, c := range ClusterNearDuplicates(batch, params) {
-		for _, sub := range splitSecurityBoundary(c) {
+		for _, sub := range splitSecurityBoundary(c, params) {
 			clusters = append(clusters, categorizedCluster{
 				Cluster:   sub,
 				Category:  dominantCategory(sub.Rules),
@@ -414,7 +414,21 @@ const securityCategory = "security"
 //
 // Non-security members keep clustering with each other, so the batch's
 // ordinary duplicates still collapse; only the boundary itself is refused.
-func splitSecurityBoundary(c Cluster) []Cluster {
+//
+// Each surviving side is RE-CLUSTERED rather than returned as it stands,
+// because ClusterNearDuplicates unions transitively: a cluster is a
+// connected component, not a clique, so removing a member can remove the
+// only edge that held the rest together. A batch holding X (testing),
+// S (security) and Y (testing) with X~S and S~Y above the threshold but
+// X~Y below both criteria is one component; partitioned by category alone
+// it would hand [X, Y] to applyClusters and merge two rules the
+// near-duplicate test had explicitly declined to join — a merge on no
+// evidence at all, and irreversible from the reviewer's point of view. The
+// mirror case is a `sec` side of two security rules bridged by a
+// non-security member. Re-running the clusterer over each side answers
+// both: what comes back is whatever components survive the removal, which
+// may be none.
+func splitSecurityBoundary(c Cluster, p DedupParams) []Cluster {
 	var sec, other Cluster
 	sec.MaxSimilarity, other.MaxSimilarity = c.MaxSimilarity, c.MaxSimilarity
 	for i, r := range c.Rules {
@@ -430,11 +444,28 @@ func splitSecurityBoundary(c Cluster) []Cluster {
 		return []Cluster{c}
 	}
 	var out []Cluster
-	if len(sec.Rules) > 1 {
-		out = append(out, sec)
+	out = append(out, reclusterPartition(sec, p)...)
+	out = append(out, reclusterPartition(other, p)...)
+	return out
+}
+
+// reclusterPartition re-runs the near-duplicate clustering over one side of
+// a split and remaps each resulting cluster's local indices back onto the
+// indices the partition was carrying, so a member's identity survives the
+// round trip. MaxSimilarity is taken from the sub-cluster rather than
+// inherited from the parent: the pair that set the parent's score may have
+// been the very edge the split removed.
+func reclusterPartition(part Cluster, p DedupParams) []Cluster {
+	if len(part.Rules) < 2 {
+		return nil
 	}
-	if len(other.Rules) > 1 {
-		out = append(out, other)
+	var out []Cluster
+	for _, sub := range ClusterNearDuplicates(part.Rules, p) {
+		out = append(out, Cluster{
+			Rules:         sub.Rules,
+			Indices:       mapPositions(part.Indices, sub.Indices),
+			MaxSimilarity: sub.MaxSimilarity,
+		})
 	}
 	return out
 }

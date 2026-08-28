@@ -579,6 +579,16 @@ func surviving(ids []string, rf *warden.RulesFile) []string {
 // nothing else in the flush removes a rule between the two passes, and
 // silently dropping an entry we cannot explain would hide the very thing
 // this function exists to make legible.
+//
+// It is a pure rewrite: the splice writes into a copy of the summary, never
+// through the argument. The caller builds the input as
+// `append(batchSummary, consolidationSummary...)`, which reuses
+// batchSummary's backing array whenever it has spare capacity, so splicing
+// in place would rewrite the very MergeResult values runBatchConsolidation
+// returned and the caller still holds — invisibly, behind an assignment
+// (`consolidationSummary = foldSupersededMerges(...)`) that reads as
+// non-mutating, and unlike every other helper here (surviving, indexOf),
+// which build new slices.
 func foldSupersededMerges(summary []warden.MergeResult, rf *warden.RulesFile) []warden.MergeResult {
 	if len(summary) < 2 || rf == nil {
 		return summary
@@ -588,8 +598,11 @@ func foldSupersededMerges(summary []warden.MergeResult, rf *warden.RulesFile) []
 		present[r.ID] = struct{}{}
 	}
 
-	out := make([]warden.MergeResult, 0, len(summary))
-	for i, m := range summary {
+	work := make([]warden.MergeResult, len(summary))
+	copy(work, summary)
+
+	out := make([]warden.MergeResult, 0, len(work))
+	for i, m := range work {
 		if _, ok := present[m.Merged.ID]; ok {
 			out = append(out, m)
 			continue
@@ -597,16 +610,18 @@ func foldSupersededMerges(summary []warden.MergeResult, rf *warden.RulesFile) []
 		// Find the LATER entry that superseded it. Later only: an entry can
 		// only be replaced by a pass that ran after the one that made it.
 		absorbed := false
-		for j := i + 1; j < len(summary); j++ {
-			at := indexOf(summary[j].ReplacedIDs, m.Merged.ID)
+		for j := i + 1; j < len(work); j++ {
+			at := indexOf(work[j].ReplacedIDs, m.Merged.ID)
 			if at < 0 {
 				continue
 			}
-			spliced := make([]string, 0, len(summary[j].ReplacedIDs)+len(m.ReplacedIDs))
-			spliced = append(spliced, summary[j].ReplacedIDs[:at+1]...)
+			// A fresh slice, so the splice never writes through the
+			// ReplacedIDs array the caller's own entry shares.
+			spliced := make([]string, 0, len(work[j].ReplacedIDs)+len(m.ReplacedIDs))
+			spliced = append(spliced, work[j].ReplacedIDs[:at+1]...)
 			spliced = append(spliced, m.ReplacedIDs...)
-			spliced = append(spliced, summary[j].ReplacedIDs[at+1:]...)
-			summary[j].ReplacedIDs = spliced
+			spliced = append(spliced, work[j].ReplacedIDs[at+1:]...)
+			work[j].ReplacedIDs = spliced
 			absorbed = true
 			break
 		}

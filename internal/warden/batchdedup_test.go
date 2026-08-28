@@ -574,11 +574,16 @@ func TestConsolidateBatch_DoesNotMergeAcrossTheSecurityBoundary(t *testing.T) {
 // member alone on its side of the boundary, the non-security members are
 // clustered exactly as they would have been.
 func TestSplitSecurityBoundary(t *testing.T) {
+	params := DedupParams{Jaccard: 0.6, Overlap: DefaultOverlapThreshold}
+	// One check, phrased alike enough that any two of these rules are
+	// near-duplicates whatever categories they carry — so what the split
+	// returns is decided by the boundary and not by the text.
+	const check = "the documented log filename must match the filename the code actually writes to on disk"
 	mk := func(cats ...string) Cluster {
 		var c Cluster
 		c.MaxSimilarity = 0.9
 		for i, cat := range cats {
-			c.Rules = append(c.Rules, Rule{ID: fmt.Sprintf("r%d", i), Category: cat})
+			c.Rules = append(c.Rules, Rule{ID: fmt.Sprintf("r%d", i), Category: cat, Check: check})
 			c.Indices = append(c.Indices, i)
 		}
 		return c
@@ -586,38 +591,72 @@ func TestSplitSecurityBoundary(t *testing.T) {
 
 	t.Run("no security member is returned unchanged", func(t *testing.T) {
 		in := mk("style", "testing", "other")
-		out := splitSecurityBoundary(in)
+		out := splitSecurityBoundary(in, params)
 		require.Len(t, out, 1)
 		assert.Equal(t, in.Rules, out[0].Rules)
 		assert.Equal(t, in.Indices, out[0].Indices)
+		assert.Equal(t, in.MaxSimilarity, out[0].MaxSimilarity,
+			"a cluster that does not straddle the boundary is not re-clustered")
 	})
 
 	t.Run("all security members are returned unchanged", func(t *testing.T) {
 		in := mk("security", "security")
-		out := splitSecurityBoundary(in)
+		out := splitSecurityBoundary(in, params)
 		require.Len(t, out, 1)
 		assert.Len(t, out[0].Rules, 2)
 	})
 
 	t.Run("a lone security member drops out and the rest still merge", func(t *testing.T) {
-		out := splitSecurityBoundary(mk("security", "style", "testing"))
+		out := splitSecurityBoundary(mk("security", "style", "testing"), params)
 		require.Len(t, out, 1, "the single security rule cannot form a cluster of its own")
 		assert.Equal(t, []int{1, 2}, out[0].Indices)
-		assert.Equal(t, 0.9, out[0].MaxSimilarity)
 	})
 
 	t.Run("both sides merge when both have two members", func(t *testing.T) {
-		out := splitSecurityBoundary(mk("security", "security", "style", "style"))
+		out := splitSecurityBoundary(mk("security", "security", "style", "style"), params)
 		require.Len(t, out, 2)
 		assert.Equal(t, []int{0, 1}, out[0].Indices)
 		assert.Equal(t, []int{2, 3}, out[1].Indices)
 	})
 
 	t.Run("category matching is case- and space-insensitive", func(t *testing.T) {
-		out := splitSecurityBoundary(mk(" Security ", "style", "testing"))
+		out := splitSecurityBoundary(mk(" Security ", "style", "testing"), params)
 		require.Len(t, out, 1)
 		assert.Equal(t, []int{1, 2}, out[0].Indices, "a padded or capitalised category must not slip past the boundary")
 	})
+}
+
+// ClusterNearDuplicates unions transitively, so a cluster is a connected
+// component and not a clique. Removing the security member can therefore
+// remove the only edge holding the rest together, and a partition returned
+// as-is would merge two rules the near-duplicate test explicitly declined to
+// join — a merge on no evidence, irreversible from the reviewer's side.
+func TestSplitSecurityBoundary_ReclustersAfterRemovingTheBridge(t *testing.T) {
+	params := DedupParams{Jaccard: 0.6, Overlap: DefaultOverlapThreshold}
+
+	// X and Y share nothing; S contains both, so it bridges them.
+	x := Rule{ID: "x-testing", Category: "testing",
+		Check: "assert the temper step reports skipped when the changed file list excludes every path glob"}
+	y := Rule{ID: "y-testing", Category: "testing",
+		Check: "close the sqlite rows handle before returning from the query helper or the connection leaks"}
+	s := Rule{ID: "s-security", Category: "security",
+		Check: "assert the temper step reports skipped when the changed file list excludes every path glob " +
+			"and close the sqlite rows handle before returning from the query helper or the connection leaks"}
+
+	xb, yb, sb := RuleWordBag(x), RuleWordBag(y), RuleWordBag(s)
+	joinedXS, _ := NearDuplicate(xb, sb, params)
+	joinedSY, _ := NearDuplicate(sb, yb, params)
+	joinedXY, _ := NearDuplicate(xb, yb, params)
+	require.True(t, joinedXS, "fixture: S must bridge to X")
+	require.True(t, joinedSY, "fixture: S must bridge to Y")
+	require.False(t, joinedXY, "fixture: X and Y must not be near-duplicates of each other")
+
+	clusters := ClusterNearDuplicates([]Rule{x, s, y}, params)
+	require.Len(t, clusters, 1, "union-find joins all three through S")
+
+	out := splitSecurityBoundary(clusters[0], params)
+	assert.Empty(t, out,
+		"with the bridging security rule split out, X and Y are no longer near-duplicates and nothing may be merged")
 }
 
 // Consolidate is the one-knob form: it applies the Jaccard number it is

@@ -291,6 +291,80 @@ func TestFlush_ContradictionsAreReportedNotResolved(t *testing.T) {
 	assert.Contains(t, body, "unlock-before-callback")
 }
 
+// TestFlush_ContradictionAnnouncedOnceButAlwaysReported pins both halves of
+// the suppression on the path that has it.
+//
+// The announcer keeps the log line and the feed row from repeating a finding
+// only a human can clear — the failure depcheck's blocked-scan signature and
+// selfdeploy's sticky stash reason both exist to prevent — while
+// runContradictionCheck still returns the FULL set, because the batch PR
+// describes what the file holds rather than what changed since the previous
+// flush. Both were reachable only through a single flush, where fresh ==
+// found and neither mistake shows: returning `fresh` from
+// reportContradictions would empty the commit message's Contradictions
+// section on every re-flush, and dropping the &s.contradictions argument (or
+// making the announcer a local) would restore the forever-re-announcing bug.
+func TestFlush_ContradictionAnnouncedOnceButAlwaysReported(t *testing.T) {
+	db := openTestDB(t)
+	dir := t.TempDir()
+	calls := 0
+	s := batchSmelter(t, db, "unused", &calls)
+
+	learned := []warden.Rule{
+		{
+			ID: "invoke-cancel-under-lock", Category: "concurrency",
+			Pattern: "A registry stores a cancel function that is invoked from a method which already holds the registry mutex",
+			Check:   "Verify the cancel function is invoked under the lock so a concurrent clear cannot swap the handle between the lookup and the call",
+			Source:  warden.SourceList{"copilot:PR#709"}, Added: "2026-08-18",
+		},
+		{
+			ID: "unlock-before-callback", Category: "concurrency",
+			Pattern: "A cancel function or callback stored in a registry is invoked while the registry mutex is held",
+			Check:   "Verify the code unlocks before invoking the callback so a callback that re-enters the registry cannot deadlock",
+			Source:  warden.SourceList{"copilot:PR#709"}, Added: "2026-08-18",
+		},
+	}
+
+	first, _ := learnAndFlush(t, s, db, "anvil-a", dir, learned)
+	require.Len(t, first.Contradictions, 1)
+	require.Equal(t, 1, countContradictionEvents(t, db), "the pair is announced on the flush that finds it")
+
+	// A second flush of the same anvil, learning one unrelated rule. The
+	// contradictory pair is still in the file, so the scan still finds it.
+	second, onDisk := learnAndFlush(t, s, db, "anvil-a", dir, []warden.Rule{{
+		ID: "log-filename-matches-doc", Category: "documentation",
+		Pattern: "A doc comment names the log file a function writes",
+		Check:   "Verify the documented log filename matches the filename the code actually writes to",
+		Source:  warden.SourceList{"copilot:PR#801"}, Added: "2026-08-19",
+	}})
+
+	assert.Len(t, onDisk.Rules, 3, "the contradictory pair is still on file, unresolved")
+	require.Len(t, second.Contradictions, 1,
+		"the full set is still returned: the batch PR describes the file, not the delta")
+	assert.Equal(t, 1, countContradictionEvents(t, db),
+		"a pair already announced does not produce a second feed row")
+
+	msg := buildCommitMessage(second)
+	assert.Contains(t, msg, "Contradictions: 1 pair(s)")
+	assert.Contains(t, msg, "invoke-cancel-under-lock")
+	assert.Contains(t, msg, "unlock-before-callback")
+}
+
+// countContradictionEvents counts the smelter_flushed rows announcing a
+// contradictory pair, which is the surface the announcer suppresses.
+func countContradictionEvents(t *testing.T, db *state.DB) int {
+	t.Helper()
+	events, err := db.RecentEvents(200)
+	require.NoError(t, err)
+	n := 0
+	for _, e := range events {
+		if strings.Contains(e.Message, "contradictory rule pair") {
+			n++
+		}
+	}
+	return n
+}
+
 // TestPassResults_ContradictionsAloneAreNotAChange: a run whose only finding
 // is a contradiction has an unchanged rules file. Counting it as a change
 // would send the smelter into `git commit` with nothing staged.
@@ -507,6 +581,26 @@ func TestFoldSupersededMerges(t *testing.T) {
 		assert.Equal(t, "M", out[0].Merged.ID)
 	})
 
+	t.Run("does not mutate the caller's entries", func(t *testing.T) {
+		// The caller builds the input as append(batchSummary, ...), which
+		// reuses batchSummary's backing array, so an in-place splice would
+		// rewrite the very entries runBatchConsolidation returned and the
+		// caller still holds.
+		batchSummary := make([]warden.MergeResult, 0, 4)
+		batchSummary = append(batchSummary, mkResult("M", "A", "B"))
+		combined := append(batchSummary, mkResult("N", "M", "C"))
+		rf := &warden.RulesFile{Rules: []warden.Rule{{ID: "N"}}}
+
+		out := foldSupersededMerges(combined, rf)
+
+		require.Len(t, out, 1)
+		assert.Equal(t, []string{"M", "A", "B", "C"}, out[0].ReplacedIDs)
+		assert.Equal(t, []string{"A", "B"}, batchSummary[0].ReplacedIDs,
+			"the batch pass's own entry must be untouched")
+		assert.Equal(t, []string{"M", "C"}, combined[1].ReplacedIDs,
+			"the input slice must be untouched")
+	})
+
 	t.Run("only a LATER entry can absorb an earlier one", func(t *testing.T) {
 		// An entry can only be replaced by a pass that ran after the one
 		// that made it; matching backwards would fold a merge into its own
@@ -527,6 +621,43 @@ func TestFoldSupersededMerges(t *testing.T) {
 // GitHub identity. So the ID reaches the body through a closed alphabet, not
 // an escape: the injection never needs to break the code span, only to be
 // read as an instruction.
+// The commit message is the second published artifact carrying model-authored
+// text, and it is the one that lands on the default branch: GitHub acts on
+// closing keywords and trailers in a merged commit. A rule ID, a source
+// reference or a category carrying a newline would forge structure there.
+func TestBuildCommitMessage_SanitizesModelAuthoredText(t *testing.T) {
+	passes := PassResults{
+		Consolidated: []warden.MergeResult{{
+			Merged:      warden.Rule{ID: "merged-rule"},
+			Category:    "style\n\nCloses #123",
+			ReplacedIDs: []string{"a\n\nCo-authored-by: x <x@y>", "b"},
+		}},
+		Contradictions: []warden.Contradiction{{
+			A:      warden.Rule{ID: "lock-first\n\nCloses #456"},
+			B:      warden.Rule{ID: "callback-first"},
+			Source: "copilot:PR#709\n\nCo-authored-by: z <z@y>",
+			Kind:   warden.ContradictionLockScope,
+		}},
+	}
+
+	msg := buildCommitMessage(passes)
+
+	assert.NotContains(t, msg, "Closes #123")
+	assert.NotContains(t, msg, "Closes #456")
+	// A trailer is only a trailer at the start of a line, and the space is
+	// what a forged bullet needs to read as structure — both are outside the
+	// alphabet, so what survives is inert text inside the bullet it came in.
+	for _, line := range strings.Split(msg, "\n") {
+		assert.False(t, strings.HasPrefix(line, "Co-authored-by:"),
+			"a rule identifier may not open a line of its own: %q", line)
+	}
+	// The legitimate parts survive: a source reference keeps its ":" and "#".
+	assert.Contains(t, msg, "copilot:PR#709")
+	assert.Contains(t, msg, "lock-first")
+	assert.Contains(t, msg, "callback-first")
+	assert.Contains(t, msg, "disagree on whether the lock is held across the call")
+}
+
 func TestSafeRuleID(t *testing.T) {
 	cases := []struct {
 		name string

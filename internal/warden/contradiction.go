@@ -404,14 +404,27 @@ func sharedSource(a, b map[string]string) string {
 	return small[best]
 }
 
+// Disagreement is the clause naming what a pair of this kind disagrees
+// about, with no rule identifiers in it.
+//
+// It is exported because the identifiers are the untrusted half: a rule's ID
+// and source are model output, so a caller rendering into a commit message
+// or a PR body has to put them through its own sanitizer and therefore
+// cannot use the assembled Detail. Sharing the clause is what keeps that
+// caller from restating the disagreement in words of its own that drift from
+// these.
+func (k ContradictionKind) Disagreement() string {
+	switch k {
+	case ContradictionLockScope:
+		return "disagree on whether the lock is held across the call"
+	default:
+		return "prescribe opposite orderings for the same operations"
+	}
+}
+
 // contradictionDetail renders the one-line statement carried on the record.
 func contradictionDetail(kind ContradictionKind, a, b Rule, source string) string {
-	switch kind {
-	case ContradictionLockScope:
-		return fmt.Sprintf("%s and %s (both from %s) disagree on whether the lock is held across the call", a.ID, b.ID, source)
-	default:
-		return fmt.Sprintf("%s and %s (both from %s) prescribe opposite orderings for the same operations", a.ID, b.ID, source)
-	}
+	return fmt.Sprintf("%s and %s (both from %s) %s", a.ID, b.ID, source, kind.Disagreement())
 }
 
 // FormatContradictions renders the pairs as a bullet list for a commit

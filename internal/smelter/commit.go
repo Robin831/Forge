@@ -107,7 +107,7 @@ func buildCommitBody(passes PassResults) string {
 	}
 	// Last, and phrased as unfinished work: a contradiction is the one thing
 	// in this message the smelter did not act on.
-	if s := warden.FormatContradictions(passes.Contradictions); s != "" {
+	if s := formatContradictionsSection(passes.Contradictions); s != "" {
 		sections = append(sections, s)
 	}
 	return strings.Join(sections, "\n\n")
@@ -132,7 +132,10 @@ func formatConsolidatedSection(summary []warden.MergeResult) string {
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "Consolidated: %d cluster(s)\n", len(summary))
 	for _, r := range summary {
-		cat := r.Category
+		// A category is model-authored too: distillRule keeps whatever the
+		// provider's JSON returned and nothing downstream validates a
+		// character of it, so it gets the same closed alphabet as an ID.
+		cat := safeRuleID(r.Category)
 		if cat == "" {
 			cat = "(no category)"
 		}
@@ -142,6 +145,34 @@ func formatConsolidatedSection(summary []warden.MergeResult) string {
 		}
 		fmt.Fprintf(&sb, "- [%s] %s ← %s (sim=%.2f)\n",
 			cat, displayID(r.Merged.ID), strings.Join(replacedDisplay, ", "), r.MaxSimilarity)
+	}
+	return strings.TrimRight(sb.String(), "\n")
+}
+
+// formatContradictionsSection renders the pairs the smelter found and did
+// not act on, as the last section of the commit body.
+//
+// It builds the bullets here rather than calling warden.FormatContradictions
+// for the same reason buildPRBody does: that renderer prints
+// Contradiction.Detail, which contradictionDetail interpolates the two rule
+// IDs and the source reference into with %s. All three are model output —
+// distillRule keeps whatever id the provider's JSON returned and
+// AddRuleDistinct validates no character of it — and this message reaches
+// `git commit -m` on a branch that is opened as a PR against main, where an
+// ID carrying "\n\nCloses #123" or a "Co-authored-by:" line would forge
+// structure in a commit Forge authors, and any extra section forges content
+// in the message a reviewer reads to decide whether to merge the batch.
+//
+// Kind is one of warden's own constants, so it is printed as it stands.
+func formatContradictionsSection(cs []warden.Contradiction) string {
+	if len(cs) == 0 {
+		return ""
+	}
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "Contradictions: %d pair(s) — NOT resolved, a human must pick the convention\n", len(cs))
+	for _, c := range cs {
+		fmt.Fprintf(&sb, "- [%s] %s and %s (both from %s) %s\n",
+			c.Kind, displayID(c.A.ID), displayID(c.B.ID), safeRuleID(c.Source), c.Kind.Disagreement())
 	}
 	return strings.TrimRight(sb.String(), "\n")
 }
