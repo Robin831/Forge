@@ -40,18 +40,27 @@ func TestCategoriesForFile(t *testing.T) {
 	assert.False(t, cs["ui"])
 	assert.False(t, cs["testing"])
 
+	// .tsx and .ts are asserted independently: TypeScript is a full
+	// application language, so every canonical category must reach a
+	// frontend-only diff, and a refactor splitting the case arm must not
+	// silently narrow plain .ts again.
 	tsx := categoriesForFile("web/Button.tsx")
-	assert.True(t, tsx["ui"])
-	assert.True(t, tsx["style"])
-	assert.False(t, tsx["error-handling"])
+	assert.Equal(t, allCanonicalCategories(), tsx)
+
+	ts := categoriesForFile("web/api.ts")
+	assert.Equal(t, allCanonicalCategories(), ts)
+
+	css := categoriesForFile("web/app.css")
+	assert.Equal(t, map[string]bool{"ui": true, "style": true, "other": true}, css)
 
 	test := categoriesForFile("src/FooTests.cs")
 	assert.True(t, test["testing"])
 	assert.False(t, test["security"])
 
+	// The test-file early return sits above the switch, so widening .tsx must
+	// not reach it.
 	test2 := categoriesForFile("web/Button_test.tsx")
-	assert.True(t, test2["testing"])
-	assert.False(t, test2["ui"])
+	assert.Equal(t, map[string]bool{"testing": true, "other": true}, test2)
 
 	yaml := categoriesForFile(".github/workflows/ci.yaml")
 	assert.True(t, yaml["security"])
