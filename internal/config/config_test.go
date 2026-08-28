@@ -1465,6 +1465,7 @@ func TestLoad_WardenSettings_Default(t *testing.T) {
 	assert.True(t, cfg.Settings.Warden.IsFilterPatternGrepEnabled())
 	assert.Equal(t, 180, cfg.Settings.Warden.ResolvedArchiveAfterDays())
 	assert.InDelta(t, 0.6, cfg.Settings.Warden.ResolvedDedupThreshold(), 1e-9)
+	assert.InDelta(t, 0.55, cfg.Settings.Warden.ResolvedOverlapThreshold(), 1e-9)
 }
 
 func TestLoad_WardenSettings_Custom(t *testing.T) {
@@ -1480,6 +1481,7 @@ settings:
     filter_pattern_grep: false
     archive_after_days: 90
     dedup_threshold: 0.8
+    overlap_threshold: 0.7
 `
 	require.NoError(t, os.WriteFile(cfgPath, []byte(content), 0o644))
 
@@ -1492,6 +1494,15 @@ settings:
 	assert.False(t, cfg.Settings.Warden.IsFilterPatternGrepEnabled())
 	assert.Equal(t, 90, cfg.Settings.Warden.ResolvedArchiveAfterDays())
 	assert.InDelta(t, 0.8, cfg.Settings.Warden.ResolvedDedupThreshold(), 1e-9)
+	assert.InDelta(t, 0.7, cfg.Settings.Warden.ResolvedOverlapThreshold(), 1e-9)
+}
+
+// TestWardenSettings_OverlapThresholdCanBeDisabled: a negative value is
+// returned as-is so the caller can read it as "disable the overlap
+// criterion", leaving Jaccard as the only near-duplicate test.
+func TestWardenSettings_OverlapThresholdCanBeDisabled(t *testing.T) {
+	w := WardenSettings{OverlapThreshold: -1}
+	assert.InDelta(t, -1.0, w.ResolvedOverlapThreshold(), 1e-9)
 }
 
 func TestTemperStepConfig_VerifyNoConflictMarkersRoundTrip(t *testing.T) {

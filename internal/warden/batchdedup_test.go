@@ -1,0 +1,380 @@
+package warden
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+// logFilenameCluster reconstructs the largest cluster PR #682 shipped: eight
+// separate distillations of one check — "the documented log filename must
+// match what the code actually produces" — learned from one source PR.
+//
+// Two properties of the real batch are reproduced deliberately, because
+// together they are why nothing caught it:
+//
+//   - the categories DISAGREE (style, other, testing, documentation). The
+//     category is the model's to pick, and eight sessions picked four; a pass
+//     that clusters strictly within a category sees four small groups, none
+//     of which has two members that also cross a similarity threshold.
+//   - the verbosities disagree. Some variants are one clause, some are four.
+//     Jaccard cannot score a terse restatement of a verbose rule above
+//     |short|/|long| however complete the containment is, which is why the
+//     overlap coefficient is the criterion that does the work here.
+func logFilenameCluster() []Rule {
+	return []Rule{
+		{
+			ID: "log-filename-comment-drift", Category: "style",
+			Pattern: "A doc comment names a generated log filename such as smith-<ts>.log next to the code that builds it",
+			Check:   "Verify the documented log filename matches what the code produces, including the timestamp unit",
+			Source:  SourceList{"copilot:PR#708"}, Added: "2026-08-18",
+		},
+		{
+			ID: "stale-doc-comment-units", Category: "other",
+			Pattern: "A comment documents a generated log filename whose timestamp unit changed in the code",
+			Check:   "Verify the documented timestamp unit matches the code, since time.Now().Unix() is seconds and UnixMilli() is milliseconds",
+			Source:  SourceList{"copilot:PR#708"}, Added: "2026-08-18",
+		},
+		{
+			ID: "temper-log-filename-precision-comment", Category: "style",
+			Pattern: "The temper stage documents its log filename format in a doc comment near the code that constructs it",
+			Check:   "Verify the documented log filename format matches the code, including the timestamp precision and any sequence suffix",
+			Source:  SourceList{"copilot:PR#708"}, Added: "2026-08-19",
+		},
+		{
+			ID: "log-filename-timestamp-format-mismatch", Category: "other",
+			Pattern: "Documentation shows a log filename example built from a timestamp that the code formats differently",
+			Check:   "Verify the documented log filename example matches the format the code produces, including the timestamp unit and any suffix",
+			Source:  SourceList{"copilot:PR#708"}, Added: "2026-08-19",
+		},
+		{
+			ID: "stage-log-naming-doc-accuracy", Category: "testing",
+			Pattern: "A stage documents its log naming scheme while a sibling stage names its logs differently",
+			Check:   "Verify the documented log naming scheme matches what the code produces and stays consistent with sibling stage log filenames",
+			Source:  SourceList{"copilot:PR#708"}, Added: "2026-08-20",
+		},
+		{
+			ID: "doc-comment-log-filename-mismatch", Category: "documentation",
+			Pattern: "A doc comment describes the log filename format produced by the surrounding code",
+			Check:   "Verify the doc comment's log filename format matches the code, including the timestamp unit and sequence suffix",
+			Source:  SourceList{"copilot:PR#708"}, Added: "2026-08-20",
+		},
+		{
+			ID: "changelog-log-filename-accuracy", Category: "documentation",
+			Pattern: "A changelog fragment quotes a generated log filename example",
+			Check:   "Verify the quoted log filename matches what the code produces rather than a stale example",
+			Source:  SourceList{"copilot:PR#708"}, Added: "2026-08-20",
+		},
+		{
+			ID: "log-naming-doc-drift", Category: "style",
+			Pattern: "Documentation and code disagree about a generated log filename after a naming change",
+			Check:   "Verify the documented log filename is updated with the code, including the timestamp unit and any sequence suffix",
+			Source:  SourceList{"copilot:PR#708"}, Added: "2026-08-21",
+		},
+	}
+}
+
+// shippedParams are the criteria the daemon runs with out of the box.
+func shippedParams() DedupParams {
+	return DedupParams{Jaccard: 0.6, Overlap: DefaultOverlapThreshold}
+}
+
+// TestJaccardAloneCannotSeeTheBatchCluster is the diagnosis, pinned. Before
+// this bead the pass ran with Jaccard alone at 0.6 and found nothing to merge
+// — not in this batch and, measured, not in a single pair of the 727 rules in
+// this repository's own rules file. If someone drops the overlap criterion,
+// this is the test that says the pass is inert again rather than tuned.
+func TestJaccardAloneCannotSeeTheBatchCluster(t *testing.T) {
+	assert.Empty(t, ClusterNearDuplicates(logFilenameCluster(), DedupParams{Jaccard: 0.6}),
+		"eight restatements of one check score below 0.6 on Jaccard")
+}
+
+// TestCategoryGroupingSplitsTheBatchCluster pins the other half of the
+// diagnosis: even with a criterion that fires, partitioning by category first
+// leaves the cluster in pieces.
+func TestCategoryGroupingSplitsTheBatchCluster(t *testing.T) {
+	_, byCat := GroupRulesByCategory(logFilenameCluster())
+	require.Greater(t, len(byCat), 1, "the fixture must span categories, as the real batch did")
+
+	merged := 0
+	for _, rules := range byCat {
+		for _, c := range ClusterNearDuplicates(rules, shippedParams()) {
+			merged += len(c.Rules)
+		}
+	}
+	assert.Less(t, merged, len(logFilenameCluster()),
+		"a per-category pass cannot collapse a cluster whose members disagree about their category")
+}
+
+// TestClusterNearDuplicates_CollapsesTheBatchClusterAcrossCategories is the
+// positive case: with both criteria and no category partition, six of the
+// eight land in one cluster.
+//
+// Six and not eight, and the assertion says so rather than being tuned until
+// it says eight. This is a similarity heuristic over prose, and the two that
+// stay out are the two whose wording strays furthest from the rest —
+// `stage-log-naming-doc-accuracy`, which talks about consistency between
+// sibling stages, and `changelog-log-filename-accuracy`, which is about a
+// changelog fragment rather than a doc comment. A threshold low enough to
+// pull those in is low enough to merge rules that merely share a topic, and
+// a wrong merge deletes coverage silently. Eight checklist entries becoming
+// three is the win; claiming one would be over-fitting the test to the
+// fixture.
+func TestClusterNearDuplicates_CollapsesTheBatchClusterAcrossCategories(t *testing.T) {
+	clusters := ClusterNearDuplicates(logFilenameCluster(), shippedParams())
+	require.Len(t, clusters, 1)
+	assert.Len(t, clusters[0].Rules, 6)
+	assert.GreaterOrEqual(t, clusters[0].MaxSimilarity, DefaultOverlapThreshold)
+
+	clustered := make(map[string]bool, 6)
+	for _, r := range clusters[0].Rules {
+		clustered[r.ID] = true
+	}
+	assert.False(t, clustered["stage-log-naming-doc-accuracy"])
+	assert.False(t, clustered["changelog-log-filename-accuracy"])
+}
+
+// TestClusterNearDuplicates_LeavesDistinctRulesAlone is the guard against
+// over-merging: a batch of rules about genuinely different concerns passes
+// through untouched. A pass that collapsed these would be deleting coverage.
+func TestClusterNearDuplicates_LeavesDistinctRulesAlone(t *testing.T) {
+	distinct := []Rule{
+		{ID: "sql-injection", Category: "security",
+			Pattern: "A query is assembled by concatenating request parameters into SQL text",
+			Check:   "Verify the query uses bound parameters rather than string concatenation"},
+		{ID: "react-key-filtered-index", Category: "ui",
+			Pattern: "A React list is keyed by the index of a filtered array",
+			Check:   "Verify the key is derived from a stable identity so reordering does not remount rows"},
+		{ID: "unchecked-writer-flush", Category: "error-handling",
+			Pattern: "A buffered writer is flushed in a deferred call whose error is discarded",
+			Check:   "Verify the flush error is captured and logged so a disk-full failure does not silently drop data"},
+		{ID: "bound-aggregate-fetch", Category: "performance",
+			Pattern: "An aggregate figure is recomputed on every iteration of a loop over open pull requests",
+			Check:   "Verify loop-invariant queries are hoisted out and computed once per cycle"},
+	}
+	assert.Empty(t, ClusterNearDuplicates(distinct, shippedParams()))
+}
+
+// TestOverlap_SeesContainmentJaccardCannot states the metric difference in
+// isolation, so the reason the second criterion exists survives a refactor of
+// the callers.
+func TestOverlap_SeesContainmentJaccardCannot(t *testing.T) {
+	short := Tokenize("documented log filename must match generated code")
+	long := Tokenize(
+		"documented log filename must match generated code including timestamp unit " +
+			"sequence suffix stage naming scheme sibling consistency placeholder example")
+
+	assert.InDelta(t, 1.0, Overlap(short, long), 1e-9, "every token of the short bag is in the long one")
+	assert.Less(t, Jaccard(short, long), 0.6, "Jaccard is capped by the union it divides by")
+}
+
+// TestNearDuplicate_SmallBagsAreJudgedOnJaccardAlone pins MinOverlapTokens.
+// Overlap is meaningless for a handful of tokens: three words that happen to
+// appear in a forty-word rule score a perfect 1.0 while saying something
+// entirely different.
+func TestNearDuplicate_SmallBagsAreJudgedOnJaccardAlone(t *testing.T) {
+	tiny := Tokenize("timestamp suffix")
+	long := Tokenize(
+		"documented log filename must match generated code including timestamp unit " +
+			"sequence suffix stage naming scheme sibling consistency placeholder example")
+	require.Less(t, len(tiny), MinOverlapTokens)
+	require.InDelta(t, 1.0, Overlap(tiny, long), 1e-9)
+
+	hit, _ := NearDuplicate(tiny, long, shippedParams())
+	assert.False(t, hit, "a bag below MinOverlapTokens must not merge on containment")
+}
+
+// TestDedupParams_ZeroDisablesEverything: both criteria off means the pass
+// cannot return a cluster, whatever the input.
+func TestDedupParams_ZeroDisablesEverything(t *testing.T) {
+	assert.True(t, DedupParams{}.IsZero())
+	assert.False(t, DedupParams{Overlap: 0.5}.IsZero())
+	assert.Empty(t, ClusterNearDuplicates(logFilenameCluster(), DedupParams{}))
+}
+
+// mergeStub returns a ConsolidationRunner that answers with a fixed merged
+// rule and records how many clusters it was asked to merge.
+func mergeStub(t *testing.T, id, pattern, check string, calls *int) ConsolidationRunner {
+	t.Helper()
+	return func(context.Context, string, string) ([]byte, error) {
+		*calls++
+		body, err := json.Marshal(map[string]string{"id": id, "pattern": pattern, "check": check})
+		require.NoError(t, err)
+		return body, nil
+	}
+}
+
+// TestConsolidateBatch_CollapsesTheRestatementCluster is the shape of the
+// PR #682 failure, run through the batch pass: eight rules in, three out.
+func TestConsolidateBatch_CollapsesTheRestatementCluster(t *testing.T) {
+	batch := logFilenameCluster()
+	rf := &RulesFile{Rules: batch}
+	ids := make([]string, len(batch))
+	for i, r := range batch {
+		ids[i] = r.ID
+	}
+
+	calls := 0
+	replaced, summary, errs := ConsolidateBatch(context.Background(), t.TempDir(), rf, ids,
+		shippedParams(), mergeStub(t, "log-filename-doc-drift", "documented log filename", "verify it matches the code", &calls))
+
+	assert.Empty(t, errs)
+	assert.Equal(t, 1, calls, "one cluster, one distillation call")
+	require.Len(t, summary, 1)
+	assert.Len(t, replaced, 6)
+	require.Len(t, rf.Rules, 3, "six restatements become one rule; two outliers survive")
+
+	merged := rf.Rules[2]
+	assert.Equal(t, "log-filename-doc-drift", merged.ID)
+	assert.Equal(t, SourceList{"copilot:PR#708"}, merged.Source, "provenance is the union of the cluster's sources")
+	assert.Equal(t, "2026-08-18", merged.Added, "the merged rule keeps the oldest Added date")
+	// The category is the cluster's most common one; ties break by first
+	// appearance. style appears three times here, more than any other.
+	assert.Equal(t, "style", merged.Category)
+	assert.ElementsMatch(t, summary[0].ReplacedIDs, []string{
+		"log-filename-comment-drift",
+		"stale-doc-comment-units",
+		"temper-log-filename-precision-comment",
+		"log-filename-timestamp-format-mismatch",
+		"doc-comment-log-filename-mismatch",
+		"log-naming-doc-drift",
+	})
+	_ = ids
+}
+
+// TestConsolidateBatch_MergedSourcesAreTheUnion covers the multi-PR case:
+// a cluster whose members came from different PRs must keep every reference,
+// because the paths backfill and the staleness sweep both read Source.
+func TestConsolidateBatch_MergedSourcesAreTheUnion(t *testing.T) {
+	batch := logFilenameCluster()
+	sourceOf := make(map[string]string, len(batch))
+	ids := make([]string, len(batch))
+	for i := range batch {
+		batch[i].Source = SourceList{fmt.Sprintf("copilot:PR#%d", 700+i)}
+		sourceOf[batch[i].ID] = batch[i].Source[0]
+		ids[i] = batch[i].ID
+	}
+	rf := &RulesFile{Rules: batch}
+
+	calls := 0
+	_, summary, errs := ConsolidateBatch(context.Background(), t.TempDir(), rf, ids,
+		shippedParams(), mergeStub(t, "merged", "p", "c", &calls))
+	assert.Empty(t, errs)
+	require.Len(t, summary, 1)
+
+	want := make([]string, 0, len(summary[0].ReplacedIDs))
+	for _, id := range summary[0].ReplacedIDs {
+		want = append(want, sourceOf[id])
+	}
+	require.Greater(t, len(want), 1, "the cluster must span more than one source PR")
+	assert.ElementsMatch(t, want, []string(summary[0].Merged.Source))
+}
+
+// TestConsolidateBatch_LeavesRulesOutsideTheBatchAlone: deduping the batch
+// against the established file is the whole-file pass's job. A rule nobody
+// asked about must not be swept into a merge — not even one that is a
+// near-duplicate of a batch member, which is exactly what this fixture puts
+// in the file.
+func TestConsolidateBatch_LeavesRulesOutsideTheBatchAlone(t *testing.T) {
+	batch := logFilenameCluster()
+	existing := batch[0]
+	existing.ID = "already-in-the-file"
+
+	rf := &RulesFile{Rules: append([]Rule{existing}, batch...)}
+	ids := make([]string, len(batch))
+	for i, r := range batch {
+		ids[i] = r.ID
+	}
+
+	calls := 0
+	replaced, summary, errs := ConsolidateBatch(context.Background(), t.TempDir(), rf, ids,
+		shippedParams(), mergeStub(t, "merged", "p", "c", &calls))
+	assert.Empty(t, errs)
+	require.Len(t, summary, 1)
+	for _, id := range summary[0].ReplacedIDs {
+		assert.NotEqual(t, "already-in-the-file", id)
+	}
+	for _, r := range replaced {
+		assert.NotEqual(t, "already-in-the-file", r.ID)
+	}
+
+	var survived bool
+	for _, r := range rf.Rules {
+		if r.ID == "already-in-the-file" {
+			survived = true
+		}
+	}
+	assert.True(t, survived, "the pre-existing rule survives the batch pass untouched")
+}
+
+// TestConsolidateBatch_IsOrderIndependent: the caller hands over IDs in
+// whatever order the pending queue returned them, and the merge must not
+// depend on it.
+func TestConsolidateBatch_IsOrderIndependent(t *testing.T) {
+	run := func(ids []string) []string {
+		rf := &RulesFile{Rules: logFilenameCluster()}
+		calls := 0
+		_, _, errs := ConsolidateBatch(context.Background(), t.TempDir(), rf, ids,
+			shippedParams(), mergeStub(t, "merged", "p", "c", &calls))
+		require.Empty(t, errs)
+		out := make([]string, len(rf.Rules))
+		for i, r := range rf.Rules {
+			out[i] = r.ID
+		}
+		return out
+	}
+
+	forward := make([]string, 0, 8)
+	for _, r := range logFilenameCluster() {
+		forward = append(forward, r.ID)
+	}
+	reversed := make([]string, len(forward))
+	for i, id := range forward {
+		reversed[len(forward)-1-i] = id
+	}
+	assert.Equal(t, run(forward), run(reversed))
+}
+
+// TestConsolidateBatch_NoOpCases covers the guards: nothing to cluster,
+// criteria disabled, and a batch naming rules the file does not hold.
+func TestConsolidateBatch_NoOpCases(t *testing.T) {
+	batch := logFilenameCluster()
+	ids := make([]string, len(batch))
+	for i, r := range batch {
+		ids[i] = r.ID
+	}
+	calls := 0
+	runner := mergeStub(t, "merged", "p", "c", &calls)
+
+	rf := &RulesFile{Rules: batch}
+	_, summary, _ := ConsolidateBatch(context.Background(), t.TempDir(), rf, ids, DedupParams{}, runner)
+	assert.Empty(t, summary, "both criteria disabled")
+
+	rf = &RulesFile{Rules: batch}
+	_, summary, _ = ConsolidateBatch(context.Background(), t.TempDir(), rf, []string{ids[0]}, shippedParams(), runner)
+	assert.Empty(t, summary, "a batch of one has nothing to dedupe against")
+
+	rf = &RulesFile{Rules: batch}
+	_, summary, _ = ConsolidateBatch(context.Background(), t.TempDir(), rf, []string{"absent-a", "absent-b"}, shippedParams(), runner)
+	assert.Empty(t, summary, "IDs the file does not hold match no rules")
+
+	assert.Zero(t, calls, "no distillation call is made for any no-op case")
+}
+
+// TestConsolidate_ZeroThresholdStaysOff: dedup_threshold is the documented
+// off switch. The overlap criterion must never keep merging behind it.
+func TestConsolidate_ZeroThresholdStaysOff(t *testing.T) {
+	rf := &RulesFile{Rules: logFilenameCluster()}
+	calls := 0
+	replaced, summary, errs := Consolidate(context.Background(), t.TempDir(), rf, 0,
+		mergeStub(t, "merged", "p", "c", &calls))
+	assert.Empty(t, replaced)
+	assert.Empty(t, summary)
+	assert.Empty(t, errs)
+	assert.Zero(t, calls)
+	assert.Len(t, rf.Rules, 8)
+}

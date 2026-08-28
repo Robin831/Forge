@@ -27,6 +27,12 @@ type ConsolidateOptions struct {
 	// which two rules in the same category are considered duplicates. When
 	// <= 0, Pass 1 is skipped.
 	DedupThreshold float64
+	// OverlapThreshold is the second near-duplicate criterion (see
+	// warden.DedupParams). Zero falls back to
+	// warden.DefaultOverlapThreshold; a negative value disables it, leaving
+	// Jaccard as the only test. It never enables Pass 1 on its own —
+	// DedupThreshold <= 0 still skips the pass entirely.
+	OverlapThreshold float64
 	// ArchiveAfterDays is the staleness threshold in days for Pass 2. When
 	// <= 0, Pass 2 is skipped.
 	ArchiveAfterDays int
@@ -108,7 +114,12 @@ func ConsolidateAnvil(ctx context.Context, opts ConsolidateOptions) (Consolidate
 	)
 	if opts.Consolidator != nil && opts.DedupThreshold > 0 {
 		var errs []error
-		replaced, summary, errs = warden.Consolidate(ctx, opts.AnvilPath, rf, opts.DedupThreshold, opts.Consolidator)
+		overlap := opts.OverlapThreshold
+		if overlap == 0 {
+			overlap = warden.DefaultOverlapThreshold
+		}
+		params := warden.DedupParams{Jaccard: opts.DedupThreshold, Overlap: overlap}
+		replaced, summary, errs = warden.ConsolidateWithParams(ctx, opts.AnvilPath, rf, params, opts.Consolidator)
 		for i, e := range errs {
 			if i == 0 {
 				firstPassErr = e
@@ -152,10 +163,19 @@ func ConsolidateAnvil(ctx context.Context, opts ConsolidateOptions) (Consolidate
 		}
 	}
 
+	// Contradictions are reported, never resolved, so they are computed last
+	// (over the rules as they will be written) and left out of HasChanges:
+	// a run whose only finding is a contradiction has nothing to persist.
+	contradictions := warden.DetectContradictions(rf.Rules)
+	for _, c := range contradictions {
+		log.Printf("[smelter] WARNING contradictory rules for %s: %s", opts.AnvilName, c.Detail)
+	}
+
 	passes := PassResults{
-		Consolidated: summary,
-		Archived:     stale,
-		Backfilled:   backfilled,
+		Consolidated:   summary,
+		Archived:       stale,
+		Backfilled:     backfilled,
+		Contradictions: contradictions,
 	}
 
 	result := ConsolidateResult{

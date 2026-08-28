@@ -21,6 +21,7 @@ import (
 
 	"github.com/Robin831/Forge/internal/executil"
 	"github.com/Robin831/Forge/internal/state"
+	"github.com/Robin831/Forge/internal/textfmt"
 	"github.com/Robin831/Forge/internal/warden"
 	"github.com/Robin831/Forge/internal/worktree"
 	"gopkg.in/yaml.v3"
@@ -55,9 +56,13 @@ type Smelter struct {
 	// When nil, consolidation is skipped (legacy behavior). Set via
 	// WithConsolidator.
 	consolidator warden.ConsolidationRunner
-	// dedupThreshold returns the active similarity threshold. When nil or it
-	// returns <= 0, consolidation is skipped.
+	// dedupThreshold returns the active Jaccard similarity threshold. When
+	// nil or it returns <= 0, both consolidation passes are skipped.
 	dedupThreshold func() float64
+	// overlapThreshold returns the active overlap-coefficient threshold, the
+	// second near-duplicate criterion. When nil, warden's shipped default is
+	// used; a value <= 0 disables the criterion and leaves Jaccard alone.
+	overlapThreshold func() float64
 	// archiveAfterDays returns the staleness threshold in days for Pass 2.
 	// When nil or it returns <= 0, the staleness pass is skipped.
 	archiveAfterDays func() int
@@ -80,6 +85,16 @@ func WithConsolidator(runner warden.ConsolidationRunner) Option {
 // the smelter. A nil function or one returning <= 0 disables consolidation.
 func WithDedupThreshold(fn func() float64) Option {
 	return func(s *Smelter) { s.dedupThreshold = fn }
+}
+
+// WithOverlapThreshold supplies a function the Smelter calls at flush time
+// to resolve the overlap-coefficient threshold — the second criterion under
+// which two rules count as near-duplicates. A function (rather than a value)
+// is used so config hot-reload can take effect without restarting. A nil
+// function leaves warden.DefaultOverlapThreshold in place; a function
+// returning <= 0 disables the criterion, leaving Jaccard as the only test.
+func WithOverlapThreshold(fn func() float64) Option {
+	return func(s *Smelter) { s.overlapThreshold = fn }
 }
 
 // WithArchiveAfterDays supplies a function the Smelter calls at flush time
@@ -321,66 +336,15 @@ func (s *Smelter) flushAnvil(ctx context.Context, anvilName, anvilPath string, r
 		_ = s.wtMgr.Remove(cleanupCtx, anvilPath, wt)
 	}()
 
-	// 2. Parse each pending rule's YAML and load the current rules file
-	//    from the worktree (reflects main branch state after reset).
-	rf, err := warden.LoadRules(wt.Path)
+	// 2. Turn the pending queue into the rules file this flush will commit.
+	//    Everything from loading the file to running the passes lives in
+	//    buildFlushRules, so a test can drive the whole learn -> flush
+	//    decision path without a remote, a push or a gh invocation.
+	built, err := s.buildFlushRules(ctx, wt.Path, anvilName, rules)
 	if err != nil {
-		return fmt.Errorf("loading warden rules for %s: %w", anvilName, err)
+		return err
 	}
-
-	var addedIDs []string
-	var flushedIDs []int
-	for _, pr := range rules {
-		var rule warden.Rule
-		if err := yaml.Unmarshal([]byte(pr.RuleYAML), &rule); err != nil {
-			log.Printf("[smelter] Skipping malformed rule (id=%d, anvil=%s): %v", pr.ID, anvilName, err)
-			// Still mark for deletion so it doesn't jam the queue.
-			flushedIDs = append(flushedIDs, pr.ID)
-			continue
-		}
-		if rf.AddRule(rule) {
-			addedIDs = append(addedIDs, rule.ID)
-		}
-		flushedIDs = append(flushedIDs, pr.ID)
-	}
-
-	// 2b. Pass 1 consolidation: cluster near-duplicate rules and merge each
-	//     cluster into a single canonical rule via the warden-stage AI. Runs
-	//     before save/commit so the merge lands in the same Smelter PR.
-	consolidationSummary, archived, err := s.runConsolidation(ctx, wt.Path, anvilName, rf)
-	if err != nil {
-		// Non-fatal: log and continue with whatever rules we have. The original
-		// (pre-consolidation) rules are still in rf because Consolidate only
-		// mutates rf when at least one cluster merged successfully.
-		log.Printf("[smelter] consolidation error for %s: %v", anvilName, err)
-	}
-
-	// 2c. Pass 2 staleness archive: move rules that have aged past the
-	//     configured threshold and have had no recent source activity into
-	//     the archive store with reason="stale". Runs after Pass 1 so the
-	//     newly-merged rules in rf.Rules are still candidates for staleness
-	//     in future flushes. Pass 3 only operates on whatever remains in
-	//     rf.Rules after this step.
-	staleArchived := s.runStaleness(anvilName, rf)
-
-	// 2d. Pass 3 paths backfill: for each active rule whose Paths field is
-	//     empty and whose Source carries a copilot:PR#N token, fetch the
-	//     PR's changed files and derive file-extension globs. Idempotent:
-	//     rules with non-empty Paths are skipped. Pass 3 only mutates
-	//     existing rules in rf, so no archive write is required.
-	backfilledIDs := s.runPathsBackfill(ctx, wt.Path, anvilName, rf)
-	if len(backfilledIDs) > 0 {
-		log.Printf("[smelter] paths backfilled on %d rule(s) for %s", len(backfilledIDs), anvilName)
-		_ = s.db.LogEvent(state.EventSmelterFlushed,
-			fmt.Sprintf("Backfilled paths on %d rule(s) for %s", len(backfilledIDs), anvilName), "", anvilName)
-	}
-
-	passes := PassResults{
-		Added:        addedIDs,
-		Consolidated: consolidationSummary,
-		Archived:     staleArchived,
-		Backfilled:   backfilledIDs,
-	}
+	rf, passes, archived, flushedIDs := built.rules, built.passes, built.archived, built.flushedIDs
 
 	if !passes.HasChanges() {
 		// All rules were duplicates (already in the file) or malformed AND
@@ -403,7 +367,7 @@ func (s *Smelter) flushAnvil(ctx context.Context, anvilName, anvilPath string, r
 	//    archive entry for the rules it replaced (the bead contract). If
 	//    either step fails we abort before staging/commit/push, leaving the
 	//    pending queue intact for the next flush.
-	if err := persistRulesAndArchive(wt.Path, rf, archived, consolidationSummary, staleArchived); err != nil {
+	if err := persistRulesAndArchive(wt.Path, rf, archived, passes.Consolidated, passes.Archived); err != nil {
 		return fmt.Errorf("persisting warden rules for %s: %w", anvilName, err)
 	}
 
@@ -429,20 +393,228 @@ func (s *Smelter) flushAnvil(ctx context.Context, anvilName, anvilPath string, r
 	return nil
 }
 
+// flushBuild is what buildFlushRules produces: the rules file to persist,
+// the per-pass outcomes to render, the entries to archive, and the pending
+// queue rows to delete.
+type flushBuild struct {
+	rules      *warden.RulesFile
+	passes     PassResults
+	archived   []warden.Rule
+	flushedIDs []int
+}
+
+// buildFlushRules performs every in-memory step of a flush for one anvil:
+// it loads the rules file out of the batch worktree, folds the pending
+// queue into it, and runs the passes in the order their arguments require.
+//
+// It is separated from flushAnvil so the ordering — and the intra-batch
+// consolidation that PR #682 needed and did not have — is reachable from a
+// test without a bare remote, a force-push and a gh invocation standing
+// between the pending queue and the assertion.
+func (s *Smelter) buildFlushRules(ctx context.Context, wtPath, anvilName string, rules []state.PendingRule) (flushBuild, error) {
+	rf, err := warden.LoadRules(wtPath)
+	if err != nil {
+		return flushBuild{}, fmt.Errorf("loading warden rules for %s: %w", anvilName, err)
+	}
+
+	var addedIDs []string
+	var flushedIDs []int
+	for _, pr := range rules {
+		var rule warden.Rule
+		if err := yaml.Unmarshal([]byte(pr.RuleYAML), &rule); err != nil {
+			log.Printf("[smelter] Skipping malformed rule (id=%d, anvil=%s): %v", pr.ID, anvilName, err)
+			// Still mark for deletion so it doesn't jam the queue.
+			flushedIDs = append(flushedIDs, pr.ID)
+			continue
+		}
+		if rf.AddRule(rule) {
+			addedIDs = append(addedIDs, rule.ID)
+		}
+		flushedIDs = append(flushedIDs, pr.ID)
+	}
+
+	// Pass 1a intra-batch consolidation: collapse near-duplicates among the
+	// rules THIS flush is adding, against each other and across categories,
+	// before they are measured against the rest of the file. Runs first so
+	// the whole-file pass sees one canonical rule per cluster rather than
+	// eight restatements of it.
+	addedIDs, batchSummary, batchReplaced := s.runBatchConsolidation(ctx, wtPath, anvilName, rf, addedIDs)
+
+	// Pass 1b whole-file consolidation: cluster near-duplicate rules within
+	// each category and merge each cluster into a single canonical rule via
+	// the warden-stage AI. Runs before save/commit so the merge lands in the
+	// same Smelter PR.
+	consolidationSummary, archived, err := s.runConsolidation(ctx, wtPath, anvilName, rf)
+	if err != nil {
+		// Non-fatal: log and continue with whatever rules we have. The original
+		// (pre-consolidation) rules are still in rf because Consolidate only
+		// mutates rf when at least one cluster merged successfully.
+		log.Printf("[smelter] consolidation error for %s: %v", anvilName, err)
+	}
+	// Both passes feed one archive write and one commit-message section. The
+	// batch pass ran first and already removed its members from rf, so the
+	// two sets are disjoint by construction and no rule can be archived twice.
+	consolidationSummary = append(batchSummary, consolidationSummary...)
+	archived = append(batchReplaced, archived...)
+
+	// Pass 2 staleness archive: move rules that have aged past the configured
+	// threshold and have had no recent source activity into the archive store
+	// with reason="stale". Runs after Pass 1 so the newly-merged rules in
+	// rf.Rules are still candidates for staleness in future flushes. Pass 3
+	// only operates on whatever remains in rf.Rules after this step.
+	staleArchived := s.runStaleness(anvilName, rf)
+
+	// Pass 3 paths backfill: for each active rule whose Paths field is empty
+	// and whose Source carries a copilot:PR#N token, fetch the PR's changed
+	// files and derive file-extension globs. Idempotent: rules with non-empty
+	// Paths are skipped. Pass 3 only mutates existing rules in rf, so no
+	// archive write is required.
+	backfilledIDs := s.runPathsBackfill(ctx, wtPath, anvilName, rf)
+	if len(backfilledIDs) > 0 {
+		log.Printf("[smelter] paths backfilled on %d rule(s) for %s", len(backfilledIDs), anvilName)
+		_ = s.db.LogEvent(state.EventSmelterFlushed,
+			fmt.Sprintf("Backfilled paths on %d rule(s) for %s", len(backfilledIDs), anvilName), "", anvilName)
+	}
+
+	// Contradiction check: report (never resolve) rules from one source PR
+	// that prescribe opposite orderings. Runs last so it sees the rules as
+	// they will be committed.
+	contradictions := s.runContradictionCheck(anvilName, rf)
+
+	return flushBuild{
+		rules: rf,
+		passes: PassResults{
+			Added:          addedIDs,
+			Consolidated:   consolidationSummary,
+			Archived:       staleArchived,
+			Backfilled:     backfilledIDs,
+			Contradictions: contradictions,
+		},
+		archived:   archived,
+		flushedIDs: flushedIDs,
+	}, nil
+}
+
+// dedupParams resolves the two near-duplicate criteria at flush time.
+// The second return value is false when the Jaccard threshold is unset or
+// non-positive, which is the configured off switch for consolidation as a
+// whole — the overlap criterion is never applied on its own, so turning
+// dedup off cannot leave rules being merged by the other measure.
+func (s *Smelter) dedupParams() (warden.DedupParams, bool) {
+	if s.dedupThreshold == nil {
+		return warden.DedupParams{}, false
+	}
+	jaccard := s.dedupThreshold()
+	if jaccard <= 0 {
+		return warden.DedupParams{}, false
+	}
+	overlap := warden.DefaultOverlapThreshold
+	if s.overlapThreshold != nil {
+		overlap = s.overlapThreshold()
+	}
+	return warden.DedupParams{Jaccard: jaccard, Overlap: overlap}, true
+}
+
+// runBatchConsolidation is the intra-batch pass: it collapses near-duplicates
+// among the rules THIS flush is adding, against each other and across
+// categories, before the whole-file pass runs and before anything is
+// committed.
+//
+// It is a separate pass rather than a wider setting on the whole-file one
+// because the whole-file pass clusters strictly within a category, and a
+// batch's duplicates do not reliably share one — each rule's category is
+// picked by whichever distillation session produced it. PR #682 is the
+// worked example: 90 rules holding 16 clusters, eight of them restatements
+// of "the documented log filename must match the code", spread across four
+// categories and therefore invisible to a per-category pass. Every duplicate
+// is a copy in every Warden prompt and a slot out of the MaxRules cap.
+//
+// The returned IDs are the surviving ones: addedIDs minus everything a merge
+// superseded, plus the merged rules. Reporting the raw pending-queue list
+// would name rules that are no longer in the file.
+func (s *Smelter) runBatchConsolidation(ctx context.Context, wtPath, anvilName string, rf *warden.RulesFile, addedIDs []string) (survivingIDs []string, summary []warden.MergeResult, replaced []warden.Rule) {
+	if s.consolidator == nil || len(addedIDs) < 2 {
+		return addedIDs, nil, nil
+	}
+	params, ok := s.dedupParams()
+	if !ok {
+		return addedIDs, nil, nil
+	}
+
+	replaced, summary, errs := warden.ConsolidateBatch(ctx, wtPath, rf, addedIDs, params, s.consolidator)
+	for _, e := range errs {
+		log.Printf("[smelter] intra-batch consolidation error for %s: %v", anvilName, e)
+	}
+	if len(summary) == 0 {
+		return addedIDs, nil, nil
+	}
+
+	gone := make(map[string]struct{}, len(replaced))
+	for _, r := range replaced {
+		gone[r.ID] = struct{}{}
+	}
+	survivingIDs = make([]string, 0, len(addedIDs))
+	for _, id := range addedIDs {
+		if _, dropped := gone[id]; dropped {
+			continue
+		}
+		survivingIDs = append(survivingIDs, id)
+	}
+	for _, m := range summary {
+		survivingIDs = append(survivingIDs, m.Merged.ID)
+	}
+
+	sizes := make([]string, 0, len(summary))
+	for _, m := range summary {
+		sizes = append(sizes, fmt.Sprintf("%d", len(m.ReplacedIDs)))
+	}
+	msg := fmt.Sprintf("Intra-batch consolidation for %s: %d learned rule(s) -> %d after merging %d cluster(s) (sizes: %s)",
+		anvilName, len(addedIDs), len(survivingIDs), len(summary), strings.Join(sizes, ", "))
+	log.Printf("[smelter] %s", msg)
+	_ = s.db.LogEvent(state.EventSmelterFlushed, msg, "", anvilName)
+
+	return survivingIDs, summary, replaced
+}
+
+// runContradictionCheck reports rules that prescribe opposite orderings for
+// the same operations while both being learned from the same source PR.
+//
+// It reports and never resolves: which ordering a codebase actually wants is
+// a reading of the code, not of the two sentences, so merging the pair would
+// silently pick a winner and dropping both would silently delete coverage.
+// The pairs go to the log, to the activity feed and into the batch PR's
+// commit message, where the human reviewing the batch can settle them.
+//
+// The whole post-consolidation rules file is scanned, not just the batch: a
+// rule arriving now can equally contradict one from the same PR that landed
+// in an earlier flush.
+func (s *Smelter) runContradictionCheck(anvilName string, rf *warden.RulesFile) []warden.Contradiction {
+	found := warden.DetectContradictions(rf.Rules)
+	for _, c := range found {
+		log.Printf("[smelter] WARNING contradictory rules for %s: %s", anvilName, c.Detail)
+	}
+	if len(found) > 0 {
+		_ = s.db.LogEvent(state.EventSmelterFlushed,
+			fmt.Sprintf("%s for %s — not resolved automatically", textfmt.Count(len(found), "contradictory rule pair"), anvilName),
+			"", anvilName)
+	}
+	return found
+}
+
 // runConsolidation invokes warden.Consolidate over the in-memory rules file
 // when a consolidator and positive threshold are configured. It returns the
 // per-cluster summary and the original rule entries that were superseded so
 // the caller can write them to the archive store. Errors that occur for
 // individual clusters are aggregated and returned but do not abort the pass.
 func (s *Smelter) runConsolidation(ctx context.Context, wtPath, anvilName string, rf *warden.RulesFile) ([]warden.MergeResult, []warden.Rule, error) {
-	if s.consolidator == nil || s.dedupThreshold == nil {
+	if s.consolidator == nil {
 		return nil, nil, nil
 	}
-	threshold := s.dedupThreshold()
-	if threshold <= 0 {
+	params, ok := s.dedupParams()
+	if !ok {
 		return nil, nil, nil
 	}
-	replaced, summary, errs := warden.Consolidate(ctx, wtPath, rf, threshold, s.consolidator)
+	replaced, summary, errs := warden.ConsolidateWithParams(ctx, wtPath, rf, params, s.consolidator)
 	if len(summary) > 0 {
 		log.Printf("[smelter] consolidated %d cluster(s) for %s", len(summary), anvilName)
 		_ = s.db.LogEvent(state.EventSmelterFlushed,

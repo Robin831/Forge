@@ -1515,6 +1515,9 @@ func (d *Daemon) Run(ctx context.Context) error {
 			smelter.WithDedupThreshold(func() float64 {
 				return d.config().Settings.Warden.ResolvedDedupThreshold()
 			}),
+			smelter.WithOverlapThreshold(func() float64 {
+				return d.config().Settings.Warden.ResolvedOverlapThreshold()
+			}),
 			smelter.WithArchiveAfterDays(func() int {
 				return d.config().Settings.Warden.ResolvedArchiveAfterDays()
 			}),
