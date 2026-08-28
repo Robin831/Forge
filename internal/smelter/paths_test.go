@@ -3,6 +3,7 @@ package smelter
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/Robin831/Forge/internal/warden"
@@ -368,4 +369,50 @@ func TestRunPathsBackfill_DedupesSameSourceRepeated(t *testing.T) {
 	assert.Equal(t, []string{"r1"}, updated)
 	assert.Equal(t, 1, calls, "duplicate PR references must be deduplicated")
 	assert.Equal(t, []string{"**/*.go"}, rf.Rules[0].Paths)
+}
+
+// TestSafeGlobListNeutralizesPRDerivedBytes pins the log-site treatment of a
+// glob whose extension came out of a filename an external contributor chose.
+// filepath.Ext returns everything after the LAST dot, so a file named
+// "a/b.go\n[smelter] forged line" reaches the backfill log as a glob carrying
+// a newline (there is no later dot in the payload to cut it short) — which, printed raw, is a line of the operator's daemon.log that
+// Forge did not write.
+func TestSafeGlobListNeutralizesPRDerivedBytes(t *testing.T) {
+	forged := globsFromExtensions([]string{"a/b.go\n[smelter] paths backfill: rule x on y kept everything"})
+	require.Len(t, forged, 1)
+	require.Contains(t, forged[0], "\n", "the raw glob carries the injected newline")
+
+	out := safeGlobList(forged)
+	assert.NotContains(t, out, "\n", "a newline must never reach a log line")
+	assert.NotContains(t, out, " ", "nor a space, which is what a forged sentence needs")
+
+	// The alphabet is closed, so the ESC and the '[' are gone and what is left
+	// of the sequence is inert literal text — the "?" marking where bytes were
+	// removed, as diff.SafePath does.
+	esc := safeGlobList([]string{"**/*.go\x1b[31m", "**/*.ts"})
+	assert.Equal(t, "**/*.go?31m, **/*.ts", esc, "escape bytes collapse to the scrub marker")
+}
+
+// TestSafeGlobListKeepsGlobsReadable is the other half: the sanitizer exists
+// to be used on every backfill log line, so it must leave an ordinary glob
+// alone. diff.SafePath cannot be used here for exactly this reason — '*' is
+// not in its alphabet, so it renders every glob this package emits as "?/?.go".
+func TestSafeGlobListKeepsGlobsReadable(t *testing.T) {
+	assert.Equal(t, "**/*.go, **/*.tsx, changelog.d/**",
+		safeGlobList([]string{"**/*.go", "**/*.tsx", "changelog.d/**"}))
+}
+
+// TestSafeGlobListCapsTheList bounds one rendered list, on the argument
+// diff.MaxElidedFilesListed is bounded on: a PR touching hundreds of distinct
+// extensions would otherwise put the whole set — the attacker-controlled part
+// of it included — into a single log line.
+func TestSafeGlobListCapsTheList(t *testing.T) {
+	globs := make([]string, 0, 13)
+	for i := 0; i < 13; i++ {
+		globs = append(globs, fmt.Sprintf("**/*.e%d", i))
+	}
+	out := safeGlobList(globs)
+	assert.Contains(t, out, "**/*.e0")
+	assert.NotContains(t, out, "**/*.e10")
+	assert.Contains(t, out, "and 3 more")
 }
