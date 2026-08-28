@@ -121,8 +121,16 @@ func fetchChangedFilesViaGH(ctx context.Context, repoDir string, prNum int) ([]s
 // below because rulelang.go classifies an inferred glob by testing for it —
 // a glob carrying it names an extension and can be compared against the
 // PR-derived set, anything else (a directory glob like changelog.d/**) cannot.
-// Written twice, a change to the emitted shape would silently move every
-// extension glob into the directory branch instead of failing to compile.
+//
+// What the constant buys is that the emitted shape and the shape the
+// classifier tests for are one string: the intersection rulelang.go takes is
+// only meaningful while an inferred **/*.go and a PR-derived **/*.go are
+// byte-identical, and written twice they could drift apart. It does not make
+// the classification itself safe from a change of shape — the globs actually
+// tested against it are the hand-written literals in languageSignals, so
+// changing this constant would silently move every one of them into the
+// directory branch without failing to compile. TestGlobsForRule is what
+// catches that, not the compiler.
 const extGlobPrefix = "**/*."
 
 // globsFromExtensions returns the unique doublestar globs derived from the
@@ -241,16 +249,100 @@ func pathsBackfill(ctx context.Context, wtPath, anvilName string, rf *warden.Rul
 		}
 		rule.Paths = globs
 		updated = append(updated, rule.ID)
-		// Name the languages the rule's own text was read as naming: the globs
-		// alone cannot say whether a rule was narrowed by its language or fell
-		// back to the PR's extensions, which is the one thing worth knowing
-		// when a backfilled rule stops firing.
-		langs := inferredLanguageNames(ruleText(*rule))
+		// Name the languages the rule's own text was read as naming AND what
+		// became of each: the globs alone cannot say whether a rule was
+		// narrowed by its language or fell back to the PR's extensions, which
+		// is the one thing worth knowing when a backfilled rule stops firing.
+		// The outcome is read off the globs the rule now carries, so a
+		// discarded inference reads as discarded rather than as the narrowing
+		// that did not happen. The globs themselves are PR-derived and so go
+		// out through safeGlobList.
+		langs := languageOutcomes(ruleText(*rule), globs)
 		if len(langs) == 0 {
 			langs = []string{"none"}
 		}
 		log.Printf("[smelter] paths backfill: rule %s on %s -> %s (languages: %s)",
-			rule.ID, anvilName, strings.Join(globs, ", "), strings.Join(langs, ", "))
+			rule.ID, anvilName, safeGlobList(globs), strings.Join(langs, ", "))
 	}
 	return updated
+}
+
+// maxLoggedGlobs and maxLoggedGlobLen bound one rendered glob list, on the
+// same argument diff.MaxElidedFilesListed is bounded on: a PR touching two
+// hundred distinct extensions would otherwise put the whole set into a log
+// line, in the shape most likely to be the attacker-controlled one.
+const (
+	maxLoggedGlobs   = 10
+	maxLoggedGlobLen = 120
+)
+
+// safeGlobList renders derived globs as an inert label for the daemon log.
+//
+// A glob's extension comes from a filename `gh api .../pulls/N/files`
+// reported, which is a string the author of that pull request chose — and on
+// an ext-* PR that author is an external contributor. filepath.Ext returns
+// everything after the LAST dot, so it stops nothing: a file named
+// "a/b.go\n[smelter] forged line" yields the glob
+// "**/*.go\n[smelter] forged line", which written straight into log.Printf is
+// a line of the operator's daemon.log that Forge did not write, and an ANSI
+// escape in the same position is a terminal injection when the daemon runs in
+// the foreground.
+//
+// So the alphabet is closed rather than the dangerous bytes blocked, exactly
+// as diff.SafePath argues: letters, digits, '.', '_', '-', '/' and '*'
+// survive, every run of anything else collapses to a single "?", and a name
+// that was scrubbed reads as scrubbed. diff.SafePath itself cannot be used
+// here — '*' is not in its alphabet, so it renders every glob this package
+// produces as "?/?.go" — and the shared half, the closed-alphabet argument,
+// is the comment above rather than a call.
+func safeGlobList(globs []string) string {
+	extra := 0
+	if len(globs) > maxLoggedGlobs {
+		extra = len(globs) - maxLoggedGlobs
+		globs = globs[:maxLoggedGlobs]
+	}
+	out := make([]string, 0, len(globs))
+	for _, g := range globs {
+		out = append(out, safeGlob(g))
+	}
+	list := strings.Join(out, ", ")
+	if extra > 0 {
+		list += fmt.Sprintf(", and %d more", extra)
+	}
+	return list
+}
+
+func safeGlob(glob string) string {
+	var b strings.Builder
+	dropped := false
+	for _, r := range glob {
+		if !safeGlobRune(r) {
+			dropped = true
+			continue
+		}
+		if dropped {
+			b.WriteByte('?')
+			dropped = false
+		}
+		b.WriteRune(r)
+	}
+	if dropped {
+		b.WriteByte('?')
+	}
+	// Every rune kept above is one ASCII byte, so this cut cannot split one.
+	out := b.String()
+	if len(out) > maxLoggedGlobLen {
+		out = out[:maxLoggedGlobLen] + "..."
+	}
+	return out
+}
+
+func safeGlobRune(r rune) bool {
+	switch {
+	case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+		return true
+	case r == '.', r == '_', r == '-', r == '/', r == '*':
+		return true
+	}
+	return false
 }

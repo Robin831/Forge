@@ -32,6 +32,30 @@ func TestInferRuleGlobs(t *testing.T) {
 			want: []string{"**/*.go"},
 		},
 		{
+			name: "go defer rule, single selector",
+			rule: warden.Rule{
+				Pattern: "file opened without a matching close",
+				Check:   "defer f.Close() on the line after the open",
+			},
+			want: []string{"**/*.go"},
+		},
+		{
+			name: "go defer rule, chained selector",
+			rule: warden.Rule{
+				Pattern: "response body left open",
+				Check:   "defer resp.Body.Close() once the error is checked",
+			},
+			want: []string{"**/*.go"},
+		},
+		{
+			name: "go defer rule, unlock",
+			rule: warden.Rule{
+				Pattern: "mutex held across a return",
+				Check:   "take the lock and defer mu.Unlock()",
+			},
+			want: []string{"**/*.go"},
+		},
+		{
 			name: "react rule",
 			rule: warden.Rule{
 				Pattern: "state derived during render",
@@ -102,6 +126,20 @@ func TestInferRuleGlobsIgnoresGenericProse(t *testing.T) {
 			rule: warden.Rule{
 				Pattern: "do not defer validation to the client",
 				Check:   "validate in the form component before submit",
+			},
+		},
+		{
+			// The boundary of the narrowed defer signal, stated rather than
+			// left to be inferred from the pattern: a selector is required,
+			// so the bare-call form is read as naming no language. It is the
+			// deliberate side of the trade — `defer word(` is one keystroke
+			// from prose about deferring something ("defer validation(s) to
+			// the client"), and a missed narrowing costs a rule the gate it
+			// could have had, while a misfire costs it every gate it has.
+			name: "defer of a bare call, no selector",
+			rule: warden.Rule{
+				Pattern: "context created without a cancel",
+				Check:   "defer cancel() immediately after",
 			},
 		},
 		{
@@ -241,6 +279,29 @@ func TestGlobsForRule(t *testing.T) {
 			files: nil,
 			want:  []string{"**/*.go"},
 		},
+		{
+			// The empty-prGlobs exit corroborates its directory globs like
+			// every other exit does. Uncorroborated, changelog.d/** would be
+			// this rule's SOLE gate — and on an anvil whose fragments live
+			// somewhere else it matches nothing, so the rule silently never
+			// fires again.
+			name:  "no files drops an uncorroborated directory glob",
+			rule:  changelogRule,
+			files: nil,
+			want:  nil,
+		},
+		{
+			name:  "extensionless files drop an uncorroborated directory glob",
+			rule:  changelogRule,
+			files: []string{"Makefile", "Dockerfile", "LICENSE"},
+			want:  nil,
+		},
+		{
+			name:  "extensionless files keep a corroborated directory glob",
+			rule:  changelogRule,
+			files: []string{"Makefile", "changelog.d/Forge-abc1"},
+			want:  []string{"changelog.d/**"},
+		},
 	}
 
 	for _, tc := range cases {
@@ -307,4 +368,69 @@ func TestRunPathsBackfill_NarrowsToTheRulesOwnLanguage(t *testing.T) {
 	assert.Equal(t, []string{"**/*.ts", "**/*.tsx"}, rf.Rules[1].Paths)
 	assert.Equal(t, []string{"**/*.go", "**/*.md", "**/*.ts", "**/*.tsx"}, rf.Rules[2].Paths,
 		"a rule naming no language keeps the PR-derived set")
+}
+
+// TestLanguageOutcomesReportsWhatSurvived pins the half of the backfill log
+// that the inference alone cannot supply: whether the language a rule's text
+// named actually became its gate. A Go rule learned from a PR of .ts files is
+// backfilled with **/*.ts, and logging a bare `go` there reads to whoever is
+// debugging it as confirmation the Go narrowing applied.
+func TestLanguageOutcomesReportsWhatSurvived(t *testing.T) {
+	goRule := warden.Rule{
+		Pattern: "map mutated from a goroutine",
+		Check:   "hold a sync.Mutex across the write",
+	}
+	frontendRule := warden.Rule{
+		Pattern: "effect without a dependency array",
+		Check:   "React re-runs useEffect on every render otherwise",
+	}
+	changelogRule := warden.Rule{
+		Pattern: "PR without a changelog fragment",
+		Check:   "add a file under changelog.d",
+	}
+
+	cases := []struct {
+		name  string
+		rule  warden.Rule
+		files []string
+		want  []string
+	}{
+		{
+			name:  "inference that became the gate",
+			rule:  goRule,
+			files: []string{"internal/daemon/poll.go", "web/src/App.tsx"},
+			want:  []string{"go=kept"},
+		},
+		{
+			name:  "inference the PR contradicted",
+			rule:  goRule,
+			files: []string{"web/src/api/prs.ts"},
+			want:  []string{"go=discarded"},
+		},
+		{
+			name:  "directory glob the PR did not corroborate",
+			rule:  changelogRule,
+			files: []string{"internal/daemon/poll.go"},
+			want:  []string{"changelog=discarded"},
+		},
+		{
+			name:  "only one of a language's globs corroborated",
+			rule:  frontendRule,
+			files: []string{"web/src/api/prs.ts"},
+			want:  []string{"frontend=partial(1/2)"},
+		},
+		{
+			name:  "no language named",
+			rule:  warden.Rule{Pattern: "magic number", Check: "name it as a constant"},
+			files: []string{"internal/daemon/poll.go"},
+			want:  nil,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			globs := globsForRule(tc.rule, tc.files)
+			assert.Equal(t, tc.want, languageOutcomes(ruleText(tc.rule), globs))
+		})
+	}
 }

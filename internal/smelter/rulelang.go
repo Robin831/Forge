@@ -1,6 +1,7 @@
 package smelter
 
 import (
+	"fmt"
 	"regexp"
 	"sort"
 	"strings"
@@ -54,7 +55,15 @@ var languageSignals = []languageSignal{
 			`\berrors\.(Is|As|New)\b`,
 			`\bfmt\.Errorf\b`,
 			`err != nil`,
-			`(?i)\bdefer\s+\w+\.\w+\(`, // defer f.Close(), defer mu.Unlock()
+			// defer f.Close(), defer mu.Unlock(), defer resp.Body.Close().
+			// The selector is what distinguishes the Go statement from the
+			// English verb: `defer` followed directly by a call on a value is
+			// not a sentence anybody writes about something else, while a bare
+			// `defer word(` is one keystroke from ordinary review prose. The
+			// chain is repeated rather than fixed at one selector because
+			// `defer resp.Body.Close()` and `defer rows.Next()` are the same
+			// idiom, and anchoring at a single one matched only the second.
+			`(?i)\bdefer\s+\w+(?:\.\w+)+\(`,
 		),
 	},
 	{
@@ -114,20 +123,49 @@ func matchedLanguages(text string) []languageSignal {
 	return out
 }
 
-// inferredLanguageNames returns the names of the languages a rule's text
-// names. It exists so the backfill log can say WHY a rule got the globs it
-// got — an inference that is wrong is otherwise indistinguishable, in the log,
-// from one the PR's files happened not to corroborate.
-func inferredLanguageNames(text string) []string {
+// languageOutcomes names the languages a rule's text was read as naming AND
+// what globsForRule then did with each: `go=kept`, `changelog=discarded`,
+// `frontend=partial(1/2)`. It exists so the backfill log can say WHY a rule
+// got the globs it got.
+//
+// The outcome is the half that cannot be left out. The inference alone answers
+// a question nobody is asking: a Go-signalled rule learned from a PR of .ts
+// files is backfilled with **/*.ts and would have logged `languages: go` —
+// indistinguishable from a rule the narrowing genuinely applied to, and read
+// by whoever is debugging that rule as confirmation it did. So the outcome is
+// read back off the globs the rule actually carries rather than re-derived
+// from the text, which is exactly the information the text does not hold.
+func languageOutcomes(text string, globs []string) []string {
 	langs := matchedLanguages(text)
 	if len(langs) == 0 {
 		return nil
 	}
-	names := make([]string, 0, len(langs))
-	for _, lang := range langs {
-		names = append(names, lang.name)
+	final := make(map[string]struct{}, len(globs))
+	for _, g := range globs {
+		final[g] = struct{}{}
 	}
-	return names
+	out := make([]string, 0, len(langs))
+	for _, lang := range langs {
+		kept := 0
+		for _, g := range lang.globs {
+			if _, ok := final[g]; ok {
+				kept++
+			}
+		}
+		switch {
+		case kept == 0:
+			out = append(out, lang.name+"=discarded")
+		case kept == len(lang.globs):
+			out = append(out, lang.name+"=kept")
+		default:
+			// A language whose globs came through in part — the frontend rule
+			// from a PR that touched .ts but no .tsx. Reported as neither, so
+			// that a gate narrower than the inference does not read as the
+			// whole of it.
+			out = append(out, fmt.Sprintf("%s=partial(%d/%d)", lang.name, kept, len(lang.globs)))
+		}
+	}
+	return out
 }
 
 // inferRuleGlobs returns the globs implied by the languages a rule's own text
@@ -175,7 +213,11 @@ func matchesAny(signals []*regexp.Regexp, text string) bool {
 //     behaviour and the right fallback: without a signal there is nothing to
 //     narrow with, and a guess would be worse than the status quo.
 //   - No PR-derived set (the PR reported no file carrying an extension) → the
-//     inferred set, whole. There is no observation to weigh it against.
+//     inferred EXTENSION globs, whole. There is no observation to weigh them
+//     against. The inferred directory globs are not exempted by that: they are
+//     corroborated here exactly as they are below, since a PR of extensionless
+//     files (Makefile, Dockerfile, LICENSE) is silent about a rule's language
+//     but says as much about changelog.d/** as any other PR does.
 //   - An inferred extension glob is kept when the PR actually touched that
 //     extension, since the two sets are then comparable.
 //   - If the rule named extensions and the PR corroborates none of them, the
@@ -195,10 +237,13 @@ func globsForRule(rule warden.Rule, files []string) []string {
 	if len(inferred) == 0 {
 		return prGlobs
 	}
-	if len(prGlobs) == 0 {
-		return sortedCopy(inferred)
-	}
 
+	// The split happens before any of the ladder's exits, so that a directory
+	// glob is corroborated on every one of them. Split after the empty-prGlobs
+	// exit, it was not: a rule merely mentioning changelog fragments, learned
+	// from a PR of extensionless files, came out gated on changelog.d/** and
+	// nothing else — the uncorroborated sole gate this whole arrangement
+	// exists to prevent, reached by the one path that skipped the check.
 	var extGlobs, dirGlobs []string
 	for _, g := range inferred {
 		if strings.HasPrefix(g, extGlobPrefix) {
@@ -206,6 +251,11 @@ func globsForRule(rule warden.Rule, files []string) []string {
 			continue
 		}
 		dirGlobs = append(dirGlobs, g)
+	}
+	dirGlobs = corroboratedGlobs(dirGlobs, files)
+
+	if len(prGlobs) == 0 {
+		return sortedCopy(append(extGlobs, dirGlobs...))
 	}
 
 	inPR := make(map[string]struct{}, len(prGlobs))
@@ -223,7 +273,7 @@ func globsForRule(rule warden.Rule, files []string) []string {
 		// contradict. Either way the observed evidence is the only evidence.
 		out = append(out, prGlobs...)
 	}
-	out = append(out, corroboratedGlobs(dirGlobs, files)...)
+	out = append(out, dirGlobs...)
 
 	sort.Strings(out)
 	return out
