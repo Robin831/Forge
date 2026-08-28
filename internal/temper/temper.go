@@ -1046,23 +1046,9 @@ func detectSteps(worktreePath string, opts *DetectOptions, goRace bool) []Step {
 		}
 	}
 
-	// Check for .NET project
-	if hasGlob(worktreePath, "*.sln") || hasGlob(worktreePath, "**/*.csproj") {
-		steps = append(steps, Step{
-			Name:    "build",
-			Command: "dotnet",
-			Args:    []string{"build", "--no-restore"},
-			Timeout: 3 * time.Minute,
-			Paths:   defaultDotnetPaths,
-		})
-		steps = append(steps, Step{
-			Name:    "test",
-			Command: "dotnet",
-			Args:    []string{"test", "--no-build"},
-			Timeout: 5 * time.Minute,
-			Paths:   defaultDotnetPaths,
-		})
-	}
+	// Check for .NET project — solution or project file at any depth, since
+	// plenty of repositories keep theirs under src/ with nothing at the root.
+	steps = append(steps, dotnetSteps(worktreePath)...)
 
 	// Check for Node.js project — at root and common subdirectories.
 	for _, nodeDir := range detectNodeDirs(worktreePath) {
@@ -1487,12 +1473,6 @@ func detectNodeDirs(worktreePath string) []string {
 func fileExists(dir, name string) bool {
 	_, err := os.Stat(filepath.Join(dir, name))
 	return err == nil
-}
-
-// hasGlob checks if any file matching the glob pattern exists.
-func hasGlob(dir, pattern string) bool {
-	matches, _ := filepath.Glob(filepath.Join(dir, pattern))
-	return len(matches) > 0
 }
 
 // resolveStepDir returns the absolute working directory for a step.

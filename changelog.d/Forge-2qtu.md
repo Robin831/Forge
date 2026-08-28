@@ -1,0 +1,2 @@
+category: Fixed
+- **Temper detects .NET projects at any depth** - Detection asked `filepath.Glob` for `**/*.csproj`, which matches only one directory level, so a repository laid out as `src/Api/Api.csproj` with no root solution was not detected as .NET at all and fell through to the "No build system detected" step, verifying nothing. The worktree is now walked (bounded depth, skipping build output and dependency trees), a target below the root is named on the `dotnet` command line, and only projects referencing a test framework get a `test` step. (Forge-2qtu)
