@@ -2162,12 +2162,25 @@ func (a AssayConfig) GetMaxTurnsPerPass() int {
 
 // defaultAssayMaxCostPerPassUSD is the fallback per-pass spend ceiling when
 // max_cost_per_pass_usd is unset. It is a runaway brake, not a routine budget:
-// a review pass that spends this much has burned a third of the default
-// daily_cost_limit_usd on one session, which is the shape of a pass looping on
-// tool calls rather than one reading a large diff. Deployments running a
-// premium model over big diffs should raise it (or set 0) rather than have
-// ordinary passes clipped.
-const defaultAssayMaxCostPerPassUSD = 1.50
+// a pass that spends this much is looping on tool calls rather than reading a
+// large diff. Deployments running a premium model over big diffs should raise
+// it (or set 0) rather than have ordinary passes clipped.
+//
+// $1.50 -> $3.00 (Forge-sra6, 2026-08-28). The measured argument is in
+// docs/assay-turn-budget.md; the shape of it is that at $1.50 the ceiling had
+// stopped being a runaway brake and become a clip point. Over the 141 pass
+// sessions logged under the corrected turn counter, the surviving estimates
+// ran to $1.467 — 98% of the ceiling — and the four that crossed it crossed at
+// $1.51-$1.58, taking 4 of 5 deep passes out of one run (PR #872: "partial: 1
+// of 5 passes completed"). A stop is terminal by design and never retried, so
+// each of those was coverage removed for a few cents of overshoot. The number
+// is set by clearing that censoring point by a factor rather than by a
+// percentile of a distribution the ceiling itself truncates — the same
+// argument that moved the turn budget 12 -> 16. What it must still catch is an
+// order-of-magnitude runaway, which $3.00 estimated (about $4.80 billed, at
+// the 1.6x the input/cache-only estimate runs under the provider's own figure)
+// remains: over four times the mean billed session in that sample.
+const defaultAssayMaxCostPerPassUSD = 3.00
 
 // GetMaxCostPerPassUSD returns the per-pass USD spend ceiling, defaulting to
 // defaultAssayMaxCostPerPassUSD when unset. Zero disables the ceiling; a

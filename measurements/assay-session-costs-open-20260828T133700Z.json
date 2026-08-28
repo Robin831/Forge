@@ -1,0 +1,1130 @@
+[
+ {
+  "run": 1787820930447,
+  "pass_": "security",
+  "est": 0.5965,
+  "billed": 1.064787,
+  "msgs": 3,
+  "subtype": "success"
+ },
+ {
+  "run": 1787822130476,
+  "pass_": "triage",
+  "est": 0.5593,
+  "billed": 0.9085415,
+  "msgs": 1,
+  "subtype": "success"
+ },
+ {
+  "run": 1787822130476,
+  "pass_": "tests-missing",
+  "est": 0.9191,
+  "billed": 1.4745430000000002,
+  "msgs": 8,
+  "subtype": "success"
+ },
+ {
+  "run": 1787820930447,
+  "pass_": "tests-missing",
+  "est": 1.0053,
+  "billed": 1.5333970000000001,
+  "msgs": 10,
+  "subtype": "success"
+ },
+ {
+  "run": 1787820930447,
+  "pass_": "conventions",
+  "est": 1.2689,
+  "billed": 1.9188430000000003,
+  "msgs": 14,
+  "subtype": "success"
+ },
+ {
+  "run": 1787822130476,
+  "pass_": "security",
+  "est": 0.6103,
+  "billed": 1.0325265,
+  "msgs": 4,
+  "subtype": "success"
+ },
+ {
+  "run": 1787822130476,
+  "pass_": "logic",
+  "est": 0.9818,
+  "billed": 1.8950365,
+  "msgs": 8,
+  "subtype": "success"
+ },
+ {
+  "run": 1787822130476,
+  "pass_": "conventions",
+  "est": 0.7276,
+  "billed": 1.25983,
+  "msgs": 6,
+  "subtype": "success"
+ },
+ {
+  "run": 1787820930447,
+  "pass_": "triage",
+  "est": 0.596,
+  "billed": 0.9673765,
+  "msgs": 1,
+  "subtype": "success"
+ },
+ {
+  "run": 1787820930447,
+  "pass_": "logic",
+  "est": 1.247,
+  "billed": 2.248678,
+  "msgs": 12,
+  "subtype": "success"
+ },
+ {
+  "run": 1787822130476,
+  "pass_": "repo-specific",
+  "est": 0.9157,
+  "billed": 1.521386,
+  "msgs": 8,
+  "subtype": "success"
+ },
+ {
+  "run": 1787820930447,
+  "pass_": "repo-specific",
+  "est": 1.2229,
+  "billed": 2.1031014999999997,
+  "msgs": 12,
+  "subtype": "success"
+ },
+ {
+  "run": 1787820930447,
+  "pass_": "triage",
+  "est": 0.59,
+  "billed": 0.9644615,
+  "msgs": 1,
+  "subtype": "success"
+ },
+ {
+  "run": 1787764052433,
+  "pass_": "repo-specific",
+  "est": 0.2256,
+  "billed": 0.379284,
+  "msgs": 1,
+  "subtype": "success"
+ },
+ {
+  "run": 1787764052433,
+  "pass_": "conventions",
+  "est": 0.2449,
+  "billed": 0.42199149999999996,
+  "msgs": 1,
+  "subtype": "success"
+ },
+ {
+  "run": 1787762974613,
+  "pass_": "logic",
+  "est": 0.9593,
+  "billed": 1.5342529999999999,
+  "msgs": 16,
+  "subtype": "error_max_turns"
+ },
+ {
+  "run": 1787764052433,
+  "pass_": "logic",
+  "est": 0.788,
+  "billed": 1.3422074999999998,
+  "msgs": 12,
+  "subtype": "success"
+ },
+ {
+  "run": 1787764052433,
+  "pass_": "repo-specific",
+  "est": 1.1386,
+  "billed": 1.7580645,
+  "msgs": 16,
+  "subtype": "error_max_turns"
+ },
+ {
+  "run": 1787762974613,
+  "pass_": "repo-specific",
+  "est": 0.1392,
+  "billed": 0.255828,
+  "msgs": 1,
+  "subtype": "success"
+ },
+ {
+  "run": 1787764052433,
+  "pass_": "triage",
+  "est": 0.2822,
+  "billed": 0.4644565,
+  "msgs": 1,
+  "subtype": "success"
+ },
+ {
+  "run": 1787764052433,
+  "pass_": "conventions",
+  "est": 0.9832,
+  "billed": 1.553,
+  "msgs": 16,
+  "subtype": "error_max_turns"
+ },
+ {
+  "run": 1787762974613,
+  "pass_": "repo-specific",
+  "est": 0.9611,
+  "billed": 1.5510285000000001,
+  "msgs": 16,
+  "subtype": "error_max_turns"
+ },
+ {
+  "run": 1787762974613,
+  "pass_": "tests-missing",
+  "est": 0.4956,
+  "billed": 0.828642,
+  "msgs": 9,
+  "subtype": "success"
+ },
+ {
+  "run": 1787764052433,
+  "pass_": "security",
+  "est": 0.3332,
+  "billed": 0.5686545,
+  "msgs": 3,
+  "subtype": "success"
+ },
+ {
+  "run": 1787762974613,
+  "pass_": "logic",
+  "est": 0.1396,
+  "billed": 0.24819300000000002,
+  "msgs": 1,
+  "subtype": "success"
+ },
+ {
+  "run": 1787762974613,
+  "pass_": "conventions",
+  "est": 0.7743,
+  "billed": 1.29061,
+  "msgs": 14,
+  "subtype": "success"
+ },
+ {
+  "run": 1787764052433,
+  "pass_": "tests-missing",
+  "est": 0.6203,
+  "billed": 1.0488250000000001,
+  "msgs": 9,
+  "subtype": "success"
+ },
+ {
+  "run": 1787762974613,
+  "pass_": "security",
+  "est": 0.2738,
+  "billed": 0.44026849999999995,
+  "msgs": 4,
+  "subtype": "success"
+ },
+ {
+  "run": 1787762974613,
+  "pass_": "triage",
+  "est": 0.2219,
+  "billed": 0.364513,
+  "msgs": 1,
+  "subtype": "success"
+ },
+ {
+  "run": 1787754932957,
+  "pass_": "tests-missing",
+  "est": 0.5137,
+  "billed": 0.88805,
+  "msgs": 10,
+  "subtype": "success"
+ },
+ {
+  "run": 1787754932957,
+  "pass_": "repo-specific",
+  "est": 0.6192,
+  "billed": 1.0980670000000001,
+  "msgs": 9,
+  "subtype": "success"
+ },
+ {
+  "run": 1787754213616,
+  "pass_": "repo-specific",
+  "est": 0.6944,
+  "billed": 1.256554,
+  "msgs": 9,
+  "subtype": "success"
+ },
+ {
+  "run": 1787754213616,
+  "pass_": "triage",
+  "est": 0.3237,
+  "billed": 0.5303785,
+  "msgs": 1,
+  "subtype": "success"
+ },
+ {
+  "run": 1787754213616,
+  "pass_": "security",
+  "est": 0.5251,
+  "billed": 0.906498,
+  "msgs": 7,
+  "subtype": "success"
+ },
+ {
+  "run": 1787754932957,
+  "pass_": "conventions",
+  "est": 0.5849,
+  "billed": 0.9299104999999999,
+  "msgs": 11,
+  "subtype": "success"
+ },
+ {
+  "run": 1787754213616,
+  "pass_": "conventions",
+  "est": 0.6408,
+  "billed": 1.143776,
+  "msgs": 8,
+  "subtype": "success"
+ },
+ {
+  "run": 1787754213616,
+  "pass_": "logic",
+  "est": 0.7672,
+  "billed": 1.3349045000000002,
+  "msgs": 12,
+  "subtype": "success"
+ },
+ {
+  "run": 1787754932957,
+  "pass_": "triage",
+  "est": 0.2106,
+  "billed": 0.3449315,
+  "msgs": 1,
+  "subtype": "success"
+ },
+ {
+  "run": 1787754213616,
+  "pass_": "tests-missing",
+  "est": 0.9692,
+  "billed": 1.537363,
+  "msgs": 16,
+  "subtype": "success"
+ },
+ {
+  "run": 1787754932957,
+  "pass_": "logic",
+  "est": 0.7081,
+  "billed": 1.2092370000000001,
+  "msgs": 10,
+  "subtype": "success"
+ },
+ {
+  "run": 1787754932957,
+  "pass_": "security",
+  "est": 0.347,
+  "billed": 0.5655224999999999,
+  "msgs": 7,
+  "subtype": "success"
+ },
+ {
+  "run": 1787835893727,
+  "pass_": "conventions",
+  "est": 0.5115,
+  "billed": 0.808861,
+  "msgs": 3,
+  "subtype": "success"
+ },
+ {
+  "run": 1787834138210,
+  "pass_": "logic",
+  "est": 1.2943,
+  "billed": 1.8512834999999999,
+  "msgs": 16,
+  "subtype": "error_max_turns"
+ },
+ {
+  "run": 1787834138210,
+  "pass_": "tests-missing",
+  "est": 0.9391,
+  "billed": 1.459356,
+  "msgs": 9,
+  "subtype": "success"
+ },
+ {
+  "run": 1787835893727,
+  "pass_": "repo-specific",
+  "est": 0.3972,
+  "billed": 0.6517655,
+  "msgs": 1,
+  "subtype": "success"
+ },
+ {
+  "run": 1787834138210,
+  "pass_": "triage",
+  "est": 0.4404,
+  "billed": 0.7137265,
+  "msgs": 1,
+  "subtype": "success"
+ },
+ {
+  "run": 1787834138210,
+  "pass_": "logic",
+  "est": 0.3987,
+  "billed": 0.6322645,
+  "msgs": 1,
+  "subtype": "success"
+ },
+ {
+  "run": 1787835893727,
+  "pass_": "security",
+  "est": 0.3972,
+  "billed": 0.6299754999999999,
+  "msgs": 1,
+  "subtype": "success"
+ },
+ {
+  "run": 1787834138210,
+  "pass_": "conventions",
+  "est": 1.0713,
+  "billed": 1.5324795000000002,
+  "msgs": 12,
+  "subtype": "success"
+ },
+ {
+  "run": 1787833178522,
+  "pass_": "security",
+  "est": 0.9474,
+  "billed": 1.582399,
+  "msgs": 5,
+  "subtype": "success"
+ },
+ {
+  "run": 1787833178522,
+  "pass_": "triage",
+  "est": 0.9179,
+  "billed": 1.492047,
+  "msgs": 1,
+  "subtype": "success"
+ },
+ {
+  "run": 1787835893727,
+  "pass_": "tests-missing",
+  "est": 0.5594,
+  "billed": 0.8452595,
+  "msgs": 4,
+  "subtype": "success"
+ },
+ {
+  "run": 1787835893727,
+  "pass_": "triage",
+  "est": 0.4068,
+  "billed": 0.6535315,
+  "msgs": 1,
+  "subtype": "success"
+ },
+ {
+  "run": 1787834138210,
+  "pass_": "repo-specific",
+  "est": 1.3901,
+  "billed": 2.199301,
+  "msgs": 15,
+  "subtype": "success"
+ },
+ {
+  "run": 1787834138210,
+  "pass_": "security",
+  "est": 0.5428,
+  "billed": 0.8415984999999999,
+  "msgs": 3,
+  "subtype": "success"
+ },
+ {
+  "run": 1787835893727,
+  "pass_": "logic",
+  "est": 0.5046,
+  "billed": 0.8251835000000001,
+  "msgs": 3,
+  "subtype": "success"
+ },
+ {
+  "run": 1787835099663,
+  "pass_": "repo-specific",
+  "est": 1.3277,
+  "billed": 1.939062,
+  "msgs": 15,
+  "subtype": "success"
+ },
+ {
+  "run": 1787834019850,
+  "pass_": "security",
+  "est": 0.9828,
+  "billed": 1.4313215000000001,
+  "msgs": 10,
+  "subtype": "success"
+ },
+ {
+  "run": 1787835099663,
+  "pass_": "conventions",
+  "est": 0.9564,
+  "billed": 1.4716404999999997,
+  "msgs": 10,
+  "subtype": "success"
+ },
+ {
+  "run": 1787834019850,
+  "pass_": "repo-specific",
+  "est": 1.304,
+  "billed": 2.0405960000000003,
+  "msgs": 13,
+  "subtype": "success"
+ },
+ {
+  "run": 1787834019850,
+  "pass_": "triage",
+  "est": 0.5864,
+  "billed": 0.9714685000000001,
+  "msgs": 1,
+  "subtype": "success"
+ },
+ {
+  "run": 1787835099663,
+  "pass_": "triage",
+  "est": 0.6214,
+  "billed": 1.0215465,
+  "msgs": 1,
+  "subtype": "success"
+ },
+ {
+  "run": 1787834019850,
+  "pass_": "tests-missing",
+  "est": 1.0836,
+  "billed": 1.5434105,
+  "msgs": 12,
+  "subtype": "success"
+ },
+ {
+  "run": 1787834019850,
+  "pass_": "logic",
+  "est": 1.4491,
+  "billed": 2.2240995,
+  "msgs": 16,
+  "subtype": "error_max_turns"
+ },
+ {
+  "run": 1787835099663,
+  "pass_": "tests-missing",
+  "est": 1.2033,
+  "billed": 1.7350315000000003,
+  "msgs": 14,
+  "subtype": "success"
+ },
+ {
+  "run": 1787835099663,
+  "pass_": "security",
+  "est": 0.8226,
+  "billed": 1.3105475000000002,
+  "msgs": 7,
+  "subtype": "success"
+ },
+ {
+  "run": 1787834019850,
+  "pass_": "logic",
+  "est": 0.4429,
+  "billed": 0.7130434999999999,
+  "msgs": 1,
+  "subtype": "success"
+ },
+ {
+  "run": 1787835099663,
+  "pass_": "logic",
+  "est": 1.3236,
+  "billed": 1.9441484999999998,
+  "msgs": 16,
+  "subtype": "success"
+ },
+ {
+  "run": 1787834019850,
+  "pass_": "conventions",
+  "est": 1.0368,
+  "billed": 1.7179795,
+  "msgs": 10,
+  "subtype": "success"
+ },
+ {
+  "run": 1787829660119,
+  "pass_": "conventions",
+  "est": 1.2154,
+  "billed": 1.9495545,
+  "msgs": 13,
+  "subtype": "success"
+ },
+ {
+  "run": 1787828459793,
+  "pass_": "tests-missing",
+  "est": 0.7895,
+  "billed": 1.2243265,
+  "msgs": 7,
+  "subtype": "success"
+ },
+ {
+  "run": 1787829660119,
+  "pass_": "triage",
+  "est": 0.5639,
+  "billed": 0.9144665000000001,
+  "msgs": 1,
+  "subtype": "success"
+ },
+ {
+  "run": 1787829660119,
+  "pass_": "repo-specific",
+  "est": 0.7796,
+  "billed": 1.339778,
+  "msgs": 6,
+  "subtype": "success"
+ },
+ {
+  "run": 1787828459793,
+  "pass_": "logic",
+  "est": 1.3175,
+  "billed": 2.1000005000000006,
+  "msgs": 15,
+  "subtype": "success"
+ },
+ {
+  "run": 1787828459793,
+  "pass_": "repo-specific",
+  "est": 0.9794,
+  "billed": 1.634923,
+  "msgs": 8,
+  "subtype": "success"
+ },
+ {
+  "run": 1787829660119,
+  "pass_": "security",
+  "est": 0.5556,
+  "billed": 0.94561,
+  "msgs": 3,
+  "subtype": "success"
+ },
+ {
+  "run": 1787828459793,
+  "pass_": "conventions",
+  "est": 1.0661,
+  "billed": 1.6565025,
+  "msgs": 11,
+  "subtype": "success"
+ },
+ {
+  "run": 1787829660119,
+  "pass_": "tests-missing",
+  "est": 1.3825,
+  "billed": 1.9753105000000004,
+  "msgs": 16,
+  "subtype": "error_max_turns"
+ },
+ {
+  "run": 1787829660119,
+  "pass_": "tests-missing",
+  "est": 0.4275,
+  "billed": 0.7352325000000001,
+  "msgs": 1,
+  "subtype": "success"
+ },
+ {
+  "run": 1787829660119,
+  "pass_": "logic",
+  "est": 0.7779,
+  "billed": 1.4047489999999998,
+  "msgs": 5,
+  "subtype": "success"
+ },
+ {
+  "run": 1787828459793,
+  "pass_": "security",
+  "est": 0.7666,
+  "billed": 1.3116810000000003,
+  "msgs": 6,
+  "subtype": "success"
+ },
+ {
+  "run": 1787828459793,
+  "pass_": "triage",
+  "est": 0.5609,
+  "billed": 0.911303,
+  "msgs": 1,
+  "subtype": "success"
+ },
+ {
+  "run": 1787758531149,
+  "pass_": "tests-missing",
+  "est": 0.9755,
+  "billed": 1.4291174999999996,
+  "msgs": 16,
+  "subtype": "error_max_turns"
+ },
+ {
+  "run": 1787758531149,
+  "pass_": "security",
+  "est": 0.3195,
+  "billed": 0.5159125,
+  "msgs": 2,
+  "subtype": "success"
+ },
+ {
+  "run": 1787758531149,
+  "pass_": "repo-specific",
+  "est": 1.0235,
+  "billed": 1.6097634999999997,
+  "msgs": 16,
+  "subtype": "success"
+ },
+ {
+  "run": 1787757573948,
+  "pass_": "repo-specific",
+  "est": 1.0671,
+  "billed": 1.5991920000000004,
+  "msgs": 16,
+  "subtype": "error_max_turns"
+ },
+ {
+  "run": 1787757573948,
+  "pass_": "conventions",
+  "est": 1.0146,
+  "billed": 1.556009,
+  "msgs": 16,
+  "subtype": "success"
+ },
+ {
+  "run": 1787758531149,
+  "pass_": "tests-missing",
+  "est": 0.2694,
+  "billed": 0.4675285,
+  "msgs": 1,
+  "subtype": "success"
+ },
+ {
+  "run": 1787758531149,
+  "pass_": "triage",
+  "est": 0.2926,
+  "billed": 0.4830665,
+  "msgs": 1,
+  "subtype": "success"
+ },
+ {
+  "run": 1787757573948,
+  "pass_": "repo-specific",
+  "est": 0.2559,
+  "billed": 0.4306595,
+  "msgs": 1,
+  "subtype": "success"
+ },
+ {
+  "run": 1787758531149,
+  "pass_": "logic",
+  "est": 0.9608,
+  "billed": 1.37413,
+  "msgs": 16,
+  "subtype": "error_max_turns"
+ },
+ {
+  "run": 1787757573948,
+  "pass_": "security",
+  "est": 0.2898,
+  "billed": 0.46274899999999997,
+  "msgs": 2,
+  "subtype": "success"
+ },
+ {
+  "run": 1787758531149,
+  "pass_": "logic",
+  "est": 0.2699,
+  "billed": 0.47402350000000004,
+  "msgs": 1,
+  "subtype": "success"
+ },
+ {
+  "run": 1787758531149,
+  "pass_": "conventions",
+  "est": 1.0587,
+  "billed": 1.5958400000000001,
+  "msgs": 16,
+  "subtype": "success"
+ },
+ {
+  "run": 1787757573948,
+  "pass_": "triage",
+  "est": 0.2525,
+  "billed": 0.4186295,
+  "msgs": 1,
+  "subtype": "success"
+ },
+ {
+  "run": 1787757573948,
+  "pass_": "logic",
+  "est": 1.0528,
+  "billed": 1.6463865000000002,
+  "msgs": 16,
+  "subtype": "error_max_turns"
+ },
+ {
+  "run": 1787757573948,
+  "pass_": "tests-missing",
+  "est": 0.636,
+  "billed": 1.099786,
+  "msgs": 10,
+  "subtype": "success"
+ },
+ {
+  "run": 1787757573948,
+  "pass_": "logic",
+  "est": 0.2562,
+  "billed": 0.4602495,
+  "msgs": 1,
+  "subtype": "success"
+ },
+ {
+  "run": 1787760573280,
+  "pass_": "repo-specific",
+  "est": 0.8687,
+  "billed": 1.3812754999999999,
+  "msgs": 14,
+  "subtype": "success"
+ },
+ {
+  "run": 1787761294940,
+  "pass_": "security",
+  "est": 0.1594,
+  "billed": 0.2614245,
+  "msgs": 1,
+  "subtype": "success"
+ },
+ {
+  "run": 1787760573280,
+  "pass_": "conventions",
+  "est": 0.2202,
+  "billed": 0.3896665,
+  "msgs": 1,
+  "subtype": "success"
+ },
+ {
+  "run": 1787760573280,
+  "pass_": "conventions",
+  "est": 0.8549,
+  "billed": 1.2268515,
+  "msgs": 16,
+  "subtype": "error_max_turns"
+ },
+ {
+  "run": 1787760573280,
+  "pass_": "security",
+  "est": 0.2193,
+  "billed": 0.3790365,
+  "msgs": 1,
+  "subtype": "success"
+ },
+ {
+  "run": 1787761294940,
+  "pass_": "repo-specific",
+  "est": 0.6198,
+  "billed": 1.1261919999999999,
+  "msgs": 10,
+  "subtype": "success"
+ },
+ {
+  "run": 1787761294940,
+  "pass_": "tests-missing",
+  "est": 0.3455,
+  "billed": 0.6804714999999999,
+  "msgs": 6,
+  "subtype": "success"
+ },
+ {
+  "run": 1787760573280,
+  "pass_": "triage",
+  "est": 0.2265,
+  "billed": 0.3731065,
+  "msgs": 1,
+  "subtype": "success"
+ },
+ {
+  "run": 1787760573280,
+  "pass_": "logic",
+  "est": 0.6487,
+  "billed": 1.195644,
+  "msgs": 9,
+  "subtype": "success"
+ },
+ {
+  "run": 1787761294940,
+  "pass_": "conventions",
+  "est": 0.3551,
+  "billed": 0.6889145,
+  "msgs": 5,
+  "subtype": "success"
+ },
+ {
+  "run": 1787761294940,
+  "pass_": "logic",
+  "est": 0.5563,
+  "billed": 1.0112289999999997,
+  "msgs": 11,
+  "subtype": "success"
+ },
+ {
+  "run": 1787760573280,
+  "pass_": "tests-missing",
+  "est": 0.3753,
+  "billed": 0.6867110000000001,
+  "msgs": 5,
+  "subtype": "success"
+ },
+ {
+  "run": 1787761294940,
+  "pass_": "triage",
+  "est": 0.1851,
+  "billed": 0.3118965,
+  "msgs": 1,
+  "subtype": "success"
+ },
+ {
+  "run": 1787826510789,
+  "pass_": "conventions",
+  "est": 0.4759,
+  "billed": 0.7801025000000001,
+  "msgs": 3,
+  "subtype": "success"
+ },
+ {
+  "run": 1787825893952,
+  "pass_": "security",
+  "est": 0.5691,
+  "billed": 0.9363254999999999,
+  "msgs": 3,
+  "subtype": "success"
+ },
+ {
+  "run": 1787826510789,
+  "pass_": "repo-specific",
+  "est": 0.5997,
+  "billed": 1.0484185,
+  "msgs": 5,
+  "subtype": "success"
+ },
+ {
+  "run": 1787824935238,
+  "pass_": "tests-missing",
+  "est": 1.2159,
+  "billed": 1.7898290000000003,
+  "msgs": 12,
+  "subtype": "success"
+ },
+ {
+  "run": 1787825893952,
+  "pass_": "tests-missing",
+  "est": 1.2339,
+  "billed": 1.9049929999999997,
+  "msgs": 14,
+  "subtype": "success"
+ },
+ {
+  "run": 1787824935238,
+  "pass_": "triage",
+  "est": 0.6235,
+  "billed": 1.0129585,
+  "msgs": 1,
+  "subtype": "success"
+ },
+ {
+  "run": 1787825893952,
+  "pass_": "repo-specific",
+  "est": 1.2605,
+  "billed": 2.007368,
+  "msgs": 13,
+  "subtype": "success"
+ },
+ {
+  "run": 1787826510789,
+  "pass_": "tests-missing",
+  "est": 0.4824,
+  "billed": 0.8193045000000001,
+  "msgs": 3,
+  "subtype": "success"
+ },
+ {
+  "run": 1787825893952,
+  "pass_": "logic",
+  "est": 1.341,
+  "billed": 2.1055274999999996,
+  "msgs": 15,
+  "subtype": "success"
+ },
+ {
+  "run": 1787825893952,
+  "pass_": "conventions",
+  "est": 1.2389,
+  "billed": 1.943926,
+  "msgs": 13,
+  "subtype": "success"
+ },
+ {
+  "run": 1787826510789,
+  "pass_": "security",
+  "est": 0.3683,
+  "billed": 0.5836525,
+  "msgs": 1,
+  "subtype": "success"
+ },
+ {
+  "run": 1787826510789,
+  "pass_": "logic",
+  "est": 0.5001,
+  "billed": 0.9038940000000001,
+  "msgs": 3,
+  "subtype": "success"
+ },
+ {
+  "run": 1787824935238,
+  "pass_": "security",
+  "est": 0.7708,
+  "billed": 1.242541,
+  "msgs": 6,
+  "subtype": "success"
+ },
+ {
+  "run": 1787824935238,
+  "pass_": "logic",
+  "est": 1.1442,
+  "billed": 1.9354385,
+  "msgs": 10,
+  "subtype": "success"
+ },
+ {
+  "run": 1787825893952,
+  "pass_": "triage",
+  "est": 0.5932,
+  "billed": 0.9643915,
+  "msgs": 1,
+  "subtype": "success"
+ },
+ {
+  "run": 1787826510789,
+  "pass_": "triage",
+  "est": 0.3773,
+  "billed": 0.6081615,
+  "msgs": 1,
+  "subtype": "success"
+ },
+ {
+  "run": 1787824935238,
+  "pass_": "repo-specific",
+  "est": 1.4673,
+  "billed": 2.1945140000000003,
+  "msgs": 16,
+  "subtype": "success"
+ },
+ {
+  "run": 1787824935238,
+  "pass_": "conventions",
+  "est": 0.7408,
+  "billed": 1.2706130000000002,
+  "msgs": 5,
+  "subtype": "success"
+ },
+ {
+  "run": 1787755175045,
+  "pass_": "repo-specific",
+  "est": 0.4969,
+  "billed": 0.8633740000000001,
+  "msgs": 14,
+  "subtype": "success"
+ },
+ {
+  "run": 1787754695841,
+  "pass_": "security",
+  "est": 0.1307,
+  "billed": 0.20745,
+  "msgs": 1,
+  "subtype": "success"
+ },
+ {
+  "run": 1787755175045,
+  "pass_": "triage",
+  "est": 0.1464,
+  "billed": 0.2397715,
+  "msgs": 1,
+  "subtype": "success"
+ },
+ {
+  "run": 1787754695841,
+  "pass_": "conventions",
+  "est": 0.3141,
+  "billed": 0.5617955,
+  "msgs": 6,
+  "subtype": "success"
+ },
+ {
+  "run": 1787755175045,
+  "pass_": "conventions",
+  "est": 0.2486,
+  "billed": 0.44382050000000006,
+  "msgs": 4,
+  "subtype": "success"
+ },
+ {
+  "run": 1787754695841,
+  "pass_": "logic",
+  "est": 0.3085,
+  "billed": 0.524436,
+  "msgs": 6,
+  "subtype": "success"
+ },
+ {
+  "run": 1787755175045,
+  "pass_": "tests-missing",
+  "est": 0.269,
+  "billed": 0.48902599999999996,
+  "msgs": 6,
+  "subtype": "success"
+ },
+ {
+  "run": 1787755175045,
+  "pass_": "security",
+  "est": 0.1278,
+  "billed": 0.20134649999999998,
+  "msgs": 1,
+  "subtype": "success"
+ },
+ {
+  "run": 1787754695841,
+  "pass_": "repo-specific",
+  "est": 0.2817,
+  "billed": 0.5151825,
+  "msgs": 5,
+  "subtype": "success"
+ },
+ {
+  "run": 1787754695841,
+  "pass_": "triage",
+  "est": 0.1376,
+  "billed": 0.226995,
+  "msgs": 1,
+  "subtype": "success"
+ },
+ {
+  "run": 1787754695841,
+  "pass_": "tests-missing",
+  "est": 0.3712,
+  "billed": 0.626361,
+  "msgs": 9,
+  "subtype": "success"
+ },
+ {
+  "run": 1787755175045,
+  "pass_": "logic",
+  "est": 0.2035,
+  "billed": 0.32119300000000006,
+  "msgs": 4,
+  "subtype": "success"
+ }
+]
