@@ -3,6 +3,7 @@ package assay
 import (
 	"context"
 	"encoding/json"
+	"slices"
 	"strings"
 	"testing"
 
@@ -252,6 +253,20 @@ func TestFileTrackerRecordsToolUsePaths(t *testing.T) {
 	got := tr.paths()
 	if len(got) != 2 || got[0] != "/w/a.go" || got[1] != "/w/pkg/b.go" {
 		t.Errorf("paths = %v; want [/w/a.go /w/pkg/b.go] in first-seen order", got)
+	}
+}
+
+// TestFileTrackerReadsTheWiderPathKeys covers the structured half: a tool that
+// names its file under a key other than file_path is still a tool that opened a
+// file.
+func TestFileTrackerReadsTheWiderPathKeys(t *testing.T) {
+	tr := newFileTracker()
+	tr.observe(toolEvent(t, `[{"type":"tool_use","name":"Read","input":{"file_path":"/w/a.go"}}]`))
+	tr.observe(toolEvent(t, `[{"type":"tool_use","name":"Glob","input":{"path":"/w/pkg"}}]`))
+	tr.observe(toolEvent(t, `[{"type":"tool_use","name":"NotebookEdit","input":{"notebook_path":"/w/n.ipynb"}}]`))
+	want := []string{"/w/a.go", "/w/pkg", "/w/n.ipynb"}
+	if got := tr.paths(); !slices.Equal(got, want) {
+		t.Errorf("paths = %v; want %v", got, want)
 	}
 }
 

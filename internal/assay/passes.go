@@ -1004,7 +1004,9 @@ type passResult struct {
 	// and filesRead how many distinct files they opened between them. Both are
 	// cumulative, on usage's terms rather than turns': they measure how much
 	// this pass explored, and exploration a re-prompt or a retry paid for was
-	// still exploration. See PassReport.ToolCalls.
+	// still exploration. See PassReport.ToolCalls. filesRead is the file-shaped
+	// part of the union (countFilesRead) rather than its length — the union
+	// itself is the looser list the retry's diff scoping selects from.
 	toolCalls int
 	filesRead int
 	// failure is the classified termination, derived once here so nothing
@@ -1088,7 +1090,7 @@ func runDeepPass(ctx context.Context, runner PassRunner, cfg Config, req ReviewR
 		res.turns = a.turns
 		res.toolCalls += a.toolCalls
 		opened = mergeOpenedFiles(opened, a.openedFiles)
-		res.filesRead = len(opened)
+		res.filesRead = countFilesRead(opened)
 		res.attempts = attempt
 		res.findings = a.findings
 		res.err = a.err

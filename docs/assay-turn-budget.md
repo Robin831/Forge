@@ -859,18 +859,28 @@ What changes as a result:
 
 - **`files=` becomes a measurement.** It was structurally zero on all 78 pass
   observations because 100% of the 742 tool calls were `Bash`; a session that
-  reads with `cat`, `sed -n` or `grep` now contributes the paths it named. It is
-  a slight over-count by construction — a path named on a command line that did
-  not open it still lands in the set — and is read as the rough figure it is:
-  the question it answers is whether the pass went and looked, which `tools=`
-  alone cannot separate from a pass that ran `go build` twice.
+  reads with `cat`, `sed -n` or `grep` now contributes the paths it named. Only
+  the names that look like a file are counted (`countFilesRead`): a command line
+  names directories, patterns and script fragments beside its files, and a pass
+  that ran nothing but `cd internal/assay && go test ./...` opened nothing — a
+  non-zero reading here is the evidence that the pass went and looked, so a
+  false one would cost the field its whole purpose. Within that it is still a
+  slight over-count — a file named on a command line that did not open it still
+  lands in the set — and a slight under-count for a file with no extension. It
+  is read as the rough figure it is.
 - **The retry gets its third modification.** `openedDiffFiles` can now select,
   so a turn-budget retry is scoped to the changed files the failed session
   actually opened rather than running on reduced budget and appended instruction
-  alone. The safety property is unchanged and is what makes the loose parse
-  acceptable: only files already in the diff are ever selected, so a misparsed
-  token narrows the retry by less than it should have and can never reach
-  outside the change under review.
+  alone. Only files already in the diff are ever selected, so an over-matching
+  token can never reach outside the change under review. The direction that does
+  cost something is a MISS — a file the session read and the parser failed to
+  name is a file the retry no longer sees — which is why the three read shapes a
+  pass actually issues are handled rather than left to the generic rules:
+  `git show <rev>:<path>` (reduced to the path), input redirection (`< file`)
+  and a quoted sub-command (`bash -c "..."`). A bare basename read after a `cd`
+  is honoured only when it matches exactly one diff file: basenames repeat
+  across packages, and scoping the retry to a same-named file in another package
+  would undo the narrowing rather than perform it.
 
 **Forge-55eq (`assayMaxTurns` 16 → 24) is unblocked, and is still not an edit
 to make blind.** The reason for the ordering was that a cap raise measured

@@ -45,7 +45,10 @@ type triageRun struct {
 	toolCalls int
 	// filesRead is how many distinct files those sessions opened between them,
 	// carried beside toolCalls so the rendered line cannot report a pass that
-	// opened files as having opened none.
+	// opened files as having opened none. It counts the file-shaped entries of
+	// the tracked list (countFilesRead), not its length: the list is also what
+	// the retry's diff scoping selects from, and that consumer is happy with a
+	// directory or a fragment that matches nothing while this one is not.
 	filesRead int
 }
 
@@ -79,7 +82,7 @@ func runTriage(ctx context.Context, runner PassRunner, cfg Config, req ReviewReq
 		// reached after a session has already produced a PassOutput.
 		u, turns, calls, est := passErrorTelemetry(err)
 		return triageRun{usage: u, estCostUSD: est, turns: turns, toolCalls: calls,
-			filesRead: len(passErrorFiles(err))}, err
+			filesRead: countFilesRead(passErrorFiles(err))}, err
 	}
 	opened := out.OpenedFiles
 	run := triageRun{
@@ -87,7 +90,7 @@ func runTriage(ctx context.Context, runner PassRunner, cfg Config, req ReviewReq
 		estCostUSD: out.EstCostUSD,
 		turns:      out.Turns,
 		toolCalls:  out.ToolCalls,
-		filesRead:  len(opened),
+		filesRead:  countFilesRead(opened),
 	}
 
 	res, perr := parseTriage(out.Text)
@@ -99,14 +102,14 @@ func runTriage(ctx context.Context, runner PassRunner, cfg Config, req ReviewReq
 			run.estCostUSD += est2
 			run.turns = turns2
 			run.toolCalls += calls2
-			run.filesRead = len(mergeOpenedFiles(opened, passErrorFiles(err2)))
+			run.filesRead = countFilesRead(mergeOpenedFiles(opened, passErrorFiles(err2)))
 			return run, err2
 		}
 		run.usage.Add(out2.usage())
 		run.estCostUSD += out2.EstCostUSD
 		run.turns = out2.Turns
 		run.toolCalls += out2.ToolCalls
-		run.filesRead = len(mergeOpenedFiles(opened, out2.OpenedFiles))
+		run.filesRead = countFilesRead(mergeOpenedFiles(opened, out2.OpenedFiles))
 		res, perr = parseTriage(out2.Text)
 		if perr != nil {
 			return run, fmt.Errorf("assay pass %s: invalid JSON output after retry: %w", passTriage.Name, perr)

@@ -199,17 +199,40 @@ func reducedTurnBudget(orig int) (int, bool) {
 // Only files already in the diff can be selected, so a path the session read
 // from outside the change — a config file, a test helper, anything an injected
 // tool name reported — can never widen the retry's scope, only fail to match.
+//
+// The two matching arms are not applied on the same terms, because they are not
+// equally safe. A path that carries its own directory chain (pathRefersTo)
+// identifies one file, so it selects whatever it matches. A bare basename read
+// off a command line that had cd'd somewhere (`cd internal/assay && cat
+// retry.go`) does not: this repository alone has retry.go, cost.go, skip.go and
+// url.go in more than one package, so the same token names several diff files
+// and selecting all of them scopes the retry to files the session never opened
+// — the exact narrowing this is here to perform, silently undone. Such a token
+// is therefore honoured only when it matches EXACTLY ONE diff file; an
+// ambiguous one selects nothing and, if it was the only evidence there was,
+// costs the retry its scoping rather than pointing it at the wrong file.
 func openedDiffFiles(opened, diffFiles []string) []string {
 	if len(opened) == 0 || len(diffFiles) == 0 {
 		return nil
 	}
-	var out []string
-	for _, f := range diffFiles {
+	selected := make([]bool, len(diffFiles))
+	for i, f := range diffFiles {
 		for _, o := range opened {
 			if pathRefersTo(o, f) {
-				out = append(out, f)
+				selected[i] = true
 				break
 			}
+		}
+	}
+	for _, o := range opened {
+		if i, ok := uniqueBasenameMatch(o, diffFiles); ok {
+			selected[i] = true
+		}
+	}
+	var out []string
+	for i, f := range diffFiles {
+		if selected[i] {
+			out = append(out, f)
 		}
 	}
 	if len(out) == len(diffFiles) {
@@ -218,29 +241,55 @@ func openedDiffFiles(opened, diffFiles []string) []string {
 	return out
 }
 
+// uniqueBasenameMatch resolves a command-relative opened path against the diff
+// by the reverse suffix arm — the diff path is the longer one — and reports the
+// match only when there is exactly one. Two matches mean the token names a
+// basename that repeats across packages, which identifies no file.
+func uniqueBasenameMatch(opened string, diffFiles []string) (int, bool) {
+	o := normalizeSlashes(opened)
+	if o == "" {
+		return 0, false
+	}
+	found := -1
+	for i, f := range diffFiles {
+		w := normalizeSlashes(f)
+		if w == "" || !strings.HasSuffix(w, "/"+o) {
+			continue
+		}
+		if found >= 0 {
+			return 0, false
+		}
+		found = i
+	}
+	if found < 0 {
+		return 0, false
+	}
+	return found, true
+}
+
 // pathRefersTo reports whether an opened path names the repo-relative diff path
-// want. The comparison is a path-component suffix match in BOTH directions
-// rather than equality, because neither side is reliably the longer one:
+// want, by the arm that can be applied unconditionally: the opened path is the
+// longer one and carries the whole directory chain below it. A provider reports
+// the absolute path it read ("/home/x/.workers/y/internal/assay/passes.go")
+// while a diff header names it relative to the repository root, so a
+// path-component suffix match rather than equality is what joins the two.
 //
-//   - a provider reports the absolute path it read
-//     ("/home/x/.workers/y/internal/assay/passes.go") while a diff header names
-//     it relative to the repository root, so the opened path is the longer one;
-//   - a path read off a shell command line is relative to that command's own
-//     working directory ("cd internal/assay && sed -n 1,80p retry.go"), so the
-//     diff path is.
+// The match can still be too generous — an unrelated checkout with the same
+// tail — and that is the harmless direction, because openedDiffFiles only ever
+// SELECTS from the diff: the effect is that the retry keeps a diff file it
+// would otherwise have dropped, never that it reaches outside the change under
+// review.
 //
-// The match can be too generous — an unrelated checkout with the same tail, or
-// a second file of the same basename elsewhere in the diff — and that is the
-// harmless direction, because openedDiffFiles only ever SELECTS from the diff:
-// the only effect is that the retry keeps a diff file it would otherwise have
-// dropped, never that it reaches outside the change under review.
+// The opposite direction, where the token read off a command line is the
+// SHORTER one, is not applied here: see uniqueBasenameMatch for why it needs
+// the whole diff to be judged against.
 func pathRefersTo(opened, want string) bool {
 	o := normalizeSlashes(opened)
 	w := normalizeSlashes(want)
 	if o == "" || w == "" {
 		return false
 	}
-	return o == w || strings.HasSuffix(o, "/"+w) || strings.HasSuffix(w, "/"+o)
+	return o == w || strings.HasSuffix(o, "/"+w)
 }
 
 // normalizeSlashes puts a path into the one form the suffix comparison can be

@@ -1,6 +1,7 @@
 package assay
 
 import (
+	"slices"
 	"strings"
 	"testing"
 )
@@ -49,13 +50,66 @@ func TestBashCandidatePathsReadsRealCommands(t *testing.T) {
 			want: []string{"internal/assay/skip.go"},
 		},
 		{
-			// git's rev:path syntax is admitted, and naming it here is what
-			// keeps that an acknowledged over-count rather than a surprise: it
-			// is path-shaped, it is not a file in the tree, and it is harmless
-			// because openedDiffFiles only ever selects from the diff.
-			name: "a git revision path is admitted as a candidate",
+			// git's rev:path syntax names a file the session read, and the
+			// revision prefix is not part of any path a diff can name: left on,
+			// the candidate matched nothing and the file was dropped from the
+			// retry's diff (see TestGitRevisionReadsReachTheRetryScope).
+			name: "a git revision path is reduced to the path it names",
 			cmd:  "LC_ALL=C git show HEAD:internal/assay/skip.go",
-			want: []string{"HEAD:internal/assay/skip.go"},
+			want: []string{"internal/assay/skip.go"},
+		},
+		{
+			// A colon after a separator belongs to the filename, and a drive
+			// letter is not a revision.
+			name: "a colon that is not a revision prefix is left alone",
+			cmd:  "cat C:/w/a.go dir/od:d.go",
+			want: []string{"C:/w/a.go", "dir/od:d.go"},
+		},
+		{
+			// The one redirection whose target the command READS. Treated as a
+			// segment separator it became the next command word and was lost.
+			name: "an input redirection names a file the command read",
+			cmd:  "cat < internal/assay/f.go",
+			want: []string{"internal/assay/f.go"},
+		},
+		{
+			// A shell's quoted argument is a command line, not data.
+			name: "a quoted sub-command is followed one level down",
+			cmd:  `bash -c "sed -n 1,20p a/b.go && cat c/d.go"`,
+			want: []string{"a/b.go", "c/d.go"},
+		},
+		{
+			// Without backslash handling the escaped quote closed the string,
+			// after which `;` split a segment inside what the model intended as
+			// quoted text and the tokens after it landed in the wrong roles.
+			name: "an escaped quote does not desynchronise the rest of the line",
+			cmd:  `echo "a \" b" ; cat x/y.go`,
+			want: []string{"x/y.go"},
+		},
+		{
+			// A backslash that escapes nothing is the character it is: a
+			// Windows path unescaped to `C:wa.go` would match nothing, and the
+			// comparison is normalized for that spelling.
+			name: "a backslash that escapes nothing stays in the path",
+			cmd:  `cat C:\w\a.go`,
+			want: []string{`C:\w\a.go`},
+		},
+		{
+			// An escaped space makes one token rather than two, which is what
+			// keeps the rest of the line's roles right; the token itself is
+			// still dropped, since embedded whitespace is far more often a
+			// quoted message than a filename.
+			name: "an escaped space does not split the token",
+			cmd:  `cat internal/assay/my\ file.go x/y.go`,
+			want: []string{"x/y.go"},
+		},
+		{
+			// An empty quoted argument used to emit a zero-length token, which
+			// segmentArguments then consumed as the command word — promoting
+			// the real one, path-shaped, to a file the session read.
+			name: "an empty quoted argument does not shift the command word",
+			cmd:  "grep '' ./scripts/x.sh",
+			want: []string{"./scripts/x.sh"},
 		},
 		{
 			name: "a go test invocation names no file",
@@ -86,7 +140,7 @@ func TestBashCandidatePathsReadsRealCommands(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			got := bashCandidatePaths(tc.cmd)
-			if !equalStrs(got, tc.want) {
+			if !slices.Equal(got, tc.want) {
 				t.Errorf("bashCandidatePaths(%q) = %v; want %v", tc.cmd, got, tc.want)
 			}
 		})
@@ -106,6 +160,12 @@ func TestBashCandidatePathsIsBounded(t *testing.T) {
 	}
 	if got := len(bashCandidatePaths(b.String())); got != maxBashCandidates {
 		t.Errorf("candidates = %d; want the cap %d", got, maxBashCandidates)
+	}
+	// The cap holds across the nested parse too: a quoted sub-command must not
+	// be a way to hand back more candidates than one command may yield.
+	nested := "bash -c \"cat" + strings.Repeat(" pkg/x.go pkg/y.go", maxBashCandidates) + "\""
+	if got := len(bashCandidatePaths(nested)); got > maxBashCandidates {
+		t.Errorf("nested candidates = %d; cap is %d", got, maxBashCandidates)
 	}
 	// An over-long command is truncated rather than scanned whole; it must
 	// still answer, and must not answer with the truncated tail as a path.
@@ -131,7 +191,7 @@ func TestFileTrackerRecordsBashPaths(t *testing.T) {
 	tr.observe(toolEvent(t, `[{"type":"tool_use","name":"Bash","input":{"command":"go build ./..."}}]`))
 
 	want := []string{"internal/assay/retry.go", "internal/assay/skip.go"}
-	if got := tr.paths(); !equalStrs(got, want) {
+	if got := tr.paths(); !slices.Equal(got, want) {
 		t.Errorf("paths = %v; want %v", got, want)
 	}
 	// Every block is still exactly one tool call, files or none: the two
@@ -141,17 +201,22 @@ func TestFileTrackerRecordsBashPaths(t *testing.T) {
 	}
 }
 
-// TestFileTrackerReadsTheWiderPathKeys covers the structured half: a tool that
-// names its file under a key other than file_path is still a tool that opened a
-// file.
-func TestFileTrackerReadsTheWiderPathKeys(t *testing.T) {
+// TestFilesReadCountsFilesNotEverythingNamed is the honesty of the telemetry
+// field: files= is read as "this pass went and looked at code", so a directory
+// argument or a fragment of a quoted script must not raise it. Both stay in the
+// tracked list, where the retry's scoping is free to match them against nothing.
+func TestFilesReadCountsFilesNotEverythingNamed(t *testing.T) {
 	tr := newFileTracker()
-	tr.observe(toolEvent(t, `[{"type":"tool_use","name":"Read","input":{"file_path":"/w/a.go"}}]`))
-	tr.observe(toolEvent(t, `[{"type":"tool_use","name":"Glob","input":{"path":"/w/pkg"}}]`))
-	tr.observe(toolEvent(t, `[{"type":"tool_use","name":"NotebookEdit","input":{"notebook_path":"/w/n.ipynb"}}]`))
-	want := []string{"/w/a.go", "/w/pkg", "/w/n.ipynb"}
-	if got := tr.paths(); !equalStrs(got, want) {
-		t.Errorf("paths = %v; want %v", got, want)
+	tr.observe(toolEvent(t, `[{"type":"tool_use","name":"Bash","input":{"command":"cd internal/assay && go test ./..."}}]`))
+	tr.observe(toolEvent(t, `[{"type":"tool_use","name":"Bash","input":{"command":"grep -rn costTracker internal/"}}]`))
+	tr.observe(toolEvent(t, `[{"type":"tool_use","name":"Bash","input":{"command":"python3 -c \"print(open('internal/assay/g.go').read())\""}}]`))
+	if got := countFilesRead(tr.paths()); got != 0 {
+		t.Errorf("countFilesRead(%v) = %d; want 0 — none of those commands opened a file", tr.paths(), got)
+	}
+
+	tr.observe(toolEvent(t, `[{"type":"tool_use","name":"Bash","input":{"command":"cat internal/assay/retry.go"}}]`))
+	if got := countFilesRead(tr.paths()); got != 1 {
+		t.Errorf("countFilesRead(%v) = %d; want 1", tr.paths(), got)
 	}
 }
 
@@ -164,7 +229,7 @@ func TestFileTrackerCountsCallsWithUnreadableInput(t *testing.T) {
 	if got := tr.toolCalls(); got != 2 {
 		t.Errorf("toolCalls = %d; want 2 — an undecodable input still made a call", got)
 	}
-	if got := tr.paths(); !equalStrs(got, []string{"a/x.go"}) {
+	if got := tr.paths(); !slices.Equal(got, []string{"a/x.go"}) {
 		t.Errorf("paths = %v; want [a/x.go]", got)
 	}
 }
@@ -177,8 +242,29 @@ func TestOpenedDiffFilesRejectsMisparsedTokens(t *testing.T) {
 	diffFiles := []string{"a.go", "pkg/b.go", "c.go"}
 	opened := bashCandidatePaths("sed -n '1,50p' pkg/b.go && go test ./... -run TestX && cat /etc/hosts")
 	got := openedDiffFiles(opened, diffFiles)
-	if !equalStrs(got, []string{"pkg/b.go"}) {
+	if !slices.Equal(got, []string{"pkg/b.go"}) {
 		t.Errorf("openedDiffFiles(%v) = %v; want [pkg/b.go]", opened, got)
+	}
+}
+
+// TestGitRevisionReadsReachTheRetryScope carries the `git show <rev>:<path>`
+// form all the way to the retry's diff, which is the only place its handling
+// can be judged. As a bare candidate the revspec looked admitted and harmless;
+// against a diff it matched nothing — the character before the path is a colon
+// rather than a separator — so the retry's third modification was still dead
+// for a session that read its files the way this one does.
+func TestGitRevisionReadsReachTheRetryScope(t *testing.T) {
+	diffFiles := []string{"internal/assay/skip.go", "internal/assay/retry.go", "x.go"}
+	opened := bashCandidatePaths("LC_ALL=C git show HEAD:internal/assay/skip.go")
+	if got := openedDiffFiles(opened, diffFiles); !slices.Equal(got, []string{"internal/assay/skip.go"}) {
+		t.Fatalf("openedDiffFiles(%v) = %v; want [internal/assay/skip.go]", opened, got)
+	}
+	mods, ok := buildRetryMods(DefaultConfig(), opened, diffFiles)
+	if !ok {
+		t.Fatal("buildRetryMods reported no modification")
+	}
+	if !slices.Equal(mods.scopedFiles, []string{"internal/assay/skip.go"}) {
+		t.Errorf("scopedFiles = %v; want [internal/assay/skip.go]", mods.scopedFiles)
 	}
 }
 
@@ -188,8 +274,40 @@ func TestOpenedDiffFilesRejectsMisparsedTokens(t *testing.T) {
 func TestOpenedDiffFilesMatchesCommandRelativePaths(t *testing.T) {
 	diffFiles := []string{"internal/assay/retry.go", "internal/web/login.go"}
 	opened := bashCandidatePaths("cd internal/assay && cat retry.go")
-	if got := openedDiffFiles(opened, diffFiles); !equalStrs(got, []string{"internal/assay/retry.go"}) {
+	if got := openedDiffFiles(opened, diffFiles); !slices.Equal(got, []string{"internal/assay/retry.go"}) {
 		t.Errorf("openedDiffFiles(%v) = %v; want [internal/assay/retry.go]", opened, got)
+	}
+}
+
+// TestOpenedDiffFilesRefusesAnAmbiguousBasename is the other half of that arm,
+// and the one that decides what it may cost. A bare basename carries no
+// directory, and basenames repeat across packages in this repository alone
+// (retry.go, cost.go, skip.go, url.go), so a token matching two diff paths
+// identifies neither. Selecting both would scope the retry to a file the
+// session never opened — the narrowing silently pointed at the wrong code — so
+// an ambiguous token selects nothing, and a session with no other evidence
+// loses its scoping instead.
+func TestOpenedDiffFilesRefusesAnAmbiguousBasename(t *testing.T) {
+	opened := bashCandidatePaths("cd internal/assay && cat retry.go")
+
+	collide := []string{"internal/assay/retry.go", "internal/web/retry.go", "internal/assay/skip.go"}
+	if got := openedDiffFiles(opened, collide); got != nil {
+		t.Errorf("openedDiffFiles(%v, %v) = %v; want none — neither retry.go is identified", opened, collide, got)
+	}
+
+	// And where the ambiguous pair IS the whole diff, the answer is the same
+	// one an empty selection has always produced: no scoping, so the retry
+	// keeps the diff it was given.
+	both := []string{"internal/assay/retry.go", "internal/web/retry.go"}
+	if got := openedDiffFiles(opened, both); got != nil {
+		t.Errorf("openedDiffFiles(%v, %v) = %v; want none", opened, both, got)
+	}
+
+	// An unambiguous token in the same session is unaffected: ambiguity is
+	// judged per candidate, not per session.
+	opened = append(opened, "internal/web/login.go")
+	if got := openedDiffFiles(opened, append(collide, "internal/web/login.go")); !slices.Equal(got, []string{"internal/web/login.go"}) {
+		t.Errorf("openedDiffFiles(%v) = %v; want [internal/web/login.go]", opened, got)
 	}
 }
 
@@ -205,7 +323,7 @@ func TestBashOnlySessionScopesTheRetry(t *testing.T) {
 	if !ok {
 		t.Fatal("buildRetryMods reported no modification")
 	}
-	if !equalStrs(mods.scopedFiles, []string{"a.go"}) {
+	if !slices.Equal(mods.scopedFiles, []string{"a.go"}) {
 		t.Fatalf("scopedFiles = %v; want [a.go] — the retry is narrower in name only without it", mods.scopedFiles)
 	}
 
@@ -239,21 +357,9 @@ func TestPassTelemetryReportsFilesForABashOnlySession(t *testing.T) {
 		Attempts:  1,
 		Provider:  "claude",
 		ToolCalls: tr.toolCalls(),
-		FilesRead: len(tr.paths()),
+		FilesRead: countFilesRead(tr.paths()),
 	}})
 	if !strings.Contains(got, "tools=2 files=2") {
 		t.Errorf("RenderPassTelemetry = %q; want tools=2 files=2", got)
 	}
-}
-
-func equalStrs(a, b []string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
 }
