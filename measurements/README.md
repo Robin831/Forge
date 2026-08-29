@@ -23,6 +23,34 @@ cannot be re-derived once the logs behind them roll off.
 | `assay-passes-open-20260828T133700Z.json` | one row per pass observation off `daemon.log`'s `passes=` field — timestamp, PR, pass, `turns`, `term`, `tools`, `files` |
 | `assay-session-costs-open-20260828T133700Z.json` | one row per pass **session** off the preserved `assay-*.log` files — `est` is `costTracker`'s in-flight figure reproduced from the per-message usage blocks, `billed` the provider's `total_cost_usd` |
 
+## Per-pass turn and spend sample (Forge-cikv, 2026-08-29)
+
+The R2/R3 sample — the same two extractors, run again once Assay runs had
+accumulated under the reading prompts. Note that the window holds **two**
+regimes, because Forge-sra6's own $1.50 → $3.00 raise deployed inside it
+(2026-08-28 16:32:22 +02:00); the boundaries are in
+[../docs/assay-turn-budget.md](../docs/assay-turn-budget.md) and the analysis
+partitions on them.
+
+| File | What |
+|---|---|
+| `assay-passes-20260827T131525Z-20260829T062100Z.json` | 78 pass observations, cut at the reading-prompt boundary by the printed extractor's own filter line |
+| `assay-session-costs-20260827T131525Z-20260829T062100Z.json` | 95 pass sessions; additionally carries each session's `tool_use` block names and turn count, which the printed extractor discards |
+
+Both filenames open at the R2 boundary (`20260827T131525Z`), which is the
+window the extractors were *asked* for and not the one they found — the first
+run inside it is a day later, 2026-08-28 16:02:06 +02:00.
+
+That boundary cut is not a modification: both printed extractors carry the
+filter themselves (`rows = [... if r['ts'] >= '2026-08-27T15:15:25']`, and its
+epoch-ms twin in the session one), so applying it is running them verbatim.
+The added fields are the second file's only departure from the verbatim
+extractor, and they add rather than alter — the `est`/`billed` columns are
+computed by the printed code unchanged. They exist because `files=` is
+structurally 0 on this deployment (every tool call is `Bash`, which names no
+`file_path`), so the tool-name breakdown is the only way to tell a pass that
+read the code from one that did not.
+
 Neither is the output of a shipped subcommand, so the exception to the
 verbatim rule below is stated rather than assumed: they were produced by the
 extractors printed in

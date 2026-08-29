@@ -542,3 +542,275 @@ is what makes the boundary filter above a plain integer comparison — and note
 that the sessions killed on cost are **absent** from this sample by
 construction: they emit no `result` event. The crossings have to be read off
 the daemon log's `error_max_cost` lines, which carry the estimate at death.
+
+## Re-measurement — 2026-08-29 (Forge-cikv)
+
+The R2 sample the section above could not take. It exists now, and it answers
+both questions the parent asked — but the window turned out to hold a boundary
+neither the parent nor Forge-sra6 anticipated, so the first job is to say where
+it is.
+
+### There are two post-change regimes, not one
+
+Forge-sra6's own change — `max_cost_per_pass_usd` $1.50 → $3.00 — merged as
+PR #874 and deployed at **2026-08-28 16:32:22 +02:00** (`71d3dfcd`), which is
+*inside* the window this bead was told to measure. So "under the reading
+prompts" is two regimes, and mixing them would compare a ceiling against
+itself:
+
+| regime | from | reading prompts | ceiling |
+|---|---|---|---|
+| R1 | 2026-08-25 17:39:44 +02:00 (`4795e636`) | no | $1.50 |
+| R2 | 2026-08-27 15:15:25 +02:00 (`d9f3ec5a`) | **yes** | $1.50 |
+| R3 | 2026-08-28 16:32:22 +02:00 (`71d3dfcd`) | **yes** | **$3.00** |
+
+R2 is one run wide. Everything below that speaks about the ceiling is R3;
+everything that speaks about the prompts is R2+R3, since the prompts are
+identical across both.
+
+### The sample, and what it is short of
+
+**13 runs, 78 pass observations, 95 pass sessions**, from
+2026-08-28 16:02:06 +02:00 to 2026-08-29 08:20:48 +02:00. All on the `forge`
+anvil, `claude-opus-5` for triage and review both. The split across the two
+regimes, so the headline reconciles on the page:
+
+| regime | runs | pass observations | pass sessions |
+|---|---|---|---|
+| R2 | 1 (PR #874) | 6 | 7 |
+| R3 | 12 | 72 | 88 |
+| **total** | **13** | **78** | **95** |
+
+R2's single run is the one place the observation and session columns do not
+differ by retries alone, so it is worth stating why: its six passes ran eight sessions — triage,
+five deep passes, plus a retry each in `logic` and `repo-specific` — and only
+seven have a row. The missing one is the `conventions` session the $1.50
+ceiling killed, which emits no `result` event and so cannot appear in a
+session extract at all (the same construction the section above notes). R3's
+72 pass observations are 12 runs x 6 passes exactly.
+
+This is **13 runs where the bead asked for ~20**, and that shortfall is stated
+rather than smoothed over: the per-*run* figures below (mean cost, mean
+duration) are thin at n=12 and are reported as orientation, not as a
+distribution. The questions the bead actually turns on are per *session* — is
+any pass cost-terminated, which bound ends a session, does a pass read files —
+and those have 88 observations, which is a real sample. Nothing here is tuned
+off the run-level numbers.
+
+Both extractors from the section above ran **verbatim and clean**, which is
+itself a result: the `passes=` field and the session-log event shapes have not
+drifted, so the R1 figures and these are the same measurement. Retention did
+not bite either — the oldest recoverable `passes=` line on disk is
+2026-08-11T07:08:22, well before the R2 boundary, so there is **no gap** in
+this window. (`daemon.log` stood at 48.4 MiB against `MaxSizeMB: 50`, i.e.
+**97% of its rotation threshold**, when this was taken — that margin was luck
+rather than headroom.)
+
+The artifacts, extracted 2026-08-29T06:21Z:
+
+| File | What |
+|---|---|
+| `measurements/assay-passes-20260827T131525Z-20260829T062100Z.json` | 78 rows, one per pass observation off `daemon.log` |
+| `measurements/assay-session-costs-20260827T131525Z-20260829T062100Z.json` | 95 rows, one per pass session off the preserved `assay-*.log` files |
+
+Both filenames open at `20260827T131525Z`, which is the **R2 boundary** — the
+window the extractors were asked for, per this directory's naming convention —
+and not the window they found: the first run inside it is 2026-08-28 16:02:06
++02:00, a day later, because `assay.daily_cost_limit_usd` was exhausted for
+most of the intervening day. The prose above names the observed window; the
+filenames name the requested one.
+
+Both extractors were run with their boundary filter as printed — the
+`rows = [... if r['ts'] >= '2026-08-27T15:15:25']` line in the first and the
+epoch-ms twin of it in the second — so the filtering is part of the verbatim
+extractor rather than a modification of it. The session extractor was
+additionally asked for each session's `tool_use` block names and turn count,
+which the printed one discards; that is the only departure from verbatim and
+it adds fields rather than changing any.
+
+### The ceiling is now non-binding, and it was still binding at $1.50
+
+**Zero `error_max_cost` in 12 runs / 88 sessions under $3.00.** The whole
+recoverable log holds three ceiling-stop events, six killed passes between
+them, and every one is behind the raise and against the **$1.50** ceiling:
+PR #854's triage at $3.13 (R0, 2026-08-25 16:16 — the one the section above
+notes $3.00 would not have saved either), PR #872's four-pass wipeout (R1,
+2026-08-27 14:25), and one in R2.
+
+Estimated session cost — `costTracker`'s unit, reproduced as before — over R3:
+
+| pass | n | mean | p50 | p90 | p90 as % of $3.00 | max | max as % of $3.00 | over $1.50 |
+|---|---|---|---|---|---|---|---|---|
+| triage | 12 | $0.39 | $0.41 | $0.67 | 22% | $0.81 | 27% | 0 |
+| logic | 15 | $0.77 | $0.66 | $1.40 | 47% | $1.84 | 61% | 2 |
+| security | 15 | $0.76 | $0.74 | $1.55 | 52% | $1.64 | 55% | 2 |
+| conventions | 16 | $0.71 | $0.69 | $1.30 | 43% | $1.56 | 52% | 1 |
+| tests-missing | 13 | $0.68 | $0.65 | $1.26 | 42% | $1.58 | 53% | 1 |
+| repo-specific | 17 | $0.77 | $0.83 | $1.38 | 46% | $1.61 | 54% | 2 |
+| **all** | **88** | **$0.69** | **$0.63** | **$1.40** | **47%** | **$1.84** | **61%** | **8** |
+
+The shape is the point, and it is the opposite of R1's. There the maximum was
+98% of the ceiling and p95 was 88% — a distribution piled against the wall,
+censored by it. Here p90 across all 88 sessions ($1.40) is **47%** of the
+ceiling and the single largest session is **61%** — both read off the **all**
+row above. Per pass, p90 runs 42%–52% across the five deep passes. The tail
+has room.
+
+The last column is the counterfactual, and it is why the raise was not
+cosmetic: **8 of 88 sessions (9%) came in above $1.50**, spread across all five
+deep passes rather than concentrated in one. Under the old ceiling every one of
+them would have been killed on `ReasonMaxCost` — terminal, never retried — and
+their runs would have reported partial coverage while still paying for the
+sessions.
+
+R2's single run is the same fact from the other side. PR #874's `conventions`
+pass — on the very bead that raised the ceiling — died at
+`estimated session cost $1.53 reached the $1.50 per-pass ceiling`, after 16
+turns. Three cents over, at the turn cap, with the fix for it in the diff it
+was reviewing. So the reading prompts *did* push sessions through the old
+ceiling, exactly as Forge-sra6 predicted from pre-change data; the prediction
+had one run to be confirmed on before the change landed, and it was confirmed
+on it.
+
+### The turn cap is now the binding bound
+
+The two are no longer adjacent, and they have swapped places. Every deep
+session in R3 that did not answer was ended by the **turn** cap:
+
+| bound | deep sessions ended (R3, n=76) |
+|---|---|
+| 16-turn cap (`error_max_turns`) | 16 |
+| $3.00 ceiling (`error_max_cost`) | **0** |
+| answered | 60 |
+
+At session level, before the retry hides it:
+
+| pass | sessions | hit the 16-turn cap | rate | mean turns | mean tool calls |
+|---|---|---|---|---|---|
+| logic | 15 | 3 | 20% | 8.3 | 9.3 |
+| security | 15 | 3 | 20% | 7.9 | 9.3 |
+| conventions | 16 | 4 | 25% | 7.8 | 8.5 |
+| tests-missing | 13 | 1 | 8% | 7.1 | 7.2 |
+| repo-specific | 17 | 5 | 29% | 8.8 | 10.4 |
+| **all deep** | **76** | **16** | **21%** | — | — |
+
+**21.1% of deep sessions (16 of 76), against R1's 10.2% (12 of 118).** Both
+sides of that ratio are deep sessions, which is the only way to compare them:
+R1's headline 8.5% is quoted above over **all 141** of its sessions, 23 of them
+triage, and no triage session in either regime has ever reached the cap — so
+the all-session figure is diluted by a pass that cannot contribute to it. Like
+for like the jump is **2.07x** on the deep-session basis (21.1% / 10.2%) and
+2.14x on the all-session one (16 of 88 = 18.2%, against 12 of 141 = 8.5%).
+Call it **twice the rate**, on the same cap, from the prompt change alone —
+which is the intended effect showing up as pressure on the bound it was always
+going to press on.
+
+And the adjacency that made Forge-sra6 refuse to touch the turn cap is gone.
+The R1 argument was that sessions dying on turns were holding $0.85–$1.45
+against a $1.50 ceiling, so giving them more turns would only convert a
+recoverable `error_max_turns` into a terminal `error_max_cost`. The 16 sessions
+the cap killed here hold a mean of **$1.15** and a maximum of **$1.84** —
+38% and 61% of the ceiling. There is room above them now. That conversion
+argument no longer applies.
+
+This is a **recommendation, not a change** (see below).
+
+### The prompts worked, and `files=` cannot see it
+
+The first `tools=` observation there has ever been, since the counter shipped
+in the same commit as the prompts.
+
+| pass | pre-change (Forge-q2qz, by hand) | now (R3, all sessions) |
+|---|---|---|
+| security | mean 2.5 turns; 13 of 20 runs answered from diff text alone | mean 7.9 turns, 9.3 tool calls; **12 of 12 first attempts called a tool** |
+| repo-specific | ~7 of 20 runs answered from diff text alone | mean 8.8 turns, 10.4 tool calls |
+
+Security's lowest first attempt in R3 still made one tool call. The behaviour
+the parent bead was written against — a pass reviewing the diff without opening
+the code — does not appear in this sample at all: **58 of 60 first attempts
+called at least one tool**, and both exceptions are single-turn.
+
+The 18 sessions that made no tool call are **all 16 retries plus those two**.
+That is `answerNowInstruction` working: the retry is told to stop exploring and
+answer from what it has, and every one of them did, in exactly 1 turn.
+
+Cost of reading, which is the fourth thing the bead asked for:
+
+| deep sessions (R3) | n | mean est. | p90 | max | mean turns | mean tools |
+|---|---|---|---|---|---|---|
+| called a tool | 58 | $0.87 | $1.58 | $1.84 | 10.2 | 11.8 |
+| answered without tools | 18 | $0.31 | $0.53 | $0.61 | 1.0 | 0 |
+
+A reading session costs about **2.8x** a non-reading one. That ratio is the
+price of the change, and at the run level it is close to invisible: 12 R3 runs
+average **$7.83** against R1's 22-run **$7.29** (+7%), same mean duration
+(239s), max $14.39 against $10.80. The reading prompts moved the *maximum* run
+cost, not the typical one.
+
+**`files=` is 0 on every one of the 78 pass observations, and it is wrong.**
+Not "no files were read" — 742 tool calls were made across these 95 sessions
+and **every single one of them is `Bash`**. `fileTracker.add` records a path
+only from a `tool_use` block whose input carries `file_path`, which is the
+`Read` tool's shape; a session that reads with `cat`, `sed -n` or `grep` names
+no `file_path` and is counted by `tools=` while contributing nothing to
+`files=`. On this deployment that is 100% of sessions, so `files=` is
+structurally zero and says nothing. `tools=` is unaffected and is the field
+that carries the signal — which is the counter's own design working
+(`addCall` counts a block naming no file precisely so the two cannot be
+conflated), but it leaves half the telemetry inert. Filed as **Forge-72oy**.
+
+This also means `openedDiffFiles` — the third of `buildRetryMods`' three
+modifications, the diff scoped to the files the failed session opened — is
+never constructed here. The 16 retries in this sample were modified by reduced
+budget and appended instruction alone, and all 16 still recovered.
+
+### The decision
+
+**No setting is changed by this bead.** Forge-sra6 already spent one adjustment
+on a pre-change window, and a second unreviewed tune inside the same fortnight
+would confound the next regime comparison — R3 would then be two regimes as
+well, for the same reason R2 turned out to be.
+
+**On `max_cost_per_pass_usd` ($3.00): keep.** Its trigger is "any pass reaches
+`error_max_cost`", and none did in 12 runs. p90 at 47% of the ceiling and a
+maximum at 61% is the non-binding bound the raise was meant to produce, and the
+9% of sessions that cleared the old $1.50 mark say the raise was load-bearing
+rather than precautionary. Nothing here is a regression against Forge-sra6's
+intent.
+
+**On `assayMaxTurns` (16): recommend raising to 24, filed as Forge-55eq.** The
+trigger this time did fire, twice over:
+
+- 21.1% of deep sessions reach the cap (16 of 76), against 10.2% under the old
+  prompts (12 of 118) — twice the rate, both figures over deep sessions only.
+  That is not a cap that occasionally bites.
+- The reason Forge-sra6 declined to move it — the two bounds being adjacent, so
+  more turns would convert recoverable turn deaths into terminal cost deaths —
+  is measured gone: turn-killed sessions hold $1.15 mean / $1.84 max against
+  $3.00.
+
+24 is the same argument the 12 → 16 move used, and it carries the same caveat
+that move earned: raising 12 → 16 did **not** lower the rate at which sessions
+reached the cap (7.1% → 8.5%), because passes expand into the budget they are
+given. So the expected outcome of 16 → 24 is a lower *retry* rate, not a lower
+cap-hit rate, and the reason to want it is that a retry is a second session at
+full price whose scoping modification (`openedDiffFiles`) is inert here.
+
+That last point is why the ordering matters, and why this is a recommendation
+rather than an edit: **fix `files=` first.** The retry currently runs on two of
+its three modifications, and the third is the one that narrows the question
+rather than merely shortening it. A cap raise evaluated before that fix would
+be measuring the wrong retry.
+
+### What is still owed
+
+- **~20 runs.** This is 13. The session-level answers are firm; the run-level
+  cost figures are not, and a later section should re-state them at n≥20 rather
+  than treat $7.83 as settled.
+- **The `files=` fix** (Forge-72oy), and a re-measurement of the retry once
+  `openedDiffFiles` is actually being constructed.
+- **The turn-cap raise** (Forge-55eq, blocked on Forge-72oy), after both of the
+  above.
+
+Retention is the clock on all three: `daemon.log` was at 97% of its rotation
+threshold when this was taken. Extract before analysing, as this section did.

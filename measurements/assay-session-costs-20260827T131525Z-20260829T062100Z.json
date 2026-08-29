@@ -1,0 +1,1458 @@
+[
+ {
+  "log": "assay-1787927628538-conventions-1787927706179-5.log",
+  "run": 1787927628538,
+  "name": "conventions",
+  "seq": 5,
+  "turns": 10,
+  "est": 1.3739,
+  "billed": 2.1789624999999995,
+  "subtype": "success",
+  "num_turns": 17,
+  "tools": {
+   "Bash": 16
+  },
+  "tool_calls": 16,
+  "file_path_files": 0
+ },
+ {
+  "log": "assay-1787927628538-logic-1787927646178-3.log",
+  "run": 1787927628538,
+  "name": "logic",
+  "seq": 3,
+  "turns": 16,
+  "est": 1.8382,
+  "billed": 2.7343559999999996,
+  "subtype": "error_max_turns",
+  "num_turns": 17,
+  "tools": {
+   "Bash": 16
+  },
+  "tool_calls": 16,
+  "file_path_files": 0
+ },
+ {
+  "log": "assay-1787927628538-logic-1787927876909-9.log",
+  "run": 1787927628538,
+  "name": "logic",
+  "seq": 9,
+  "turns": 1,
+  "est": 0.6061,
+  "billed": 1.013153,
+  "subtype": "success",
+  "num_turns": 1,
+  "tools": {},
+  "tool_calls": 0,
+  "file_path_files": 0
+ },
+ {
+  "log": "assay-1787927628538-repo-specific-1787927706179-6.log",
+  "run": 1787927628538,
+  "name": "repo-specific",
+  "seq": 6,
+  "turns": 13,
+  "est": 1.6086,
+  "billed": 2.5244585,
+  "subtype": "success",
+  "num_turns": 23,
+  "tools": {
+   "Bash": 22
+  },
+  "tool_calls": 22,
+  "file_path_files": 0
+ },
+ {
+  "log": "assay-1787927628538-security-1787927706179-7.log",
+  "run": 1787927628538,
+  "name": "security",
+  "seq": 7,
+  "turns": 14,
+  "est": 1.6374,
+  "billed": 2.3695095,
+  "subtype": "success",
+  "num_turns": 16,
+  "tools": {
+   "Bash": 15
+  },
+  "tool_calls": 15,
+  "file_path_files": 0
+ },
+ {
+  "log": "assay-1787927628538-tests-missing-1787927706181-8.log",
+  "run": 1787927628538,
+  "name": "tests-missing",
+  "seq": 8,
+  "turns": 14,
+  "est": 1.5754,
+  "billed": 2.253478,
+  "subtype": "success",
+  "num_turns": 14,
+  "tools": {
+   "Bash": 13
+  },
+  "tool_calls": 13,
+  "file_path_files": 0
+ },
+ {
+  "log": "assay-1787927628538-triage-1787927629255-2.log",
+  "run": 1787927628538,
+  "name": "triage",
+  "seq": 2,
+  "turns": 1,
+  "est": 0.8138,
+  "billed": 1.318458,
+  "subtype": "success",
+  "num_turns": 1,
+  "tools": {},
+  "tool_calls": 0,
+  "file_path_files": 0
+ },
+ {
+  "log": "assay-1787929071248-conventions-1787929124996-35.log",
+  "run": 1787929071248,
+  "name": "conventions",
+  "seq": 35,
+  "turns": 16,
+  "est": 1.5581,
+  "billed": 2.141908,
+  "subtype": "error_max_turns",
+  "num_turns": 17,
+  "tools": {
+   "Bash": 16
+  },
+  "tool_calls": 16,
+  "file_path_files": 0
+ },
+ {
+  "log": "assay-1787929071248-conventions-1787929244977-47.log",
+  "run": 1787929071248,
+  "name": "conventions",
+  "seq": 47,
+  "turns": 1,
+  "est": 0.5287,
+  "billed": 0.9156119999999999,
+  "subtype": "success",
+  "num_turns": 1,
+  "tools": {},
+  "tool_calls": 0,
+  "file_path_files": 0
+ },
+ {
+  "log": "assay-1787929071248-logic-1787929096725-34.log",
+  "run": 1787929071248,
+  "name": "logic",
+  "seq": 34,
+  "turns": 13,
+  "est": 1.6042,
+  "billed": 2.662294,
+  "subtype": "success",
+  "num_turns": 20,
+  "tools": {
+   "Bash": 19
+  },
+  "tool_calls": 19,
+  "file_path_files": 0
+ },
+ {
+  "log": "assay-1787929071248-repo-specific-1787929124996-36.log",
+  "run": 1787929071248,
+  "name": "repo-specific",
+  "seq": 36,
+  "turns": 16,
+  "est": 1.582,
+  "billed": 2.1841095,
+  "subtype": "error_max_turns",
+  "num_turns": 17,
+  "tools": {
+   "Bash": 19
+  },
+  "tool_calls": 19,
+  "file_path_files": 0
+ },
+ {
+  "log": "assay-1787929071248-repo-specific-1787929240746-46.log",
+  "run": 1787929071248,
+  "name": "repo-specific",
+  "seq": 46,
+  "turns": 1,
+  "est": 0.5379,
+  "billed": 0.855087,
+  "subtype": "success",
+  "num_turns": 1,
+  "tools": {},
+  "tool_calls": 0,
+  "file_path_files": 0
+ },
+ {
+  "log": "assay-1787929071248-security-1787929125000-38.log",
+  "run": 1787929071248,
+  "name": "security",
+  "seq": 38,
+  "turns": 15,
+  "est": 1.6026,
+  "billed": 2.3893250000000004,
+  "subtype": "success",
+  "num_turns": 18,
+  "tools": {
+   "Bash": 17
+  },
+  "tool_calls": 17,
+  "file_path_files": 0
+ },
+ {
+  "log": "assay-1787929071248-tests-missing-1787929124998-37.log",
+  "run": 1787929071248,
+  "name": "tests-missing",
+  "seq": 37,
+  "turns": 11,
+  "est": 1.3161,
+  "billed": 1.9857570000000002,
+  "subtype": "success",
+  "num_turns": 15,
+  "tools": {
+   "Bash": 14
+  },
+  "tool_calls": 14,
+  "file_path_files": 0
+ },
+ {
+  "log": "assay-1787929071248-triage-1787929072028-33.log",
+  "run": 1787929071248,
+  "name": "triage",
+  "seq": 33,
+  "turns": 1,
+  "est": 0.6862,
+  "billed": 1.1289365,
+  "subtype": "success",
+  "num_turns": 1,
+  "tools": {},
+  "tool_calls": 0,
+  "file_path_files": 0
+ },
+ {
+  "log": "assay-1787925455825-logic-1787925482478-7.log",
+  "run": 1787925455825,
+  "name": "logic",
+  "seq": 7,
+  "turns": 16,
+  "est": 1.4523,
+  "billed": 2.1450105,
+  "subtype": "error_max_turns",
+  "num_turns": 17,
+  "tools": {
+   "Bash": 23
+  },
+  "tool_calls": 23,
+  "file_path_files": 0
+ },
+ {
+  "log": "assay-1787925455825-logic-1787925663191-12.log",
+  "run": 1787925455825,
+  "name": "logic",
+  "seq": 12,
+  "turns": 1,
+  "est": 0.468,
+  "billed": 0.7431450000000001,
+  "subtype": "success",
+  "num_turns": 1,
+  "tools": {},
+  "tool_calls": 0,
+  "file_path_files": 0
+ },
+ {
+  "log": "assay-1787925455825-repo-specific-1787925487127-8.log",
+  "run": 1787925455825,
+  "name": "repo-specific",
+  "seq": 8,
+  "turns": 16,
+  "est": 1.4593,
+  "billed": 2.129996,
+  "subtype": "error_max_turns",
+  "num_turns": 17,
+  "tools": {
+   "Bash": 21
+  },
+  "tool_calls": 21,
+  "file_path_files": 0
+ },
+ {
+  "log": "assay-1787925455825-repo-specific-1787925679186-13.log",
+  "run": 1787925455825,
+  "name": "repo-specific",
+  "seq": 13,
+  "turns": 1,
+  "est": 0.4703,
+  "billed": 0.746945,
+  "subtype": "success",
+  "num_turns": 1,
+  "tools": {},
+  "tool_calls": 0,
+  "file_path_files": 0
+ },
+ {
+  "log": "assay-1787925455825-security-1787925487127-9.log",
+  "run": 1787925455825,
+  "name": "security",
+  "seq": 9,
+  "turns": 5,
+  "est": 0.7144,
+  "billed": 1.0848965000000002,
+  "subtype": "success",
+  "num_turns": 5,
+  "tools": {
+   "Bash": 4
+  },
+  "tool_calls": 4,
+  "file_path_files": 0
+ },
+ {
+  "log": "assay-1787925455825-tests-missing-1787925487128-11.log",
+  "run": 1787925455825,
+  "name": "tests-missing",
+  "seq": 11,
+  "turns": 5,
+  "est": 0.7408,
+  "billed": 1.135956,
+  "subtype": "success",
+  "num_turns": 9,
+  "tools": {
+   "Bash": 8
+  },
+  "tool_calls": 8,
+  "file_path_files": 0
+ },
+ {
+  "log": "assay-1787925455825-triage-1787925456594-6.log",
+  "run": 1787925455825,
+  "name": "triage",
+  "seq": 6,
+  "turns": 1,
+  "est": 0.9509,
+  "billed": 1.556725,
+  "subtype": "success",
+  "num_turns": 1,
+  "tools": {},
+  "tool_calls": 0,
+  "file_path_files": 0
+ },
+ {
+  "log": "assay-1787928232352-conventions-1787928278947-17.log",
+  "run": 1787928232352,
+  "name": "conventions",
+  "seq": 17,
+  "turns": 8,
+  "est": 0.842,
+  "billed": 1.2953385,
+  "subtype": "success",
+  "num_turns": 8,
+  "tools": {
+   "Bash": 7
+  },
+  "tool_calls": 7,
+  "file_path_files": 0
+ },
+ {
+  "log": "assay-1787928232352-logic-1787928254385-14.log",
+  "run": 1787928232352,
+  "name": "logic",
+  "seq": 14,
+  "turns": 12,
+  "est": 1.0966,
+  "billed": 1.7777180000000001,
+  "subtype": "success",
+  "num_turns": 12,
+  "tools": {
+   "Bash": 11
+  },
+  "tool_calls": 11,
+  "file_path_files": 0
+ },
+ {
+  "log": "assay-1787928232352-repo-specific-1787928278946-15.log",
+  "run": 1787928232352,
+  "name": "repo-specific",
+  "seq": 15,
+  "turns": 16,
+  "est": 1.2447,
+  "billed": 1.758453,
+  "subtype": "error_max_turns",
+  "num_turns": 17,
+  "tools": {
+   "Bash": 16
+  },
+  "tool_calls": 16,
+  "file_path_files": 0
+ },
+ {
+  "log": "assay-1787928232352-repo-specific-1787928396120-19.log",
+  "run": 1787928232352,
+  "name": "repo-specific",
+  "seq": 19,
+  "turns": 1,
+  "est": 0.4446,
+  "billed": 0.7067165,
+  "subtype": "success",
+  "num_turns": 1,
+  "tools": {},
+  "tool_calls": 0,
+  "file_path_files": 0
+ },
+ {
+  "log": "assay-1787928232352-security-1787928278947-16.log",
+  "run": 1787928232352,
+  "name": "security",
+  "seq": 16,
+  "turns": 16,
+  "est": 1.4718,
+  "billed": 2.3299105,
+  "subtype": "error_max_turns",
+  "num_turns": 17,
+  "tools": {
+   "Bash": 25
+  },
+  "tool_calls": 25,
+  "file_path_files": 0
+ },
+ {
+  "log": "assay-1787928232352-security-1787928548423-21.log",
+  "run": 1787928232352,
+  "name": "security",
+  "seq": 21,
+  "turns": 1,
+  "est": 0.44,
+  "billed": 0.6993665,
+  "subtype": "success",
+  "num_turns": 1,
+  "tools": {},
+  "tool_calls": 0,
+  "file_path_files": 0
+ },
+ {
+  "log": "assay-1787928232352-tests-missing-1787928278952-18.log",
+  "run": 1787928232352,
+  "name": "tests-missing",
+  "seq": 18,
+  "turns": 6,
+  "est": 0.7254,
+  "billed": 1.1318025,
+  "subtype": "success",
+  "num_turns": 8,
+  "tools": {
+   "Bash": 7
+  },
+  "tool_calls": 7,
+  "file_path_files": 0
+ },
+ {
+  "log": "assay-1787928232352-triage-1787928232908-13.log",
+  "run": 1787928232352,
+  "name": "triage",
+  "seq": 13,
+  "turns": 1,
+  "est": 0.4328,
+  "billed": 0.715443,
+  "subtype": "success",
+  "num_turns": 1,
+  "tools": {},
+  "tool_calls": 0,
+  "file_path_files": 0
+ },
+ {
+  "log": "assay-1787929553193-conventions-1787929629568-55.log",
+  "run": 1787929553193,
+  "name": "conventions",
+  "seq": 55,
+  "turns": 6,
+  "est": 0.7538,
+  "billed": 1.219029,
+  "subtype": "success",
+  "num_turns": 8,
+  "tools": {
+   "Bash": 7
+  },
+  "tool_calls": 7,
+  "file_path_files": 0
+ },
+ {
+  "log": "assay-1787929553193-logic-1787929587924-51.log",
+  "run": 1787929553193,
+  "name": "logic",
+  "seq": 51,
+  "turns": 8,
+  "est": 0.8813,
+  "billed": 1.3859899999999998,
+  "subtype": "success",
+  "num_turns": 9,
+  "tools": {
+   "Bash": 8
+  },
+  "tool_calls": 8,
+  "file_path_files": 0
+ },
+ {
+  "log": "assay-1787929553193-repo-specific-1787929629564-52.log",
+  "run": 1787929553193,
+  "name": "repo-specific",
+  "seq": 52,
+  "turns": 7,
+  "est": 0.8314,
+  "billed": 1.3199104999999998,
+  "subtype": "success",
+  "num_turns": 9,
+  "tools": {
+   "Bash": 8
+  },
+  "tool_calls": 8,
+  "file_path_files": 0
+ },
+ {
+  "log": "assay-1787929553193-security-1787929629567-54.log",
+  "run": 1787929553193,
+  "name": "security",
+  "seq": 54,
+  "turns": 5,
+  "est": 0.7424,
+  "billed": 1.1978525,
+  "subtype": "success",
+  "num_turns": 8,
+  "tools": {
+   "Bash": 7
+  },
+  "tool_calls": 7,
+  "file_path_files": 0
+ },
+ {
+  "log": "assay-1787929553193-tests-missing-1787929629565-53.log",
+  "run": 1787929553193,
+  "name": "tests-missing",
+  "seq": 53,
+  "turns": 6,
+  "est": 0.7729,
+  "billed": 1.22685,
+  "subtype": "success",
+  "num_turns": 6,
+  "tools": {
+   "Bash": 5
+  },
+  "tool_calls": 5,
+  "file_path_files": 0
+ },
+ {
+  "log": "assay-1787929553193-triage-1787929553918-50.log",
+  "run": 1787929553193,
+  "name": "triage",
+  "seq": 50,
+  "turns": 2,
+  "est": 0.523,
+  "billed": 0.852805,
+  "subtype": "success",
+  "num_turns": 2,
+  "tools": {
+   "Bash": 1
+  },
+  "tool_calls": 1,
+  "file_path_files": 0
+ },
+ {
+  "log": "assay-1787928953649-conventions-1787928971002-28.log",
+  "run": 1787928953649,
+  "name": "conventions",
+  "seq": 28,
+  "turns": 4,
+  "est": 0.6334,
+  "billed": 0.998475,
+  "subtype": "success",
+  "num_turns": 4,
+  "tools": {
+   "Bash": 3
+  },
+  "tool_calls": 3,
+  "file_path_files": 0
+ },
+ {
+  "log": "assay-1787928953649-logic-1787928965343-26.log",
+  "run": 1787928953649,
+  "name": "logic",
+  "seq": 26,
+  "turns": 4,
+  "est": 0.595,
+  "billed": 0.8972640000000001,
+  "subtype": "success",
+  "num_turns": 6,
+  "tools": {
+   "Bash": 5
+  },
+  "tool_calls": 5,
+  "file_path_files": 0
+ },
+ {
+  "log": "assay-1787928953649-repo-specific-1787928971002-29.log",
+  "run": 1787928953649,
+  "name": "repo-specific",
+  "seq": 29,
+  "turns": 9,
+  "est": 0.9227,
+  "billed": 1.3787915,
+  "subtype": "success",
+  "num_turns": 14,
+  "tools": {
+   "Bash": 13
+  },
+  "tool_calls": 13,
+  "file_path_files": 0
+ },
+ {
+  "log": "assay-1787928953649-security-1787928971002-27.log",
+  "run": 1787928953649,
+  "name": "security",
+  "seq": 27,
+  "turns": 7,
+  "est": 0.7576,
+  "billed": 1.1263045,
+  "subtype": "success",
+  "num_turns": 8,
+  "tools": {
+   "Bash": 7
+  },
+  "tool_calls": 7,
+  "file_path_files": 0
+ },
+ {
+  "log": "assay-1787928953649-tests-missing-1787928971003-30.log",
+  "run": 1787928953649,
+  "name": "tests-missing",
+  "seq": 30,
+  "turns": 2,
+  "est": 0.5015,
+  "billed": 0.788457,
+  "subtype": "success",
+  "num_turns": 3,
+  "tools": {
+   "Bash": 2
+  },
+  "tool_calls": 2,
+  "file_path_files": 0
+ },
+ {
+  "log": "assay-1787928953649-triage-1787928954539-25.log",
+  "run": 1787928953649,
+  "name": "triage",
+  "seq": 25,
+  "turns": 1,
+  "est": 0.4454,
+  "billed": 0.716778,
+  "subtype": "success",
+  "num_turns": 1,
+  "tools": {},
+  "tool_calls": 0,
+  "file_path_files": 0
+ },
+ {
+  "log": "assay-1787929793863-conventions-1787929811403-62.log",
+  "run": 1787929793863,
+  "name": "conventions",
+  "seq": 62,
+  "turns": 16,
+  "est": 1.233,
+  "billed": 1.7059214999999994,
+  "subtype": "error_max_turns",
+  "num_turns": 17,
+  "tools": {
+   "Bash": 16
+  },
+  "tool_calls": 16,
+  "file_path_files": 0
+ },
+ {
+  "log": "assay-1787929793863-conventions-1787930024025-69.log",
+  "run": 1787929793863,
+  "name": "conventions",
+  "seq": 69,
+  "turns": 1,
+  "est": 0.4112,
+  "billed": 0.652258,
+  "subtype": "success",
+  "num_turns": 1,
+  "tools": {},
+  "tool_calls": 0,
+  "file_path_files": 0
+ },
+ {
+  "log": "assay-1787929793863-logic-1787929803492-59.log",
+  "run": 1787929793863,
+  "name": "logic",
+  "seq": 59,
+  "turns": 6,
+  "est": 0.6618,
+  "billed": 1.000297,
+  "subtype": "success",
+  "num_turns": 10,
+  "tools": {
+   "Bash": 9
+  },
+  "tool_calls": 9,
+  "file_path_files": 0
+ },
+ {
+  "log": "assay-1787929793863-repo-specific-1787929811406-64.log",
+  "run": 1787929793863,
+  "name": "repo-specific",
+  "seq": 64,
+  "turns": 11,
+  "est": 0.952,
+  "billed": 1.3821539999999999,
+  "subtype": "success",
+  "num_turns": 11,
+  "tools": {
+   "Bash": 10
+  },
+  "tool_calls": 10,
+  "file_path_files": 0
+ },
+ {
+  "log": "assay-1787929793863-security-1787929811403-61.log",
+  "run": 1787929793863,
+  "name": "security",
+  "seq": 61,
+  "turns": 8,
+  "est": 0.7739,
+  "billed": 1.146582,
+  "subtype": "success",
+  "num_turns": 13,
+  "tools": {
+   "Bash": 12
+  },
+  "tool_calls": 12,
+  "file_path_files": 0
+ },
+ {
+  "log": "assay-1787929793863-tests-missing-1787929811404-63.log",
+  "run": 1787929793863,
+  "name": "tests-missing",
+  "seq": 63,
+  "turns": 1,
+  "est": 0.4119,
+  "billed": 0.658023,
+  "subtype": "success",
+  "num_turns": 1,
+  "tools": {},
+  "tool_calls": 0,
+  "file_path_files": 0
+ },
+ {
+  "log": "assay-1787929793863-triage-1787929795276-57.log",
+  "run": 1787929793863,
+  "name": "triage",
+  "seq": 57,
+  "turns": 1,
+  "est": 0.4259,
+  "billed": 0.6844214999999999,
+  "subtype": "success",
+  "num_turns": 1,
+  "tools": {},
+  "tool_calls": 0,
+  "file_path_files": 0
+ },
+ {
+  "log": "assay-1787929194921-conventions-1787929209311-43.log",
+  "run": 1787929194921,
+  "name": "conventions",
+  "seq": 43,
+  "turns": 5,
+  "est": 0.6267,
+  "billed": 0.9666695000000001,
+  "subtype": "success",
+  "num_turns": 5,
+  "tools": {
+   "Bash": 4
+  },
+  "tool_calls": 4,
+  "file_path_files": 0
+ },
+ {
+  "log": "assay-1787929194921-logic-1787929204212-41.log",
+  "run": 1787929194921,
+  "name": "logic",
+  "seq": 41,
+  "turns": 4,
+  "est": 0.5623,
+  "billed": 0.851885,
+  "subtype": "success",
+  "num_turns": 4,
+  "tools": {
+   "Bash": 3
+  },
+  "tool_calls": 3,
+  "file_path_files": 0
+ },
+ {
+  "log": "assay-1787929194921-repo-specific-1787929209311-42.log",
+  "run": 1787929194921,
+  "name": "repo-specific",
+  "seq": 42,
+  "turns": 4,
+  "est": 0.583,
+  "billed": 0.9152170000000001,
+  "subtype": "success",
+  "num_turns": 6,
+  "tools": {
+   "Bash": 5
+  },
+  "tool_calls": 5,
+  "file_path_files": 0
+ },
+ {
+  "log": "assay-1787929194921-security-1787929209311-44.log",
+  "run": 1787929194921,
+  "name": "security",
+  "seq": 44,
+  "turns": 4,
+  "est": 0.5659,
+  "billed": 0.8668165,
+  "subtype": "success",
+  "num_turns": 4,
+  "tools": {
+   "Bash": 3
+  },
+  "tool_calls": 3,
+  "file_path_files": 0
+ },
+ {
+  "log": "assay-1787929194921-tests-missing-1787929209316-45.log",
+  "run": 1787929194921,
+  "name": "tests-missing",
+  "seq": 45,
+  "turns": 4,
+  "est": 0.5587,
+  "billed": 0.8474705000000001,
+  "subtype": "success",
+  "num_turns": 5,
+  "tools": {
+   "Bash": 4
+  },
+  "tool_calls": 4,
+  "file_path_files": 0
+ },
+ {
+  "log": "assay-1787929194921-triage-1787929195469-40.log",
+  "run": 1787929194921,
+  "name": "triage",
+  "seq": 40,
+  "turns": 1,
+  "est": 0.3994,
+  "billed": 0.641018,
+  "subtype": "success",
+  "num_turns": 1,
+  "tools": {},
+  "tool_calls": 0,
+  "file_path_files": 0
+ },
+ {
+  "log": "assay-1787932193041-conventions-1787932219808-91.log",
+  "run": 1787932193041,
+  "name": "conventions",
+  "seq": 91,
+  "turns": 16,
+  "est": 0.7776,
+  "billed": 1.1836375000000001,
+  "subtype": "error_max_turns",
+  "num_turns": 17,
+  "tools": {
+   "Bash": 24
+  },
+  "tool_calls": 24,
+  "file_path_files": 0
+ },
+ {
+  "log": "assay-1787932193041-conventions-1787932338964-94.log",
+  "run": 1787932193041,
+  "name": "conventions",
+  "seq": 94,
+  "turns": 1,
+  "est": 0.1471,
+  "billed": 0.27308350000000003,
+  "subtype": "success",
+  "num_turns": 1,
+  "tools": {},
+  "tool_calls": 0,
+  "file_path_files": 0
+ },
+ {
+  "log": "assay-1787932193041-logic-1787932217014-88.log",
+  "run": 1787932193041,
+  "name": "logic",
+  "seq": 88,
+  "turns": 16,
+  "est": 0.957,
+  "billed": 1.611852,
+  "subtype": "error_max_turns",
+  "num_turns": 17,
+  "tools": {
+   "Bash": 24
+  },
+  "tool_calls": 24,
+  "file_path_files": 0
+ },
+ {
+  "log": "assay-1787932193041-logic-1787932434709-97.log",
+  "run": 1787932193041,
+  "name": "logic",
+  "seq": 97,
+  "turns": 1,
+  "est": 0.154,
+  "billed": 0.30290849999999997,
+  "subtype": "success",
+  "num_turns": 1,
+  "tools": {},
+  "tool_calls": 0,
+  "file_path_files": 0
+ },
+ {
+  "log": "assay-1787932193041-repo-specific-1787932219807-90.log",
+  "run": 1787932193041,
+  "name": "repo-specific",
+  "seq": 90,
+  "turns": 16,
+  "est": 0.8713,
+  "billed": 1.447043,
+  "subtype": "error_max_turns",
+  "num_turns": 17,
+  "tools": {
+   "Bash": 26
+  },
+  "tool_calls": 26,
+  "file_path_files": 0
+ },
+ {
+  "log": "assay-1787932193041-repo-specific-1787932416094-96.log",
+  "run": 1787932193041,
+  "name": "repo-specific",
+  "seq": 96,
+  "turns": 1,
+  "est": 0.15,
+  "billed": 0.2343285,
+  "subtype": "success",
+  "num_turns": 1,
+  "tools": {},
+  "tool_calls": 0,
+  "file_path_files": 0
+ },
+ {
+  "log": "assay-1787932193041-security-1787932219808-92.log",
+  "run": 1787932193041,
+  "name": "security",
+  "seq": 92,
+  "turns": 16,
+  "est": 1.0165,
+  "billed": 1.4892345,
+  "subtype": "error_max_turns",
+  "num_turns": 17,
+  "tools": {
+   "Bash": 21
+  },
+  "tool_calls": 21,
+  "file_path_files": 0
+ },
+ {
+  "log": "assay-1787932193041-security-1787932347833-95.log",
+  "run": 1787932193041,
+  "name": "security",
+  "seq": 95,
+  "turns": 1,
+  "est": 0.158,
+  "billed": 0.24719850000000002,
+  "subtype": "success",
+  "num_turns": 1,
+  "tools": {},
+  "tool_calls": 0,
+  "file_path_files": 0
+ },
+ {
+  "log": "assay-1787932193041-tests-missing-1787932219807-89.log",
+  "run": 1787932193041,
+  "name": "tests-missing",
+  "seq": 89,
+  "turns": 16,
+  "est": 0.6773,
+  "billed": 1.0102915,
+  "subtype": "success",
+  "num_turns": 16,
+  "tools": {
+   "Bash": 15
+  },
+  "tool_calls": 15,
+  "file_path_files": 0
+ },
+ {
+  "log": "assay-1787932193041-triage-1787932193655-82.log",
+  "run": 1787932193041,
+  "name": "triage",
+  "seq": 82,
+  "turns": 1,
+  "est": 0.1983,
+  "billed": 0.3472285,
+  "subtype": "success",
+  "num_turns": 1,
+  "tools": {},
+  "tool_calls": 0,
+  "file_path_files": 0
+ },
+ {
+  "log": "assay-1787933033340-conventions-1787933049127-104.log",
+  "run": 1787933033340,
+  "name": "conventions",
+  "seq": 104,
+  "turns": 13,
+  "est": 0.7511,
+  "billed": 1.2462665000000002,
+  "subtype": "success",
+  "num_turns": 18,
+  "tools": {
+   "Bash": 17
+  },
+  "tool_calls": 17,
+  "file_path_files": 0
+ },
+ {
+  "log": "assay-1787933033340-logic-1787933046052-103.log",
+  "run": 1787933033340,
+  "name": "logic",
+  "seq": 103,
+  "turns": 14,
+  "est": 0.7438,
+  "billed": 1.17558,
+  "subtype": "success",
+  "num_turns": 18,
+  "tools": {
+   "Bash": 17
+  },
+  "tool_calls": 17,
+  "file_path_files": 0
+ },
+ {
+  "log": "assay-1787933033340-repo-specific-1787933049128-106.log",
+  "run": 1787933033340,
+  "name": "repo-specific",
+  "seq": 106,
+  "turns": 13,
+  "est": 0.6981,
+  "billed": 1.109506,
+  "subtype": "success",
+  "num_turns": 13,
+  "tools": {
+   "Bash": 12
+  },
+  "tool_calls": 12,
+  "file_path_files": 0
+ },
+ {
+  "log": "assay-1787933033340-security-1787933049128-105.log",
+  "run": 1787933033340,
+  "name": "security",
+  "seq": 105,
+  "turns": 9,
+  "est": 0.5677,
+  "billed": 0.917584,
+  "subtype": "success",
+  "num_turns": 14,
+  "tools": {
+   "Bash": 13
+  },
+  "tool_calls": 13,
+  "file_path_files": 0
+ },
+ {
+  "log": "assay-1787933033340-tests-missing-1787933049132-107.log",
+  "run": 1787933033340,
+  "name": "tests-missing",
+  "seq": 107,
+  "turns": 11,
+  "est": 0.6538,
+  "billed": 1.133439,
+  "subtype": "success",
+  "num_turns": 16,
+  "tools": {
+   "Bash": 15
+  },
+  "tool_calls": 15,
+  "file_path_files": 0
+ },
+ {
+  "log": "assay-1787933033340-triage-1787933034089-101.log",
+  "run": 1787933033340,
+  "name": "triage",
+  "seq": 101,
+  "turns": 1,
+  "est": 0.1963,
+  "billed": 0.3253065,
+  "subtype": "success",
+  "num_turns": 1,
+  "tools": {},
+  "tool_calls": 0,
+  "file_path_files": 0
+ },
+ {
+  "log": "assay-1787929797929-conventions-1787929812436-66.log",
+  "run": 1787929797929,
+  "name": "conventions",
+  "seq": 66,
+  "turns": 6,
+  "est": 0.32,
+  "billed": 0.492743,
+  "subtype": "success",
+  "num_turns": 8,
+  "tools": {
+   "Bash": 7
+  },
+  "tool_calls": 7,
+  "file_path_files": 0
+ },
+ {
+  "log": "assay-1787929797929-logic-1787929805999-60.log",
+  "run": 1787929797929,
+  "name": "logic",
+  "seq": 60,
+  "turns": 9,
+  "est": 0.3792,
+  "billed": 0.565709,
+  "subtype": "success",
+  "num_turns": 10,
+  "tools": {
+   "Bash": 9
+  },
+  "tool_calls": 9,
+  "file_path_files": 0
+ },
+ {
+  "log": "assay-1787929797929-repo-specific-1787929812436-65.log",
+  "run": 1787929797929,
+  "name": "repo-specific",
+  "seq": 65,
+  "turns": 16,
+  "est": 0.8764,
+  "billed": 1.3625874999999998,
+  "subtype": "error_max_turns",
+  "num_turns": 17,
+  "tools": {
+   "Bash": 22
+  },
+  "tool_calls": 22,
+  "file_path_files": 0
+ },
+ {
+  "log": "assay-1787929797929-repo-specific-1787930217659-71.log",
+  "run": 1787929797929,
+  "name": "repo-specific",
+  "seq": 71,
+  "turns": 1,
+  "est": 0.1605,
+  "billed": 0.2511885,
+  "subtype": "success",
+  "num_turns": 1,
+  "tools": {},
+  "tool_calls": 0,
+  "file_path_files": 0
+ },
+ {
+  "log": "assay-1787929797929-security-1787929812441-68.log",
+  "run": 1787929797929,
+  "name": "security",
+  "seq": 68,
+  "turns": 3,
+  "est": 0.2156,
+  "billed": 0.33788749999999995,
+  "subtype": "success",
+  "num_turns": 4,
+  "tools": {
+   "Bash": 3
+  },
+  "tool_calls": 3,
+  "file_path_files": 0
+ },
+ {
+  "log": "assay-1787929797929-tests-missing-1787929812437-67.log",
+  "run": 1787929797929,
+  "name": "tests-missing",
+  "seq": 67,
+  "turns": 1,
+  "est": 0.1564,
+  "billed": 0.2475985,
+  "subtype": "success",
+  "num_turns": 1,
+  "tools": {},
+  "tool_calls": 0,
+  "file_path_files": 0
+ },
+ {
+  "log": "assay-1787929797929-triage-1787929798664-58.log",
+  "run": 1787929797929,
+  "name": "triage",
+  "seq": 58,
+  "turns": 1,
+  "est": 0.1472,
+  "billed": 0.23675349999999998,
+  "subtype": "success",
+  "num_turns": 1,
+  "tools": {},
+  "tool_calls": 0,
+  "file_path_files": 0
+ },
+ {
+  "log": "assay-1787932191440-conventions-1787932203399-86.log",
+  "run": 1787932191440,
+  "name": "conventions",
+  "seq": 86,
+  "turns": 4,
+  "est": 0.2051,
+  "billed": 0.3454335,
+  "subtype": "success",
+  "num_turns": 4,
+  "tools": {
+   "Bash": 3
+  },
+  "tool_calls": 3,
+  "file_path_files": 0
+ },
+ {
+  "log": "assay-1787932191440-logic-1787932198542-83.log",
+  "run": 1787932191440,
+  "name": "logic",
+  "seq": 83,
+  "turns": 3,
+  "est": 0.1776,
+  "billed": 0.31702450000000004,
+  "subtype": "success",
+  "num_turns": 3,
+  "tools": {
+   "Bash": 2
+  },
+  "tool_calls": 2,
+  "file_path_files": 0
+ },
+ {
+  "log": "assay-1787932191440-repo-specific-1787932203399-85.log",
+  "run": 1787932191440,
+  "name": "repo-specific",
+  "seq": 85,
+  "turns": 8,
+  "est": 0.4236,
+  "billed": 0.6560605,
+  "subtype": "success",
+  "num_turns": 9,
+  "tools": {
+   "Bash": 8
+  },
+  "tool_calls": 8,
+  "file_path_files": 0
+ },
+ {
+  "log": "assay-1787932191440-security-1787932203399-84.log",
+  "run": 1787932191440,
+  "name": "security",
+  "seq": 84,
+  "turns": 2,
+  "est": 0.154,
+  "billed": 0.23603849999999998,
+  "subtype": "success",
+  "num_turns": 2,
+  "tools": {
+   "Bash": 1
+  },
+  "tool_calls": 1,
+  "file_path_files": 0
+ },
+ {
+  "log": "assay-1787932191440-tests-missing-1787932203404-87.log",
+  "run": 1787932191440,
+  "name": "tests-missing",
+  "seq": 87,
+  "turns": 3,
+  "est": 0.1741,
+  "billed": 0.275652,
+  "subtype": "success",
+  "num_turns": 3,
+  "tools": {
+   "Bash": 2
+  },
+  "tool_calls": 2,
+  "file_path_files": 0
+ },
+ {
+  "log": "assay-1787932191440-triage-1787932192238-81.log",
+  "run": 1787932191440,
+  "name": "triage",
+  "seq": 81,
+  "turns": 1,
+  "est": 0.1212,
+  "billed": 0.1942515,
+  "subtype": "success",
+  "num_turns": 1,
+  "tools": {},
+  "tool_calls": 0,
+  "file_path_files": 0
+ },
+ {
+  "log": "assay-1787984219701-conventions-1787984240203-23.log",
+  "run": 1787984219701,
+  "name": "conventions",
+  "seq": 23,
+  "turns": 16,
+  "est": 0.9041,
+  "billed": 1.2422980000000001,
+  "subtype": "error_max_turns",
+  "num_turns": 17,
+  "tools": {
+   "Bash": 16
+  },
+  "tool_calls": 16,
+  "file_path_files": 0
+ },
+ {
+  "log": "assay-1787984219701-conventions-1787984314187-26.log",
+  "run": 1787984219701,
+  "name": "conventions",
+  "seq": 26,
+  "turns": 1,
+  "est": 0.257,
+  "billed": 0.46148500000000003,
+  "subtype": "success",
+  "num_turns": 1,
+  "tools": {},
+  "tool_calls": 0,
+  "file_path_files": 0
+ },
+ {
+  "log": "assay-1787984219701-logic-1787984236708-21.log",
+  "run": 1787984219701,
+  "name": "logic",
+  "seq": 21,
+  "turns": 16,
+  "est": 1.0096,
+  "billed": 1.5918865,
+  "subtype": "error_max_turns",
+  "num_turns": 17,
+  "tools": {
+   "Bash": 16
+  },
+  "tool_calls": 16,
+  "file_path_files": 0
+ },
+ {
+  "log": "assay-1787984219701-logic-1787984425831-30.log",
+  "run": 1787984219701,
+  "name": "logic",
+  "seq": 30,
+  "turns": 1,
+  "est": 0.2575,
+  "billed": 0.44412999999999997,
+  "subtype": "success",
+  "num_turns": 1,
+  "tools": {},
+  "tool_calls": 0,
+  "file_path_files": 0
+ },
+ {
+  "log": "assay-1787984219701-repo-specific-1787984240203-22.log",
+  "run": 1787984219701,
+  "name": "repo-specific",
+  "seq": 22,
+  "turns": 16,
+  "est": 0.9337,
+  "billed": 1.2954014999999999,
+  "subtype": "error_max_turns",
+  "num_turns": 17,
+  "tools": {
+   "Bash": 16
+  },
+  "tool_calls": 16,
+  "file_path_files": 0
+ },
+ {
+  "log": "assay-1787984219701-repo-specific-1787984317687-27.log",
+  "run": 1787984219701,
+  "name": "repo-specific",
+  "seq": 27,
+  "turns": 1,
+  "est": 0.2663,
+  "billed": 0.42046,
+  "subtype": "success",
+  "num_turns": 1,
+  "tools": {},
+  "tool_calls": 0,
+  "file_path_files": 0
+ },
+ {
+  "log": "assay-1787984219701-security-1787984240203-24.log",
+  "run": 1787984219701,
+  "name": "security",
+  "seq": 24,
+  "turns": 16,
+  "est": 1.0173,
+  "billed": 1.4845935000000001,
+  "subtype": "error_max_turns",
+  "num_turns": 17,
+  "tools": {
+   "Bash": 16
+  },
+  "tool_calls": 16,
+  "file_path_files": 0
+ },
+ {
+  "log": "assay-1787984219701-security-1787984361348-29.log",
+  "run": 1787984219701,
+  "name": "security",
+  "seq": 29,
+  "turns": 1,
+  "est": 0.2679,
+  "billed": 0.4231,
+  "subtype": "success",
+  "num_turns": 1,
+  "tools": {},
+  "tool_calls": 0,
+  "file_path_files": 0
+ },
+ {
+  "log": "assay-1787984219701-tests-missing-1787984240208-25.log",
+  "run": 1787984219701,
+  "name": "tests-missing",
+  "seq": 25,
+  "turns": 16,
+  "est": 1.0328,
+  "billed": 1.4424379999999999,
+  "subtype": "error_max_turns",
+  "num_turns": 17,
+  "tools": {
+   "Bash": 16
+  },
+  "tool_calls": 16,
+  "file_path_files": 0
+ },
+ {
+  "log": "assay-1787984219701-tests-missing-1787984333311-28.log",
+  "run": 1787984219701,
+  "name": "tests-missing",
+  "seq": 28,
+  "turns": 1,
+  "est": 0.257,
+  "billed": 0.47268499999999997,
+  "subtype": "success",
+  "num_turns": 1,
+  "tools": {},
+  "tool_calls": 0,
+  "file_path_files": 0
+ },
+ {
+  "log": "assay-1787984219701-triage-1787984220354-20.log",
+  "run": 1787984219701,
+  "name": "triage",
+  "seq": 20,
+  "turns": 1,
+  "est": 0.3444,
+  "billed": 0.564615,
+  "subtype": "success",
+  "num_turns": 1,
+  "tools": {},
+  "tool_calls": 0,
+  "file_path_files": 0
+ }
+]
