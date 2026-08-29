@@ -119,10 +119,11 @@ type PassOutput struct {
 	// a different quantity from CostUSD, not a second copy of it — CostUSD is
 	// the provider's own total_cost_usd off the result event, while this is the
 	// figure assay.max_cost_per_pass_usd is actually compared against, and the
-	// two differ by a structural factor (measured 1.61x on this deployment)
-	// because a message's usage block is stamped when the message starts and so
-	// under-counts output_tokens. Sizing the ceiling from CostUSD is therefore
-	// sizing it in the wrong unit; see docs/assay-turn-budget.md.
+	// two differ by a structural factor because a message's usage block is
+	// stamped when the message starts and so under-counts output_tokens. Sizing
+	// the ceiling from CostUSD is therefore sizing it in the wrong unit. The
+	// measured factor is recorded in docs/assay-turn-budget.md and nowhere
+	// else: it came from one sample, so re-measuring it must move one number.
 	//
 	// Zero when no ceiling is configured (a disabled tracker accumulates
 	// nothing) and zero for a backend that streams no per-turn usage, which are

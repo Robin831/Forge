@@ -188,11 +188,13 @@ type PassReport struct {
 	// It is not a redundant second copy of CostUSD, and the difference is the
 	// whole reason it is here: assay.max_cost_per_pass_usd is compared against
 	// THIS quantity and never against the provider's total_cost_usd, and the
-	// two differ by a structural factor — 1.61x over 141 measured sessions —
-	// because a message's usage block is stamped when the message starts, so
-	// its output_tokens reads 2 or 3 however much the model then writes. A
-	// ceiling sized by reading CostUSD off a log is therefore about 1.6x more
-	// permissive than it looks. Before this field existed the ceiling could not
+	// two differ by a structural factor, because a message's usage block is
+	// stamped when the message starts, so its output_tokens reads 2 or 3
+	// however much the model then writes. A ceiling sized by reading CostUSD
+	// off a log is therefore that much more permissive than it looks; the
+	// measured factor is in docs/assay-turn-budget.md, which holds it once so a
+	// re-measurement does not have to be chased through four comments. Before
+	// this field existed the ceiling could not
 	// be sized from the daemon log at all: the tracker had to be reproduced by
 	// hand over the preserved session logs, and the sessions the ceiling
 	// actually killed were absent from that reproduction by construction, since

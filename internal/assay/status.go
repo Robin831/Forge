@@ -85,7 +85,7 @@ func RenderStatusText(status RunStatus, completed, total int, failed []PassFailu
 // RenderPassTelemetry renders the per-pass turn and prompt-cache telemetry of a
 // run as one line:
 //
-//	pass=triage turns=3 term=success tools=0 files=0 cache_w=41200 cache_r=0 cost_usd=0.4213 cost_est=0.2617, pass=logic turns=12 term=success tools=9 files=4 cache_w=41500 cache_r=0 cost_usd=1.2800 cost_est=0.7900 primer=1, pass=security turns=6 term=success tools=5 files=3 cache_w=900 cache_r=41500
+//	pass=triage turns=3 term=success tools=0 files=0 cache_w=41200 cache_r=0 cost_usd=0.4213 cost_est=0.2617, pass=logic turns=12 term=success tools=9 files=4 cache_w=41500 cache_r=0 cost_usd=1.2800 cost_est=0.7900 primer=1, pass=security turns=6 term=success tools=5 files=3 cache_w=900 cache_r=41500 cost_usd=0.6104 cost_est=0.3791
 //
 // It is additive — a separate field on the Assay log line, never a change to
 // the coverage status text — so nothing that reads the existing line breaks.
@@ -138,9 +138,11 @@ func RenderStatusText(status RunStatus, completed, total int, failed []PassFailu
 // — and that is the ONLY figure assay.max_cost_per_pass_usd is compared
 // against, so it is the only one a ceiling can be sized from. The gap between
 // them is structural rather than noise: a message's usage block is stamped when
-// the message starts, so output_tokens under-counts and the estimate runs about
-// 1.61x below the invoice (measured; see docs/assay-turn-budget.md). Reading
-// cost_usd as the ceiling's unit sizes it 1.6x too permissively.
+// the message starts, so output_tokens under-counts and the estimate runs
+// consistently below the invoice. Reading cost_usd as the ceiling's unit sizes
+// it that factor too permissively. The measured factor lives in
+// docs/assay-turn-budget.md and only there — it came from one sample, so a
+// re-measurement has to move one number rather than four.
 //
 // Each is omitted when it is zero, on tools='s discipline and for tools='s
 // reason: a run with no ceiling configured, and a backend that streams no
@@ -150,10 +152,14 @@ func RenderStatusText(status RunStatus, completed, total int, failed []PassFailu
 // needed here as it is for tools=, because zero is not a reading anyone wants
 // from these: a session that ran and was measured always spent something.
 //
-// The two read EQUAL on a pass the ceiling stopped, which is not a bug: such a
-// session emits no result event, so it has no provider figure and CostUSD
-// carries the tracker's snapshot too (costStopError — a stop is not a refund).
-// term=error_max_cost is on the same segment and says so outright.
+// What says a pass was stopped at the ceiling is term=error_max_cost, which is
+// unconditional. It is NOT the two figures reading equal: they do on the
+// stopped session itself (it emits no result event, so costStopError puts the
+// tracker's snapshot under both names — a stop is not a refund), but both
+// fields here fold every session the pass made, so a pass whose first session
+// answered unparseably and whose re-prompt was then stopped carries session
+// one's billed figure in cost_usd and session one's estimate in cost_est, and
+// the two do not match.
 //
 // primer=1 stays last so a grep for it still anchors to the end of a segment.
 //

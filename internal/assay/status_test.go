@@ -266,8 +266,8 @@ func TestRenderPassTelemetry(t *testing.T) {
 // TestCostRendersInTelemetry pins the two dollar fields and, above all, keeps
 // them apart. assay.max_cost_per_pass_usd is compared against costTracker's
 // running estimate and never against the provider's billed total, and the two
-// differ by a structural factor (1.61x measured) because a message's usage
-// block is stamped when the message starts. So a line carrying only the billed
+// differ by a structural factor (measured in docs/assay-turn-budget.md)
+// because a message's usage block is stamped when the message starts. So a line carrying only the billed
 // figure cannot size the ceiling — which is exactly the state that forced the
 // tracker to be reproduced by hand over raw session logs, a reproduction the
 // sessions the ceiling actually killed are absent from by construction.
