@@ -31,6 +31,10 @@ type triageRun struct {
 	// prompt-cache halves and the cost alike — and is reported on the error
 	// paths too.
 	usage cost.Usage
+	// estCostUSD is costTracker's estimate of that same spend, cumulative on
+	// usage's terms — the unit the per-pass spend ceiling is written in. Zero
+	// when no ceiling is configured or the backend streams no per-turn usage.
+	estCostUSD float64
 	// turns is the recorded (final) session's turn count.
 	turns int
 	// toolCalls is how many tool calls every session of the pass made together,
@@ -73,30 +77,33 @@ func runTriage(ctx context.Context, runner PassRunner, cfg Config, req ReviewReq
 		// One session has run, so its own list IS the union — there is nothing
 		// earlier to merge with. The paths below, which do merge, are the ones
 		// reached after a session has already produced a PassOutput.
-		u, turns, calls := passErrorTelemetry(err)
-		return triageRun{usage: u, turns: turns, toolCalls: calls,
+		u, turns, calls, est := passErrorTelemetry(err)
+		return triageRun{usage: u, estCostUSD: est, turns: turns, toolCalls: calls,
 			filesRead: len(passErrorFiles(err))}, err
 	}
 	opened := out.OpenedFiles
 	run := triageRun{
-		usage:     out.usage(),
-		turns:     out.Turns,
-		toolCalls: out.ToolCalls,
-		filesRead: len(opened),
+		usage:      out.usage(),
+		estCostUSD: out.EstCostUSD,
+		turns:      out.Turns,
+		toolCalls:  out.ToolCalls,
+		filesRead:  len(opened),
 	}
 
 	res, perr := parseTriage(out.Text)
 	if perr != nil {
 		out2, err2 := runner(ctx, passTriage.Name, passTriage.Tier, prompt+"\n\n"+strictJSONReminder)
 		if err2 != nil {
-			u2, turns2, calls2 := passErrorTelemetry(err2)
+			u2, turns2, calls2, est2 := passErrorTelemetry(err2)
 			run.usage.Add(u2)
+			run.estCostUSD += est2
 			run.turns = turns2
 			run.toolCalls += calls2
 			run.filesRead = len(mergeOpenedFiles(opened, passErrorFiles(err2)))
 			return run, err2
 		}
 		run.usage.Add(out2.usage())
+		run.estCostUSD += out2.EstCostUSD
 		run.turns = out2.Turns
 		run.toolCalls += out2.ToolCalls
 		run.filesRead = len(mergeOpenedFiles(opened, out2.OpenedFiles))

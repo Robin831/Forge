@@ -327,12 +327,18 @@ func TestCostStopErrorCarriesEveryTokenColumn(t *testing.T) {
 	}
 	// And it survives the projection every cost sink reads it through, so the
 	// row that lands is the whole session, not its dollars alone.
-	u, turns, _ := passErrorTelemetry(perr)
+	u, turns, _, est := passErrorTelemetry(perr)
 	if u.InputTokens != 800_000 || u.OutputTokens != 12 || u.CacheWriteTokens != 900 || u.CacheReadTokens != 61500 || turns != 2 {
 		t.Errorf("passErrorTelemetry = {%+v turns:%d}; want the tracker's whole accounting", u, turns)
 	}
 	if math.Abs(u.EstimatedCostUSD-perr.CostUSD) > 1e-9 {
 		t.Errorf("usage cost %v disagrees with the error's %v", u.EstimatedCostUSD, perr.CostUSD)
+	}
+	// The estimate rides out beside the money. A stopped session has no
+	// provider figure at all, so this is the one dollar number it can be read
+	// against its own ceiling by.
+	if math.Abs(est-perr.CostUSD) > 1e-9 {
+		t.Errorf("estimate %v disagrees with the error's cost %v; a stopped session reports one snapshot under both names", est, perr.CostUSD)
 	}
 }
 
@@ -711,4 +717,308 @@ func TestSessionOutcomeAsksTheCeilingFirst(t *testing.T) {
 	if out.Text != "{}" || out.Turns != 7 {
 		t.Errorf("output = %+v; want the session's own text and turns", out)
 	}
+}
+
+// TestEstimatedCostReachesPassTelemetry is the end-to-end half of the same
+// argument: the ceiling's unit has to survive the whole fold from a session's
+// stream to the rendered log field, or it is still unrecoverable from the log.
+//
+// Two things are pinned. First, a pass that answered reports BOTH figures and
+// they disagree — that gap is the structural one docs/assay-turn-budget.md
+// measures, and a line carrying only the billed number sizes the ceiling that
+// much too permissively. Second, the
+// pass the ceiling actually stopped reports its estimate at all: that session
+// emits no result event, so it is absent by construction from any reproduction
+// built off preserved session logs, which is the exact gap this closes.
+func TestEstimatedCostReachesPassTelemetry(t *testing.T) {
+	script := map[string][]stubResp{
+		passTriage.Name: {{text: triageJSON(t, nil, ""), turns: 3, cost: 0.42, estCost: 0.26}},
+	}
+	for _, p := range deepPasses {
+		script[p.Name] = []stubResp{{text: findingsJSON(t, nil), turns: 6, cost: 0.80, estCost: 0.49}}
+	}
+	stopped := maxCostErr("security", 13, 1.57)
+	script["security"] = []stubResp{{err: stopped}}
+
+	res, err := Review(context.Background(), testRequest(), openTestDB(t), DefaultConfig().WithRunner(newScriptRunner(script).run))
+	if err != nil {
+		t.Fatalf("Review: %v", err)
+	}
+
+	triage := passReport(res, passTriage.Name)
+	if triage == nil {
+		t.Fatal("no triage pass report")
+	}
+	if math.Abs(triage.EstCostUSD-0.26) > 1e-9 {
+		t.Errorf("triage EstCostUSD = %v; want the tracker's 0.26", triage.EstCostUSD)
+	}
+	if triage.EstCostUSD == triage.CostUSD {
+		t.Error("triage reports one figure under both names; the billed total and the ceiling's unit are different quantities")
+	}
+
+	sec := passReport(res, "security")
+	if sec == nil {
+		t.Fatal("no security pass report")
+	}
+	if math.Abs(sec.EstCostUSD-stopped.EstCostUSD) > 1e-9 {
+		t.Errorf("stopped pass EstCostUSD = %v; want the tracker snapshot %v — a killed session has no other dollar figure",
+			sec.EstCostUSD, stopped.EstCostUSD)
+	}
+
+	line := res.PassTelemetryText()
+	for _, want := range []string{
+		"cost_usd=0.4200 cost_est=0.2600",
+		fmt.Sprintf("term=%s cost_usd=%.4f cost_est=%.4f", ReasonMaxCost, stopped.CostUSD, stopped.EstCostUSD),
+	} {
+		if !strings.Contains(line, want) {
+			t.Errorf("PassTelemetryText = %q; want it to carry %q", line, want)
+		}
+	}
+}
+
+// TestEstimatedCostSumsOverAPassesSessions holds the estimate to CostUSD's fold
+// rather than Turns' final-session one. The two dollar fields on a telemetry
+// segment are only comparable if they count the same sessions, and a pass that
+// took a strict-JSON re-prompt made two — both of which the provider billed and
+// both of which the tracker watched.
+func TestEstimatedCostSumsOverAPassesSessions(t *testing.T) {
+	script := map[string][]stubResp{passTriage.Name: {{text: triageJSON(t, nil, "")}}}
+	for _, p := range deepPasses {
+		script[p.Name] = []stubResp{{text: findingsJSON(t, nil)}}
+	}
+	// First session answers unparseably, so the pass re-prompts: two sessions,
+	// one pass.
+	script["logic"] = []stubResp{
+		{text: "not json", cost: 0.30, estCost: 0.18},
+		{text: findingsJSON(t, nil), cost: 0.20, estCost: 0.11},
+	}
+
+	res, err := Review(context.Background(), testRequest(), openTestDB(t), DefaultConfig().WithRunner(newScriptRunner(script).run))
+	if err != nil {
+		t.Fatalf("Review: %v", err)
+	}
+	logic := passReport(res, "logic")
+	if logic == nil {
+		t.Fatal("no logic pass report")
+	}
+	if math.Abs(logic.EstCostUSD-0.29) > 1e-9 {
+		t.Errorf("EstCostUSD = %v; want 0.29 — both sessions the pass made", logic.EstCostUSD)
+	}
+	if math.Abs(logic.CostUSD-0.50) > 1e-9 {
+		t.Fatalf("CostUSD = %v; want 0.50 — the fold the estimate has to match", logic.CostUSD)
+	}
+}
+
+// TestEstimatedCostSumsWhenADeepPassesRepromptFails is the sibling of the case
+// above at the branch that fails instead of answering: the first session
+// returned unparseable text, the strict-JSON re-prompt then died, and both were
+// billed.
+//
+// It is not a symmetric copy of the branch that answers, because the usage fold
+// one line up is unconditional. With the estimate dropped there, cost_usd folds
+// both sessions while cost_est folds only the first, and the two figures the
+// telemetry doc comment promises are the same fold of the same sessions quietly
+// stop being comparable — on precisely the pass an operator reads against the
+// ceiling, since a failing re-prompt is often the ceiling stop itself, whose
+// estimate is the only dollar figure that session has. The failure is visible
+// end to end rather than swallowed: a failed deep pass still produces a
+// PassReport and a partial run, so the mismatched pair reaches the rendered
+// line.
+//
+// The re-prompt is stopped on COST rather than on turns so the assertion is
+// about this fold alone: a turn-budget death would earn the pass a fresh
+// session from runDeepPass's retry loop, whose own fold is pinned separately.
+func TestEstimatedCostSumsWhenADeepPassesRepromptFails(t *testing.T) {
+	script := map[string][]stubResp{passTriage.Name: {{text: triageJSON(t, nil, "")}}}
+	for _, p := range deepPasses {
+		script[p.Name] = []stubResp{{text: findingsJSON(t, nil)}}
+	}
+	stopped := maxCostErr("logic", 9, 1.51)
+	script["logic"] = []stubResp{
+		{text: "not json", cost: 0.30, estCost: 0.18},
+		{err: stopped},
+	}
+
+	res, err := Review(context.Background(), testRequest(), openTestDB(t), DefaultConfig().WithRunner(newScriptRunner(script).run))
+	if err != nil {
+		t.Fatalf("Review: %v", err)
+	}
+	logic := passReport(res, "logic")
+	if logic == nil {
+		t.Fatal("no logic pass report")
+	}
+	if logic.TerminationReason != ReasonMaxCost {
+		t.Fatalf("term = %q; want %s — the re-prompt's own failure", logic.TerminationReason, ReasonMaxCost)
+	}
+	wantEst := 0.18 + stopped.EstCostUSD
+	if math.Abs(logic.EstCostUSD-wantEst) > 1e-9 {
+		t.Errorf("EstCostUSD = %v; want %v — both sessions the pass made", logic.EstCostUSD, wantEst)
+	}
+	// The invariant the estimate has to match: the billed figure folds both
+	// sessions, so an estimate that folded one is not comparable to it.
+	wantCost := 0.30 + stopped.CostUSD
+	if math.Abs(logic.CostUSD-wantCost) > 1e-9 {
+		t.Errorf("CostUSD = %v; want %v — the fold the estimate has to match", logic.CostUSD, wantCost)
+	}
+}
+
+// TestSessionOutcomeCarriesTheTrackersEstimate pins the one seam at which the
+// ceiling's unit enters the telemetry at all: PassOutput.EstCostUSD and
+// PassError.EstCostUSD are sourced from costTracker and from nothing else, on
+// every branch sessionOutcome can take.
+//
+// It has to be a direct test, because the end-to-end ones structurally cannot
+// reach this line: they drive Review through a scripted runner that sets
+// EstCostUSD itself and constructs no tracker, so they pin the fold and the
+// rendering ABOVE this assignment and say nothing about it. Replacing both
+// tracker.TotalUSD() reads with a literal 0 left the whole package green —
+// while every real pass would render no cost_est= at all, since the field is
+// omitted at zero, leaving assay.max_cost_per_pass_usd unsizeable from the
+// daemon log. That is the regression the field exists to prevent.
+func TestSessionOutcomeCarriesTheTrackersEstimate(t *testing.T) {
+	pv := provider.Provider{Kind: provider.Claude}
+	// Well under the $1.50 ceiling, so no branch below is a stop: the estimate
+	// has to arrive on the ordinary paths' own merits rather than as
+	// costStopError's snapshot, which is the one path already covered.
+	tracked := func() *costTracker {
+		tr := newCostTracker(1.50)
+		tr.AddTurnCost("msg_1", turnOf(0.25, 900, 41500))
+		tr.AddTurnCost("msg_2", turnOf(0.15, 0, 0))
+		return tr
+	}
+	const wantEst = 0.40
+
+	t.Run("a session that answered", func(t *testing.T) {
+		tr := tracked()
+		out, err := sessionOutcome("logic", tr, nil, &smith.Result{
+			ResultSubtype: "success", FullOutput: "{}", NumTurns: 7, CostUSD: 0.65,
+		}, pv)
+		if err != nil {
+			t.Fatalf("sessionOutcome: %v", err)
+		}
+		if math.Abs(out.EstCostUSD-tr.TotalUSD()) > 1e-9 || math.Abs(out.EstCostUSD-wantEst) > 1e-9 {
+			t.Errorf("EstCostUSD = %v; want the tracker's %v", out.EstCostUSD, wantEst)
+		}
+		// The whole point of the second field: it is a different quantity from
+		// the provider's billed total, not a second copy of it.
+		if math.Abs(out.EstCostUSD-out.CostUSD) < 1e-9 {
+			t.Errorf("EstCostUSD == CostUSD (%v); the estimate came from the result event rather than the tracker, and only the tracker's figure is the ceiling's unit", out.CostUSD)
+		}
+	})
+
+	// The failure branches matter more, not less: a session that died is one an
+	// operator most wants to read against the ceiling, and a failure is not a
+	// refund for what the tracker already watched the provider bill.
+	for _, tc := range []struct {
+		name   string
+		res    *smith.Result
+		reason string
+	}{
+		{"rate limited", &smith.Result{ExitCode: 1, RateLimited: true, NumTurns: 4, CostUSD: 0.12}, ReasonRateLimited},
+		{"provider failure", &smith.Result{ExitCode: 1, IsError: true, ResultSubtype: ReasonMaxTurns, NumTurns: 30, CostUSD: 0.90}, ReasonMaxTurns},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tr := tracked()
+			_, err := sessionOutcome("logic", tr, nil, tc.res, pv)
+			var perr *PassError
+			if !errors.As(err, &perr) || perr.Reason != tc.reason {
+				t.Fatalf("outcome = %v; want a %s PassError", err, tc.reason)
+			}
+			if math.Abs(perr.EstCostUSD-tr.TotalUSD()) > 1e-9 || math.Abs(perr.EstCostUSD-wantEst) > 1e-9 {
+				t.Errorf("EstCostUSD = %v; want the tracker's %v", perr.EstCostUSD, wantEst)
+			}
+			if math.Abs(perr.EstCostUSD-perr.CostUSD) < 1e-9 {
+				t.Errorf("EstCostUSD == CostUSD (%v); the failed session's billed figure is not the tracker's estimate", perr.CostUSD)
+			}
+		})
+	}
+}
+
+// TestEstimatedCostSumsAcrossAMaxTurnsRetry is the sum-over-sessions fold at
+// the site that spends the most: the turn-budget retry, which runs a whole
+// extra session rather than a re-prompt. A fold that degrades to assignment
+// here under-reports the ceiling's own unit on exactly the passes that cost
+// twice — and the two dollar fields on one telemetry segment are comparable
+// only while both count the same sessions, so CostUSD's fold is asserted
+// beside it.
+func TestEstimatedCostSumsAcrossAMaxTurnsRetry(t *testing.T) {
+	script := map[string][]stubResp{passTriage.Name: {{text: triageJSON(t, nil, "")}}}
+	for _, p := range deepPasses {
+		script[p.Name] = []stubResp{{text: findingsJSON(t, nil)}}
+	}
+	// Session one burns the budget without answering — the failure that earns a
+	// fresh session — and the retry answers. Both were billed, both watched.
+	burned := maxTurnsErr("logic", assayMaxTurns, 0.90)
+	burned.EstCostUSD = 0.55
+	script["logic"] = []stubResp{
+		{err: burned},
+		{text: findingsJSON(t, nil), cost: 0.20, estCost: 0.11},
+	}
+
+	res, err := Review(context.Background(), testRequest(), openTestDB(t), DefaultConfig().WithRunner(newScriptRunner(script).run))
+	if err != nil {
+		t.Fatalf("Review: %v", err)
+	}
+	logic := passReport(res, "logic")
+	if logic == nil {
+		t.Fatal("no logic pass report")
+	}
+	if !logic.Retried || logic.Attempts != 2 {
+		t.Fatalf("telemetry = {Retried:%v Attempts:%d}; want the retry to have run", logic.Retried, logic.Attempts)
+	}
+	if math.Abs(logic.EstCostUSD-0.66) > 1e-9 {
+		t.Errorf("EstCostUSD = %v; want 0.66 — both sessions the retry loop made", logic.EstCostUSD)
+	}
+	if math.Abs(logic.CostUSD-1.10) > 1e-9 {
+		t.Errorf("CostUSD = %v; want 1.10 — the fold the estimate has to match", logic.CostUSD)
+	}
+}
+
+// TestTriageEstimatedCostSumsOverItsReprompt covers the remaining two write
+// sites of the same fold, which are triage's re-prompt branches. They are
+// tested against runTriage directly rather than through Review because the
+// error branch is unobservable from there: a triage failure aborts the run, and
+// RunError carries the token usage but no estimate, so the only place the
+// second session's estimate can be seen is the triageRun itself.
+func TestTriageEstimatedCostSumsOverItsReprompt(t *testing.T) {
+	req := testRequest()
+
+	t.Run("the re-prompt answered", func(t *testing.T) {
+		r := newScriptRunner(map[string][]stubResp{passTriage.Name: {
+			{text: "not json", cost: 0.30, estCost: 0.18},
+			{text: triageJSON(t, nil, ""), cost: 0.20, estCost: 0.11},
+		}})
+		run, err := runTriage(context.Background(), r.run, DefaultConfig(), req, req.Diff)
+		if err != nil {
+			t.Fatalf("runTriage: %v", err)
+		}
+		if math.Abs(run.estCostUSD-0.29) > 1e-9 {
+			t.Errorf("estCostUSD = %v; want 0.29 — both sessions triage made", run.estCostUSD)
+		}
+		if math.Abs(run.usage.EstimatedCostUSD-0.50) > 1e-9 {
+			t.Errorf("usage cost = %v; want 0.50 — the fold the estimate has to match", run.usage.EstimatedCostUSD)
+		}
+	})
+
+	t.Run("the re-prompt failed", func(t *testing.T) {
+		// The first session answered unparseably and was billed for it; the
+		// re-prompt then died. Reporting only the second would drop spend the
+		// provider made either way — a failure is not a refund.
+		died := maxTurnsErr(passTriage.Name, assayMaxTurns, 0.20)
+		died.EstCostUSD = 0.11
+		r := newScriptRunner(map[string][]stubResp{passTriage.Name: {
+			{text: "not json", cost: 0.30, estCost: 0.18},
+			{err: died},
+		}})
+		run, err := runTriage(context.Background(), r.run, DefaultConfig(), req, req.Diff)
+		if err == nil {
+			t.Fatal("runTriage returned no error; want the re-prompt's failure")
+		}
+		if math.Abs(run.estCostUSD-0.29) > 1e-9 {
+			t.Errorf("estCostUSD = %v; want 0.29 — both sessions triage made", run.estCostUSD)
+		}
+		if math.Abs(run.usage.EstimatedCostUSD-0.50) > 1e-9 {
+			t.Errorf("usage cost = %v; want 0.50 — the fold the estimate has to match", run.usage.EstimatedCostUSD)
+		}
+	})
 }

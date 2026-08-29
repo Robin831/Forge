@@ -25,6 +25,14 @@ type stubResp struct {
 	err   error
 	turns int
 	cost  float64
+	// estCost is costTracker's running estimate for the session — the unit
+	// assay.max_cost_per_pass_usd is compared against, and a different quantity
+	// from cost, which is the provider's own billed total. It has its own
+	// channel here for the same reason it has its own field on PassOutput: a
+	// test cannot otherwise tell the two apart on the rendered line. Set it on
+	// an err response through PassError.EstCostUSD, which is the carrier a
+	// failed session has.
+	estCost float64
 	// cacheW and cacheR are the session's prompt-cache write/read accounting,
 	// which the pass telemetry sums over every session a pass made — unlike
 	// turns, which records the final session only.
@@ -99,6 +107,7 @@ func (r *scriptRunner) run(ctx context.Context, pass, _, prompt string) (PassOut
 		Text:                resp.text,
 		Turns:               resp.turns,
 		CostUSD:             resp.cost,
+		EstCostUSD:          resp.estCost,
 		TokensIn:            resp.tokensIn,
 		TokensOut:           resp.tokensOut,
 		CacheCreationTokens: resp.cacheW,
