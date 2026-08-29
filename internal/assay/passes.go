@@ -114,6 +114,22 @@ type PassOutput struct {
 	Text string
 	// CostUSD is the estimated cost of the invocation.
 	CostUSD float64
+	// EstCostUSD is what costTracker summed for the session as it streamed:
+	// each API message's usage block priced through cost.EstimatePricing. It is
+	// a different quantity from CostUSD, not a second copy of it — CostUSD is
+	// the provider's own total_cost_usd off the result event, while this is the
+	// figure assay.max_cost_per_pass_usd is actually compared against, and the
+	// two differ by a structural factor (measured 1.61x on this deployment)
+	// because a message's usage block is stamped when the message starts and so
+	// under-counts output_tokens. Sizing the ceiling from CostUSD is therefore
+	// sizing it in the wrong unit; see docs/assay-turn-budget.md.
+	//
+	// Zero when no ceiling is configured (a disabled tracker accumulates
+	// nothing) and zero for a backend that streams no per-turn usage, which are
+	// the same two cases in which the ceiling could never fire. Telemetry only:
+	// nothing branches on it, and it never reaches a cost table — the money is
+	// CostUSD's to report.
+	EstCostUSD float64
 	// Turns is how many model messages the invocation consumed — the unit
 	// --max-turns is written in, counted off the stream by turnCounter rather
 	// than taken from the provider's num_turns, which counts tool-result rounds
@@ -311,6 +327,14 @@ type PassError struct {
 	// it here would make every retried pass under-report by roughly a full
 	// session, and with it the daily cost tracking Review's total feeds.
 	CostUSD float64
+	// EstCostUSD is costTracker's running total for the failed session, in the
+	// unit assay.max_cost_per_pass_usd is written in (see
+	// PassOutput.EstCostUSD). It matters most on exactly this path: a session
+	// the ceiling stopped emits no result event, so there is no provider figure
+	// for it at all and this is the only dollar number it has. On a session
+	// stopped for cost CostUSD carries the same snapshot, since reporting zero
+	// spend for turns the provider did bill would be a refund nobody gave.
+	EstCostUSD float64
 	// TokensIn and TokensOut are the failed session's token counts, carried for
 	// the same reason CostUSD is — the provider billed them.
 	TokensIn  int
@@ -514,7 +538,7 @@ func sessionOutcome(pass string, tracker *costTracker, turns *turnCounter, res *
 	if res.RateLimited {
 		perr := newPassError(pass, ReasonRateLimited,
 			fmt.Sprintf("provider %s rate limited", pv.Label()), nil)
-		withResultTelemetry(perr, turns, res)
+		withResultTelemetry(perr, tracker, turns, res)
 		return PassOutput{}, perr
 	}
 	if res.IsError || res.ExitCode != 0 {
@@ -527,7 +551,7 @@ func sessionOutcome(pass string, tracker *costTracker, turns *turnCounter, res *
 		}
 		perr := newPassError(pass, reason,
 			fmt.Sprintf("provider %s failed (exit %d, subtype %s)", pv.Label(), res.ExitCode, res.ResultSubtype), nil)
-		withResultTelemetry(perr, turns, res)
+		withResultTelemetry(perr, tracker, turns, res)
 		return PassOutput{}, perr
 	}
 	text := res.FullOutput
@@ -537,6 +561,7 @@ func sessionOutcome(pass string, tracker *costTracker, turns *turnCounter, res *
 	return PassOutput{
 		Text:                text,
 		CostUSD:             res.CostUSD,
+		EstCostUSD:          tracker.TotalUSD(),
 		Turns:               observedTurns(turns, res.NumTurns),
 		TokensIn:            res.TokensIn,
 		TokensOut:           res.TokensOut,
@@ -555,9 +580,15 @@ func sessionOutcome(pass string, tracker *costTracker, turns *turnCounter, res *
 // event's, because this is the path a budget-exhausted session takes and the
 // result event reports a constant cap+1 there — the one number that cannot say
 // how much more the session wanted.
-func withResultTelemetry(perr *PassError, turns *turnCounter, res *smith.Result) {
+//
+// The estimate is the tracker's for the same reason: it is the quantity the
+// spend ceiling compares against, and a session that died on turns is exactly
+// one an operator wants to read against that ceiling. It is zero for a session
+// with no ceiling in force, which is the honest reading — nothing measured it.
+func withResultTelemetry(perr *PassError, tracker *costTracker, turns *turnCounter, res *smith.Result) {
 	perr.Turns = observedTurns(turns, res.NumTurns)
 	perr.CostUSD = res.CostUSD
+	perr.EstCostUSD = tracker.TotalUSD()
 	perr.TokensIn = res.TokensIn
 	perr.TokensOut = res.TokensOut
 	perr.CacheCreationTokens = res.CacheCreationTokens
@@ -958,6 +989,11 @@ type passResult struct {
 	// reason the cost is: a pass that took a re-prompt or a retry really did
 	// write the prefix more than once.
 	usage cost.Usage
+	// estCostUSD is costTracker's estimate of that same spend, summed over the
+	// same sessions — the unit assay.max_cost_per_pass_usd is compared against.
+	// Zero when no ceiling is configured or the backend streams no per-turn
+	// usage, which are the cases where nothing measured it.
+	estCostUSD float64
 	// turns is the turn count of the session whose output the pass recorded,
 	// i.e. the final one. Cumulating turns across sessions would say nothing
 	// about how close any single session came to the --max-turns budget, which
@@ -1047,6 +1083,7 @@ func runDeepPass(ctx context.Context, runner PassRunner, cfg Config, req ReviewR
 	for attempt := 1; attempt <= 1+maxTurnsRetries; attempt++ {
 		a := runPassAttempt(ctx, runner, req, p, in)
 		res.usage.Add(a.usage)
+		res.estCostUSD += a.estCostUSD
 		res.turns = a.turns
 		res.toolCalls += a.toolCalls
 		opened = mergeOpenedFiles(opened, a.openedFiles)
@@ -1099,9 +1136,14 @@ type attemptResult struct {
 	findings []Finding
 	// usage is the cumulative token accounting across every session the attempt
 	// made, failed ones included — the provider bills each of them.
-	usage    cost.Usage
-	turns    int
-	sessions int
+	usage cost.Usage
+	// estCostUSD is costTracker's estimate summed over those same sessions, on
+	// usage's terms rather than turns' — the two dollar figures the telemetry
+	// line carries are then the same fold of the same sessions, which is what
+	// makes them comparable to each other (see PassReport.EstCostUSD).
+	estCostUSD float64
+	turns      int
+	sessions   int
 	// toolCalls is how many tool calls every session of the attempt made
 	// together. It is summed rather than taken from the final session, on the
 	// same terms as usage: the question it answers is how much this pass
@@ -1132,9 +1174,10 @@ func runPassAttempt(ctx context.Context, runner PassRunner, req ReviewRequest, p
 
 	out, err := runner(ctx, p.Name, p.Tier, prompt)
 	if err != nil {
-		u, turns, calls := passErrorTelemetry(err)
+		u, turns, calls, est := passErrorTelemetry(err)
 		return attemptResult{
 			usage:       u,
+			estCostUSD:  est,
 			turns:       turns,
 			sessions:    1,
 			toolCalls:   calls,
@@ -1144,6 +1187,7 @@ func runPassAttempt(ctx context.Context, runner PassRunner, req ReviewRequest, p
 	}
 	res := attemptResult{
 		usage:       out.usage(),
+		estCostUSD:  out.EstCostUSD,
 		turns:       out.Turns,
 		sessions:    1,
 		toolCalls:   out.ToolCalls,
@@ -1156,8 +1200,9 @@ func runPassAttempt(ctx context.Context, runner PassRunner, req ReviewRequest, p
 		out2, err2 := runner(ctx, p.Name, p.Tier, prompt+"\n\n"+strictJSONReminder)
 		res.sessions = 2
 		if err2 != nil {
-			u2, turns2, calls2 := passErrorTelemetry(err2)
+			u2, turns2, calls2, est2 := passErrorTelemetry(err2)
 			res.usage.Add(u2)
+			res.estCostUSD += est2
 			res.turns = turns2
 			res.toolCalls += calls2
 			res.openedFiles = mergeOpenedFiles(res.openedFiles, passErrorFiles(err2))
@@ -1165,6 +1210,7 @@ func runPassAttempt(ctx context.Context, runner PassRunner, req ReviewRequest, p
 			return res
 		}
 		res.usage.Add(out2.usage())
+		res.estCostUSD += out2.EstCostUSD
 		res.turns = out2.Turns
 		res.toolCalls += out2.ToolCalls
 		res.openedFiles = mergeOpenedFiles(res.openedFiles, out2.OpenedFiles)
@@ -1183,7 +1229,9 @@ func runPassAttempt(ctx context.Context, runner PassRunner, req ReviewRequest, p
 
 // passErrorTelemetry reports what a failed session burned, where the error
 // carries it: the tokens and cost the provider billed (including its
-// prompt-cache write/read accounting) and the turns it got through.
+// prompt-cache write/read accounting), the turns it got through, and the
+// tracker's own estimate of the same spend — the ceiling's unit, which for a
+// session the ceiling stopped is the only dollar figure there is.
 //
 // It is one function rather than one per field group because every error path
 // wants all of it — an error either is a *PassError carrying the lot or is not
@@ -1194,7 +1242,7 @@ func runPassAttempt(ctx context.Context, runner PassRunner, req ReviewRequest, p
 // undercount is the safe direction for numbers feeding a spend limit's
 // denominator and a cache-redundancy measurement; a fabricated one would make
 // either say whatever the fabrication said.
-func passErrorTelemetry(err error) (u cost.Usage, turns, toolCalls int) {
+func passErrorTelemetry(err error) (u cost.Usage, turns, toolCalls int, estUSD float64) {
 	var pe *PassError
 	if errors.As(err, &pe) {
 		return cost.Usage{
@@ -1203,9 +1251,9 @@ func passErrorTelemetry(err error) (u cost.Usage, turns, toolCalls int) {
 			CacheReadTokens:  pe.CacheReadTokens,
 			CacheWriteTokens: pe.CacheCreationTokens,
 			EstimatedCostUSD: pe.CostUSD,
-		}, pe.Turns, pe.ToolCalls
+		}, pe.Turns, pe.ToolCalls, pe.EstCostUSD
 	}
-	return cost.Usage{}, 0, 0
+	return cost.Usage{}, 0, 0, 0
 }
 
 // passErrorFiles reports the files a failed session opened, where the error

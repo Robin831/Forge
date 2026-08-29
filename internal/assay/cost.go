@@ -317,6 +317,12 @@ func costStopError(pass string, tracker *costTracker, res *smith.Result) *PassEr
 			textfmt.Count(turns, "turn"), u.EstimatedCostUSD, tracker.LimitUSD()), nil)
 	perr.Turns = turns
 	perr.CostUSD = u.EstimatedCostUSD
+	// The same snapshot under both names on purpose: this session has no
+	// provider figure to report (it emitted no result event), and the one
+	// number it does have is already in the ceiling's own unit. Read off the
+	// telemetry line, cost_usd == cost_est is the signature of a stopped
+	// session — which term=error_max_cost says outright beside it.
+	perr.EstCostUSD = u.EstimatedCostUSD
 	perr.TokensIn = u.InputTokens
 	perr.TokensOut = u.OutputTokens
 	perr.CacheCreationTokens = u.CacheWriteTokens

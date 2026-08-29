@@ -262,3 +262,67 @@ func TestRenderPassTelemetry(t *testing.T) {
 		})
 	}
 }
+
+// TestCostRendersInTelemetry pins the two dollar fields and, above all, keeps
+// them apart. assay.max_cost_per_pass_usd is compared against costTracker's
+// running estimate and never against the provider's billed total, and the two
+// differ by a structural factor (1.61x measured) because a message's usage
+// block is stamped when the message starts. So a line carrying only the billed
+// figure cannot size the ceiling — which is exactly the state that forced the
+// tracker to be reproduced by hand over raw session logs, a reproduction the
+// sessions the ceiling actually killed are absent from by construction.
+func TestCostRendersInTelemetry(t *testing.T) {
+	tests := []struct {
+		name   string
+		passes []PassReport
+		want   string
+	}{
+		{
+			// Both known: exact placement, after the cache pair and before
+			// primer=, so a grep for primer=1 still anchors to a segment's end.
+			"both figures",
+			[]PassReport{{
+				Name: "logic", Turns: 12, Attempts: 1,
+				CacheCreationTokens: 41500, CacheReadTokens: 900,
+				CostUSD: 1.28, EstCostUSD: 0.79, Primer: true,
+			}},
+			"pass=logic turns=12 term=success cache_w=41500 cache_r=900 cost_usd=1.2800 cost_est=0.7900 primer=1",
+		},
+		{
+			// A backend that streams no per-turn usage (Gemini deltas, plain
+			// text) can be billed while nothing measures it in the ceiling's
+			// unit. cost_est=0 there would read as a free pass, so it is
+			// omitted — the same discipline tools=/files= follow.
+			"billed but unmeasured",
+			[]PassReport{{Name: "security", Turns: 6, Attempts: 1, CostUSD: 0.51}},
+			"pass=security turns=6 term=success cost_usd=0.5100",
+		},
+		{
+			// The mirror case, and the one the whole field exists for: a
+			// session Assay stopped at the ceiling emits no result event, so
+			// there is no provider total for it at all — only the tracker's
+			// snapshot, which is what PassError carries under both names.
+			// cost_usd == cost_est beside term=error_max_cost is the signature.
+			"stopped at the ceiling",
+			[]PassReport{{
+				Name: "logic", Turns: 13, Attempts: 1,
+				TerminationReason: ReasonMaxCost, CostUSD: 1.5732, EstCostUSD: 1.5732,
+			}},
+			"pass=logic turns=13 term=error_max_cost cost_usd=1.5732 cost_est=1.5732",
+		},
+		{
+			// No ceiling configured and a provider that reported nothing:
+			// neither field, and no stray separator left behind.
+			"nothing measured",
+			[]PassReport{{Name: "tests-missing", Turns: 4, Attempts: 1}},
+			"pass=tests-missing turns=4 term=success",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := RenderPassTelemetry(tt.passes); got != tt.want {
+				t.Errorf("RenderPassTelemetry() = %q; want %q", got, tt.want)
+			}
+		})
+	}
+}

@@ -465,8 +465,37 @@ The daemon-log extractor. This is the cheap source and the one to start from:
 its fields are already at *pass* level — `term=` is the outcome after the retry,
 `tools=` is summed over the pass's sessions and `files=` is their deduplicated
 union — whereas the session logs hold the raw events those were folded from and
-have to be reassembled per pass. What the daemon log does not carry is cost,
-which is the next script (and Forge-6ltv):
+have to be reassembled per pass.
+
+Since Forge-6ltv the daemon log carries **cost too**, and carries it in the
+ceiling's own unit, so the by-hand reproduction below is no longer the way to
+size `max_cost_per_pass_usd`. Each `passes=` segment now ends with two fields
+before `primer=`:
+
+- **`cost_est=`** — `costTracker`'s running estimate, summed over the pass's
+  sessions. **This is the quantity `assay.max_cost_per_pass_usd` is compared
+  against**, and the only one a ceiling can be sized from. It is present for a
+  pass the ceiling *stopped*, which is what the reproduction below can never
+  recover.
+- **`cost_usd=`** — the provider's billed `total_cost_usd`, over the same
+  sessions. **Do not size the ceiling from this field.** It is the larger
+  quantity by the structural ~1.61x measured above (a message's usage block is
+  stamped when the message starts, so `output_tokens` is understated by
+  construction and the gap will not close). A "$3.00" ceiling picked by reading
+  `cost_usd` does not bite until about $4.80 of estimate.
+
+Both are omitted rather than printed as zero where nothing measured them — a
+run with no ceiling configured, or a backend that streams no per-turn usage —
+on the same discipline `tools=`/`files=` follow, since `cost_est=0` would read
+as a pass that cost nothing. On a pass the ceiling stopped the two read
+**equal**: such a session emits no result event, so it has no provider figure
+and both report the tracker's snapshot; `term=error_max_cost` on the same
+segment says so outright.
+
+So the R2 cost distribution is the first extractor plus two fields — add
+`est=f.get('cost_est')` beside `tools=` and fold on it. What follows is the
+pre-Forge-6ltv method, kept for reading runs logged before the fields existed
+(and for auditing the tracker itself against raw events):
 
 ```bash
 python3 - <<'PY'
@@ -493,12 +522,13 @@ for n in ('triage', 'logic', 'security', 'conventions', 'tests-missing', 'repo-s
 PY
 ```
 
-And the tracker-unit cost distribution, which the daemon log cannot give —
-per-pass cost is not a rendered telemetry field, so it has to be reproduced
-from the preserved session logs by doing what `AddTurnCost` does: dedupe by
-message id, price at the row `cost.EstimatePricing` resolves for the configured
-model. Without this the only per-session figure available is `total_cost_usd`,
-which is the wrong quantity by the 1.61x above.
+The tracker-unit cost distribution as it had to be built *before* `cost_est=`
+existed: reproduced from the preserved session logs by doing what `AddTurnCost`
+does — dedupe by message id, price at the row `cost.EstimatePricing` resolves
+for the configured model. This is what the 1.61x table above was measured with.
+Reach for it only for runs predating the field, or to check the rendered figure
+against the raw events; note the blind spot recorded under it, which is the
+reason `cost_est=` was added at all.
 
 ```bash
 python3 - <<'PY'
@@ -540,8 +570,11 @@ PY
 The run key in the filename is the epoch-ms `LogKey` the daemon minted, which
 is what makes the boundary filter above a plain integer comparison — and note
 that the sessions killed on cost are **absent** from this sample by
-construction: they emit no `result` event. The crossings have to be read off
-the daemon log's `error_max_cost` lines, which carry the estimate at death.
+construction: they emit no `result` event. That is the blind spot: the script
+reproduces the ceiling's unit for every session *except* the ones the ceiling
+fired on, which are the only sessions that prove where it is set wrong. Those
+now come off the daemon log's own `cost_est=` beside `term=error_max_cost`,
+which is a `passes=` field like any other rather than a message to be parsed.
 
 ## Re-measurement — 2026-08-29 (Forge-cikv)
 

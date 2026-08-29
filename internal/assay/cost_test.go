@@ -327,12 +327,18 @@ func TestCostStopErrorCarriesEveryTokenColumn(t *testing.T) {
 	}
 	// And it survives the projection every cost sink reads it through, so the
 	// row that lands is the whole session, not its dollars alone.
-	u, turns, _ := passErrorTelemetry(perr)
+	u, turns, _, est := passErrorTelemetry(perr)
 	if u.InputTokens != 800_000 || u.OutputTokens != 12 || u.CacheWriteTokens != 900 || u.CacheReadTokens != 61500 || turns != 2 {
 		t.Errorf("passErrorTelemetry = {%+v turns:%d}; want the tracker's whole accounting", u, turns)
 	}
 	if math.Abs(u.EstimatedCostUSD-perr.CostUSD) > 1e-9 {
 		t.Errorf("usage cost %v disagrees with the error's %v", u.EstimatedCostUSD, perr.CostUSD)
+	}
+	// The estimate rides out beside the money. A stopped session has no
+	// provider figure at all, so this is the one dollar number it can be read
+	// against its own ceiling by.
+	if math.Abs(est-perr.CostUSD) > 1e-9 {
+		t.Errorf("estimate %v disagrees with the error's cost %v; a stopped session reports one snapshot under both names", est, perr.CostUSD)
 	}
 }
 
@@ -710,5 +716,94 @@ func TestSessionOutcomeAsksTheCeilingFirst(t *testing.T) {
 	}
 	if out.Text != "{}" || out.Turns != 7 {
 		t.Errorf("output = %+v; want the session's own text and turns", out)
+	}
+}
+
+// TestEstimatedCostReachesPassTelemetry is the end-to-end half of the same
+// argument: the ceiling's unit has to survive the whole fold from a session's
+// stream to the rendered log field, or it is still unrecoverable from the log.
+//
+// Two things are pinned. First, a pass that answered reports BOTH figures and
+// they disagree — that gap is the 1.61x structural one, and a line carrying
+// only the billed number sizes the ceiling ~1.6x too permissively. Second, the
+// pass the ceiling actually stopped reports its estimate at all: that session
+// emits no result event, so it is absent by construction from any reproduction
+// built off preserved session logs, which is the exact gap this closes.
+func TestEstimatedCostReachesPassTelemetry(t *testing.T) {
+	script := map[string][]stubResp{
+		passTriage.Name: {{text: triageJSON(t, nil, ""), turns: 3, cost: 0.42, estCost: 0.26}},
+	}
+	for _, p := range deepPasses {
+		script[p.Name] = []stubResp{{text: findingsJSON(t, nil), turns: 6, cost: 0.80, estCost: 0.49}}
+	}
+	stopped := maxCostErr("security", 13, 1.57)
+	script["security"] = []stubResp{{err: stopped}}
+
+	res, err := Review(context.Background(), testRequest(), openTestDB(t), DefaultConfig().WithRunner(newScriptRunner(script).run))
+	if err != nil {
+		t.Fatalf("Review: %v", err)
+	}
+
+	triage := passReport(res, passTriage.Name)
+	if triage == nil {
+		t.Fatal("no triage pass report")
+	}
+	if math.Abs(triage.EstCostUSD-0.26) > 1e-9 {
+		t.Errorf("triage EstCostUSD = %v; want the tracker's 0.26", triage.EstCostUSD)
+	}
+	if triage.EstCostUSD == triage.CostUSD {
+		t.Error("triage reports one figure under both names; the billed total and the ceiling's unit are different quantities")
+	}
+
+	sec := passReport(res, "security")
+	if sec == nil {
+		t.Fatal("no security pass report")
+	}
+	if math.Abs(sec.EstCostUSD-stopped.EstCostUSD) > 1e-9 {
+		t.Errorf("stopped pass EstCostUSD = %v; want the tracker snapshot %v — a killed session has no other dollar figure",
+			sec.EstCostUSD, stopped.EstCostUSD)
+	}
+
+	line := res.PassTelemetryText()
+	for _, want := range []string{
+		"cost_usd=0.4200 cost_est=0.2600",
+		fmt.Sprintf("term=%s cost_usd=%.4f cost_est=%.4f", ReasonMaxCost, stopped.CostUSD, stopped.EstCostUSD),
+	} {
+		if !strings.Contains(line, want) {
+			t.Errorf("PassTelemetryText = %q; want it to carry %q", line, want)
+		}
+	}
+}
+
+// TestEstimatedCostSumsOverAPassesSessions holds the estimate to CostUSD's fold
+// rather than Turns' final-session one. The two dollar fields on a telemetry
+// segment are only comparable if they count the same sessions, and a pass that
+// took a strict-JSON re-prompt made two — both of which the provider billed and
+// both of which the tracker watched.
+func TestEstimatedCostSumsOverAPassesSessions(t *testing.T) {
+	script := map[string][]stubResp{passTriage.Name: {{text: triageJSON(t, nil, "")}}}
+	for _, p := range deepPasses {
+		script[p.Name] = []stubResp{{text: findingsJSON(t, nil)}}
+	}
+	// First session answers unparseably, so the pass re-prompts: two sessions,
+	// one pass.
+	script["logic"] = []stubResp{
+		{text: "not json", cost: 0.30, estCost: 0.18},
+		{text: findingsJSON(t, nil), cost: 0.20, estCost: 0.11},
+	}
+
+	res, err := Review(context.Background(), testRequest(), openTestDB(t), DefaultConfig().WithRunner(newScriptRunner(script).run))
+	if err != nil {
+		t.Fatalf("Review: %v", err)
+	}
+	logic := passReport(res, "logic")
+	if logic == nil {
+		t.Fatal("no logic pass report")
+	}
+	if math.Abs(logic.EstCostUSD-0.29) > 1e-9 {
+		t.Errorf("EstCostUSD = %v; want 0.29 — both sessions the pass made", logic.EstCostUSD)
+	}
+	if math.Abs(logic.CostUSD-0.50) > 1e-9 {
+		t.Fatalf("CostUSD = %v; want 0.50 — the fold the estimate has to match", logic.CostUSD)
 	}
 }

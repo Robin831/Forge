@@ -182,6 +182,33 @@ type PassReport struct {
 	// this counts sessions, not Attempts: the two fields deliberately measure
 	// different things.
 	CostUSD float64
+	// EstCostUSD is costTracker's running estimate of that same spend, summed
+	// over the same sessions so the two are the same fold of the same work.
+	//
+	// It is not a redundant second copy of CostUSD, and the difference is the
+	// whole reason it is here: assay.max_cost_per_pass_usd is compared against
+	// THIS quantity and never against the provider's total_cost_usd, and the
+	// two differ by a structural factor — 1.61x over 141 measured sessions —
+	// because a message's usage block is stamped when the message starts, so
+	// its output_tokens reads 2 or 3 however much the model then writes. A
+	// ceiling sized by reading CostUSD off a log is therefore about 1.6x more
+	// permissive than it looks. Before this field existed the ceiling could not
+	// be sized from the daemon log at all: the tracker had to be reproduced by
+	// hand over the preserved session logs, and the sessions the ceiling
+	// actually killed were absent from that reproduction by construction, since
+	// they emit no result event (see docs/assay-turn-budget.md).
+	//
+	// Zero when no ceiling is configured — a disabled tracker accumulates
+	// nothing — and zero for a backend that streams no per-turn usage, which
+	// are exactly the two cases in which the ceiling could never fire.
+	// RenderPassTelemetry omits the field there rather than printing a zero
+	// that would read as a free pass.
+	//
+	// For the near-universal single-session pass this IS the figure the ceiling
+	// compared against. A pass that took a strict-JSON re-prompt or a
+	// turn-budget retry reports the sum, which is an upper bound on any one of
+	// its sessions; Attempts and Retried are what say a pass is in that case.
+	EstCostUSD float64
 	// Turns is the turn count of the session the pass recorded — the final
 	// one, not the sum, so the number stays comparable to the --max-turns
 	// budget a single session is given. It is counted in model messages, which
@@ -610,6 +637,7 @@ func Review(ctx context.Context, req ReviewRequest, db *state.DB, cfg Config) (*
 		Name:                passTriage.Name,
 		Findings:            0,
 		CostUSD:             triageRes.usage.EstimatedCostUSD,
+		EstCostUSD:          triageRes.estCostUSD,
 		Turns:               triageRes.turns,
 		ToolCalls:           triageRes.toolCalls,
 		FilesRead:           triageRes.filesRead,
@@ -684,6 +712,7 @@ func Review(ctx context.Context, req ReviewRequest, db *state.DB, cfg Config) (*
 			Name:                deepPasses[i].Name,
 			Findings:            len(o.findings),
 			CostUSD:             o.usage.EstimatedCostUSD,
+			EstCostUSD:          o.estCostUSD,
 			Turns:               o.turns,
 			ToolCalls:           o.toolCalls,
 			FilesRead:           o.filesRead,
