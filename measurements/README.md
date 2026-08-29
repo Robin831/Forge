@@ -34,9 +34,16 @@ partitions on them.
 
 | File | What |
 |---|---|
-| `assay-passes-20260827T131525Z-20260829T062100Z.json` | 78 pass observations, filtered to the reading-prompt boundary at extraction time |
+| `assay-passes-20260827T131525Z-20260829T062100Z.json` | 78 pass observations, cut at the reading-prompt boundary by the printed extractor's own filter line |
 | `assay-session-costs-20260827T131525Z-20260829T062100Z.json` | 95 pass sessions; additionally carries each session's `tool_use` block names and turn count, which the printed extractor discards |
 
+Both filenames open at the R2 boundary (`20260827T131525Z`), which is the
+window the extractors were *asked* for and not the one they found — the first
+run inside it is a day later, 2026-08-28 16:02:06 +02:00.
+
+That boundary cut is not a modification: both printed extractors carry the
+filter themselves (`rows = [... if r['ts'] >= '2026-08-27T15:15:25']`, and its
+epoch-ms twin in the session one), so applying it is running them verbatim.
 The added fields are the second file's only departure from the verbatim
 extractor, and they add rather than alter — the `est`/`billed` columns are
 computed by the printed code unchanged. They exist because `files=` is

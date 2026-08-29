@@ -572,8 +572,22 @@ identical across both.
 
 **13 runs, 78 pass observations, 95 pass sessions**, from
 2026-08-28 16:02:06 +02:00 to 2026-08-29 08:20:48 +02:00. All on the `forge`
-anvil, `claude-opus-5` for triage and review both. Of those, **R3 is 12 runs /
-88 sessions** and R2 is the single run in front of it.
+anvil, `claude-opus-5` for triage and review both. The split across the two
+regimes, so the headline reconciles on the page:
+
+| regime | runs | pass observations | pass sessions |
+|---|---|---|---|
+| R2 | 1 (PR #874) | 6 | 7 |
+| R3 | 12 | 72 | 88 |
+| **total** | **13** | **78** | **95** |
+
+R2's single run is the one place the observation and session columns do not
+differ by retries alone, so it is worth stating why: its six passes ran eight sessions — triage,
+five deep passes, plus a retry each in `logic` and `repo-specific` — and only
+seven have a row. The missing one is the `conventions` session the $1.50
+ceiling killed, which emits no `result` event and so cannot appear in a
+session extract at all (the same construction the section above notes). R3's
+72 pass observations are 12 runs x 6 passes exactly.
 
 This is **13 runs where the bead asked for ~20**, and that shortfall is stated
 rather than smoothed over: the per-*run* figures below (mean cost, mean
@@ -599,9 +613,20 @@ The artifacts, extracted 2026-08-29T06:21Z:
 | `measurements/assay-passes-20260827T131525Z-20260829T062100Z.json` | 78 rows, one per pass observation off `daemon.log` |
 | `measurements/assay-session-costs-20260827T131525Z-20260829T062100Z.json` | 95 rows, one per pass session off the preserved `assay-*.log` files |
 
-The session extractor was additionally asked for each session's `tool_use`
-block names and turn count, which the printed one discards; that is the only
-departure from verbatim and it adds fields rather than changing any.
+Both filenames open at `20260827T131525Z`, which is the **R2 boundary** — the
+window the extractors were asked for, per this directory's naming convention —
+and not the window they found: the first run inside it is 2026-08-28 16:02:06
++02:00, a day later, because `assay.daily_cost_limit_usd` was exhausted for
+most of the intervening day. The prose above names the observed window; the
+filenames name the requested one.
+
+Both extractors were run with their boundary filter as printed — the
+`rows = [... if r['ts'] >= '2026-08-27T15:15:25']` line in the first and the
+epoch-ms twin of it in the second — so the filtering is part of the verbatim
+extractor rather than a modification of it. The session extractor was
+additionally asked for each session's `tool_use` block names and turn count,
+which the printed one discards; that is the only departure from verbatim and
+it adds fields rather than changing any.
 
 ### The ceiling is now non-binding, and it was still binding at $1.50
 
@@ -614,20 +639,22 @@ notes $3.00 would not have saved either), PR #872's four-pass wipeout (R1,
 
 Estimated session cost — `costTracker`'s unit, reproduced as before — over R3:
 
-| pass | n | mean | p50 | p90 | max | max as % of $3.00 | over $1.50 |
-|---|---|---|---|---|---|---|---|
-| triage | 12 | $0.39 | $0.41 | $0.67 | $0.81 | 27% | 0 |
-| logic | 15 | $0.77 | $0.66 | $1.40 | $1.84 | 61% | 2 |
-| security | 15 | $0.76 | $0.74 | $1.55 | $1.64 | 55% | 2 |
-| conventions | 16 | $0.71 | $0.69 | $1.30 | $1.56 | 52% | 1 |
-| tests-missing | 13 | $0.68 | $0.65 | $1.26 | $1.58 | 53% | 1 |
-| repo-specific | 17 | $0.77 | $0.83 | $1.38 | $1.61 | 54% | 2 |
-| **all** | **88** | **$0.69** | **$0.63** | **$1.40** | **$1.84** | **61%** | **8** |
+| pass | n | mean | p50 | p90 | p90 as % of $3.00 | max | max as % of $3.00 | over $1.50 |
+|---|---|---|---|---|---|---|---|---|
+| triage | 12 | $0.39 | $0.41 | $0.67 | 22% | $0.81 | 27% | 0 |
+| logic | 15 | $0.77 | $0.66 | $1.40 | 47% | $1.84 | 61% | 2 |
+| security | 15 | $0.76 | $0.74 | $1.55 | 52% | $1.64 | 55% | 2 |
+| conventions | 16 | $0.71 | $0.69 | $1.30 | 43% | $1.56 | 52% | 1 |
+| tests-missing | 13 | $0.68 | $0.65 | $1.26 | 42% | $1.58 | 53% | 1 |
+| repo-specific | 17 | $0.77 | $0.83 | $1.38 | 46% | $1.61 | 54% | 2 |
+| **all** | **88** | **$0.69** | **$0.63** | **$1.40** | **47%** | **$1.84** | **61%** | **8** |
 
 The shape is the point, and it is the opposite of R1's. There the maximum was
 98% of the ceiling and p95 was 88% — a distribution piled against the wall,
-censored by it. Here p90 is **47%** of the ceiling and the single largest
-session is **61%**. The tail has room.
+censored by it. Here p90 across all 88 sessions ($1.40) is **47%** of the
+ceiling and the single largest session is **61%** — both read off the **all**
+row above. Per pass, p90 runs 42%–52% across the five deep passes. The tail
+has room.
 
 The last column is the counterfactual, and it is why the raise was not
 cosmetic: **8 of 88 sessions (9%) came in above $1.50**, spread across all five
@@ -667,9 +694,16 @@ At session level, before the retry hides it:
 | repo-specific | 17 | 5 | 29% | 8.8 | 10.4 |
 | **all deep** | **76** | **16** | **21%** | — | — |
 
-**21%, against R1's 8.5% (12 of 141).** Two and a half times the rate, on the
-same cap, from the prompt change alone — which is the intended effect showing
-up as pressure on the bound it was always going to press on.
+**21.1% of deep sessions (16 of 76), against R1's 10.2% (12 of 118).** Both
+sides of that ratio are deep sessions, which is the only way to compare them:
+R1's headline 8.5% is quoted above over **all 141** of its sessions, 23 of them
+triage, and no triage session in either regime has ever reached the cap — so
+the all-session figure is diluted by a pass that cannot contribute to it. Like
+for like the jump is **2.07x** on the deep-session basis (21.1% / 10.2%) and
+2.14x on the all-session one (16 of 88 = 18.2%, against 12 of 141 = 8.5%).
+Call it **twice the rate**, on the same cap, from the prompt change alone —
+which is the intended effect showing up as pressure on the bound it was always
+going to press on.
 
 And the adjacency that made Forge-sra6 refuse to touch the turn cap is gone.
 The R1 argument was that sessions dying on turns were holding $0.85–$1.45
@@ -747,8 +781,9 @@ intent.
 **On `assayMaxTurns` (16): recommend raising to 24, filed as Forge-55eq.** The
 trigger this time did fire, twice over:
 
-- 21% of deep sessions reach the cap, against 8.5% under the old prompts. That
-  is not a cap that occasionally bites.
+- 21.1% of deep sessions reach the cap (16 of 76), against 10.2% under the old
+  prompts (12 of 118) — twice the rate, both figures over deep sessions only.
+  That is not a cap that occasionally bites.
 - The reason Forge-sra6 declined to move it — the two bounds being adjacent, so
   more turns would convert recoverable turn deaths into terminal cost deaths —
   is measured gone: turn-killed sessions hold $1.15 mean / $1.84 max against
