@@ -809,6 +809,59 @@ func TestEstimatedCostSumsOverAPassesSessions(t *testing.T) {
 	}
 }
 
+// TestEstimatedCostSumsWhenADeepPassesRepromptFails is the sibling of the case
+// above at the branch that fails instead of answering: the first session
+// returned unparseable text, the strict-JSON re-prompt then died, and both were
+// billed.
+//
+// It is not a symmetric copy of the branch that answers, because the usage fold
+// one line up is unconditional. With the estimate dropped there, cost_usd folds
+// both sessions while cost_est folds only the first, and the two figures the
+// telemetry doc comment promises are the same fold of the same sessions quietly
+// stop being comparable — on precisely the pass an operator reads against the
+// ceiling, since a failing re-prompt is often the ceiling stop itself, whose
+// estimate is the only dollar figure that session has. The failure is visible
+// end to end rather than swallowed: a failed deep pass still produces a
+// PassReport and a partial run, so the mismatched pair reaches the rendered
+// line.
+//
+// The re-prompt is stopped on COST rather than on turns so the assertion is
+// about this fold alone: a turn-budget death would earn the pass a fresh
+// session from runDeepPass's retry loop, whose own fold is pinned separately.
+func TestEstimatedCostSumsWhenADeepPassesRepromptFails(t *testing.T) {
+	script := map[string][]stubResp{passTriage.Name: {{text: triageJSON(t, nil, "")}}}
+	for _, p := range deepPasses {
+		script[p.Name] = []stubResp{{text: findingsJSON(t, nil)}}
+	}
+	stopped := maxCostErr("logic", 9, 1.51)
+	script["logic"] = []stubResp{
+		{text: "not json", cost: 0.30, estCost: 0.18},
+		{err: stopped},
+	}
+
+	res, err := Review(context.Background(), testRequest(), openTestDB(t), DefaultConfig().WithRunner(newScriptRunner(script).run))
+	if err != nil {
+		t.Fatalf("Review: %v", err)
+	}
+	logic := passReport(res, "logic")
+	if logic == nil {
+		t.Fatal("no logic pass report")
+	}
+	if logic.TerminationReason != ReasonMaxCost {
+		t.Fatalf("term = %q; want %s — the re-prompt's own failure", logic.TerminationReason, ReasonMaxCost)
+	}
+	wantEst := 0.18 + stopped.EstCostUSD
+	if math.Abs(logic.EstCostUSD-wantEst) > 1e-9 {
+		t.Errorf("EstCostUSD = %v; want %v — both sessions the pass made", logic.EstCostUSD, wantEst)
+	}
+	// The invariant the estimate has to match: the billed figure folds both
+	// sessions, so an estimate that folded one is not comparable to it.
+	wantCost := 0.30 + stopped.CostUSD
+	if math.Abs(logic.CostUSD-wantCost) > 1e-9 {
+		t.Errorf("CostUSD = %v; want %v — the fold the estimate has to match", logic.CostUSD, wantCost)
+	}
+}
+
 // TestSessionOutcomeCarriesTheTrackersEstimate pins the one seam at which the
 // ceiling's unit enters the telemetry at all: PassOutput.EstCostUSD and
 // PassError.EstCostUSD are sourced from costTracker and from nothing else, on

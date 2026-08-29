@@ -152,6 +152,15 @@ func RenderStatusText(status RunStatus, completed, total int, failed []PassFailu
 // needed here as it is for tools=, because zero is not a reading anyone wants
 // from these: a session that ran and was measured always spent something.
 //
+// A zero cost_usd is its own case, and it is why a segment can carry cost_est
+// with no cost_usd beside it: the figure is the PROVIDER's, so a backend that
+// reports no total_cost_usd (Copilot's plain-text stream) and a session killed
+// before it emitted a result event both leave it at zero while the tracker's
+// own estimate stands. That second one is the cost-stopped session, where
+// costStopError supplies the snapshot under both names; a provider with no cost
+// figure at all is the shape that renders the estimate alone. Printing
+// cost_usd=0 there would report a pass the provider did bill as free.
+//
 // What says a pass was stopped at the ceiling is term=error_max_cost, which is
 // unconditional. It is NOT the two figures reading equal: they do on the
 // stopped session itself (it emits no result event, so costStopError puts the
