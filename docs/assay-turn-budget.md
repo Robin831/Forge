@@ -847,3 +847,48 @@ be measuring the wrong retry.
 
 Retention is the clock on all three: `daemon.log` was at 97% of its rotation
 threshold when this was taken. Extract before analysing, as this section did.
+
+## `files=` fixed — 2026-08-29 (Forge-72oy)
+
+The measurement above ends with three owed items, and the first of them is now
+closed: `fileTracker` reads a path from a shell command line as well as from a
+`file_path`-shaped tool input (`internal/assay/bashpaths.go`,
+`toolUseInput.paths`). Nothing else moved — no setting, no prompt, no cap.
+
+What changes as a result:
+
+- **`files=` becomes a measurement.** It was structurally zero on all 78 pass
+  observations because 100% of the 742 tool calls were `Bash`; a session that
+  reads with `cat`, `sed -n` or `grep` now contributes the paths it named. Only
+  the names that look like a file are counted (`countFilesRead`): a command line
+  names directories, patterns and script fragments beside its files, and a pass
+  that ran nothing but `cd internal/assay && go test ./...` opened nothing — a
+  non-zero reading here is the evidence that the pass went and looked, so a
+  false one would cost the field its whole purpose. Within that it is still a
+  slight over-count — a file named on a command line that did not open it still
+  lands in the set — and a slight under-count for a file with no extension. It
+  is read as the rough figure it is.
+- **The retry gets its third modification.** `openedDiffFiles` can now select,
+  so a turn-budget retry is scoped to the changed files the failed session
+  actually opened rather than running on reduced budget and appended instruction
+  alone. Only files already in the diff are ever selected, so an over-matching
+  token can never reach outside the change under review. The direction that does
+  cost something is a MISS — a file the session read and the parser failed to
+  name is a file the retry no longer sees — which is why the three read shapes a
+  pass actually issues are handled rather than left to the generic rules:
+  `git show <rev>:<path>` (reduced to the path), input redirection (`< file`)
+  and a quoted sub-command (`bash -c "..."`). A bare basename read after a `cd`
+  is honoured only when it matches exactly one diff file: basenames repeat
+  across packages, and scoping the retry to a same-named file in another package
+  would undo the narrowing rather than perform it.
+
+**Forge-55eq (`assayMaxTurns` 16 → 24) is unblocked, and is still not an edit
+to make blind.** The reason for the ordering was that a cap raise measured
+against a retry running on two of its three modifications measures the wrong
+retry. That objection is gone, but the evidence behind the raise was gathered
+under the inert retry, so the re-measurement it wants is a fresh window under
+this fix: the deep-session cap-hit rate (21.1% here), the retry rate, and
+whether a scoped retry recovers on fewer turns and less money than the
+unscoped one did. The 16 retries in the sample above all recovered without
+scoping, so the raise's expected win — fewer retries, not fewer cap hits — is
+what the new window has to show.

@@ -3,6 +3,7 @@ package assay
 import (
 	"context"
 	"encoding/json"
+	"slices"
 	"strings"
 	"testing"
 
@@ -245,13 +246,27 @@ func TestFileTrackerRecordsToolUsePaths(t *testing.T) {
 	tr := newFileTracker()
 	tr.observe(toolEvent(t, `[{"type":"tool_use","name":"Read","input":{"file_path":"/w/a.go"}}]`))
 	tr.observe(toolEvent(t, `[{"type":"text","text":"thinking"},{"type":"tool_use","name":"Edit","input":{"file_path":"/w/pkg/b.go"}}]`))
-	// A repeat is the same file, and a tool with no file_path names none.
+	// A repeat is the same file, and a command naming no path names no file.
 	tr.observe(toolEvent(t, `[{"type":"tool_use","name":"Read","input":{"file_path":"/w/a.go"}}]`))
 	tr.observe(toolEvent(t, `[{"type":"tool_use","name":"Bash","input":{"command":"ls"}}]`))
 
 	got := tr.paths()
 	if len(got) != 2 || got[0] != "/w/a.go" || got[1] != "/w/pkg/b.go" {
 		t.Errorf("paths = %v; want [/w/a.go /w/pkg/b.go] in first-seen order", got)
+	}
+}
+
+// TestFileTrackerReadsTheWiderPathKeys covers the structured half: a tool that
+// names its file under a key other than file_path is still a tool that opened a
+// file.
+func TestFileTrackerReadsTheWiderPathKeys(t *testing.T) {
+	tr := newFileTracker()
+	tr.observe(toolEvent(t, `[{"type":"tool_use","name":"Read","input":{"file_path":"/w/a.go"}}]`))
+	tr.observe(toolEvent(t, `[{"type":"tool_use","name":"Glob","input":{"path":"/w/pkg"}}]`))
+	tr.observe(toolEvent(t, `[{"type":"tool_use","name":"NotebookEdit","input":{"notebook_path":"/w/n.ipynb"}}]`))
+	want := []string{"/w/a.go", "/w/pkg", "/w/n.ipynb"}
+	if got := tr.paths(); !slices.Equal(got, want) {
+		t.Errorf("paths = %v; want %v", got, want)
 	}
 }
 
@@ -311,9 +326,10 @@ func TestWithSessionToolsAttachesToTheFailure(t *testing.T) {
 }
 
 // TestWithSessionToolsCountsToolsThatNameNoFile is the whole reason the call
-// count is not derived from the file list: a session that only grepped or ran a
-// command explored, and reporting it as a session that never used a tool is the
-// exact misreading this telemetry exists to prevent.
+// count is not derived from the file list: a session that listed a directory or
+// grepped for a symbol explored without naming a path, and reporting it as a
+// session that never used a tool is the exact misreading this telemetry exists
+// to prevent.
 func TestWithSessionToolsCountsToolsThatNameNoFile(t *testing.T) {
 	tr := newFileTracker()
 	tr.observe(toolEvent(t, `[{"type":"tool_use","name":"Bash","input":{"command":"ls"}}]`))
