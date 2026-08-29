@@ -249,6 +249,15 @@ type PassReport struct {
 	// and only the fold differs, because "how many files did this pass read"
 	// is a question about a set.
 	//
+	// What counts as a file it opened is what the session NAMED through its
+	// tools: a file-path input key, or a path-shaped argument on a shell
+	// command line (fileTracker, bashCandidatePaths). The second is where
+	// almost all of it comes from in practice — a pass that reads code reads it
+	// with cat, sed and grep — and it makes this a slight over-count rather
+	// than an exact one: a path named on a command line that did not open it
+	// still lands here. It is a rough figure by construction and is read as
+	// one; the question it answers is whether the pass went and looked.
+	//
 	// Zero for a backend that names no file in its tool events, which includes
 	// one that reports a tool-call COUNT but no per-call file path: ToolCalls
 	// can be non-zero here while this stays 0.

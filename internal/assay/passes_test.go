@@ -245,7 +245,7 @@ func TestFileTrackerRecordsToolUsePaths(t *testing.T) {
 	tr := newFileTracker()
 	tr.observe(toolEvent(t, `[{"type":"tool_use","name":"Read","input":{"file_path":"/w/a.go"}}]`))
 	tr.observe(toolEvent(t, `[{"type":"text","text":"thinking"},{"type":"tool_use","name":"Edit","input":{"file_path":"/w/pkg/b.go"}}]`))
-	// A repeat is the same file, and a tool with no file_path names none.
+	// A repeat is the same file, and a command naming no path names no file.
 	tr.observe(toolEvent(t, `[{"type":"tool_use","name":"Read","input":{"file_path":"/w/a.go"}}]`))
 	tr.observe(toolEvent(t, `[{"type":"tool_use","name":"Bash","input":{"command":"ls"}}]`))
 
@@ -311,9 +311,10 @@ func TestWithSessionToolsAttachesToTheFailure(t *testing.T) {
 }
 
 // TestWithSessionToolsCountsToolsThatNameNoFile is the whole reason the call
-// count is not derived from the file list: a session that only grepped or ran a
-// command explored, and reporting it as a session that never used a tool is the
-// exact misreading this telemetry exists to prevent.
+// count is not derived from the file list: a session that listed a directory or
+// grepped for a symbol explored without naming a path, and reporting it as a
+// session that never used a tool is the exact misreading this telemetry exists
+// to prevent.
 func TestWithSessionToolsCountsToolsThatNameNoFile(t *testing.T) {
 	tr := newFileTracker()
 	tr.observe(toolEvent(t, `[{"type":"tool_use","name":"Bash","input":{"command":"ls"}}]`))

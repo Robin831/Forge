@@ -219,21 +219,28 @@ func openedDiffFiles(opened, diffFiles []string) []string {
 }
 
 // pathRefersTo reports whether an opened path names the repo-relative diff path
-// want. A provider reports the absolute path it read
-// ("/home/x/.workers/y/internal/assay/passes.go") while a diff header names it
-// relative to the repository root, so the comparison is a path-component suffix
-// match rather than equality.
+// want. The comparison is a path-component suffix match in BOTH directions
+// rather than equality, because neither side is reliably the longer one:
 //
-// The match can be too generous — an opened file in an unrelated checkout with
-// the same tail matches — and that is the harmless direction: the only effect
-// is that the retry keeps a diff file it would otherwise have dropped.
+//   - a provider reports the absolute path it read
+//     ("/home/x/.workers/y/internal/assay/passes.go") while a diff header names
+//     it relative to the repository root, so the opened path is the longer one;
+//   - a path read off a shell command line is relative to that command's own
+//     working directory ("cd internal/assay && sed -n 1,80p retry.go"), so the
+//     diff path is.
+//
+// The match can be too generous — an unrelated checkout with the same tail, or
+// a second file of the same basename elsewhere in the diff — and that is the
+// harmless direction, because openedDiffFiles only ever SELECTS from the diff:
+// the only effect is that the retry keeps a diff file it would otherwise have
+// dropped, never that it reaches outside the change under review.
 func pathRefersTo(opened, want string) bool {
 	o := normalizeSlashes(opened)
 	w := normalizeSlashes(want)
 	if o == "" || w == "" {
 		return false
 	}
-	return o == w || strings.HasSuffix(o, "/"+w)
+	return o == w || strings.HasSuffix(o, "/"+w) || strings.HasSuffix(w, "/"+o)
 }
 
 // normalizeSlashes puts a path into the one form the suffix comparison can be
@@ -288,14 +295,25 @@ func planRetryInputs(base retryInputs, mods retryMods, build func(unifiedDiff st
 // no structured tool events yields an empty list, and the retry is then
 // modified by budget and instruction alone.
 //
+// What names a file is read off the input's shape, and a shell command line
+// counts (toolUseInput.paths, bashCandidatePaths). Reading the file-path keys
+// alone was not a gap at the margin: over 95 measured pass sessions every one
+// of 742 tool calls was Bash, so the list was empty on every pass and both the
+// things that read it — the files= telemetry field and the retry's diff scoping
+// — were structurally dead. What a command line yields is what the session
+// NAMED, which is a superset of what it read; the list is only ever used to
+// select from the diff or to be counted, so a name that turns out not to be a
+// file it opened costs nothing but one unit of a rough figure.
+//
 // The call count exists for telemetry, and it is deliberately not derivable
-// from the file list: a pass that greps, lists a directory or runs a command
-// has explored without naming a file_path, and a pass that made no tool call at
-// all answered from the diff text alone. That second case is the one worth
-// seeing — it is what the security pass was doing on the majority of runs, and
-// the turn count was only ever a weak proxy for it (see PassReport.ToolCalls).
-// It keeps counting past maxTrackedFiles, since it is one int and the runaway
-// session is exactly the one whose size is worth knowing.
+// from the file list: a pass can run a command that names no path at all
+// (`ls`, `go vet ./...`, a bare grep for a symbol), and a pass that made no tool
+// call at all answered from the diff text alone. That second case is the one
+// worth seeing — it is what the security pass was doing on the majority of
+// runs, and the turn count was only ever a weak proxy for it (see
+// PassReport.ToolCalls). It keeps counting past maxTrackedFiles, since it is
+// one int and the runaway session is exactly the one whose size is worth
+// knowing.
 //
 // What this tracker counts is the Claude-shaped stream, and a zero from it is
 // therefore not yet an answer: observedToolCalls is where a backend that
@@ -315,17 +333,55 @@ func newFileTracker() *fileTracker { return &fileTracker{} }
 // toolUseEnvelope is the part of an assistant message this tracker reads: the
 // content blocks, of which the tool_use ones may name a file.
 //
-// It matches on the presence of a file_path input rather than on a list of tool
-// names, so a tool Forge has never heard of that opens a file still counts. The
-// value is only ever compared against paths already in the diff
+// It matches on the SHAPE of a block's input rather than on a list of tool
+// names, so a tool Forge has never heard of that opens a file still counts. Any
+// value it reads is only ever compared against paths already in the diff
 // (openedDiffFiles), so a nonsense one costs nothing.
+//
+// Input is kept raw and decoded separately so that a block whose input is not
+// an object — a backend that streams a bare string, a tool with an array
+// argument — costs the file it might have named and not the whole event: the
+// call still counts, which is the figure the block was always going to
+// contribute.
 type toolUseEnvelope struct {
 	Content []struct {
-		Type  string `json:"type"`
-		Input struct {
-			FilePath string `json:"file_path"`
-		} `json:"input"`
+		Type  string          `json:"type"`
+		Input json.RawMessage `json:"input"`
 	} `json:"content"`
+}
+
+// toolUseInput is the set of input keys a tool can name a file with, plus the
+// one it can name a whole command line with.
+//
+// The path keys are the file-opening tools' own shapes (Read/Edit/Write
+// file_path, Glob and friends path, NotebookEdit notebook_path). Command is the
+// other half of the same question and the half that carries almost all of the
+// signal in practice: measured over 95 pass sessions, every one of 742 tool
+// calls was Bash and not one named a file_path, so a tracker reading the path
+// keys alone reported zero files for every pass that had read any.
+type toolUseInput struct {
+	FilePath     string `json:"file_path"`
+	Path         string `json:"path"`
+	NotebookPath string `json:"notebook_path"`
+	Command      string `json:"command"`
+}
+
+// paths returns the files this input names, structured keys first. The first
+// non-empty path key is taken (a tool naming two is naming one file under two
+// spellings), and a command line contributes every path-shaped argument it
+// carries.
+func (in toolUseInput) paths() []string {
+	var out []string
+	for _, p := range [...]string{in.FilePath, in.Path, in.NotebookPath} {
+		if strings.TrimSpace(p) != "" {
+			out = append(out, p)
+			break
+		}
+	}
+	if strings.TrimSpace(in.Command) != "" {
+		out = append(out, bashCandidatePaths(in.Command)...)
+	}
+	return out
 }
 
 // observe records the tool calls ev carries and any file they name. Safe to
@@ -343,7 +399,13 @@ func (t *fileTracker) observe(ev smith.StreamEvent) {
 			continue
 		}
 		t.addCall()
-		t.add(c.Input.FilePath)
+		var in toolUseInput
+		if err := json.Unmarshal(c.Input, &in); err != nil {
+			continue
+		}
+		for _, p := range in.paths() {
+			t.add(p)
+		}
 	}
 }
 

@@ -847,3 +847,38 @@ be measuring the wrong retry.
 
 Retention is the clock on all three: `daemon.log` was at 97% of its rotation
 threshold when this was taken. Extract before analysing, as this section did.
+
+## `files=` fixed — 2026-08-29 (Forge-72oy)
+
+The measurement above ends with three owed items, and the first of them is now
+closed: `fileTracker` reads a path from a shell command line as well as from a
+`file_path`-shaped tool input (`internal/assay/bashpaths.go`,
+`toolUseInput.paths`). Nothing else moved — no setting, no prompt, no cap.
+
+What changes as a result:
+
+- **`files=` becomes a measurement.** It was structurally zero on all 78 pass
+  observations because 100% of the 742 tool calls were `Bash`; a session that
+  reads with `cat`, `sed -n` or `grep` now contributes the paths it named. It is
+  a slight over-count by construction — a path named on a command line that did
+  not open it still lands in the set — and is read as the rough figure it is:
+  the question it answers is whether the pass went and looked, which `tools=`
+  alone cannot separate from a pass that ran `go build` twice.
+- **The retry gets its third modification.** `openedDiffFiles` can now select,
+  so a turn-budget retry is scoped to the changed files the failed session
+  actually opened rather than running on reduced budget and appended instruction
+  alone. The safety property is unchanged and is what makes the loose parse
+  acceptable: only files already in the diff are ever selected, so a misparsed
+  token narrows the retry by less than it should have and can never reach
+  outside the change under review.
+
+**Forge-55eq (`assayMaxTurns` 16 → 24) is unblocked, and is still not an edit
+to make blind.** The reason for the ordering was that a cap raise measured
+against a retry running on two of its three modifications measures the wrong
+retry. That objection is gone, but the evidence behind the raise was gathered
+under the inert retry, so the re-measurement it wants is a fresh window under
+this fix: the deep-session cap-hit rate (21.1% here), the retry rate, and
+whether a scoped retry recovers on fewer turns and less money than the
+unscoped one did. The 16 retries in the sample above all recovered without
+scoping, so the raise's expected win — fewer retries, not fewer cap hits — is
+what the new window has to show.
