@@ -41,9 +41,21 @@ func TestBashCandidatePathsReadsRealCommands(t *testing.T) {
 			want: []string{"internal/assay", "retry.go"},
 		},
 		{
-			name: "leading env assignment is not the command word",
+			// The command word is dropped exactly once per segment. If the
+			// leading assignment consumed that drop, the script itself — which
+			// IS path-shaped — would be reported as a file the session read.
+			name: "a leading env assignment does not consume the command-word drop",
+			cmd:  "LC_ALL=C ./scripts/check.sh internal/assay/skip.go",
+			want: []string{"internal/assay/skip.go"},
+		},
+		{
+			// git's rev:path syntax is admitted, and naming it here is what
+			// keeps that an acknowledged over-count rather than a surprise: it
+			// is path-shaped, it is not a file in the tree, and it is harmless
+			// because openedDiffFiles only ever selects from the diff.
+			name: "a git revision path is admitted as a candidate",
 			cmd:  "LC_ALL=C git show HEAD:internal/assay/skip.go",
-			want: nil, // "HEAD:internal/assay/skip.go" is a revision, not a path... but it is path-shaped
+			want: []string{"HEAD:internal/assay/skip.go"},
 		},
 		{
 			name: "a go test invocation names no file",
@@ -74,16 +86,6 @@ func TestBashCandidatePathsReadsRealCommands(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			got := bashCandidatePaths(tc.cmd)
-			if tc.name == "leading env assignment is not the command word" {
-				// git's rev:path syntax is path-shaped and is admitted; what
-				// this case pins is that LC_ALL=C did not consume the drop
-				// reserved for the command word, which would have made "show"
-				// an argument and "git" a candidate.
-				if containsStr(got, "git") {
-					t.Fatalf("candidates = %v; the env assignment consumed the command-word drop", got)
-				}
-				return
-			}
 			if !equalStrs(got, tc.want) {
 				t.Errorf("bashCandidatePaths(%q) = %v; want %v", tc.cmd, got, tc.want)
 			}
@@ -254,13 +256,4 @@ func equalStrs(a, b []string) bool {
 		}
 	}
 	return true
-}
-
-func containsStr(hay []string, needle string) bool {
-	for _, s := range hay {
-		if s == needle {
-			return true
-		}
-	}
-	return false
 }
