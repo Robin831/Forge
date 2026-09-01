@@ -209,7 +209,17 @@ func BatchFix(ctx context.Context, p BatchFixParams) *FixResult {
 	result := &FixResult{}
 
 	result.CommentsFound = len(p.Comments)
-	actionable := filterActionableComments(p.Comments)
+	// Same handled-comment filter as Fix. p.DB is optional on this path, and a
+	// nil set filters nothing.
+	var handled map[state.HandledComment]struct{}
+	if p.DB != nil {
+		var herr error
+		if handled, herr = p.DB.HandledComments(p.AnvilName, p.PRNumber); herr != nil {
+			log.Printf("[burnish] PR #%d: Warning: reading handled comments failed, not filtering: %v", p.PRNumber, herr)
+			handled = nil
+		}
+	}
+	actionable := filterActionableComments(p.Comments, handled)
 
 	if len(actionable) == 0 {
 		result.Addressed = true
@@ -437,6 +447,16 @@ func BatchFix(ctx context.Context, p BatchFixParams) *FixResult {
 	}
 
 	if p.DB != nil {
+		// The non-thread equivalent of the resolution above; see Fix.
+		if toRecord := nonThreadHandled(actionable); len(toRecord) > 0 {
+			if err := p.DB.MarkCommentsHandled(p.AnvilName, p.PRNumber, toRecord); err != nil {
+				log.Printf("[burnish] PR #%d: Warning: recording %d handled comments failed: %v",
+					p.PRNumber, len(toRecord), err)
+			} else {
+				log.Printf("[burnish] PR #%d bead=%s: recorded %d non-thread comment(s) as handled",
+					p.PRNumber, p.BeadID, len(toRecord))
+			}
+		}
 		_ = p.DB.LogEvent(state.EventBurnishSuccess,
 			fmt.Sprintf("PR #%d: batch addressed %d comments%s", p.PRNumber, len(actionable), unverifiedSuffix(result)),
 			p.BeadID, p.AnvilName)
@@ -535,8 +555,18 @@ func Fix(ctx context.Context, p FixParams) *FixResult {
 		return result
 	}
 
-	// Filter to unresolved/actionable comments
-	actionable := filterActionableComments(comments)
+	// Filter to unresolved/actionable comments. A comment already addressed on
+	// a previous round is dropped here: resolved threads are gone upstream, but
+	// review-level and PR-level comments have no platform resolution state and
+	// would otherwise be re-fixed on every round for the life of the PR.
+	handled, herr := p.DB.HandledComments(p.AnvilName, p.PRNumber)
+	if herr != nil {
+		// Not fatal: an unreadable set means the old behaviour (nothing
+		// filtered), which is noisy rather than wrong.
+		log.Printf("[burnish] PR #%d: Warning: reading handled comments failed, not filtering: %v", p.PRNumber, herr)
+		handled = nil
+	}
+	actionable := filterActionableComments(comments, handled)
 	if len(actionable) == 0 {
 		log.Printf("[burnish] PR #%d: No actionable comments", p.PRNumber)
 		result.Addressed = true
@@ -544,7 +574,8 @@ func Fix(ctx context.Context, p FixParams) *FixResult {
 		return result
 	}
 
-	log.Printf("[burnish] PR #%d: %d actionable review comments", p.PRNumber, len(actionable))
+	log.Printf("[burnish] PR #%d: %d actionable review comments (%d already handled)",
+		p.PRNumber, len(actionable), len(handled))
 
 	// Resolve providers — default to Claude → Gemini if not specified.
 	providers := p.Providers
@@ -807,6 +838,20 @@ func Fix(ctx context.Context, p FixParams) *FixResult {
 		log.Printf("[burnish] PR #%d bead=%s: thread resolution complete (resolved=%d/%d)",
 			p.PRNumber, p.BeadID, resolvedCount, len(actionable))
 
+		// Record the comments that have no thread to resolve. This is their
+		// equivalent of ResolveThread: without it they stay actionable for the
+		// life of the PR and every later round re-fixes them. Recorded after a
+		// successful fix and push, so a failed attempt leaves them actionable.
+		if toRecord := nonThreadHandled(actionable); len(toRecord) > 0 {
+			if err := p.DB.MarkCommentsHandled(p.AnvilName, p.PRNumber, toRecord); err != nil {
+				log.Printf("[burnish] PR #%d: Warning: recording %d handled comments failed: %v",
+					p.PRNumber, len(toRecord), err)
+			} else {
+				log.Printf("[burnish] PR #%d bead=%s: recorded %d non-thread comment(s) as handled",
+					p.PRNumber, p.BeadID, len(toRecord))
+			}
+		}
+
 		_ = p.DB.LogEvent(state.EventBurnishSuccess,
 			fmt.Sprintf("PR #%d: Addressed %d comments on attempt %d%s",
 				p.PRNumber, len(actionable), attempt, unverifiedSuffix(result)),
@@ -843,7 +888,14 @@ func Fix(ctx context.Context, p FixParams) *FixResult {
 }
 
 // filterActionableComments keeps only comments that need action.
-func filterActionableComments(comments []vcs.ReviewComment) []vcs.ReviewComment {
+//
+// handled is the set of review-level and PR-level comments already addressed on
+// this PR. Thread comments are excluded upstream by GetReviewComments, which
+// drops resolved threads; comments with no ThreadID have no resolution state on
+// the platform, so without this set every Copilot review body and every Assay
+// summary stays actionable forever and is re-sent to the model on every round.
+// A nil set filters nothing, which is the behaviour of every non-DB caller.
+func filterActionableComments(comments []vcs.ReviewComment, handled map[state.HandledComment]struct{}) []vcs.ReviewComment {
 	var actionable []vcs.ReviewComment
 	for _, c := range comments {
 		// Skip bot comments and approvals
@@ -853,9 +905,42 @@ func filterActionableComments(comments []vcs.ReviewComment) []vcs.ReviewComment 
 		if c.Body == "" {
 			continue
 		}
+		// Only non-thread comments are filtered here. A thread is removed by
+		// being resolved, upstream; dropping one on a handled-set hit would
+		// hide a thread the platform still shows as unresolved — which is
+		// exactly what keeps a PR blocked on conversation resolution.
+		if c.ThreadID == "" {
+			if _, ok := handled[handledKey(c)]; ok {
+				continue
+			}
+		}
 		actionable = append(actionable, c)
 	}
 	return actionable
+}
+
+// handledKey is the identity under which a non-thread comment is recorded as
+// addressed. A comment with no ID is never recorded — nonThreadHandled skips it
+// and MarkCommentsHandled skips it again — so a lookup for one cannot match,
+// and ID-less comments stay actionable rather than colliding into a shared key
+// that would suppress all of them at once.
+func handledKey(c vcs.ReviewComment) state.HandledComment {
+	return state.HandledComment{ID: c.ID, BodyHash: state.CommentBodyHash(c.Body)}
+}
+
+// nonThreadHandled selects the comments to record as addressed: those with no
+// thread to resolve and a stable ID to record them under. Thread comments are
+// deliberately excluded — they are resolved on the platform instead, which is
+// the state GetReviewComments already reads.
+func nonThreadHandled(comments []vcs.ReviewComment) []state.HandledComment {
+	var out []state.HandledComment
+	for _, c := range comments {
+		if c.ThreadID != "" || c.ID == "" {
+			continue
+		}
+		out = append(out, handledKey(c))
+	}
+	return out
 }
 
 // buildReviewFixPrompt creates a targeted prompt for Smith to address review comments.

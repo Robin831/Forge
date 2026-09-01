@@ -222,7 +222,7 @@ func TestFilterActionableComments(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := filterActionableComments(tt.input)
+			got := filterActionableComments(tt.input, nil)
 			if len(got) != tt.wantLen {
 				t.Errorf("filterActionableComments() returned %d comments, want %d", len(got), tt.wantLen)
 			}

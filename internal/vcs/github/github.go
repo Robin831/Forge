@@ -733,32 +733,37 @@ func (p *Provider) FetchReviewComments(ctx context.Context, worktreePath string,
 			} `json:"author"`
 			Body  string `json:"body"`
 			State string `json:"state"`
+			ID    string `json:"id"`
 		} `json:"reviews"`
 		Comments []struct {
 			Author struct {
 				Login string `json:"login"`
 			} `json:"author"`
 			Body string `json:"body"`
+			ID   string `json:"id"`
 		} `json:"comments"`
 	}
 
 	if err := json.Unmarshal(stdout2.Bytes(), &prData); err == nil {
-		// Review-level comments
+		// Review-level comments. These have no thread and so are never
+		// resolvable; ID is what lets a caller record having handled one.
 		for _, r := range prData.Reviews {
 			if r.State != "APPROVED" && r.State != "DISMISSED" && len(r.Body) > 20 {
 				comments = append(comments, vcs.ReviewComment{
 					Author: r.Author.Login,
 					Body:   r.Body,
 					State:  r.State,
+					ID:     r.ID,
 				})
 			}
 		}
-		// PR-level general comments
+		// PR-level general comments. Same: no thread, so no resolution.
 		for _, c := range prData.Comments {
 			if len(c.Body) > 20 {
 				comments = append(comments, vcs.ReviewComment{
 					Author: c.Author.Login,
 					Body:   c.Body,
+					ID:     c.ID,
 				})
 			}
 		}
