@@ -7,7 +7,9 @@
 package state
 
 import (
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -626,6 +628,30 @@ CREATE TABLE IF NOT EXISTS assay_runs (
 );
 
 CREATE INDEX IF NOT EXISTS idx_assay_runs_anvil_pr ON assay_runs(anvil, pr_number);
+
+-- Review-level and PR-level comments that Burnish has already addressed.
+-- A review thread carries its handled state on the platform (isResolved), so
+-- GetReviewComments filters resolved threads out and the actionable set drains.
+-- A review-level or PR-level comment belongs to no thread and can never be
+-- resolved, so nothing distinguished one Burnish had already worked through
+-- from one that had just arrived: every Copilot review body and every Assay
+-- summary stayed permanently actionable and was re-sent to the model on every
+-- round, forever. This table is the missing resolution state.
+--
+-- body_hash is part of the identity so that editing a comment to add a new
+-- request re-surfaces it rather than staying silently suppressed under an ID
+-- that was already recorded.
+CREATE TABLE IF NOT EXISTS burnish_handled_comments (
+    anvil      TEXT NOT NULL,
+    pr_number  INTEGER NOT NULL,
+    comment_id TEXT NOT NULL,
+    body_hash  TEXT NOT NULL DEFAULT '',
+    handled_at TEXT NOT NULL,
+    PRIMARY KEY (anvil, pr_number, comment_id, body_hash)
+);
+
+CREATE INDEX IF NOT EXISTS idx_burnish_handled_anvil_pr
+    ON burnish_handled_comments(anvil, pr_number);
 
 CREATE TABLE IF NOT EXISTS daemon_settings (
     key   TEXT PRIMARY KEY,
@@ -5765,6 +5791,84 @@ func (db *DB) CountAssayRuns(anvil string, prNumber int) (int, error) {
 		return 0, err
 	}
 	return n, nil
+}
+
+// HandledComment identifies a review-level or PR-level review comment that
+// Burnish has addressed. Such a comment belongs to no review thread, so the
+// platform holds no resolution state for it and Forge must keep its own.
+//
+// BodyHash is part of the identity, not decoration: a comment edited to add a
+// new request keeps its ID, and matching on ID alone would suppress the edit
+// forever.
+type HandledComment struct {
+	ID       string
+	BodyHash string
+}
+
+// CommentBodyHash is the body digest stored in a HandledComment. Both the
+// writer and the reader must derive it the same way, so it lives here rather
+// than in each caller.
+func CommentBodyHash(body string) string {
+	sum := sha256.Sum256([]byte(body))
+	return hex.EncodeToString(sum[:])
+}
+
+// MarkCommentsHandled records that Burnish has addressed these comments on the
+// PR. Re-recording one is a no-op, so a retried round cannot fail on a comment
+// the previous attempt already wrote.
+func (db *DB) MarkCommentsHandled(anvil string, prNumber int, cs []HandledComment) error {
+	if len(cs) == 0 {
+		return nil
+	}
+	tx, err := db.conn.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	stmt, err := tx.Prepare(
+		`INSERT OR IGNORE INTO burnish_handled_comments
+		     (anvil, pr_number, comment_id, body_hash, handled_at)
+		 VALUES (?, ?, ?, ?, ?)`)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = stmt.Close() }()
+
+	now := time.Now().UTC().Format(dbTimeLayout)
+	for _, c := range cs {
+		if c.ID == "" {
+			continue // nothing stable to record it under
+		}
+		if _, err := stmt.Exec(anvil, prNumber, c.ID, c.BodyHash, now); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+// HandledComments returns the set of comments already addressed on the PR, for
+// filtering a freshly fetched comment list.
+func (db *DB) HandledComments(anvil string, prNumber int) (map[HandledComment]struct{}, error) {
+	rows, err := db.conn.Query(
+		`SELECT comment_id, body_hash FROM burnish_handled_comments
+		 WHERE anvil = ? AND pr_number = ?`,
+		anvil, prNumber,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	handled := make(map[HandledComment]struct{})
+	for rows.Next() {
+		var c HandledComment
+		if err := rows.Scan(&c.ID, &c.BodyHash); err != nil {
+			return nil, err
+		}
+		handled[c] = struct{}{}
+	}
+	return handled, rows.Err()
 }
 
 // AssayCostUSDSince returns the total cost_usd of all assay_runs started at or

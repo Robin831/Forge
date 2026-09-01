@@ -600,12 +600,22 @@ type CICheck struct {
 
 // ReviewComment represents a review comment on a PR/MR.
 type ReviewComment struct {
-	Author   string // reviewer login
-	Body     string // comment text
-	Path     string // file path (empty for PR-level comments)
-	Line     int    // line number (0 for PR-level comments)
-	State    string // "CHANGES_REQUESTED", etc. (empty for thread comments)
-	ThreadID string // platform-specific thread identifier
+	Author string // reviewer login
+	Body   string // comment text
+	Path   string // file path (empty for PR-level comments)
+	Line   int    // line number (0 for PR-level comments)
+	State  string // "CHANGES_REQUESTED", etc. (empty for thread comments)
+	// ThreadID is the platform-specific review-thread identifier. Empty for
+	// review-level and PR-level comments, which do not belong to a thread and
+	// therefore can never be resolved.
+	ThreadID string
+	// ID identifies a comment that has no ThreadID, so that a caller can record
+	// having handled it. A resolvable thread carries its handled state on the
+	// platform (isResolved); a review-level or PR-level comment carries none,
+	// so without this there is nothing to distinguish one Forge has already
+	// addressed from one that just arrived. Empty for thread comments, which
+	// are filtered by resolution instead.
+	ID string
 }
 
 // MergeabilityInputs holds the computed boolean inputs for UpdatePRMergeability,
