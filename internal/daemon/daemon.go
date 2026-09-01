@@ -2200,6 +2200,22 @@ func (d *Daemon) ensureAssayReviewedHead(ctx context.Context, anvil, anvilPath, 
 	if last, lerr := d.db.LastReviewedSHA(anvil, prNumber); lerr == nil && last == st.HeadSHA {
 		return // current head already reviewed; its comments (if any) are posted
 	}
+	// Per-PR run cap, mirroring the Bellows gate in shouldEmitReviewNeeded.
+	// Bellows stops re-firing Assay at max_runs so the Assay -> Burnish ->
+	// new-head loop terminates, but this path is reached from the Burnish
+	// worker rather than from Bellows and used to bypass the cap entirely: a
+	// PR that Bellows had already stopped reviewing kept getting a fresh Assay
+	// run on every Burnish round. Observed on Munin#5423, where Bellows logged
+	// "run cap reached (3/2)" while Assay ran for a third and fourth time, each
+	// one blocking the fix it was meant to inform and turning up findings about
+	// the previous round's fix.
+	if maxRuns := resolved.GetMaxRuns(); maxRuns > 0 {
+		if n, cerr := d.db.CountAssayRuns(anvil, prNumber); cerr == nil && n >= maxRuns {
+			d.logger.Info("Burnish/Assay coordination: skipping Assay — per-PR run cap reached; fixing without Assay sync",
+				"pr", prNumber, "anvil", anvil, "runs", n, "max", maxRuns)
+			return
+		}
+	}
 	d.logger.Info("Burnish/Assay coordination: running Assay before fix so both reviews land in one pass", "pr", prNumber, "anvil", anvil, "head", st.HeadSHA)
 	// No dedicated Assay worker row on this path — the run piggybacks on the
 	// Burnish worker — so there is nothing to point at a log file.
