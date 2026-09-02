@@ -382,7 +382,7 @@ func buildPRBody(passes PassResults) string {
 	if n := len(passes.Narrowed); n > 0 {
 		lines = append(lines, fmt.Sprintf("- %d rule(s) whose paths were narrowed to the files their own source PR changed.", n))
 	}
-	if s := occupancyPhrase(passes); s != "" {
+	if s := OccupancyPhrase(passes); s != "" {
 		// Stated whether or not the ceiling evicted anything this run: a
 		// reviewer reading "0 evicted" cannot tell a file at half the ceiling
 		// from one a single rule under it.
@@ -437,23 +437,31 @@ func passResultsSummary(passes PassResults) string {
 		// flush that happened where none did.
 		return "no changes"
 	}
-	if s := occupancyPhrase(passes); s != "" {
+	if s := OccupancyPhrase(passes); s != "" {
 		parts = append(parts, s)
 	}
 	return strings.Join(parts, ", ")
 }
 
-// occupancyPhrase renders the active file's size against the ceiling it is
-// held to — "287/300 on file" — for the summary line, the PR body and the CLI.
-// One renderer rather than three, so the three surfaces cannot come to disagree
-// about what the ceiling was on a run that evicted nothing.
+// OccupancyPhrase renders the active file's size against the ceiling it is
+// held to — "287/300 on file". It is exported because the third surface that
+// reports the occupancy lives outside this package: the flush summary line and
+// the PR body call it from here, and `forge warden consolidate`
+// (cmd/forge.activeAfterLine) calls it for its "Active after:" column. One
+// renderer rather than one per surface, so the three cannot come to disagree
+// about what the ceiling was on a run that evicted nothing — which is exactly
+// what happened while the CLI formatted its own "287 (ceiling 300)".
+//
+// What it reads is PassResults.ActiveRules, never a second count carried
+// alongside it, so the number and the ceiling it is printed against come from
+// the one place the eviction pass recorded them.
 //
 // It is suppressed entirely when no ceiling is in effect, which covers both a
 // deployment that disabled it and a PassResults built by a caller that never
 // measured one: RuleCap is an int, so "disabled" and "not recorded" are the
 // same value here and a rendered "287/0" would be a claim about a ceiling
 // nobody set. The count alone is already in every other surface.
-func occupancyPhrase(passes PassResults) string {
+func OccupancyPhrase(passes PassResults) string {
 	if passes.RuleCap <= 0 {
 		return ""
 	}

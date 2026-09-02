@@ -31,7 +31,18 @@ func TestActiveAfterLine_NamesTheCeilingInEffect(t *testing.T) {
 		FinalActive: 299,
 		Passes:      smelter.PassResults{ActiveRules: 299, RuleCap: 300},
 	})
-	assert.Equal(t, "299 (ceiling 300)", line)
+	assert.Equal(t, "299/300 on file", line)
+}
+
+// The column is the smelter's own occupancy renderer and not a second format
+// written in the CLI: with one measurement rendered two ways the two surfaces
+// are free to drift, which is what the shared renderer's doc comment claims
+// cannot happen.
+func TestActiveAfterLine_UsesTheSharedOccupancyRenderer(t *testing.T) {
+	passes := smelter.PassResults{ActiveRules: 287, RuleCap: 300}
+	assert.Equal(t,
+		smelter.OccupancyPhrase(passes),
+		activeAfterLine(smelter.ConsolidateResult{FinalActive: 287, Passes: passes}))
 }
 
 // With eviction disabled the ceiling is omitted rather than printed as zero:
@@ -57,7 +68,7 @@ func TestRenderConsolidateSummary_ReportsOccupancyWithNoEvictions(t *testing.T) 
 		Passes:       smelter.PassResults{ActiveRules: 288, RuleCap: 300},
 	})
 	require.NoError(t, err)
-	assert.Contains(t, out.String(), "Active after:    288 (ceiling 300)")
+	assert.Contains(t, out.String(), "Active after:    288/300 on file")
 	assert.NotContains(t, out.String(), "Evicted:",
 		"nothing was evicted, so nothing may claim it was")
 }
@@ -77,7 +88,7 @@ func TestRenderConsolidateSummary_EvictionAndOccupancyAreBothReported(t *testing
 	})
 	require.NoError(t, err)
 	text := out.String()
-	assert.Contains(t, text, "Active after:    300 (ceiling 300)")
+	assert.Contains(t, text, "Active after:    300/300 on file")
 	assert.Contains(t, text, "Evicted:         5 rule(s) over the file ceiling")
 	assert.False(t, strings.Contains(text, "Archived stale:"),
 		"an over-cap eviction is not a rule that aged out")

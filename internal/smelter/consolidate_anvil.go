@@ -64,7 +64,10 @@ type ConsolidateResult struct {
 	// any pass ran.
 	InitialCount int
 	// FinalActive is the rule count in the active file after all passes
-	// completed and persistence (when any pass produced changes) ran.
+	// completed and persistence (when any pass produced changes) ran. It is
+	// assigned from Passes.ActiveRules rather than counted a second time, so
+	// the two cannot disagree; anything rendering the occupancy reads
+	// Passes.ActiveRules through smelter.OccupancyPhrase.
 	FinalActive int
 	// ArchiveCount is the entry count in the archive file after the run.
 	// Zero when no archive file exists.
@@ -325,7 +328,7 @@ func ConsolidateAnvil(ctx context.Context, opts ConsolidateOptions) (Consolidate
 		Passes:            passes,
 		Pass1Archived:     replaced,
 		InitialCount:      initialCount,
-		FinalActive:       len(rf.Rules),
+		FinalActive:       passes.ActiveRules,
 		FirstError:        firstPassErr,
 		ClustersAttempted: attempted,
 		ClusterErrors:     clusterErrs,

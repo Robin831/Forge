@@ -889,7 +889,7 @@ func (s *Smelter) runFileCap(anvilName string, rf *warden.RulesFile, max int) []
 }
 
 // ruleCap reads the configured ceiling on the active rules file once. An
-// unwired closure is no ceiling (0), which applyFileCap and occupancyPhrase
+// unwired closure is no ceiling (0), which applyFileCap and OccupancyPhrase
 // both already read as "not in effect", so a Smelter built without the option
 // needs no nil check at either call site.
 func (s *Smelter) ruleCap() int {
