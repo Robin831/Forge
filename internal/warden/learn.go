@@ -279,8 +279,16 @@ Respond with ONLY a JSON object (no markdown fences, no explanation) in this exa
 	// for no paths, so anything that arrived in that field is invented, while
 	// the files the comments sit on are observed. A rule written with the
 	// repo-wide `**/*.cs` a model would guess is one that fires on every C#
-	// diff in the repository, which is the shape DerivePaths exists to remove.
-	rule.Paths = DerivePaths(commentPaths(comments))
+	// diff in the repository, which is the shape this derivation exists to
+	// remove.
+	//
+	// DeriveRulePaths and not the bare DerivePaths, because the smelter's Pass
+	// 3 re-derives this same field from this same rule later and the two must
+	// be the same function: scoping the evidence and stopping here, while Pass
+	// 3 also intersected the extensions with the rule's own language, made the
+	// backfill rewrite rules the learner had placed minutes earlier — the one
+	// property a shared derivation is for.
+	rule.Paths = DeriveRulePaths(rule, commentPaths(comments))
 
 	return &rule, nil
 }
@@ -520,7 +528,7 @@ Respond with ONLY a JSON object (no markdown fences, no explanation) using this 
 	// actually fixed in are the files the rule is about. Same derivation the
 	// Copilot path and the smelter's backfill use, so a rule learned here is
 	// gated the way a rule learned anywhere else is.
-	rule.Paths = DerivePaths(diffpkg.ChangedFiles(fixDiff))
+	rule.Paths = DeriveRulePaths(rule, diffpkg.ChangedFiles(fixDiff))
 	return &rule, nil
 }
 

@@ -1,23 +1,20 @@
-package smelter
+package warden
 
 import (
-	"context"
 	"testing"
 
-	"github.com/Robin831/Forge/internal/warden"
 	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
 func TestInferRuleGlobs(t *testing.T) {
 	cases := []struct {
 		name string
-		rule warden.Rule
+		rule Rule
 		want []string
 	}{
 		{
 			name: "go concurrency rule",
-			rule: warden.Rule{
+			rule: Rule{
 				Pattern: "map written from more than one goroutine",
 				Check:   "guard shared state with sync.Map or a mutex",
 			},
@@ -25,7 +22,7 @@ func TestInferRuleGlobs(t *testing.T) {
 		},
 		{
 			name: "go error handling rule",
-			rule: warden.Rule{
+			rule: Rule{
 				Pattern: "error returned without context",
 				Check:   "wrap with fmt.Errorf and check err != nil at the call site",
 			},
@@ -33,7 +30,7 @@ func TestInferRuleGlobs(t *testing.T) {
 		},
 		{
 			name: "go defer rule, single selector",
-			rule: warden.Rule{
+			rule: Rule{
 				Pattern: "file opened without a matching close",
 				Check:   "defer f.Close() on the line after the open",
 			},
@@ -41,7 +38,7 @@ func TestInferRuleGlobs(t *testing.T) {
 		},
 		{
 			name: "go defer rule, chained selector",
-			rule: warden.Rule{
+			rule: Rule{
 				Pattern: "response body left open",
 				Check:   "defer resp.Body.Close() once the error is checked",
 			},
@@ -49,7 +46,7 @@ func TestInferRuleGlobs(t *testing.T) {
 		},
 		{
 			name: "go defer rule, unlock",
-			rule: warden.Rule{
+			rule: Rule{
 				Pattern: "mutex held across a return",
 				Check:   "take the lock and defer mu.Unlock()",
 			},
@@ -57,7 +54,7 @@ func TestInferRuleGlobs(t *testing.T) {
 		},
 		{
 			name: "react rule",
-			rule: warden.Rule{
+			rule: Rule{
 				Pattern: "state derived during render",
 				Check:   "compute it with useMemo instead of a second useState",
 			},
@@ -65,7 +62,7 @@ func TestInferRuleGlobs(t *testing.T) {
 		},
 		{
 			name: "typescript rule naming the extension",
-			rule: warden.Rule{
+			rule: Rule{
 				Pattern: "component file without an explicit props type",
 				Check:   "declare the props interface in the .tsx file",
 			},
@@ -73,7 +70,7 @@ func TestInferRuleGlobs(t *testing.T) {
 		},
 		{
 			name: "changelog rule",
-			rule: warden.Rule{
+			rule: Rule{
 				Pattern: "PR without a changelog fragment",
 				Check:   "add changelog.d/<bead-id>.md",
 			},
@@ -81,7 +78,7 @@ func TestInferRuleGlobs(t *testing.T) {
 		},
 		{
 			name: "rule naming both go and the changelog",
-			rule: warden.Rule{
+			rule: Rule{
 				Pattern: "exported function added with no changelog fragment",
 				Check:   "every .go change that is user visible needs one",
 			},
@@ -89,7 +86,7 @@ func TestInferRuleGlobs(t *testing.T) {
 		},
 		{
 			name: "generic rule names no language",
-			rule: warden.Rule{
+			rule: Rule{
 				Pattern: "magic number in a conditional",
 				Check:   "name it as a constant",
 			},
@@ -97,14 +94,14 @@ func TestInferRuleGlobs(t *testing.T) {
 		},
 		{
 			name: "empty rule text",
-			rule: warden.Rule{},
+			rule: Rule{},
 			want: nil,
 		},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			assert.Equal(t, tc.want, inferRuleGlobs(ruleText(tc.rule)))
+			assert.Equal(t, tc.want, InferRuleGlobs(RuleText(tc.rule)))
 		})
 	}
 }
@@ -119,11 +116,11 @@ func TestInferRuleGlobs(t *testing.T) {
 func TestInferRuleGlobsIgnoresGenericProse(t *testing.T) {
 	cases := []struct {
 		name string
-		rule warden.Rule
+		rule Rule
 	}{
 		{
 			name: "defer in ordinary review prose",
-			rule: warden.Rule{
+			rule: Rule{
 				Pattern: "do not defer validation to the client",
 				Check:   "validate in the form component before submit",
 			},
@@ -137,28 +134,28 @@ func TestInferRuleGlobsIgnoresGenericProse(t *testing.T) {
 			// the client"), and a missed narrowing costs a rule the gate it
 			// could have had, while a misfire costs it every gate it has.
 			name: "defer of a bare call, no selector",
-			rule: warden.Rule{
+			rule: Rule{
 				Pattern: "context created without a cancel",
 				Check:   "defer cancel() immediately after",
 			},
 		},
 		{
 			name: "nil in ordinary review prose",
-			rule: warden.Rule{
+			rule: Rule{
 				Pattern: "avoid rendering a nil value",
 				Check:   "guard the optional field",
 			},
 		},
 		{
 			name: "chan as an abbreviation, not the keyword",
-			rule: warden.Rule{
+			rule: Rule{
 				Pattern: "channel names in the UI must be escaped",
 				Check:   "escape the chan name",
 			},
 		},
 		{
 			name: "props without any other frontend token",
-			rule: warden.Rule{
+			rule: Rule{
 				Pattern: "props drilled through three levels",
 				Check:   "pass them explicitly instead",
 			},
@@ -167,7 +164,7 @@ func TestInferRuleGlobsIgnoresGenericProse(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			assert.Nil(t, inferRuleGlobs(ruleText(tc.rule)),
+			assert.Nil(t, InferRuleGlobs(RuleText(tc.rule)),
 				"generic review prose must not be read as naming a language")
 		})
 	}
@@ -180,42 +177,42 @@ func TestInferRuleGlobsIgnoresGenericProse(t *testing.T) {
 // turns into a rule that silently never fires again.
 func TestGlobsForRuleNeverGatesOnAnUncorroboratedLanguage(t *testing.T) {
 	tsFiles := []string{"web/src/App.tsx", "web/src/api/prs.ts"}
-	goRule := warden.Rule{
+	goRule := Rule{
 		Pattern: "map mutated from a goroutine",
 		Check:   "hold a sync.Mutex across the write",
 	}
 
-	got := globsForRule(goRule, tsFiles)
+	got := DeriveRulePaths(goRule, tsFiles)
 	assert.Equal(t, []string{"web/**/*.ts", "web/**/*.tsx"}, got)
 	assert.NotContains(t, got, "**/*.go",
 		"a language the PR's own files contradict must not become the rule's gate")
 }
 
 func TestGlobsForRule(t *testing.T) {
-	goRule := warden.Rule{
+	goRule := Rule{
 		Pattern: "shared map mutated from a goroutine",
 		Check:   "use sync.Map or hold a mutex across the write",
 	}
-	frontendRule := warden.Rule{
+	frontendRule := Rule{
 		Pattern: "effect without a dependency array",
 		Check:   "React re-runs useEffect on every render otherwise",
 	}
-	changelogRule := warden.Rule{
+	changelogRule := Rule{
 		Pattern: "PR without a changelog fragment",
 		Check:   "add a file under changelog.d",
 	}
-	genericRule := warden.Rule{
+	genericRule := Rule{
 		Pattern: "magic number in a conditional",
 		Check:   "name it as a constant",
 	}
-	goChangelogRule := warden.Rule{
+	goChangelogRule := Rule{
 		Pattern: "exported function added with no changelog fragment",
 		Check:   "every .go change that is user visible needs one",
 	}
 
 	cases := []struct {
 		name  string
-		rule  warden.Rule
+		rule  Rule
 		files []string
 		want  []string
 	}{
@@ -306,7 +303,7 @@ func TestGlobsForRule(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			assert.Equal(t, tc.want, globsForRule(tc.rule, tc.files))
+			assert.Equal(t, tc.want, DeriveRulePaths(tc.rule, tc.files))
 		})
 	}
 }
@@ -315,62 +312,17 @@ func TestGlobsForRule(t *testing.T) {
 // warden-rules.yaml depends on: the same inputs must produce the same slice,
 // whatever order the PR reported its files in.
 func TestGlobsForRuleIsDeterministic(t *testing.T) {
-	rule := warden.Rule{
+	rule := Rule{
 		Pattern: "exported function added with no changelog fragment",
 		Check:   "every .go change that is user visible needs a changelog.d entry",
 	}
-	first := globsForRule(rule, []string{"a.go", "b.ts", "changelog.d/x.md"})
-	second := globsForRule(rule, []string{"changelog.d/x.md", "b.ts", "a.go"})
+	first := DeriveRulePaths(rule, []string{"a.go", "b.ts", "changelog.d/x.md"})
+	second := DeriveRulePaths(rule, []string{"changelog.d/x.md", "b.ts", "a.go"})
 	assert.Equal(t, first, second)
 	// `a.go` sits in the repository root, so its area is the root: `*.go`
 	// matches it and nothing under a directory, which is the whole of what the
 	// evidence supports.
 	assert.Equal(t, []string{"*.go", "changelog.d/**"}, first)
-}
-
-// TestRunPathsBackfill_NarrowsToTheRulesOwnLanguage is the end-to-end shape of
-// the bug: a Go rule learned from a PR that also touched the frontend must not
-// be backfilled with the frontend's globs.
-func TestRunPathsBackfill_NarrowsToTheRulesOwnLanguage(t *testing.T) {
-	db := openTestDB(t)
-	s := New(db, 0, map[string]string{})
-
-	withStubFetcher(t, func(_ context.Context, _ string, _ int) ([]string, error) {
-		return []string{
-			"internal/daemon/poll.go",
-			"web/src/App.tsx",
-			"web/src/api/prs.ts",
-			"docs/configuration.md",
-		}, nil
-	})
-
-	rf := &warden.RulesFile{Rules: []warden.Rule{
-		{
-			ID:      "go-1",
-			Pattern: "map mutated from a goroutine",
-			Check:   "guard it with sync.Mutex",
-			Source:  warden.SourceList{"copilot:PR#682"},
-		},
-		{
-			ID:      "ui-1",
-			Pattern: "component state derived during render",
-			Check:   "use useMemo instead of a second useState in the React component",
-			Source:  warden.SourceList{"copilot:PR#682"},
-		},
-		{
-			ID:      "any-1",
-			Pattern: "magic number in a conditional",
-			Check:   "name it as a constant",
-			Source:  warden.SourceList{"copilot:PR#682"},
-		},
-	}}
-
-	updated := s.runPathsBackfill(context.Background(), t.TempDir(), "anvil-a", rf).Filled
-	require.Equal(t, []string{"go-1", "ui-1", "any-1"}, updated)
-	assert.Equal(t, []string{"internal/**/*.go"}, rf.Rules[0].Paths)
-	assert.Equal(t, []string{"web/**/*.ts", "web/**/*.tsx"}, rf.Rules[1].Paths)
-	assert.Equal(t, []string{"docs/**/*.md", "internal/**/*.go", "web/**/*.ts", "web/**/*.tsx"}, rf.Rules[2].Paths,
-		"a rule naming no language keeps the PR-derived set, scoped to its areas")
 }
 
 // TestLanguageOutcomesReportsWhatSurvived pins the half of the backfill log
@@ -379,22 +331,22 @@ func TestRunPathsBackfill_NarrowsToTheRulesOwnLanguage(t *testing.T) {
 // backfilled with **/*.ts, and logging a bare `go` there reads to whoever is
 // debugging it as confirmation the Go narrowing applied.
 func TestLanguageOutcomesReportsWhatSurvived(t *testing.T) {
-	goRule := warden.Rule{
+	goRule := Rule{
 		Pattern: "map mutated from a goroutine",
 		Check:   "hold a sync.Mutex across the write",
 	}
-	frontendRule := warden.Rule{
+	frontendRule := Rule{
 		Pattern: "effect without a dependency array",
 		Check:   "React re-runs useEffect on every render otherwise",
 	}
-	changelogRule := warden.Rule{
+	changelogRule := Rule{
 		Pattern: "PR without a changelog fragment",
 		Check:   "add a file under changelog.d",
 	}
 
 	cases := []struct {
 		name  string
-		rule  warden.Rule
+		rule  Rule
 		files []string
 		want  []string
 	}{
@@ -424,7 +376,7 @@ func TestLanguageOutcomesReportsWhatSurvived(t *testing.T) {
 		},
 		{
 			name:  "no language named",
-			rule:  warden.Rule{Pattern: "magic number", Check: "name it as a constant"},
+			rule:  Rule{Pattern: "magic number", Check: "name it as a constant"},
 			files: []string{"internal/daemon/poll.go"},
 			want:  nil,
 		},
@@ -432,8 +384,8 @@ func TestLanguageOutcomesReportsWhatSurvived(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			globs := globsForRule(tc.rule, tc.files)
-			assert.Equal(t, tc.want, languageOutcomes(ruleText(tc.rule), globs))
+			globs := DeriveRulePaths(tc.rule, tc.files)
+			assert.Equal(t, tc.want, LanguageOutcomes(RuleText(tc.rule), globs))
 		})
 	}
 }

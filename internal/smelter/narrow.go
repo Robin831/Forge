@@ -67,8 +67,8 @@ func anyRepoWide(globs []string) bool {
 //
 // The pairs it has to decide are narrow by construction: Pass 3 derives
 // candidates from warden.DerivePaths (`api/**/*.cs`, the root-level `*.cs`, and
-// the bare `**/*.ext` where there was no file to place) and the languageSignals
-// table (`**/*.go`, `**/*.ts`, `**/*.tsx`, `changelog.d/**`), so equality
+// the bare `**/*.ext` where there was no file to place) and warden's language
+// signal table (`**/*.go`, `**/*.ts`, `**/*.tsx`, `changelog.d/**`), so equality
 // carries most of them and two relations are left worth naming.
 //
 // The second is area scoping, and it is a containment this CAN prove rather

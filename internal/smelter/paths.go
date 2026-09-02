@@ -157,8 +157,10 @@ func (r backfillResult) summary(anvilName string) string {
 
 // runPathsBackfill iterates the active rules in rf and, for each rule whose
 // Source carries one or more copilot:PR#N tokens, fetches the changed files for
-// those PRs and derives the globs globsForRule reads out of those files and the
-// rule's own text. What it then does with them depends on the rule:
+// those PRs and derives the globs warden.DeriveRulePaths reads out of those
+// files and the rule's own text — the same function the learner placed the rule
+// with, so this pass is a re-derivation of one answer rather than a second
+// opinion on it. What it then does with them depends on the rule:
 //
 //   - Paths empty → populated with the derived globs, the pass's original
 //     behaviour, unchanged.
@@ -181,7 +183,12 @@ func (r backfillResult) summary(anvilName string) string {
 // Idempotency survives the change because the derivation is a fixed point: the
 // globs are a function of the rule's text and its PRs' files, neither of which
 // a rewrite moves, so a second run derives the set already on file and
-// isStrictlyNarrower declines an equal set.
+// isStrictlyNarrower declines an equal set. It holds for a rule this pass has
+// never seen for the same reason once warden.DeriveRulePaths is what placed it:
+// the learner's evidence (a comment's anchors) is a subset of this pass's (the
+// whole PR), so the candidate carries areas the rule's own set does not cover
+// and the narrowing is declined rather than re-placing a rule learned minutes
+// earlier.
 //
 // What it does NOT survive is the fetch: a rule whose paths are already narrow
 // still has to be re-derived to find that out, so the pass now costs one gh
@@ -190,7 +197,7 @@ func (r backfillResult) summary(anvilName string) string {
 // 2295-rule one — a couple of minutes per anvil, once per smelter_interval).
 // That is accepted rather than optimised away with a marker on the rule: a
 // persisted "already narrowed" flag is a claim about a derivation that changes
-// whenever languageSignals does, and a rule wrongly carrying it would never be
+// whenever warden's language signals do, and a rule wrongly carrying it would never be
 // looked at again. mayNarrow is the part that can be decided without the
 // network, and it is decided there.
 //
@@ -253,8 +260,8 @@ func pathsBackfill(ctx context.Context, wtPath, anvilName string, rf *warden.Rul
 		// Derived from the rule's own text as well as the PR's files: the PR
 		// says which extensions were touched, the rule says which language it
 		// is about, and only the intersection is a path filter that narrows
-		// anything. See globsForRule.
-		globs := globsForRule(*rule, files)
+		// anything. See warden.DeriveRulePaths.
+		globs := warden.DeriveRulePaths(*rule, files)
 		if len(globs) == 0 {
 			continue
 		}
@@ -361,7 +368,7 @@ func sourcePRFiles(ctx context.Context, wtPath, anvilName string, rule *warden.R
 // being reviewed. Both lists are PR-derived, so both go out through
 // safeGlobList.
 func logPathsDerived(action string, rule *warden.Rule, anvilName string, before, after []string) {
-	langs := languageOutcomes(ruleText(*rule), after)
+	langs := warden.LanguageOutcomes(warden.RuleText(*rule), after)
 	if len(langs) == 0 {
 		langs = []string{"none"}
 	}

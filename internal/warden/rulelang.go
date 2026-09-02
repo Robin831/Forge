@@ -1,11 +1,10 @@
-package smelter
+package warden
 
 import (
 	"fmt"
 	"regexp"
 	"strings"
 
-	"github.com/Robin831/Forge/internal/warden"
 	"github.com/bmatcuk/doublestar/v4"
 )
 
@@ -22,7 +21,7 @@ import (
 // deliberately absent: `nil`, `defer`, `chan` and `props` each fire on
 // ordinary review prose ("do not defer validation to the client", "avoid
 // rendering a nil value"), which attributes a language-agnostic or frontend
-// rule to Go. globsForRule no longer turns such a misfire into a permanent
+// rule to Go. DeriveRulePaths no longer turns such a misfire into a permanent
 // gate — an inference the PR's own files contradict is discarded in favour of
 // them — but a misfire still costs the rule the narrowing this table exists to
 // provide, so the bar for adding a pattern here is that it cannot be written
@@ -103,7 +102,7 @@ func compileSignals(patterns ...string) []*regexp.Regexp {
 // says to look for and what it says to check. Everything else on a Rule —
 // source, id, added date — describes where the rule came from, not what it is
 // about, which is precisely the confusion this package had.
-func ruleText(r warden.Rule) string {
+func RuleText(r Rule) string {
 	return r.Pattern + "\n" + r.Check
 }
 
@@ -123,7 +122,7 @@ func matchedLanguages(text string) []languageSignal {
 }
 
 // languageOutcomes names the languages a rule's text was read as naming AND
-// what globsForRule then did with each: `go=kept`, `changelog=discarded`,
+// what DeriveRulePaths then did with each: `go=kept`, `changelog=discarded`,
 // `frontend=partial(1/2)`. It exists so the backfill log can say WHY a rule
 // got the globs it got.
 //
@@ -134,19 +133,19 @@ func matchedLanguages(text string) []languageSignal {
 // by whoever is debugging that rule as confirmation it did. So the outcome is
 // read back off the globs the rule actually carries rather than re-derived
 // from the text, which is exactly the information the text does not hold.
-func languageOutcomes(text string, globs []string) []string {
+func LanguageOutcomes(text string, globs []string) []string {
 	langs := matchedLanguages(text)
 	if len(langs) == 0 {
 		return nil
 	}
-	// Read through warden.BaseGlob, because the globs a rule ends up carrying
+	// Read through BaseGlob, because the globs a rule ends up carrying
 	// are area-scoped (`internal/**/*.go`) while a languageSignal entry names
 	// the bare form (`**/*.go`). Compared literally, every scoped glob would
 	// read as the language having been discarded — the one outcome that says a
 	// rule was gated on something its own text never named.
 	final := make(map[string]struct{}, len(globs))
 	for _, g := range globs {
-		final[warden.BaseGlob(g)] = struct{}{}
+		final[BaseGlob(g)] = struct{}{}
 	}
 	out := make([]string, 0, len(langs))
 	for _, lang := range langs {
@@ -175,7 +174,7 @@ func languageOutcomes(text string, globs []string) []string {
 // inferRuleGlobs returns the globs implied by the languages a rule's own text
 // names, in languageSignals declaration order and deduplicated. It returns nil
 // when the text names none — the caller then has nothing to narrow with.
-func inferRuleGlobs(text string) []string {
+func InferRuleGlobs(text string) []string {
 	var globs []string
 	seen := make(map[string]struct{})
 	for _, lang := range matchedLanguages(text) {
@@ -199,18 +198,35 @@ func matchesAny(signals []*regexp.Regexp, text string) bool {
 	return false
 }
 
-// globsForRule derives the Paths a backfilled rule should carry from two
-// independent pieces of evidence: the extensions of the files the source PR
-// touched (what was changed) and the languages the rule's own text names (what
-// the rule is about). Taking the PR's set alone is what made a Go concurrency
-// rule learned from a PR that also touched the frontend carry **/*.ts,
-// **/*.tsx and **/*.md — globs that match unrelated diffs, so the rule joined
-// the Warden checklist on every one of them.
+// DeriveRulePaths derives the Paths a rule should carry from two independent
+// pieces of evidence: the extensions of the files that taught it (what was
+// changed) and the languages the rule's own text names (what the rule is
+// about). Taking the file set alone is what made a Go concurrency rule learned
+// from a PR that also touched the frontend carry **/*.ts, **/*.tsx and **/*.md
+// — globs that match unrelated diffs, so the rule joined the Warden checklist
+// on every one of them.
 //
-// Both are read as BARE extension globs and the result is scoped to the areas
-// the PR's files occupy as the last step (scopeToAreas), so every set named
-// below is the set of extensions, not of locations: `**/*.go` in this ladder
-// reaches the rule as `internal/**/*.go`.
+// It is the ONE derivation of a rule's Paths, and every writer of that field
+// calls it over whatever evidence it holds: DistillRule over the files the
+// review comments were anchored to, LearnFromCIFix over the fix diff's own
+// changed files, and the smelter's Pass 3 over the source PRs when it
+// re-derives them a month later. Two functions here would be two answers to
+// one question, and the answer they disagreed on was the whole ladder below:
+// the learner scoped its evidence and stopped, while Pass 3 also intersected
+// the extensions with the rule's own language. So a Go rule the learner placed
+// in `internal/**/*.go` beside the `web/**/*.ts` its evidence also touched was
+// re-derived by the very next flush as `internal/**/*.go` alone — a rewrite of
+// a rule learned minutes earlier, which is precisely the backfill
+// non-idempotency the shared scoping was introduced to close. Run over the
+// same evidence the two now return the same bytes; run over the learner's
+// tighter evidence and Pass 3's wider PR-level set, Pass 3's candidate carries
+// areas the learner's does not, so isStrictlyNarrower declines it and the
+// learner's placement stands.
+//
+// Both kinds of evidence are read as BARE extension globs and the result is
+// scoped to the areas the files occupy as the last step (scopeToAreas), so
+// every set named below is the set of extensions, not of locations: `**/*.go`
+// in this ladder reaches the rule as `internal/**/*.go`.
 //
 // The two are combined as follows. The ladder is decided on the EXTENSION
 // evidence alone, and directory globs are folded in afterwards, because the
@@ -232,7 +248,7 @@ func matchesAny(signals []*regexp.Regexp, text string) bool {
 //   - If the rule named extensions and the PR corroborates none of them, the
 //     inference is discarded in favour of the PR-derived set. Keeping it would
 //     gate the rule on a language its own diffs never contain, which
-//     warden.FilterRules turns into a rule that never fires again — silently,
+//     FilterRules turns into a rule that never fires again — silently,
 //     since a rule that matches nothing looks exactly like a rule with nothing
 //     to say.
 //   - A directory glob (changelog.d/**) names no extension, so it is ADDITIVE:
@@ -240,11 +256,16 @@ func matchesAny(signals []*regexp.Regexp, text string) bool {
 //     it, and only when the source PR actually touched a file it matches. That
 //     corroboration is also what keeps the glob out of an anvil that uses a
 //     different fragment directory, where changelog.d/** would match nothing.
-func globsForRule(rule warden.Rule, files []string) []string {
-	prGlobs := warden.ExtGlobs(files)
-	inferred := inferRuleGlobs(ruleText(rule))
+func DeriveRulePaths(rule Rule, files []string) []string {
+	prGlobs := ExtGlobs(files)
+	inferred := InferRuleGlobs(RuleText(rule))
 	if len(inferred) == 0 {
-		return scopeToAreas(prGlobs, files)
+		// Exactly DerivePaths: the evidence's own extensions, each scoped to
+		// the areas the files carrying it occupy. Written as the call rather
+		// than as scopeToAreas(prGlobs, files) so that the relationship between
+		// the two exported entry points is a fact of the code — this ladder is
+		// DerivePaths plus whatever the rule's own text can narrow it by.
+		return DerivePaths(files)
 	}
 
 	// The split happens before any of the ladder's exits, so that a directory
@@ -255,7 +276,7 @@ func globsForRule(rule warden.Rule, files []string) []string {
 	// exists to prevent, reached by the one path that skipped the check.
 	var extGlobs, dirGlobs []string
 	for _, g := range inferred {
-		if strings.HasPrefix(g, warden.ExtGlobPrefix) {
+		if strings.HasPrefix(g, ExtGlobPrefix) {
 			extGlobs = append(extGlobs, g)
 			continue
 		}
@@ -294,20 +315,20 @@ func globsForRule(rule warden.Rule, files []string) []string {
 // what the source PR touched — and an area-scoped glob is comparable to
 // neither side of it.
 //
-// The scoping itself is warden.DerivePaths' own, shared rather than reproduced,
+// The scoping itself is DerivePaths' own, shared rather than reproduced,
 // so a rule the learner placed in `api/**` and the same rule re-derived here a
 // month later come out as one answer. Without that they are two derivations of
 // one thing, and the backfill's idempotency is the property that breaks first:
 // Pass 3 would re-derive a set the learner never writes, every flush, forever.
 func scopeToAreas(globs, files []string) []string {
-	return warden.ScopeExtGlobs(globs, files)
+	return ScopeExtGlobs(globs, files)
 }
 
 // corroboratedGlobs returns the globs that at least one of the PR's own files
 // matches. It is the directory-glob counterpart of the extension
 // intersection — the same question ("did the PR that taught this rule touch
 // what the glob names?") asked of a glob no extension implies. Matching is
-// doublestar, the same as warden.FilterRules applies at review time, so a glob
+// doublestar, the same as FilterRules applies at review time, so a glob
 // kept here is one that could fire there; an invalid pattern never matches,
 // again as at review time.
 func corroboratedGlobs(globs, files []string) []string {

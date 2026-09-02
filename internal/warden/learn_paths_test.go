@@ -99,3 +99,36 @@ func TestLearnFromCIFixScopesPathsToTheFixedArea(t *testing.T) {
 	require.Len(t, loaded.Rules, 1)
 	assert.Equal(t, []string{"web/**/*.tsx"}, loaded.Rules[0].Paths)
 }
+
+// The learner runs the WHOLE derivation and not only its scoping half. A rule
+// whose own text names a language is gated on that language, exactly as the
+// smelter's Pass 3 would gate it a month later — without which the pass rewrote
+// rules the learner had just written, every flush, and reported each as a
+// finding.
+func TestDistillRuleNarrowsToTheRulesOwnLanguage(t *testing.T) {
+	stubDistiller(t, `{"id":"map-race","category":"concurrency","pattern":"map mutated from a goroutine","check":"guard it with sync.Mutex"}`)
+
+	rule, err := DistillRule(context.Background(), []PRComment{
+		{PRNumber: 682, Path: "internal/daemon/poll.go", Body: "this map is written from two goroutines"},
+		{PRNumber: 682, Path: "web/src/api/prs.ts", Body: "unrelated comment on the same PR"},
+	}, t.TempDir())
+	require.NoError(t, err)
+
+	assert.Equal(t, []string{"internal/**/*.go"}, rule.Paths,
+		"a Go rule is not gated on the frontend files its PR happened to touch")
+}
+
+// The mirror case, which is what keeps the language ladder from becoming a
+// guess: a rule whose text names no language keeps every area its own evidence
+// contains, since there is nothing to narrow the observation with.
+func TestDistillRuleKeepsEveryAreaWhenItNamesNoLanguage(t *testing.T) {
+	stubDistiller(t, `{"id":"magic-number","category":"style","pattern":"magic number in a conditional","check":"name it as a constant"}`)
+
+	rule, err := DistillRule(context.Background(), []PRComment{
+		{PRNumber: 682, Path: "internal/daemon/poll.go", Body: "name this"},
+		{PRNumber: 682, Path: "web/src/api/prs.ts", Body: "and this"},
+	}, t.TempDir())
+	require.NoError(t, err)
+
+	assert.Equal(t, []string{"internal/**/*.go", "web/**/*.ts"}, rule.Paths)
+}
