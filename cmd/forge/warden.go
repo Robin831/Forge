@@ -270,7 +270,8 @@ var wardenConsolidateCmd = &cobra.Command{
 	Long: `Off-cycle manual trigger for the same three-pass merge logic the
 scheduled smelter runs:
   Pass 1 — cluster near-duplicate rules and merge each cluster.
-  Pass 2 — archive rules whose Added date is older than archive_after_days.
+  Pass 2 — archive rules whose Added date is older than archive_after_days,
+           then evict the lowest-value rules over max_rules_in_file.
   Pass 3 — backfill the Paths field from each rule's source PR(s).
 
 Always writes .forge/warden-rules.yaml when any pass produced changes.
@@ -304,10 +305,11 @@ in the active rules file.`,
 			DedupThreshold:   cfg.Settings.Warden.ResolvedDedupThreshold(),
 			OverlapThreshold: cfg.Settings.Warden.ResolvedOverlapThreshold(),
 			ArchiveAfterDays: cfg.Settings.Warden.ResolvedArchiveAfterDays(),
+			MaxRulesInFile:   cfg.Settings.Warden.ResolvedMaxRulesInFile(),
 		}
 
-		fmt.Fprintf(os.Stderr, "Running three-pass consolidation against %s (dedup_threshold=%.2f, overlap_threshold=%.2f, archive_after_days=%d)...\n",
-			anvilName, opts.DedupThreshold, opts.OverlapThreshold, opts.ArchiveAfterDays)
+		fmt.Fprintf(os.Stderr, "Running three-pass consolidation against %s (dedup_threshold=%.2f, overlap_threshold=%.2f, archive_after_days=%d, max_rules_in_file=%d)...\n",
+			anvilName, opts.DedupThreshold, opts.OverlapThreshold, opts.ArchiveAfterDays, opts.MaxRulesInFile)
 
 		result, err := smelter.ConsolidateAnvil(rootCtx, opts)
 		if err != nil {

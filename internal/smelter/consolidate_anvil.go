@@ -36,6 +36,9 @@ type ConsolidateOptions struct {
 	// ArchiveAfterDays is the staleness threshold in days for Pass 2. When
 	// <= 0, Pass 2 is skipped.
 	ArchiveAfterDays int
+	// MaxRulesInFile is the hard ceiling on the active rules file. When <= 0,
+	// the eviction pass is skipped.
+	MaxRulesInFile int
 	// Now optionally overrides the reference time used by the staleness
 	// pass. Zero defaults to time.Now().UTC().
 	Now time.Time
@@ -150,6 +153,25 @@ func ConsolidateAnvil(ctx context.Context, opts ConsolidateOptions) (Consolidate
 			if opts.EventLogger != nil {
 				opts.EventLogger("smelter_flushed",
 					fmt.Sprintf("Archived %d stale rule(s) for %s", len(stale), opts.AnvilName))
+			}
+		}
+	}
+
+	if opts.MaxRulesInFile > 0 {
+		now := opts.Now
+		if now.IsZero() {
+			now = time.Now().UTC()
+		}
+		active, evicted := warden.EvictOverCap(rf.Rules, opts.MaxRulesInFile, now)
+		if len(evicted) > 0 {
+			rf.Rules = active
+			stale = append(stale, evicted...)
+			log.Printf("[smelter] evicted %d rule(s) over the file ceiling for %s (max=%d, kept=%d)",
+				len(evicted), opts.AnvilName, opts.MaxRulesInFile, len(active))
+			if opts.EventLogger != nil {
+				opts.EventLogger("smelter_flushed",
+					fmt.Sprintf("Evicted %d rule(s) over the %d-rule ceiling for %s",
+						len(evicted), opts.MaxRulesInFile, opts.AnvilName))
 			}
 		}
 	}

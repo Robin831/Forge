@@ -1181,6 +1181,19 @@ type WardenSettings struct {
 	// dedup_threshold still turns consolidation off entirely — this
 	// criterion is never applied alone.
 	OverlapThreshold float64 `mapstructure:"overlap_threshold" yaml:"overlap_threshold,omitempty"`
+	// MaxRulesInFile is the hard ceiling on how many rules the active
+	// warden-rules.yaml may hold. The Smelter evicts the lowest-value rules
+	// past it (see warden.EvictOverCap) into the archive store with
+	// reason="over-cap". Zero falls back to DefaultWardenMaxRulesInFile; a
+	// negative value disables the ceiling, on DedupThreshold's rule — zero is
+	// the field's zero value and cannot mean "off" without disabling the
+	// ceiling for every deployment that never configured one.
+	//
+	// A ceiling and not merely a shorter archive_after_days because only a
+	// count bounds the file: a review reads MaxRulesPerReview of it, so a file
+	// that keeps growing is one where each rule learned competes for a slot it
+	// will almost never win, whatever its age.
+	MaxRulesInFile int `mapstructure:"max_rules_in_file" yaml:"max_rules_in_file,omitempty"`
 }
 
 // The shipped defaults for the three Smelter knobs under settings.warden.
@@ -1197,6 +1210,11 @@ const (
 	// criterion. It mirrors warden.DefaultOverlapThreshold, which config
 	// cannot import without a cycle.
 	DefaultWardenOverlapThreshold = 0.55
+	// DefaultWardenMaxRulesInFile is the shipped ceiling on the active rules
+	// file. It is set well above what any single review reads (30) and above
+	// what a healthy file holds, so it bounds unbounded growth without
+	// evicting from a file that is merely large.
+	DefaultWardenMaxRulesInFile = 1000
 )
 
 // ResolvedArchiveAfterDays returns the effective archive-after threshold in
@@ -1254,6 +1272,16 @@ func (w WardenSettings) IsFilterPatternGrepEnabled() bool {
 		return true
 	}
 	return *w.FilterPatternGrep
+}
+
+// ResolvedMaxRulesInFile returns the effective ceiling on the active rules
+// file. Zero (unset) resolves to DefaultWardenMaxRulesInFile; negative values
+// are returned as-is, which is how the ceiling is switched off.
+func (w WardenSettings) ResolvedMaxRulesInFile() int {
+	if w.MaxRulesInFile == 0 {
+		return DefaultWardenMaxRulesInFile
+	}
+	return w.MaxRulesInFile
 }
 
 // ResolvedMaxRulesPerReview returns the cap to pass to FilterRules.
@@ -2446,6 +2474,7 @@ func Defaults() Config {
 			SSEPollFallback: false,
 			Warden: WardenSettings{
 				MaxRulesPerReview: 30,
+				MaxRulesInFile:    DefaultWardenMaxRulesInFile,
 				UseAllRules:       false,
 				FilterPathGlob:    boolPtr(true),
 				FilterCategory:    boolPtr(true),
@@ -2553,6 +2582,7 @@ func Load(configFile string) (*Config, error) {
 	v.SetDefault("settings.warden.filter_category", true)
 	v.SetDefault("settings.warden.filter_pattern_grep", true)
 	v.SetDefault("settings.warden.archive_after_days", DefaultWardenArchiveAfterDays)
+	v.SetDefault("settings.warden.max_rules_in_file", DefaultWardenMaxRulesInFile)
 	v.SetDefault("settings.warden.dedup_threshold", DefaultWardenDedupThreshold)
 	v.SetDefault("settings.warden.overlap_threshold", DefaultWardenOverlapThreshold)
 	v.SetDefault("settings.forgechat.turn_timeout", DefaultForgeChatTurnTimeout.String())

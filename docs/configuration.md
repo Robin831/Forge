@@ -127,6 +127,7 @@ settings:
   warden:                          # review-time rule filtering (see Warden Rule Filtering)
     max_rules_per_review: 30
     archive_after_days: 180
+    max_rules_in_file: 1000
     dedup_threshold: 0.6
     overlap_threshold: 0.55
 
@@ -919,6 +920,7 @@ settings:
     archive_after_days: 180    # Smelter staleness sweep threshold; 0 = default 180; negative disables
     dedup_threshold: 0.6       # Jaccard score above which duplicate rules are archived; 0 = default 0.6; negative turns BOTH consolidation passes off
     overlap_threshold: 0.55    # containment score, the second duplicate criterion; 0 = default 0.55; negative disables it
+    max_rules_in_file: 1000    # hard ceiling on the active rules file; 0 = default 1000; negative disables
 ```
 
 | Field | Type | Default | Description |
@@ -930,7 +932,50 @@ settings:
 | `warden.filter_pattern_grep` | bool | `true` | Enables substring matching of ≥4-character words from each rule's `Pattern` against the diff. |
 | `warden.archive_after_days` | int | `180` | Staleness threshold (days) used by the Smelter's Pass 2 sweep: a rule older than this with no recent source activity is archived with reason `stale`. `0` (or omit) uses the default of `180`; a negative value disables the pass ("never archive"). |
 | `warden.dedup_threshold` | float | `0.6` | Jaccard similarity (0.0–1.0) above which two active rules are treated as duplicates and the older entry is archived with reason `duplicate`. `0` (or omit) uses the default of `0.6`; a **negative** value turns **both** consolidation passes off — `overlap_threshold` is never applied on its own, so this is the single off switch for consolidation. The disable is negative and not `0` for the same reason `archive_after_days`' is: `0` is the field's zero value, so an unset setting and an explicit `dedup_threshold: 0` are indistinguishable by the time either reaches the daemon, and reading that as "off" would disable consolidation for every deployment that never configured it. |
+| `warden.max_rules_in_file` | int | `1000` | Hard ceiling on how many rules the active `.forge/warden-rules.yaml` may hold. Past it the Smelter evicts the lowest-value rules — least specific paths, oldest — into the archive store with reason `over-cap`, so raising the ceiling is all it takes to want them back. `0` (or omit) uses the default of `1000`; a negative value disables the ceiling, on `dedup_threshold`'s rule (`0` is the field's zero value and cannot mean "off"). A ceiling rather than a shorter `archive_after_days` because only a count bounds the file: a review reads `max_rules_per_review` of it, so a file that keeps growing is one where each rule learned competes for a slot it will almost never win, whatever its age. |
 | `warden.overlap_threshold` | float | `0.55` | The second duplicate criterion: the share of the **shorter** rule's vocabulary that also appears in the longer one (`\|A ∩ B\| / min(\|A\|, \|B\|)`). Two rules are near-duplicates when **either** criterion fires. `0` (or omit) uses the default of `0.55`; a negative value disables the criterion, leaving Jaccard alone. |
+
+### How the review-time set is chosen
+
+The three filters answer whether a rule *could* apply; `max_rules_per_review`
+decides which of the survivors actually reach the checklist. That second step is
+a ranked **selection**, not a truncation. It used to be `rules[:30]` in file
+order — and rules are appended to the file as they are learned, so file order is
+age order and the cap returned the file's thirty oldest surviving rules and only
+ever those. Measured on one anvil's 1793-rule file against every PR in its own
+history, 61 rules were reachable in total and nothing learned in the preceding
+four months could reach a review at all: the learner was writing into a file
+where only the head was read.
+
+Candidates are now ranked on three components and the best `max_rules_per_review`
+of them emitted:
+
+- **Specificity** — how narrowly the rule's most specific *matching* glob names
+  a location (`internal/warden/filter.go` over `api/**/*.cs` over `**/*.go` over
+  `**/*`), discounted by how many repo-wide globs the rule carries beside it. A
+  rule with no `paths` claims no scope and scores as the broadest.
+- **Pattern relevance** — the *share* of the rule's own ≥4-char pattern
+  vocabulary present in the diff, so a terse pattern fully present outranks a
+  verbose one that landed a few common words.
+- **Recency** — normalised across the candidate set, weighted low: it breaks
+  ties among rules that are equally broad and equally on-topic (which, on a
+  mature file, is most of them) without letting a vague new rule outrank a
+  narrowly scoped old one.
+
+Ties break on recency and then on a content-derived key — never on position,
+which is the age order the ranking exists to replace. The emitted set is
+therefore identical however the file is ordered.
+
+The same filter now requires **two** distinct pattern words in the diff rather
+than one (a pattern short enough not to have two is held to the words it does
+have). One was a no-op: a rule's pattern is ordinary English, so a single common
+word matched nearly every diff and the filter passed nearly everything, leaving
+the cap to perform the whole of the selection by the most arbitrary criterion
+available.
+
+Each review logs the funnel — `rules funnel: 727 on file, 512 after paths, 498
+after category, 431 matched, 30 emitted (cap 30)` — because a checklist of 30
+reads exactly the same whether 30 candidates survived or 431 did.
 
 ### Why two duplicate criteria
 

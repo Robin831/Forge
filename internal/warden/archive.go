@@ -17,6 +17,11 @@ const ArchiveFileName = ".forge/warden-rules.archive.yaml"
 const (
 	ArchiveReasonDuplicate = "duplicate"
 	ArchiveReasonStale     = "stale"
+	// ArchiveReasonOverCap marks a rule evicted because the active file was
+	// over its size ceiling (see EvictOverCap). It is its own reason rather
+	// than "stale" because the rule is not stale: it lost a slot, and raising
+	// the ceiling is enough to want it back.
+	ArchiveReasonOverCap = "over-cap"
 )
 
 // ArchivedRule represents a Rule that has been retired from the active

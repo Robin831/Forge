@@ -66,6 +66,9 @@ type Smelter struct {
 	// archiveAfterDays returns the staleness threshold in days for Pass 2.
 	// When nil or it returns <= 0, the staleness pass is skipped.
 	archiveAfterDays func() int
+	// maxRulesInFile returns the hard ceiling on the active rules file. When
+	// nil or it returns <= 0, the eviction pass is skipped.
+	maxRulesInFile func() int
 
 	// contradictions remembers which contradictory rule pairs each anvil has
 	// already been announced, so a condition only a human can clear is not
@@ -108,6 +111,14 @@ func WithOverlapThreshold(fn func() float64) Option {
 // function or one returning <= 0 disables the staleness pass.
 func WithArchiveAfterDays(fn func() int) Option {
 	return func(s *Smelter) { s.archiveAfterDays = fn }
+}
+
+// WithMaxRulesInFile supplies a function the Smelter calls at flush time to
+// resolve the hard ceiling on the active rules file. A function is used so
+// config hot-reload takes effect without restarting. A nil function or one
+// returning <= 0 disables the ceiling.
+func WithMaxRulesInFile(fn func() int) Option {
+	return func(s *Smelter) { s.maxRulesInFile = fn }
 }
 
 // New creates a Smelter. interval controls how often Flush is called;
@@ -503,6 +514,13 @@ func (s *Smelter) buildFlushRules(ctx context.Context, wtPath, anvilName string,
 	// only operates on whatever remains in rf.Rules after this step.
 	staleArchived := s.runStaleness(anvilName, rf)
 
+	// Ceiling: evict the lowest-value rules once the file is over its size
+	// limit. It runs after staleness so an over-cap eviction never takes a
+	// slot from a rule the staleness sweep was about to remove anyway, and
+	// before the paths backfill so the backfill does not spend PR lookups on
+	// rules that are leaving the file.
+	staleArchived = append(staleArchived, s.runFileCap(anvilName, rf)...)
+
 	// Pass 3 paths backfill: for each active rule whose Paths field is empty
 	// and whose Source carries a copilot:PR#N token, fetch the PR's changed
 	// files and derive file-extension globs. Idempotent: rules with non-empty
@@ -837,6 +855,32 @@ func (s *Smelter) runStaleness(anvilName string, rf *warden.RulesFile) []warden.
 	_ = s.db.LogEvent(state.EventSmelterFlushed,
 		fmt.Sprintf("Archived %d stale rule(s) for %s", len(stale), anvilName), "", anvilName)
 	return stale
+}
+
+// runFileCap invokes warden.EvictOverCap on the active rules slice when a
+// ceiling is configured. Evicted rules are removed from rf in place and
+// returned as ArchivedRule entries so the caller persists them to the archive
+// store exactly as it does the stale ones.
+//
+// When maxRulesInFile is nil or returns <= 0, the pass is a no-op.
+func (s *Smelter) runFileCap(anvilName string, rf *warden.RulesFile) []warden.ArchivedRule {
+	if s.maxRulesInFile == nil {
+		return nil
+	}
+	max := s.maxRulesInFile()
+	if max <= 0 {
+		return nil
+	}
+	active, evicted := warden.EvictOverCap(rf.Rules, max, time.Now().UTC())
+	if len(evicted) == 0 {
+		return nil
+	}
+	rf.Rules = active
+	log.Printf("[smelter] evicted %d rule(s) over the file ceiling for %s (max=%d, kept=%d)",
+		len(evicted), anvilName, max, len(active))
+	_ = s.db.LogEvent(state.EventSmelterFlushed,
+		fmt.Sprintf("Evicted %d rule(s) over the %d-rule ceiling for %s", len(evicted), max, anvilName), "", anvilName)
+	return evicted
 }
 
 // persistRulesAndArchive writes the archive entries (when any) and then

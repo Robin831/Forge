@@ -1521,6 +1521,9 @@ func (d *Daemon) Run(ctx context.Context) error {
 			smelter.WithArchiveAfterDays(func() int {
 				return d.config().Settings.Warden.ResolvedArchiveAfterDays()
 			}),
+			smelter.WithMaxRulesInFile(func() int {
+				return d.config().Settings.Warden.ResolvedMaxRulesInFile()
+			}),
 		)
 		go func() {
 			if err := d.smelterWorker.Run(ctx); err != nil && err != context.Canceled {

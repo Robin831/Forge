@@ -1,7 +1,9 @@
 package warden
 
 import (
+	"fmt"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync/atomic"
 
@@ -185,59 +187,142 @@ func extractDiffWords(text string) []string {
 	return out
 }
 
-// patternGrep returns true when at least one ≥4-char word from pattern appears
-// as a substring of diffLower. When the pattern carries no ≥4-char words the
-// rule is kept (nothing to filter on).
-func patternGrep(pattern, diffLower string) bool {
-	words := extractDiffWords(pattern)
-	if len(words) == 0 {
+// minPatternWordHits is how many distinct ≥4-char pattern words must appear in
+// the diff before the pattern filter keeps a rule. One was a no-op: a pattern
+// is ordinary English, so a single common word ("value", "method", "return")
+// matches nearly every diff and the filter passed nearly every rule, leaving
+// the cap to perform the whole of the selection.
+//
+// A pattern carrying fewer than this many ≥4-char words is held to what it
+// has (see patternGrepPasses) rather than excluded forever.
+const minPatternWordHits = 2
+
+// patternWordHits returns how many of the distinct ≥4-char words in pattern
+// appear as substrings of diffLower, alongside how many such words the pattern
+// carries at all. The two together are what both the filter (a threshold) and
+// the ranking (a share) need, computed once per rule.
+func patternWordHits(pattern, diffLower string) (hits, words int) {
+	ws := extractDiffWords(pattern)
+	for _, w := range ws {
+		if strings.Contains(diffLower, w) {
+			hits++
+		}
+	}
+	return hits, len(ws)
+}
+
+// patternGrepPasses reports whether a rule's pattern is close enough to the
+// diff to keep. It requires minPatternWordHits distinct words, except for a
+// pattern that does not have that many, which is held to all of the words it
+// does carry — a rule whose pattern is one word is not one that may never fire
+// again. A pattern with no ≥4-char words is kept: there is nothing to filter
+// on.
+func patternGrepPasses(hits, words int) bool {
+	if words == 0 {
 		return true
 	}
-	for _, w := range words {
-		if strings.Contains(diffLower, w) {
-			return true
-		}
+	need := minPatternWordHits
+	if words < need {
+		need = words
 	}
-	return false
+	return hits >= need
 }
 
-// FilterRules returns the subset of rules to include in a review-time
-// checklist, applying the path-glob, category, and pattern-grep filters (in
-// that order, each gated by cfg) and then capping the result to cfg.MaxRules.
-// When cfg.UseAllRules is true the three filters are skipped and only the cap
-// applies.
+// FilterStats reports how a review's rule set narrowed at each stage. It exists
+// because the narrowing was invisible: a checklist of 30 rules reads the same
+// whether 30 candidates survived the filters or 949 did and 919 were discarded
+// by a cap that truncated in file order.
+type FilterStats struct {
+	// Total is the number of rules on file.
+	Total int
+	// PathMatched, CategoryMatched and Matched are the survivor counts after
+	// the path-glob, category and pattern filters respectively; Matched is
+	// therefore the candidate set the ranking chose from.
+	PathMatched     int
+	CategoryMatched int
+	Matched         int
+	// Emitted is the number of rules that reached the checklist, and Cap the
+	// limit that decided it (0 when uncapped).
+	Emitted int
+	Cap     int
+}
+
+// Line renders the funnel as one log sentence.
+func (s FilterStats) Line() string {
+	capText := "none"
+	if s.Cap > 0 {
+		capText = strconv.Itoa(s.Cap)
+	}
+	return fmt.Sprintf("rules funnel: %d on file, %d after paths, %d after category, %d matched, %d emitted (cap %s)",
+		s.Total, s.PathMatched, s.CategoryMatched, s.Matched, s.Emitted, capText)
+}
+
+// FilterRules returns the rules to include in a review-time checklist: the
+// subset matching the diff (path-glob, category and pattern filters, in that
+// order, each gated by cfg), ranked, and cut to cfg.MaxRules. When
+// cfg.UseAllRules is true the three filters are skipped and every rule is
+// ranked against the diff instead.
 func FilterRules(rules []Rule, diff string, changedFiles []string, cfg ReviewFilterConfig) []Rule {
-	if cfg.UseAllRules {
-		return capRules(rules, cfg.MaxRules)
-	}
-
-	diffLower := strings.ToLower(diff)
-	categorySet := aggregateCategories(changedFiles)
-
-	out := make([]Rule, 0, len(rules))
-	for _, r := range rules {
-		if cfg.FilterPathGlob && len(r.Paths) > 0 {
-			if len(changedFiles) == 0 || !matchPathGlob(r.Paths, changedFiles) {
-				continue
-			}
-		}
-		if cfg.FilterCategory && canonicalCategories[r.Category] {
-			if !categorySet[r.Category] {
-				continue
-			}
-		}
-		if cfg.FilterPatternGrep && !patternGrep(r.Pattern, diffLower) {
-			continue
-		}
-		out = append(out, r)
-	}
-
-	return capRules(out, cfg.MaxRules)
+	out, _ := FilterRulesWithStats(rules, diff, changedFiles, cfg)
+	return out
 }
 
-func capRules(rules []Rule, max int) []Rule {
-	if max <= 0 || len(rules) <= max {
-		return rules
+// FilterRulesWithStats is FilterRules plus the per-stage funnel counts.
+//
+// The cut to cfg.MaxRules is a SELECTION and not a truncation, which is the
+// whole point of this function: rules are appended to the file as they are
+// learned, so file order is age order, and taking the first N of it returned
+// the oldest surviving rules and only ever those. Measured on one anvil's
+// 1793-rule file against its own PR history, 61 rules were reachable across
+// every PR ever opened, and nothing learned in the preceding four months could
+// reach a review at all.
+func FilterRulesWithStats(rules []Rule, diff string, changedFiles []string, cfg ReviewFilterConfig) ([]Rule, FilterStats) {
+	stats := FilterStats{Total: len(rules), Cap: cfg.MaxRules}
+	diffLower := strings.ToLower(diff)
+
+	var (
+		candidates []Rule
+		hits       []int
+		words      []int
+	)
+	keep := func(r Rule, h, w int) {
+		candidates = append(candidates, r)
+		hits = append(hits, h)
+		words = append(words, w)
 	}
-	return rules[:max]
+
+	if cfg.UseAllRules {
+		stats.PathMatched = len(rules)
+		stats.CategoryMatched = len(rules)
+		for _, r := range rules {
+			h, w := patternWordHits(r.Pattern, diffLower)
+			keep(r, h, w)
+		}
+	} else {
+		categorySet := aggregateCategories(changedFiles)
+		for _, r := range rules {
+			if cfg.FilterPathGlob && len(r.Paths) > 0 {
+				if len(changedFiles) == 0 || !matchPathGlob(r.Paths, changedFiles) {
+					continue
+				}
+			}
+			stats.PathMatched++
+			if cfg.FilterCategory && canonicalCategories[r.Category] {
+				if !categorySet[r.Category] {
+					continue
+				}
+			}
+			stats.CategoryMatched++
+			h, w := patternWordHits(r.Pattern, diffLower)
+			if cfg.FilterPatternGrep && !patternGrepPasses(h, w) {
+				continue
+			}
+			keep(r, h, w)
+		}
+	}
+	stats.Matched = len(candidates)
+
+	selected := selectRules(scoreCandidates(candidates, changedFiles, hits, words), cfg.MaxRules)
+	stats.Emitted = len(selected)
+	return selected, stats
 }

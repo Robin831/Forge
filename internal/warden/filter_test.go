@@ -19,6 +19,12 @@ func TestExtractDiffWords(t *testing.T) {
 	assert.Empty(t, extractDiffWords("a b c d ef gh"))
 }
 
+// patternGrep is the pre-ranking boolean the pattern filter reduces to, kept
+// here so the filter's behaviour is asserted in one call rather than two.
+func patternGrep(pattern, diffLower string) bool {
+	return patternGrepPasses(patternWordHits(pattern, diffLower))
+}
+
 func TestPatternGrep_NoWordsAlwaysPasses(t *testing.T) {
 	// Pattern with no ≥4-char words — keep the rule.
 	assert.True(t, patternGrep("a; b!", "anything"))
@@ -26,11 +32,22 @@ func TestPatternGrep_NoWordsAlwaysPasses(t *testing.T) {
 }
 
 func TestPatternGrep_MatchAndMiss(t *testing.T) {
-	diff := strings.ToLower("public void HandleDeadlock() {}")
-	// At least one ≥4-char word matches.
+	diff := strings.ToLower("public void HandleDeadlock() with async work {}")
+	// Two ≥4-char words match — over the threshold.
 	assert.True(t, patternGrep("async await deadlock", diff))
+	// Only one word matches: a single common word is what made this filter a
+	// no-op, so one hit is no longer enough.
+	assert.False(t, patternGrep("xyzzy plover deadlock", diff))
 	// No ≥4-char word matches.
 	assert.False(t, patternGrep("xyzzy plover wibble", diff))
+}
+
+func TestPatternGrep_ShortPatternHeldToItsOnlyWord(t *testing.T) {
+	// A pattern with a single ≥4-char word cannot reach two hits; requiring
+	// two would exclude it from every review forever, so it is held to the
+	// one word it has.
+	assert.True(t, patternGrep("deadlock", "handledeadlock()"))
+	assert.False(t, patternGrep("deadlock", "unrelated text"))
 }
 
 func TestCategoriesForFile(t *testing.T) {
