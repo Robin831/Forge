@@ -1463,9 +1463,14 @@ func TestLoad_WardenSettings_Default(t *testing.T) {
 	assert.True(t, cfg.Settings.Warden.IsFilterPathGlobEnabled())
 	assert.True(t, cfg.Settings.Warden.IsFilterCategoryEnabled())
 	assert.True(t, cfg.Settings.Warden.IsFilterPatternGrepEnabled())
-	assert.Equal(t, 180, cfg.Settings.Warden.ResolvedArchiveAfterDays())
+	assert.Equal(t, 90, cfg.Settings.Warden.ResolvedArchiveAfterDays())
+	assert.Equal(t, DefaultWardenArchiveAfterDays, cfg.Settings.Warden.ResolvedArchiveAfterDays())
 	assert.InDelta(t, 0.6, cfg.Settings.Warden.ResolvedDedupThreshold(), 1e-9)
 	assert.InDelta(t, 0.55, cfg.Settings.Warden.ResolvedOverlapThreshold(), 1e-9)
+	// Both defaults are pinned as literals beside the constant: they bound
+	// how large the active rules file can get, and a change to either is a
+	// change to that bound rather than a constant being renamed.
+	assert.Equal(t, 300, cfg.Settings.Warden.ResolvedMaxRulesInFile())
 	assert.Equal(t, DefaultWardenMaxRulesInFile, cfg.Settings.Warden.ResolvedMaxRulesInFile())
 }
 
@@ -1480,7 +1485,7 @@ settings:
     filter_path_glob: false
     filter_category: false
     filter_pattern_grep: false
-    archive_after_days: 90
+    archive_after_days: 45
     dedup_threshold: 0.8
     overlap_threshold: 0.7
     max_rules_in_file: 250
@@ -1494,7 +1499,8 @@ settings:
 	assert.False(t, cfg.Settings.Warden.IsFilterPathGlobEnabled())
 	assert.False(t, cfg.Settings.Warden.IsFilterCategoryEnabled())
 	assert.False(t, cfg.Settings.Warden.IsFilterPatternGrepEnabled())
-	assert.Equal(t, 90, cfg.Settings.Warden.ResolvedArchiveAfterDays())
+	assert.Equal(t, 45, cfg.Settings.Warden.ResolvedArchiveAfterDays(),
+		"a configured threshold must survive Load — and it is deliberately not the shipped default, which an override test cannot distinguish from the default winning")
 	assert.InDelta(t, 0.8, cfg.Settings.Warden.ResolvedDedupThreshold(), 1e-9)
 	assert.InDelta(t, 0.7, cfg.Settings.Warden.ResolvedOverlapThreshold(), 1e-9)
 	assert.Equal(t, 250, cfg.Settings.Warden.ResolvedMaxRulesInFile())

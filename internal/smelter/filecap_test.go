@@ -112,14 +112,15 @@ func TestRunFileCap_DisabledByDefault(t *testing.T) {
 
 	rf := &warden.RulesFile{Rules: capRules(10)}
 
-	archived := s.runFileCap("anvil-a", rf)
+	archived := s.runFileCap("anvil-a", rf, s.ruleCap())
 	assert.Empty(t, archived)
 	assert.Len(t, rf.Rules, 10, "rf.Rules must be untouched when the ceiling is unwired")
 }
 
 // TestRunFileCap_ZeroOrNegativeCeilingSkipsPass: a ceiling of <= 0 is the
-// operator's off switch and reaches the pass through the configured function,
-// so it has to be honoured there and not only in warden.EvictOverCap.
+// operator's off switch and reaches the pass through the configured function
+// (ruleCap, which is what the flush resolves it with), so it has to be honoured
+// there and not only in warden.EvictOverCap.
 func TestRunFileCap_ZeroOrNegativeCeilingSkipsPass(t *testing.T) {
 	for _, max := range []int{0, -1} {
 		db := openTestDB(t)
@@ -129,7 +130,7 @@ func TestRunFileCap_ZeroOrNegativeCeilingSkipsPass(t *testing.T) {
 
 		rf := &warden.RulesFile{Rules: capRules(10)}
 
-		archived := s.runFileCap("anvil-a", rf)
+		archived := s.runFileCap("anvil-a", rf, s.ruleCap())
 		assert.Empty(t, archived, "max=%d", max)
 		assert.Len(t, rf.Rules, 10, "max=%d", max)
 	}
@@ -146,7 +147,7 @@ func TestRunFileCap_EvictsOverCeilingAndLogsIt(t *testing.T) {
 
 	rf := &warden.RulesFile{Rules: capRules(10)}
 
-	archived := s.runFileCap("anvil-a", rf)
+	archived := s.runFileCap("anvil-a", rf, s.ruleCap())
 	require.Len(t, archived, 6)
 	assert.Len(t, rf.Rules, 4, "the pass mutates rf in place so later passes see only survivors")
 	for _, a := range archived {

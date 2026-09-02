@@ -47,6 +47,19 @@ type PassResults struct {
 	// filled that was never empty.
 	Narrowed []string
 
+	// ActiveRules is how many rules the active file holds once every pass has
+	// run, and RuleCap is the ceiling it was measured against (the resolved
+	// warden.max_rules_in_file; <= 0 means no ceiling is in effect). They are
+	// the occupancy the eviction count alone cannot state: "0 evicted" reads
+	// identically for a file sitting at half the ceiling and one sitting one
+	// rule under it, and the second is the file about to start losing rules
+	// every flush.
+	//
+	// Neither is a change, so neither is read by HasChanges: a flush that only
+	// counted the file has nothing to commit.
+	ActiveRules int
+	RuleCap     int
+
 	// Contradictions holds pairs of rules from one source PR that prescribe
 	// opposite orderings. They are reported, never resolved — see
 	// warden.Contradiction — so they are deliberately NOT part of
@@ -369,6 +382,12 @@ func buildPRBody(passes PassResults) string {
 	if n := len(passes.Narrowed); n > 0 {
 		lines = append(lines, fmt.Sprintf("- %d rule(s) whose paths were narrowed to the files their own source PR changed.", n))
 	}
+	if s := OccupancyPhrase(passes); s != "" {
+		// Stated whether or not the ceiling evicted anything this run: a
+		// reviewer reading "0 evicted" cannot tell a file at half the ceiling
+		// from one a single rule under it.
+		lines = append(lines, fmt.Sprintf("- %s once every pass had run (the `warden.max_rules_in_file` ceiling).", s))
+	}
 	if n := len(passes.Contradictions); n > 0 {
 		lines = append(lines, "", fmt.Sprintf("**%d contradictory rule pair(s) need a human decision.** Each pair was learned from one source PR and prescribes opposite orderings, so the Warden flags an implementation whichever convention it follows. Nothing was merged or dropped for them:", n))
 		for _, c := range passes.Contradictions {
@@ -412,7 +431,39 @@ func passResultsSummary(passes PassResults) string {
 		parts = append(parts, fmt.Sprintf("%d contradiction(s) flagged", n))
 	}
 	if len(parts) == 0 {
+		// Unchanged contract: a run that did nothing says so. The occupancy
+		// is appended to a summary of changes, never used as one — a line
+		// reading "287/300 on file" in place of "no changes" would report a
+		// flush that happened where none did.
 		return "no changes"
 	}
+	if s := OccupancyPhrase(passes); s != "" {
+		parts = append(parts, s)
+	}
 	return strings.Join(parts, ", ")
+}
+
+// OccupancyPhrase renders the active file's size against the ceiling it is
+// held to — "287/300 on file". It is exported because the third surface that
+// reports the occupancy lives outside this package: the flush summary line and
+// the PR body call it from here, and `forge warden consolidate`
+// (cmd/forge.activeAfterLine) calls it for its "Active after:" column. One
+// renderer rather than one per surface, so the three cannot come to disagree
+// about what the ceiling was on a run that evicted nothing — which is exactly
+// what happened while the CLI formatted its own "287 (ceiling 300)".
+//
+// What it reads is PassResults.ActiveRules, never a second count carried
+// alongside it, so the number and the ceiling it is printed against come from
+// the one place the eviction pass recorded them.
+//
+// It is suppressed entirely when no ceiling is in effect, which covers both a
+// deployment that disabled it and a PassResults built by a caller that never
+// measured one: RuleCap is an int, so "disabled" and "not recorded" are the
+// same value here and a rendered "287/0" would be a claim about a ceiling
+// nobody set. The count alone is already in every other surface.
+func OccupancyPhrase(passes PassResults) string {
+	if passes.RuleCap <= 0 {
+		return ""
+	}
+	return fmt.Sprintf("%d/%d on file", passes.ActiveRules, passes.RuleCap)
 }

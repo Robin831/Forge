@@ -126,8 +126,8 @@ settings:
   auto_merge_crucible_children: true
   warden:                          # review-time rule filtering (see Warden Rule Filtering)
     max_rules_per_review: 30
-    archive_after_days: 180
-    max_rules_in_file: 1000
+    archive_after_days: 90
+    max_rules_in_file: 300
     dedup_threshold: 0.6
     overlap_threshold: 0.55
 
@@ -917,10 +917,10 @@ settings:
     filter_path_glob: true     # filter by Rule.Paths against the changed files
     filter_category: true      # filter by Rule.Category against the extension→category map
     filter_pattern_grep: true  # substring-match ≥4-char words from Rule.Pattern against the diff
-    archive_after_days: 180    # Smelter staleness sweep threshold; 0 = default 180; negative disables
+    archive_after_days: 90     # Smelter staleness sweep threshold; 0 = default 90; negative disables
     dedup_threshold: 0.6       # Jaccard score above which duplicate rules are archived; 0 = default 0.6; negative turns BOTH consolidation passes off
     overlap_threshold: 0.55    # containment score, the second duplicate criterion; 0 = default 0.55; negative disables it
-    max_rules_in_file: 1000    # hard ceiling on the active rules file; 0 = default 1000; negative disables
+    max_rules_in_file: 300     # hard ceiling on the active rules file; 0 = default 300; negative disables
 ```
 
 | Field | Type | Default | Description |
@@ -930,9 +930,9 @@ settings:
 | `warden.filter_path_glob` | bool | `true` | Enables filtering by each rule's `Paths` against the changed files in the diff. |
 | `warden.filter_category` | bool | `true` | Enables filtering by each rule's `Category` against the in-code extension → category map. |
 | `warden.filter_pattern_grep` | bool | `true` | Enables substring matching of ≥4-character words from each rule's `Pattern` against the diff. |
-| `warden.archive_after_days` | int | `180` | Staleness threshold (days) used by the Smelter's Pass 2 sweep: a rule older than this with no recent source activity is archived with reason `stale`. `0` (or omit) uses the default of `180`; a negative value disables the pass ("never archive"). |
+| `warden.archive_after_days` | int | `90` | Staleness threshold (days) used by the Smelter's Pass 2 sweep: a rule older than this with no recent source activity is archived with reason `stale`. `0` (or omit) uses the default of `90`; a negative value disables the pass ("never archive"). The default was 180 and is 90 because at 180 the sweep was inert on the files it exists to bound: on one anvil whose rules file had reached four figures, the rules added in 2026-04, -05 and -06 were all under 180 days old and Pass 2 archived nothing while the file kept growing. A convention still being violated keeps producing review comments, which refresh a rule's source activity and keep it out of the sweep, so 90 days removes a rule nothing has raised in a quarter — and the archive keeps it, so lengthening the threshold is enough to want it back. |
 | `warden.dedup_threshold` | float | `0.6` | Jaccard similarity (0.0–1.0) above which two active rules are treated as duplicates and the older entry is archived with reason `duplicate`. `0` (or omit) uses the default of `0.6`; a **negative** value turns **both** consolidation passes off — `overlap_threshold` is never applied on its own, so this is the single off switch for consolidation. The disable is negative and not `0` for the same reason `archive_after_days`' is: `0` is the field's zero value, so an unset setting and an explicit `dedup_threshold: 0` are indistinguishable by the time either reaches the daemon, and reading that as "off" would disable consolidation for every deployment that never configured it. |
-| `warden.max_rules_in_file` | int | `1000` | Hard ceiling on how many rules the active `.forge/warden-rules.yaml` may hold. Past it the Smelter evicts the lowest-value rules — least specific paths, oldest — into the archive store with reason `over-cap`, so raising the ceiling is all it takes to want them back. `0` (or omit) uses the default of `1000`; a negative value disables the ceiling, on `dedup_threshold`'s rule (`0` is the field's zero value and cannot mean "off"). A ceiling rather than a shorter `archive_after_days` because only a count bounds the file: a review reads `max_rules_per_review` of it, so a file that keeps growing is one where each rule learned competes for a slot it will almost never win, whatever its age. |
+| `warden.max_rules_in_file` | int | `300` | Hard ceiling on how many rules the active `.forge/warden-rules.yaml` may hold, and the unconditional backstop behind the three consolidation passes: whatever they merge, archive or re-scope, the file is under this count when the flush ends. Past it the Smelter evicts the lowest-value rules — least specific paths, oldest — into the archive store with reason `over-cap`, so raising the ceiling is all it takes to want them back. `0` (or omit) uses the default of `300`; a negative value disables the ceiling, on `dedup_threshold`'s rule (`0` is the field's zero value and cannot mean "off"). The default was 1000, which is the four-figure size the ceiling exists to prevent set as the ceiling: a review reads `max_rules_per_review` (30) of the file, and on the two anvils measured (1793 and 727 rules) only 61 and 125 rules respectively could reach any review across their whole PR history — so a ceiling in the low hundreds sits above what is reachable rather than cutting into it. It stays a count and not a shorter `archive_after_days` because an age threshold evicts nothing on a dormant anvil and everything on a busy one, while a count means what it says whatever the learning rate has been; the two are complements. |
 | `warden.overlap_threshold` | float | `0.55` | The second duplicate criterion: the share of the **shorter** rule's vocabulary that also appears in the longer one (`\|A ∩ B\| / min(\|A\|, \|B\|)`). Two rules are near-duplicates when **either** criterion fires. `0` (or omit) uses the default of `0.55`; a negative value disables the criterion, leaving Jaccard alone. |
 
 ### How the review-time set is chosen

@@ -344,6 +344,34 @@ var consolidationRunner = warden.DefaultConsolidationRunner
 // case where it is not.
 const maxConsolidateErrorsListed = 3
 
+// activeAfterLine renders the post-pass rule count, followed by the ceiling it
+// is held to when one is in effect: "287/300 on file". The bare count is the
+// one number an operator cannot act on — a file at 287 rules is healthy under a
+// ceiling of 1000 and one flush from losing rules under a ceiling of 300 — and
+// the eviction line above it is printed only when something was evicted, so
+// without this the run that is about to start evicting looks exactly like the
+// run that will never need to.
+//
+// The occupancy itself is smelter.OccupancyPhrase's, the same renderer the
+// flush summary line and the batch PR body use, rather than a second format
+// written here: this column had its own "287 (ceiling 300)" while the smelter
+// wrote "287/300 on file", which is two surfaces reporting one measurement two
+// ways and free to drift the next time either is touched. This function is
+// only the column's fallback for the case that renderer declines — no ceiling
+// in effect, where smelter.PassResults.RuleCap is <= 0 and "ceiling 0" would
+// read as a ceiling of none allowed, so the count stands alone.
+//
+// The count comes from result.Passes.ActiveRules in both branches, never from
+// ConsolidateResult.FinalActive: the two hold the same number, and reading one
+// here while the shared renderer reads the other is how they would come to
+// disagree.
+func activeAfterLine(result smelter.ConsolidateResult) string {
+	if s := smelter.OccupancyPhrase(result.Passes); s != "" {
+		return s
+	}
+	return fmt.Sprintf("%d", result.Passes.ActiveRules)
+}
+
 // renderConsolidateSummary writes the `forge warden consolidate` summary and
 // returns the error the command exits with.
 //
@@ -358,7 +386,7 @@ const maxConsolidateErrorsListed = 3
 func renderConsolidateSummary(out, errOut io.Writer, anvilName, anvilPath string, result smelter.ConsolidateResult) error {
 	fmt.Fprintf(out, "Anvil:           %s\n", anvilName)
 	fmt.Fprintf(out, "Active before:   %d\n", result.InitialCount)
-	fmt.Fprintf(out, "Active after:    %d\n", result.FinalActive)
+	fmt.Fprintf(out, "Active after:    %s\n", activeAfterLine(result))
 	fmt.Fprintf(out, "Archive size:    %d\n", result.ArchiveCount)
 	if n := len(result.Passes.Consolidated); n > 0 {
 		fmt.Fprintf(out, "Consolidated:    %d cluster(s)\n", n)

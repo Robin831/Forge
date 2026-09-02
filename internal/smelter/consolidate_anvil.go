@@ -64,7 +64,10 @@ type ConsolidateResult struct {
 	// any pass ran.
 	InitialCount int
 	// FinalActive is the rule count in the active file after all passes
-	// completed and persistence (when any pass produced changes) ran.
+	// completed and persistence (when any pass produced changes) ran. It is
+	// assigned from Passes.ActiveRules rather than counted a second time, so
+	// the two cannot disagree; anything rendering the occupancy reads
+	// Passes.ActiveRules through smelter.OccupancyPhrase.
 	FinalActive int
 	// ArchiveCount is the entry count in the archive file after the run.
 	// Zero when no archive file exists.
@@ -278,7 +281,9 @@ func ConsolidateAnvil(ctx context.Context, opts ConsolidateOptions) (Consolidate
 	// The ceiling runs through the same applyFileCap the scheduled flush uses,
 	// after the staleness sweep so an eviction never takes a slot from a rule
 	// staleness was about to remove anyway, and before the paths backfill so no
-	// PR lookup is spent on a rule that is leaving.
+	// PR lookup is spent on a rule that is leaving. It is the backstop behind
+	// the passes above rather than a replacement for them: what they merge and
+	// archive is what it never has to evict.
 	var capEmit func(string)
 	if opts.EventLogger != nil {
 		capEmit = func(message string) { opts.EventLogger("smelter_flushed", message) }
@@ -311,13 +316,19 @@ func ConsolidateAnvil(ctx context.Context, opts ConsolidateOptions) (Consolidate
 		Backfilled:     backfill.Filled,
 		Narrowed:       backfill.Narrowed,
 		Contradictions: contradictions,
+		// The occupancy after every pass, against the ceiling this run was
+		// actually held to — so `forge warden consolidate` reports a file that
+		// is one rule under its ceiling as such, which an eviction count of
+		// zero reads exactly like a file at half of it.
+		ActiveRules: len(rf.Rules),
+		RuleCap:     opts.MaxRulesInFile,
 	}
 
 	result := ConsolidateResult{
 		Passes:            passes,
 		Pass1Archived:     replaced,
 		InitialCount:      initialCount,
-		FinalActive:       len(rf.Rules),
+		FinalActive:       passes.ActiveRules,
 		FirstError:        firstPassErr,
 		ClustersAttempted: attempted,
 		ClusterErrors:     clusterErrs,
