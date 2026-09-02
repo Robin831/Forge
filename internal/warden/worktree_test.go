@@ -3,6 +3,7 @@ package warden
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -55,12 +56,22 @@ func worktreeList(t *testing.T, repo string) string {
 	return string(out)
 }
 
+// runEphemeral is WithEphemeralWorktree for a case that expects both of its
+// errors to be nil — the run's own and the teardown's, which are separate
+// returns precisely so neither can be read off the other.
+func runEphemeral(t *testing.T, anvilPath string, fn func(worktreePath string) error) {
+	t.Helper()
+	runErr, cleanupErr := WithEphemeralWorktree(context.Background(), anvilPath, fn)
+	require.NoError(t, runErr)
+	require.NoError(t, cleanupErr)
+}
+
 func TestWithEphemeralWorktree(t *testing.T) {
 	t.Run("fn sees a linked worktree checked out at HEAD", func(t *testing.T) {
 		repo := gitRepoFixture(t)
 
 		var seen string
-		require.NoError(t, WithEphemeralWorktree(context.Background(), repo, func(wt string) error {
+		runEphemeral(t, repo, func(wt string) error {
 			seen = wt
 			// The tree is materialized: the committed file is there.
 			body, err := os.ReadFile(filepath.Join(wt, "README.md"))
@@ -72,7 +83,7 @@ func TestWithEphemeralWorktree(t *testing.T) {
 			require.NoError(t, err)
 			assert.False(t, info.IsDir(), ".git must be a worktree file pointer")
 			return nil
-		}))
+		})
 
 		assert.NotEqual(t, repo, seen, "the session must not run in the main checkout")
 		assert.NotContains(t, worktreeList(t, repo), seen)
@@ -85,20 +96,21 @@ func TestWithEphemeralWorktree(t *testing.T) {
 		// The whole point of the helper: the anvil itself is refused, the
 		// directory fn receives is not.
 		require.Error(t, worktree.ValidateWorktreeDir(repo))
-		require.NoError(t, WithEphemeralWorktree(context.Background(), repo, func(wt string) error {
+		runEphemeral(t, repo, func(wt string) error {
 			return worktree.ValidateWorktreeDir(wt)
-		}))
+		})
 	})
 
 	t.Run("cleanup runs when fn fails", func(t *testing.T) {
 		repo := gitRepoFixture(t)
 
 		var seen string
-		err := WithEphemeralWorktree(context.Background(), repo, func(wt string) error {
+		runErr, cleanupErr := WithEphemeralWorktree(context.Background(), repo, func(wt string) error {
 			seen = wt
 			return assert.AnError
 		})
-		require.ErrorIs(t, err, assert.AnError, "fn's error must reach the caller unwrapped by cleanup")
+		require.ErrorIs(t, runErr, assert.AnError, "fn's error must reach the caller unwrapped by cleanup")
+		require.NoError(t, cleanupErr, "a teardown that worked must not report an error of its own")
 		assert.NotContains(t, worktreeList(t, repo), seen)
 		assert.NoDirExists(t, seen)
 	})
@@ -110,13 +122,13 @@ func TestWithEphemeralWorktree(t *testing.T) {
 			{ID: "live-rule", Category: "style", Pattern: "p", Check: "c"},
 		}}))
 
-		require.NoError(t, WithEphemeralWorktree(context.Background(), repo, func(wt string) error {
+		runEphemeral(t, repo, func(wt string) error {
 			rf, err := LoadRules(wt)
 			require.NoError(t, err)
 			require.Len(t, rf.Rules, 1)
 			assert.Equal(t, "live-rule", rf.Rules[0].ID)
 			return nil
-		}))
+		})
 	})
 
 	t.Run("edits inside the worktree never reach the anvil", func(t *testing.T) {
@@ -128,9 +140,9 @@ func TestWithEphemeralWorktree(t *testing.T) {
 		// The merged rule comes back to the caller as JSON from the session;
 		// the checkout is scratch space, so whatever a session writes there
 		// is discarded with it.
-		require.NoError(t, WithEphemeralWorktree(context.Background(), repo, func(wt string) error {
+		runEphemeral(t, repo, func(wt string) error {
 			return SaveRules(wt, &RulesFile{Rules: []Rule{{ID: "scribbled", Category: "style", Pattern: "x", Check: "y"}}})
-		}))
+		})
 
 		rf, err := LoadRules(repo)
 		require.NoError(t, err)
@@ -142,10 +154,10 @@ func TestWithEphemeralWorktree(t *testing.T) {
 		dir := t.TempDir()
 
 		var seen string
-		require.NoError(t, WithEphemeralWorktree(context.Background(), dir, func(wt string) error {
+		runEphemeral(t, dir, func(wt string) error {
 			seen = wt
 			return nil
-		}))
+		})
 		// Nothing to isolate from, and no repository to add a worktree to:
 		// the pre-flight accepts such a directory as it stands.
 		assert.Equal(t, dir, seen)
@@ -162,23 +174,22 @@ func TestWithEphemeralWorktree(t *testing.T) {
 		require.NoErrorf(t, err, "git init: %s", out)
 
 		called := false
-		err = WithEphemeralWorktree(context.Background(), dir, func(string) error {
+		runErr, cleanupErr := WithEphemeralWorktree(context.Background(), dir, func(string) error {
 			called = true
 			return nil
 		})
 		// Running fn in the main checkout is exactly what the pre-flight
 		// refuses, so an unresolvable HEAD must not degrade to it.
-		require.Error(t, err)
+		require.Error(t, runErr)
+		require.NoError(t, cleanupErr, "a checkout that was never created has nothing to tear down")
 		assert.False(t, called)
 	})
 }
 
-// The doc comment's other half: with fn successful, a teardown failure IS
-// the returned error, since nothing else would report it — and it is
-// returned as a *WorktreeCleanupError so a caller can tell it from the
-// checkout never having been created at all. ConsolidateAnvil branches on
-// exactly that distinction, and without this case the assignment on the
-// named return is exercised by nothing.
+// The doc comment's other half: a teardown failure is reported on its own
+// return, whether or not fn succeeded, and it never travels on the run
+// error. ConsolidateAnvil branches on exactly that separation, and without
+// this case the assignment on the named return is exercised by nothing.
 //
 // The failure is forced without mocking git: fn drops the write bit on the
 // temp directory holding the checkout, which is what a Windows file lock
@@ -207,30 +218,56 @@ func TestWithEphemeralWorktree_CleanupFailure(t *testing.T) {
 		repo := gitRepoFixture(t)
 
 		var seen string
-		err := WithEphemeralWorktree(context.Background(), repo, func(wt string) error {
+		runErr, cleanupErr := WithEphemeralWorktree(context.Background(), repo, func(wt string) error {
 			seen = wt
 			return sealTmpParent(t, wt)
 		})
-		require.Error(t, err, "a cleanup failure must not be swallowed on a successful run")
+		require.NoError(t, runErr, "the run succeeded; only its checkout outlived it")
+		require.Error(t, cleanupErr, "a cleanup failure must not be swallowed on a successful run")
 
-		var cleanupErr *WorktreeCleanupError
-		require.ErrorAs(t, err, &cleanupErr,
-			"the caller must be able to tell a teardown failure from a checkout that never existed")
-		assert.Equal(t, seen, cleanupErr.WorktreePath)
+		var wce *WorktreeCleanupError
+		require.ErrorAs(t, cleanupErr, &wce, "the checkout that leaked must be named")
+		assert.Equal(t, seen, wce.WorktreePath)
 	})
 
-	t.Run("fn's error still wins over a cleanup failure", func(t *testing.T) {
+	t.Run("fn's error and a cleanup failure are both reported, on their own returns", func(t *testing.T) {
 		repo := gitRepoFixture(t)
 
-		err := WithEphemeralWorktree(context.Background(), repo, func(wt string) error {
+		runErr, cleanupErr := WithEphemeralWorktree(context.Background(), repo, func(wt string) error {
 			require.NoError(t, sealTmpParent(t, wt))
 			return assert.AnError
 		})
-		require.ErrorIs(t, err, assert.AnError,
+		require.ErrorIs(t, runErr, assert.AnError,
 			"the reason the run failed is worth more than the reason a temp dir survived")
 
-		var cleanupErr *WorktreeCleanupError
-		assert.False(t, errors.As(err, &cleanupErr),
-			"a cleanup failure must never displace fn's own error")
+		var wce *WorktreeCleanupError
+		assert.False(t, errors.As(runErr, &wce),
+			"a cleanup failure must never travel on the run error")
+		// It is not dropped either: a caller that has no cluster error to
+		// report is the one thing that would surface it.
+		require.ErrorAs(t, cleanupErr, &wce)
+	})
+
+	// The reason the two errors are separate RETURNS and not one error the
+	// caller type-switches on: a *WorktreeCleanupError is a value fn is free
+	// to produce, and a nested call produces exactly one. Discriminated by
+	// type, the outer caller would read "the inner pass leaked a directory"
+	// as "the outer pass never ran" and drop the run error entirely — which
+	// is the reported bug (a temp-dir teardown read as the reason a cluster
+	// did not merge) arriving one level down.
+	t.Run("a *WorktreeCleanupError from fn stays on the run return", func(t *testing.T) {
+		repo := gitRepoFixture(t)
+
+		inner := &WorktreeCleanupError{WorktreePath: "/tmp/inner", Err: assert.AnError}
+		runErr, cleanupErr := WithEphemeralWorktree(context.Background(), repo, func(string) error {
+			return fmt.Errorf("the inner pass: %w", inner)
+		})
+		require.Error(t, runErr)
+		require.NoError(t, cleanupErr, "this call's own teardown worked")
+
+		var wce *WorktreeCleanupError
+		require.True(t, errors.As(runErr, &wce),
+			"fixture check: fn's error does carry the type a caller must not discriminate on")
+		assert.Same(t, inner, wce)
 	})
 }

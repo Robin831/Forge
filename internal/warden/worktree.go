@@ -7,27 +7,22 @@ import (
 	"log"
 	"os"
 	"path/filepath"
-	"time"
 
 	"github.com/Robin831/Forge/internal/worktree"
 )
 
-// ephemeralWorktreeCleanupTimeout bounds the teardown of the throwaway
-// checkout. It runs on a background context so a caller whose own context was
-// cancelled still gets its worktree removed.
-const ephemeralWorktreeCleanupTimeout = 60 * time.Second
-
-// WorktreeCleanupError reports that fn ran to completion and only the
-// teardown of its throwaway checkout failed.
+// WorktreeCleanupError reports that the throwaway checkout of a
+// WithEphemeralWorktree call could not be torn down. It names the checkout
+// that outlived the call, which is the one thing an operator needs to clean
+// it up by hand.
 //
-// It exists because WithEphemeralWorktree's single error return answers two
-// structurally different questions, and its callers act on them in opposite
-// ways: a checkout that could not be created means fn never ran, while this
-// one means fn ran, its results are in hand and all that outlived it is a
-// directory. Reported as one kind, a temp-dir teardown reads to an operator
-// as the reason a pass produced nothing — the "a run that did work must never
-// be reported as one that did not" rule the Assay partial/failed/skipped split
-// exists for.
+// It is the SHAPE of WithEphemeralWorktree's second return value and never
+// the discriminator between its two error channels: the type cannot answer
+// that question, because nothing prevents fn's own error from carrying one —
+// a nested WithEphemeralWorktree call returns exactly this type, and an
+// errors.As over the run error would then read "the inner pass leaked a
+// directory" as "this pass never ran". Which error is which is answered by
+// which return value it arrives on.
 type WorktreeCleanupError struct {
 	// WorktreePath is the checkout that could not be torn down.
 	WorktreePath string
@@ -56,11 +51,9 @@ func (e *WorktreeCleanupError) Unwrap() error { return e.Err }
 // spawned. The guard is right; what was missing was a valid worktree to hand
 // it.
 //
-// The checkout itself is worktree.CreateEphemeral's: that package owns every
-// git-worktree lifecycle in the tree, so the stale core.worktree self-heal,
-// the post-creation .git pointer check, the timeout tiers and the
-// Windows-aware teardown are the ones the preview and worker checkouts get
-// rather than a second set that drifts from them.
+// The checkout itself is worktree.CreateEphemeral's, and so is its teardown
+// context (worktree.EphemeralCleanupContext); see that package for what the
+// two ephemeral and preview checkouts share and why.
 //
 // A path the pre-flight would accept as it stands is passed through to fn
 // unchanged; see the check at the top for why that is the same question and
@@ -72,15 +65,21 @@ func (e *WorktreeCleanupError) Unwrap() error { return e.Err }
 // (its passes run in the batch-branch worktree), and the per-cluster errors
 // themselves are returned to the caller rather than left in those files.
 //
-// Cleanup errors are logged and never mask fn's error: a leaked directory
-// costs one temp dir, while swallowing the reason a consolidation failed
-// costs the diagnosis. When fn succeeded, a cleanup failure IS the returned
-// error, since nothing else would report it — but it is returned as a
-// *WorktreeCleanupError, so a caller can tell "fn never ran" from "fn ran and
-// its checkout outlived it" instead of reporting the second as the first.
-func WithEphemeralWorktree(ctx context.Context, anvilPath string, fn func(worktreePath string) error) (err error) {
+// The two errors are returned SEPARATELY because the call answers two
+// structurally different questions whose answers callers act on in opposite
+// ways, and one error value cannot carry both without the caller having to
+// guess which it holds. runErr is fn's own error, or — when fn never ran at
+// all — the reason the checkout could not be created. cleanupErr is the
+// teardown's, non-nil whether or not fn succeeded, and it never masks
+// anything: a leaked directory costs one temp dir, while swallowing the
+// reason a consolidation failed costs the diagnosis, so ConsolidateAnvil
+// reports it only when no cluster error claims the field first. Answered by
+// error type rather than by position, the distinction would be wrong exactly
+// where it is composed: fn is free to return a *WorktreeCleanupError of its
+// own from a nested call.
+func WithEphemeralWorktree(ctx context.Context, anvilPath string, fn func(worktreePath string) error) (runErr error, cleanupErr error) {
 	if fn == nil {
-		return errors.New("WithEphemeralWorktree: fn is nil")
+		return errors.New("WithEphemeralWorktree: fn is nil"), nil
 	}
 
 	// A directory the pre-flight already accepts needs no wrapping — and in
@@ -91,22 +90,23 @@ func WithEphemeralWorktree(ctx context.Context, anvilPath string, fn func(worktr
 	// guard itself rather than re-derived here, so the two can never come
 	// to disagree about which directories a session may run in.
 	if err := worktree.ValidateWorktreeDir(anvilPath); err == nil {
-		return fn(anvilPath)
+		return fn(anvilPath), nil
 	}
 
 	wt, err := worktree.CreateEphemeral(ctx, anvilPath)
 	if err != nil {
-		return err
+		return err, nil
 	}
 
 	defer func() {
-		cleanupCtx, cancel := context.WithTimeout(context.Background(), ephemeralWorktreeCleanupTimeout)
+		// Background context, not the caller's: see
+		// worktree.EphemeralCleanupTimeout for why a cancelled caller must
+		// still get its worktree removed.
+		ctx, cancel := worktree.EphemeralCleanupContext()
 		defer cancel()
-		if cleanupErr := wt.Remove(cleanupCtx); cleanupErr != nil {
-			log.Printf("[warden] cleaning up ephemeral worktree %s: %v", wt.Path, cleanupErr)
-			if err == nil {
-				err = &WorktreeCleanupError{WorktreePath: wt.Path, Err: cleanupErr}
-			}
+		if err := wt.Remove(ctx); err != nil {
+			log.Printf("[warden] cleaning up ephemeral worktree %s: %v", wt.Path, err)
+			cleanupErr = &WorktreeCleanupError{WorktreePath: wt.Path, Err: err}
 		}
 	}()
 
@@ -125,8 +125,7 @@ func WithEphemeralWorktree(ctx context.Context, anvilPath string, fn func(worktr
 		}
 	}
 
-	err = fn(wt.Path)
-	return err
+	return fn(wt.Path), nil
 }
 
 // copyIntoWorktree copies one anvil-relative file into the worktree,

@@ -614,8 +614,9 @@ func TestConsolidateAnvil_ClusterErrorOutranksWorktreeCleanupFailure(t *testing.
 	writeRulesFile(t, anvil, &warden.RulesFile{Rules: append(overlapOnlyPair(), secondOverlapPair()...)})
 
 	inner := failingClusterConsolidator(t, "documentation filename")
+	var sealed string
 	consolidator := func(ctx context.Context, dir, prompt string) ([]byte, error) {
-		sealWorktreeParent(t, dir)
+		sealed = sealWorktreeParent(t, dir)
 		return inner(ctx, dir, prompt)
 	}
 
@@ -630,6 +631,15 @@ func TestConsolidateAnvil_ClusterErrorOutranksWorktreeCleanupFailure(t *testing.
 	assert.Contains(t, res.FirstError.Error(), "cluster is on fire")
 	assert.NotContains(t, res.FirstError.Error(), "worktree",
 		"a temp directory that outlived a pass that RAN must not displace the cluster error")
+
+	// Positive evidence that there were two errors to order in the first
+	// place: the teardown would have deleted the sealed directory. Without
+	// it the assertion above is vacuously true of a run in which cleanup
+	// simply succeeded, and the precedence rule it guards would be free to
+	// regress unnoticed.
+	require.NotEmpty(t, sealed, "the consolidator must have run and sealed the checkout's parent")
+	require.DirExists(t, sealed,
+		"the ephemeral checkout's teardown must have failed, or this test orders one error against none")
 
 	// The pass ran, so its merge is kept and persisted.
 	require.Len(t, res.Passes.Consolidated, 1)
@@ -653,8 +663,9 @@ func TestConsolidateAnvil_CleanupFailureReportedWhenNoClusterFailed(t *testing.T
 	writeRulesFile(t, anvil, &warden.RulesFile{Rules: overlapOnlyPair()})
 
 	inner := stubConsolidator(t, "merged-log-filename", "documentation filename", "the documented filename must match the code")
+	var sealed string
 	consolidator := func(ctx context.Context, dir, prompt string) ([]byte, error) {
-		sealWorktreeParent(t, dir)
+		sealed = sealWorktreeParent(t, dir)
 		return inner(ctx, dir, prompt)
 	}
 
@@ -667,6 +678,8 @@ func TestConsolidateAnvil_CleanupFailureReportedWhenNoClusterFailed(t *testing.T
 	require.NoError(t, err)
 	require.Error(t, res.FirstError)
 	assert.Contains(t, res.FirstError.Error(), "pass 1 worktree cleanup for test")
+	require.NotEmpty(t, sealed, "the consolidator must have run and sealed the checkout's parent")
+	require.DirExists(t, sealed, "the teardown this test is about must actually have failed")
 
 	require.Len(t, res.Passes.Consolidated, 1, "the pass completed; only its checkout outlived it")
 	active, err := warden.LoadRules(anvil)
@@ -700,15 +713,34 @@ func failingClusterConsolidator(t *testing.T, marker string) warden.Consolidatio
 // for the Windows file lock that teardown is really guarding against, and the
 // test unseals and removes the directory afterwards — it lives under
 // os.MkdirTemp rather than t.TempDir, so nothing else would.
-func sealWorktreeParent(t *testing.T, worktreeDir string) {
+//
+// It returns the directory it sealed, so a caller can prove the seal did its
+// work: a teardown that succeeded would have deleted that directory. And it
+// FAILS rather than returning quietly when its precondition does not hold.
+// The layout it depends on — the checkout sitting one directory below an
+// os.MkdirTemp parent — is worktree.CreateEphemeral's private detail, so a
+// silent early return would leave the tests that force a cleanup failure
+// asserting things about an error that was never produced, green either way.
+func sealWorktreeParent(t *testing.T, worktreeDir string) string {
 	t.Helper()
 	parent := filepath.Dir(worktreeDir)
-	if fi, err := os.Stat(parent); err != nil || !fi.IsDir() {
-		return
-	}
+	require.NotEqual(t, worktreeDir, parent,
+		"the ephemeral checkout must sit BELOW the directory the seal blocks")
+	require.DirExists(t, parent)
+	// The seal chmods and then deletes this directory, so pin it to the
+	// os.MkdirTemp root before touching it: a layout change that moved the
+	// checkout into the anvil must fail here, not delete part of a fixture.
+	tempRoot, err := filepath.EvalSymlinks(os.TempDir())
+	require.NoError(t, err)
+	sealed, err := filepath.EvalSymlinks(parent)
+	require.NoError(t, err)
+	require.True(t, strings.HasPrefix(sealed, tempRoot+string(filepath.Separator)),
+		"expected the ephemeral checkout's parent under %s, got %s", tempRoot, sealed)
+
 	t.Cleanup(func() {
 		_ = os.Chmod(parent, 0o700)
 		_ = os.RemoveAll(parent)
 	})
 	require.NoError(t, os.Chmod(parent, 0o500))
+	return parent
 }

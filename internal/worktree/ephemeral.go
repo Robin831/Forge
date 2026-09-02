@@ -9,7 +9,34 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
+
+// EphemeralCleanupTimeout bounds the teardown of an ephemeral checkout, and
+// EphemeralCleanupContext is the context that teardown must run under: a
+// fresh one derived from context.Background(), never the caller's.
+//
+// The caller's context is the wrong one precisely when cleanup matters most.
+// removeWithRetry checks ctx.Err() at the top of its first iteration and
+// returns before it unlinks anything, so a teardown handed an already
+// cancelled context deletes nothing — and a cancelled context is the likeliest
+// reason `git worktree add` failed or an fn returned in the first place. What
+// survives is the os.MkdirTemp directory plus whatever administrative entry
+// the killed git left in the anvil, and unlike Kiln's previews (which
+// kiln.Reconcile prunes out of <anvil>/.previews/ at startup) nothing ever
+// sweeps it: this checkout lives outside the anvil by design, so every leak is
+// permanent.
+//
+// It is one definition rather than one per caller because it is one rule —
+// CreateEphemeral's own failure paths and warden.WithEphemeralWorktree's
+// deferred teardown are the same teardown under the same argument.
+const EphemeralCleanupTimeout = 60 * time.Second
+
+// EphemeralCleanupContext returns the context an ephemeral teardown runs
+// under. See EphemeralCleanupTimeout for why it is not the caller's.
+func EphemeralCleanupContext() (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.Background(), EphemeralCleanupTimeout)
+}
 
 // EphemeralWorktree is a throwaway detached checkout of an anvil, created
 // under os.MkdirTemp rather than inside the anvil itself so it collides with
@@ -71,7 +98,12 @@ func CreateEphemeral(ctx context.Context, anvilPath string) (*EphemeralWorktree,
 	var out bytes.Buffer
 	// head is a resolved commit SHA, so it cannot be mistaken for an option.
 	if err := gitCmdOut(ctx, anvilPath, &out, "worktree", "add", "--detach", wtPath, head); err != nil {
-		_ = removeWithRetry(ctx, tmpDir)
+		cleanupCtx, cancel := EphemeralCleanupContext()
+		if rmErr := removeWithRetry(cleanupCtx, tmpDir); rmErr != nil {
+			slog.Warn("worktree: cleaning up after failed ephemeral worktree creation",
+				"anvil", anvilPath, "dir", tmpDir, "error", rmErr)
+		}
+		cancel()
 		return nil, fmt.Errorf("git worktree add --detach (ephemeral checkout of %s at %s): %w%s",
 			anvilPath, head, err, gitOutputSuffix(out.String()))
 	}
@@ -84,7 +116,9 @@ func CreateEphemeral(ctx context.Context, anvilPath string) (*EphemeralWorktree,
 	// Smith's pre-flight (ValidateWorktreeDir) refuses a directory that lacks
 	// it — so a checkout without it is a failed creation, not a usable one.
 	if err := verifyWorktreeGitFile(wtPath); err != nil {
-		if rmErr := wt.Remove(ctx); rmErr != nil {
+		cleanupCtx, cancel := EphemeralCleanupContext()
+		defer cancel()
+		if rmErr := wt.Remove(cleanupCtx); rmErr != nil {
 			slog.Warn("worktree: cleaning up unverifiable ephemeral worktree",
 				"anvil", anvilPath, "worktree", wtPath, "error", rmErr)
 		}

@@ -2,7 +2,6 @@ package smelter
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log"
 	"time"
@@ -153,33 +152,36 @@ func ConsolidateAnvil(ctx context.Context, opts ConsolidateOptions) (Consolidate
 		// rf, which was loaded from — and is written back to — the anvil),
 		// so a checkout per cluster would be pure churn on a rules file the
 		// size of munin's.
-		wtErr := warden.WithEphemeralWorktree(ctx, opts.AnvilPath, func(wtPath string) error {
+		runErr, cleanupErr := warden.WithEphemeralWorktree(ctx, opts.AnvilPath, func(wtPath string) error {
 			replaced, summary, errs = warden.ConsolidateWithParams(ctx, wtPath, rf, params, opts.Consolidator)
 			return nil
 		})
-		// The helper answers two different questions with one error, and
-		// they call for opposite handling. A *WorktreeCleanupError means the
-		// pass RAN — every merge it made is already in summary/replaced and
-		// will be persisted — and only its throwaway checkout outlived it,
-		// so it must not evict a genuine cluster error from FirstError (the
-		// only Pass 1 diagnostic the CLI prints) or be logged as the reason
-		// nothing merged. Anything else means the checkout could not be
-		// created, so Pass 1 did not run at all.
-		var cleanupErr error
-		if wtErr != nil {
-			var wce *warden.WorktreeCleanupError
-			if errors.As(wtErr, &wce) {
-				cleanupErr = fmt.Errorf("pass 1 worktree cleanup for %s: %w", opts.AnvilName, wtErr)
+		// The helper answers two different questions on two different
+		// returns, and they call for opposite handling. runErr means the
+		// checkout could not be created, so Pass 1 did not run at all.
+		// cleanupErr means only the throwaway checkout outlived the call —
+		// every merge the pass made is already in summary/replaced and will
+		// be persisted — so it must not evict a genuine cluster error from
+		// FirstError (the only Pass 1 diagnostic the CLI prints) or be
+		// logged as the reason nothing merged. The distinction is which
+		// return it arrived on and never the error's type: fn is free to
+		// return a *WorktreeCleanupError of its own.
+		if runErr != nil {
+			// No fallback to AnvilPath: that is the arrangement that
+			// produced a cluster error for every cluster and reported it
+			// as a completed pass. Passes 2 and 3 need no session and
+			// still run; the reason Pass 1 did not is reported like a
+			// cluster error, which is the field the CLI already prints.
+			runErr = fmt.Errorf("pass 1 worktree for %s: %w", opts.AnvilName, runErr)
+			log.Printf("[smelter] %v", runErr)
+			firstPassErr = runErr
+		}
+		if cleanupErr != nil {
+			cleanupErr = fmt.Errorf("pass 1 worktree cleanup for %s: %w", opts.AnvilName, cleanupErr)
+			if runErr == nil {
 				log.Printf("[smelter] %v (pass 1 itself completed)", cleanupErr)
 			} else {
-				// No fallback to AnvilPath: that is the arrangement that
-				// produced a cluster error for every cluster and reported it
-				// as a completed pass. Passes 2 and 3 need no session and
-				// still run; the reason Pass 1 did not is reported like a
-				// cluster error, which is the field the CLI already prints.
-				wtErr = fmt.Errorf("pass 1 worktree for %s: %w", opts.AnvilName, wtErr)
-				log.Printf("[smelter] %v", wtErr)
-				firstPassErr = wtErr
+				log.Printf("[smelter] %v", cleanupErr)
 			}
 		}
 		for i, e := range errs {
