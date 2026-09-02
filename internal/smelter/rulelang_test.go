@@ -186,7 +186,7 @@ func TestGlobsForRuleNeverGatesOnAnUncorroboratedLanguage(t *testing.T) {
 	}
 
 	got := globsForRule(goRule, tsFiles)
-	assert.Equal(t, []string{"**/*.ts", "**/*.tsx"}, got)
+	assert.Equal(t, []string{"web/**/*.ts", "web/**/*.tsx"}, got)
 	assert.NotContains(t, got, "**/*.go",
 		"a language the PR's own files contradict must not become the rule's gate")
 }
@@ -223,49 +223,49 @@ func TestGlobsForRule(t *testing.T) {
 			name:  "go rule from a mixed go and tsx PR keeps only go",
 			rule:  goRule,
 			files: []string{"internal/daemon/poll.go", "web/src/App.tsx", "changelog.d/Forge-abc1.md"},
-			want:  []string{"**/*.go"},
+			want:  []string{"internal/**/*.go"},
 		},
 		{
 			name:  "frontend rule from a mixed PR keeps only the frontend globs",
 			rule:  frontendRule,
 			files: []string{"internal/daemon/poll.go", "web/src/api/prs.ts", "web/src/App.tsx"},
-			want:  []string{"**/*.ts", "**/*.tsx"},
+			want:  []string{"web/**/*.ts", "web/**/*.tsx"},
 		},
 		{
 			name:  "frontend rule keeps only the frontend extension the PR touched",
 			rule:  frontendRule,
 			files: []string{"internal/daemon/poll.go", "web/src/api/prs.ts"},
-			want:  []string{"**/*.ts"},
+			want:  []string{"web/**/*.ts"},
 		},
 		{
 			name:  "changelog rule adds the directory glob to the PR-derived set",
 			rule:  changelogRule,
 			files: []string{"internal/daemon/poll.go", "web/src/App.tsx", "changelog.d/Forge-abc1.md"},
-			want:  []string{"**/*.go", "**/*.md", "**/*.tsx", "changelog.d/**"},
+			want:  []string{"changelog.d/**", "changelog.d/**/*.md", "internal/**/*.go", "web/**/*.tsx"},
 		},
 		{
 			name:  "changelog glob is dropped when the source PR touched no fragment",
 			rule:  changelogRule,
 			files: []string{"internal/daemon/poll.go"},
-			want:  []string{"**/*.go"},
+			want:  []string{"internal/**/*.go"},
 		},
 		{
 			name:  "a directory glob is additive to a corroborated language glob",
 			rule:  goChangelogRule,
 			files: []string{"internal/daemon/poll.go", "web/src/App.tsx", "changelog.d/Forge-abc1.md"},
-			want:  []string{"**/*.go", "changelog.d/**"},
+			want:  []string{"changelog.d/**", "internal/**/*.go"},
 		},
 		{
 			name:  "no signal falls back to the PR-derived set",
 			rule:  genericRule,
 			files: []string{"internal/daemon/poll.go", "docs/configuration.md"},
-			want:  []string{"**/*.go", "**/*.md"},
+			want:  []string{"docs/**/*.md", "internal/**/*.go"},
 		},
 		{
 			name:  "inferred language the PR never touched falls back to the PR's own set",
 			rule:  goRule,
 			files: []string{"web/src/api/prs.ts"},
-			want:  []string{"**/*.ts"},
+			want:  []string{"web/**/*.ts"},
 		},
 		{
 			name:  "no files and no signal yields nothing",
@@ -322,7 +322,10 @@ func TestGlobsForRuleIsDeterministic(t *testing.T) {
 	first := globsForRule(rule, []string{"a.go", "b.ts", "changelog.d/x.md"})
 	second := globsForRule(rule, []string{"changelog.d/x.md", "b.ts", "a.go"})
 	assert.Equal(t, first, second)
-	assert.Equal(t, []string{"**/*.go", "changelog.d/**"}, first)
+	// `a.go` sits in the repository root, so its area is the root: `*.go`
+	// matches it and nothing under a directory, which is the whole of what the
+	// evidence supports.
+	assert.Equal(t, []string{"*.go", "changelog.d/**"}, first)
 }
 
 // TestRunPathsBackfill_NarrowsToTheRulesOwnLanguage is the end-to-end shape of
@@ -364,10 +367,10 @@ func TestRunPathsBackfill_NarrowsToTheRulesOwnLanguage(t *testing.T) {
 
 	updated := s.runPathsBackfill(context.Background(), t.TempDir(), "anvil-a", rf).Filled
 	require.Equal(t, []string{"go-1", "ui-1", "any-1"}, updated)
-	assert.Equal(t, []string{"**/*.go"}, rf.Rules[0].Paths)
-	assert.Equal(t, []string{"**/*.ts", "**/*.tsx"}, rf.Rules[1].Paths)
-	assert.Equal(t, []string{"**/*.go", "**/*.md", "**/*.ts", "**/*.tsx"}, rf.Rules[2].Paths,
-		"a rule naming no language keeps the PR-derived set")
+	assert.Equal(t, []string{"internal/**/*.go"}, rf.Rules[0].Paths)
+	assert.Equal(t, []string{"web/**/*.ts", "web/**/*.tsx"}, rf.Rules[1].Paths)
+	assert.Equal(t, []string{"docs/**/*.md", "internal/**/*.go", "web/**/*.ts", "web/**/*.tsx"}, rf.Rules[2].Paths,
+		"a rule naming no language keeps the PR-derived set, scoped to its areas")
 }
 
 // TestLanguageOutcomesReportsWhatSurvived pins the half of the backfill log

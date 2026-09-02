@@ -9,9 +9,7 @@ import (
 	"io"
 	"log"
 	"os/exec"
-	"path/filepath"
 	"regexp"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -114,48 +112,6 @@ func fetchChangedFilesViaGH(ctx context.Context, repoDir string, prNum int) ([]s
 		}
 	}
 	return files, nil
-}
-
-// extGlobPrefix is the shape globsFromExtensions emits: one doublestar glob
-// per file extension. It is a constant rather than a literal inside the loop
-// below because rulelang.go classifies an inferred glob by testing for it —
-// a glob carrying it names an extension and can be compared against the
-// PR-derived set, anything else (a directory glob like changelog.d/**) cannot.
-//
-// What the constant buys is that the emitted shape and the shape the
-// classifier tests for are one string: the intersection rulelang.go takes is
-// only meaningful while an inferred **/*.go and a PR-derived **/*.go are
-// byte-identical, and written twice they could drift apart. It does not make
-// the classification itself safe from a change of shape — the globs actually
-// tested against it are the hand-written literals in languageSignals, so
-// changing this constant would silently move every one of them into the
-// directory branch without failing to compile. TestGlobsForRule is what
-// catches that, not the compiler.
-const extGlobPrefix = "**/*."
-
-// globsFromExtensions returns the unique doublestar globs derived from the
-// extensions of files. Files without an extension are skipped. The result is
-// sorted so the field encoded into warden-rules.yaml is deterministic across
-// runs — this keeps the smelter PR's diff stable when nothing material has
-// changed.
-func globsFromExtensions(files []string) []string {
-	seen := make(map[string]struct{})
-	for _, f := range files {
-		ext := filepath.Ext(f)
-		if ext == "" || ext == "." {
-			continue
-		}
-		seen[extGlobPrefix+strings.TrimPrefix(ext, ".")] = struct{}{}
-	}
-	if len(seen) == 0 {
-		return nil
-	}
-	globs := make([]string, 0, len(seen))
-	for g := range seen {
-		globs = append(globs, g)
-	}
-	sort.Strings(globs)
-	return globs
 }
 
 // prFetchResult caches the outcome of a single gh API call for one PR.

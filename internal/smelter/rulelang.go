@@ -3,7 +3,6 @@ package smelter
 import (
 	"fmt"
 	"regexp"
-	"sort"
 	"strings"
 
 	"github.com/Robin831/Forge/internal/warden"
@@ -140,9 +139,14 @@ func languageOutcomes(text string, globs []string) []string {
 	if len(langs) == 0 {
 		return nil
 	}
+	// Read through warden.BaseGlob, because the globs a rule ends up carrying
+	// are area-scoped (`internal/**/*.go`) while a languageSignal entry names
+	// the bare form (`**/*.go`). Compared literally, every scoped glob would
+	// read as the language having been discarded — the one outcome that says a
+	// rule was gated on something its own text never named.
 	final := make(map[string]struct{}, len(globs))
 	for _, g := range globs {
-		final[g] = struct{}{}
+		final[warden.BaseGlob(g)] = struct{}{}
 	}
 	out := make([]string, 0, len(langs))
 	for _, lang := range langs {
@@ -203,15 +207,20 @@ func matchesAny(signals []*regexp.Regexp, text string) bool {
 // **/*.tsx and **/*.md — globs that match unrelated diffs, so the rule joined
 // the Warden checklist on every one of them.
 //
+// Both are read as BARE extension globs and the result is scoped to the areas
+// the PR's files occupy as the last step (scopeToAreas), so every set named
+// below is the set of extensions, not of locations: `**/*.go` in this ladder
+// reaches the rule as `internal/**/*.go`.
+//
 // The two are combined as follows. The ladder is decided on the EXTENSION
 // evidence alone, and directory globs are folded in afterwards, because the
 // two kinds of glob are not comparable and letting a directory glob decide the
 // ladder is how a rule that merely mentions "changelog fragments" in passing
 // ended up gated on changelog.d/** and nothing else:
 //
-//   - No language inferred → the PR-derived set, unchanged. This is the old
-//     behaviour and the right fallback: without a signal there is nothing to
-//     narrow with, and a guess would be worse than the status quo.
+//   - No language inferred → the PR-derived set. Without a signal there is
+//     nothing to narrow the extensions with, and a guess would be worse than
+//     the observation.
 //   - No PR-derived set (the PR reported no file carrying an extension) → the
 //     inferred EXTENSION globs, whole. There is no observation to weigh them
 //     against. The inferred directory globs are not exempted by that: they are
@@ -232,10 +241,10 @@ func matchesAny(signals []*regexp.Regexp, text string) bool {
 //     corroboration is also what keeps the glob out of an anvil that uses a
 //     different fragment directory, where changelog.d/** would match nothing.
 func globsForRule(rule warden.Rule, files []string) []string {
-	prGlobs := globsFromExtensions(files)
+	prGlobs := warden.ExtGlobs(files)
 	inferred := inferRuleGlobs(ruleText(rule))
 	if len(inferred) == 0 {
-		return prGlobs
+		return scopeToAreas(prGlobs, files)
 	}
 
 	// The split happens before any of the ladder's exits, so that a directory
@@ -246,7 +255,7 @@ func globsForRule(rule warden.Rule, files []string) []string {
 	// exists to prevent, reached by the one path that skipped the check.
 	var extGlobs, dirGlobs []string
 	for _, g := range inferred {
-		if strings.HasPrefix(g, extGlobPrefix) {
+		if strings.HasPrefix(g, warden.ExtGlobPrefix) {
 			extGlobs = append(extGlobs, g)
 			continue
 		}
@@ -255,7 +264,7 @@ func globsForRule(rule warden.Rule, files []string) []string {
 	dirGlobs = corroboratedGlobs(dirGlobs, files)
 
 	if len(prGlobs) == 0 {
-		return sortedCopy(append(extGlobs, dirGlobs...))
+		return scopeToAreas(append(extGlobs, dirGlobs...), files)
 	}
 
 	inPR := make(map[string]struct{}, len(prGlobs))
@@ -275,8 +284,23 @@ func globsForRule(rule warden.Rule, files []string) []string {
 	}
 	out = append(out, dirGlobs...)
 
-	sort.Strings(out)
-	return out
+	return scopeToAreas(out, files)
+}
+
+// scopeToAreas is the last step of every path out of globsForRule: the ladder
+// above decides WHICH extensions gate the rule, and this decides WHERE. They
+// are two steps rather than one because the ladder's whole arithmetic is an
+// intersection of bare extension globs — what the rule's text names against
+// what the source PR touched — and an area-scoped glob is comparable to
+// neither side of it.
+//
+// The scoping itself is warden.DerivePaths' own, shared rather than reproduced,
+// so a rule the learner placed in `api/**` and the same rule re-derived here a
+// month later come out as one answer. Without that they are two derivations of
+// one thing, and the backfill's idempotency is the property that breaks first:
+// Pass 3 would re-derive a set the learner never writes, every flush, forever.
+func scopeToAreas(globs, files []string) []string {
+	return warden.ScopeExtGlobs(globs, files)
 }
 
 // corroboratedGlobs returns the globs that at least one of the PR's own files
@@ -296,11 +320,5 @@ func corroboratedGlobs(globs, files []string) []string {
 			}
 		}
 	}
-	return out
-}
-
-func sortedCopy(globs []string) []string {
-	out := append([]string(nil), globs...)
-	sort.Strings(out)
 	return out
 }
