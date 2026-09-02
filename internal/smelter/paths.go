@@ -164,78 +164,111 @@ type prFetchResult struct {
 	err   error
 }
 
+// backfillResult is what one Pass 3 run did, split by the claim it makes about
+// a rule. Filling an empty Paths field and narrowing an over-broad one are two
+// different statements — the first gates a rule that was firing everywhere, the
+// second re-gates one that was already placed — and folded into a single count
+// the commit subject reported a narrowed rule as "backfilled", which is a claim
+// about a field that was never empty. Same argument as archivedByReason: one
+// pass, two outcomes, and every aggregate rendered from it splits them again.
+type backfillResult struct {
+	// Filled holds the IDs of rules whose empty Paths field was populated.
+	Filled []string
+	// Narrowed holds the IDs of rules whose existing Paths were replaced by a
+	// strictly narrower set derived from their own source PRs.
+	Narrowed []string
+}
+
+// summary is the one sentence both entry points — the scheduled flush and
+// `forge warden consolidate` — put in the daemon log and in the smelter_flushed
+// event. One renderer rather than a copy each, and one that names the two
+// outcomes separately: "backfilled paths on 40 rule(s)" over a run that filled
+// none and narrowed forty describes work that did not happen. Empty when
+// nothing changed, which is the caller's signal to say nothing at all.
+func (r backfillResult) summary(anvilName string) string {
+	var parts []string
+	if n := len(r.Filled); n > 0 {
+		parts = append(parts, fmt.Sprintf("backfilled paths on %d rule(s)", n))
+	}
+	if n := len(r.Narrowed); n > 0 {
+		parts = append(parts, fmt.Sprintf("narrowed paths on %d rule(s)", n))
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return fmt.Sprintf("%s for %s", strings.Join(parts, ", "), anvilName)
+}
+
 // runPathsBackfill iterates the active rules in rf and, for each rule whose
-// Paths field is empty and whose Source carries one or more copilot:PR#N
-// tokens, fetches the changed files for those PRs and populates Paths with
-// the globs globsForRule derives from those files and the rule's own text.
+// Source carries one or more copilot:PR#N tokens, fetches the changed files for
+// those PRs and derives the globs globsForRule reads out of those files and the
+// rule's own text. What it then does with them depends on the rule:
 //
-// Idempotency: rules whose Paths is already populated are skipped, so a
-// repeated flush is a no-op for the same rule.
+//   - Paths empty → populated with the derived globs, the pass's original
+//     behaviour, unchanged.
+//   - Paths already set → replaced only when the derived set is STRICTLY
+//     NARROWER than the one on file (isStrictlyNarrower) and still matches at
+//     least one file of the rule's own source PR (matchesAnySource). Anything
+//     else leaves the rule exactly as it is.
+//
+// The second half is why the pass no longer skips a rule that has paths. It
+// used to, and a rule that has been through this pass once always has some, so
+// the skip made Pass 3 a no-op on every rule that exists — this repository's own
+// 727-rule file holds not one rule with an empty Paths field. The rules carrying
+// `**/*.md` beside
+// `**/*.go` because the PR that taught them also touched a doc — a Go rule
+// gated to fire on documentation-only diffs — were exactly the rules the skip
+// declined to look at. A rule whose current Paths cannot be narrowed at all
+// (mayNarrow) is still skipped before any lookup, so the widened pass costs no
+// PR fetch it cannot use.
+//
+// Idempotency survives the change because the derivation is a fixed point: the
+// globs are a function of the rule's text and its PRs' files, neither of which
+// a rewrite moves, so a second run derives the set already on file and
+// isStrictlyNarrower declines an equal set.
+//
+// What it does NOT survive is the fetch: a rule whose paths are already narrow
+// still has to be re-derived to find that out, so the pass now costs one gh
+// call per distinct source PR on the file every flush rather than only on a
+// file with empty paths (258 for this repository's own 727 rules, 529 for a
+// 2295-rule one — a couple of minutes per anvil, once per smelter_interval).
+// That is accepted rather than optimised away with a marker on the rule: a
+// persisted "already narrowed" flag is a claim about a derivation that changes
+// whenever languageSignals does, and a rule wrongly carrying it would never be
+// looked at again. mayNarrow is the part that can be decided without the
+// network, and it is decided there.
 //
 // Best-effort: a fetch failure for a single PR is logged and the next PR is
-// tried. A rule is only modified when at least one fetch succeeded and
-// produced at least one glob.
+// tried. A rule is only modified when at least one fetch succeeded and produced
+// at least one glob.
 //
-// Returns the IDs of rules whose Paths was populated, in the order they were
-// visited. The caller can use len() to obtain the count for logging or the
-// list itself to render the "Backfilled:" section of the smelter commit.
-func (s *Smelter) runPathsBackfill(ctx context.Context, wtPath, anvilName string, rf *warden.RulesFile) []string {
+// Returns the IDs it changed, split by which of the two things happened, in the
+// order the rules were visited.
+func (s *Smelter) runPathsBackfill(ctx context.Context, wtPath, anvilName string, rf *warden.RulesFile) backfillResult {
 	return pathsBackfill(ctx, wtPath, anvilName, rf)
 }
 
 // pathsBackfill is the free-function form of runPathsBackfill. It carries no
 // dependency on Smelter state so the off-cycle CLI consolidate command can
 // share the same Pass 3 implementation as the scheduled smelter loop.
-func pathsBackfill(ctx context.Context, wtPath, anvilName string, rf *warden.RulesFile) []string {
+func pathsBackfill(ctx context.Context, wtPath, anvilName string, rf *warden.RulesFile) backfillResult {
 	// Cache fetched file lists per PR number so that multiple rules referencing
 	// the same PR number do not trigger redundant gh API calls.
 	prCache := make(map[int]prFetchResult)
 
-	var updated []string
+	var result backfillResult
 	for i := range rf.Rules {
 		if ctx.Err() != nil {
-			return updated
+			return result
 		}
 		rule := &rf.Rules[i]
-		if len(rule.Paths) > 0 {
+		filling := len(rule.Paths) == 0
+		if !filling && !mayNarrow(rule.Paths) {
 			continue
 		}
 
-		// Collect unique PR numbers referenced by this rule's sources.
-		// extractPRNumbers handles source strings that contain multiple
-		// copilot:PR#N tokens (e.g. "copilot:PR#1, copilot:PR#2").
-		var prNums []int
-		seenPR := make(map[int]struct{})
-		for _, src := range rule.Source {
-			for _, n := range extractPRNumbers(src) {
-				if _, dup := seenPR[n]; dup {
-					continue
-				}
-				seenPR[n] = struct{}{}
-				prNums = append(prNums, n)
-			}
-		}
-		if len(prNums) == 0 {
-			continue
-		}
-
-		var allFiles []string
-		var anySuccess bool
-		for _, prNum := range prNums {
-			result, cached := prCache[prNum]
-			if !cached {
-				files, err := fetchChangedFiles(ctx, wtPath, prNum)
-				result = prFetchResult{files: files, err: err}
-				prCache[prNum] = result
-			}
-			if result.err != nil {
-				log.Printf("[smelter] paths backfill: PR#%d for rule %s on %s: %v", prNum, rule.ID, anvilName, result.err)
-				continue
-			}
-			anySuccess = true
-			allFiles = append(allFiles, result.files...)
-		}
-		if !anySuccess {
+		files, ok := sourcePRFiles(ctx, wtPath, anvilName, rule, prCache)
+		if !ok {
 			continue
 		}
 
@@ -243,28 +276,106 @@ func pathsBackfill(ctx context.Context, wtPath, anvilName string, rf *warden.Rul
 		// says which extensions were touched, the rule says which language it
 		// is about, and only the intersection is a path filter that narrows
 		// anything. See globsForRule.
-		globs := globsForRule(*rule, allFiles)
+		globs := globsForRule(*rule, files)
 		if len(globs) == 0 {
 			continue
 		}
-		rule.Paths = globs
-		updated = append(updated, rule.ID)
-		// Name the languages the rule's own text was read as naming AND what
-		// became of each: the globs alone cannot say whether a rule was
-		// narrowed by its language or fell back to the PR's extensions, which
-		// is the one thing worth knowing when a backfilled rule stops firing.
-		// The outcome is read off the globs the rule now carries, so a
-		// discarded inference reads as discarded rather than as the narrowing
-		// that did not happen. The globs themselves are PR-derived and so go
-		// out through safeGlobList.
-		langs := languageOutcomes(ruleText(*rule), globs)
-		if len(langs) == 0 {
-			langs = []string{"none"}
+
+		if filling {
+			rule.Paths = globs
+			result.Filled = append(result.Filled, rule.ID)
+			logPathsDerived("backfill", rule, anvilName, nil, globs)
+			continue
 		}
-		log.Printf("[smelter] paths backfill: rule %s on %s -> %s (languages: %s)",
-			rule.ID, anvilName, safeGlobList(globs), strings.Join(langs, ", "))
+
+		// A rewrite may only ever shrink what the rule matches, and what is
+		// left has to still cover the evidence the rule was learned from.
+		// Either test failing leaves the rule's own paths in place, which is
+		// the safe direction: a set this pass got wrong is a rule that stops
+		// being reviewed with nothing to say so.
+		if !isStrictlyNarrower(globs, rule.Paths) || !matchesAnySource(globs, files) {
+			continue
+		}
+		before := rule.Paths
+		rule.Paths = globs
+		result.Narrowed = append(result.Narrowed, rule.ID)
+		logPathsDerived("narrow", rule, anvilName, before, globs)
 	}
-	return updated
+	return result
+}
+
+// sourcePRFiles returns the union of the files changed by the PRs a rule's
+// Source names, reporting false when the rule names no copilot:PR#N token or
+// when every fetch for it failed. Fetches are served from prCache, which is
+// what keeps one PR's files to one gh call however many rules cite it.
+func sourcePRFiles(ctx context.Context, wtPath, anvilName string, rule *warden.Rule, prCache map[int]prFetchResult) ([]string, bool) {
+	// Collect unique PR numbers referenced by this rule's sources.
+	// extractPRNumbers handles source strings that contain multiple
+	// copilot:PR#N tokens (e.g. "copilot:PR#1, copilot:PR#2").
+	var prNums []int
+	seenPR := make(map[int]struct{})
+	for _, src := range rule.Source {
+		for _, n := range extractPRNumbers(src) {
+			if _, dup := seenPR[n]; dup {
+				continue
+			}
+			seenPR[n] = struct{}{}
+			prNums = append(prNums, n)
+		}
+	}
+	if len(prNums) == 0 {
+		return nil, false
+	}
+
+	var (
+		files      []string
+		anySuccess bool
+	)
+	for _, prNum := range prNums {
+		res, cached := prCache[prNum]
+		if !cached {
+			f, err := fetchChangedFiles(ctx, wtPath, prNum)
+			res = prFetchResult{files: f, err: err}
+			prCache[prNum] = res
+		}
+		if res.err != nil {
+			log.Printf("[smelter] paths backfill: PR#%d for rule %s on %s: %v", prNum, rule.ID, anvilName, res.err)
+			continue
+		}
+		anySuccess = true
+		files = append(files, res.files...)
+	}
+	if !anySuccess {
+		return nil, false
+	}
+	return files, true
+}
+
+// logPathsDerived writes the one line that says what a rule's Paths became and
+// why. It names the languages the rule's own text was read as naming AND what
+// became of each: the globs alone cannot say whether a rule was narrowed by its
+// language or fell back to the PR's extensions, which is the one thing worth
+// knowing when a backfilled rule stops firing. The outcome is read off the
+// globs the rule now carries, so a discarded inference reads as discarded
+// rather than as the narrowing that did not happen.
+//
+// A narrowing also prints what the rule carried BEFORE, since "this rule is now
+// gated on **/*.go" and "this rule stopped being gated on **/*.md" are the same
+// event described from the two ends, and only the second says what stopped
+// being reviewed. Both lists are PR-derived, so both go out through
+// safeGlobList.
+func logPathsDerived(action string, rule *warden.Rule, anvilName string, before, after []string) {
+	langs := languageOutcomes(ruleText(*rule), after)
+	if len(langs) == 0 {
+		langs = []string{"none"}
+	}
+	if len(before) > 0 {
+		log.Printf("[smelter] paths %s: rule %s on %s: %s -> %s (languages: %s)",
+			action, rule.ID, anvilName, safeGlobList(before), safeGlobList(after), strings.Join(langs, ", "))
+		return
+	}
+	log.Printf("[smelter] paths %s: rule %s on %s -> %s (languages: %s)",
+		action, rule.ID, anvilName, safeGlobList(after), strings.Join(langs, ", "))
 }
 
 // maxLoggedGlobs and maxLoggedGlobLen bound one rendered glob list, on the

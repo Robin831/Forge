@@ -108,7 +108,11 @@ func withStubFetcher(t *testing.T, fn func(context.Context, string, int) ([]stri
 	t.Cleanup(func() { fetchChangedFiles = prev })
 }
 
-func TestRunPathsBackfill_SkipsRulesWithExistingPaths(t *testing.T) {
+// A rule whose Paths hold one glob that is not `**/*` admits no narrower set —
+// a candidate has to be covered by what is on file, and the only thing that one
+// glob covers is itself. So the pass declines it from the globs alone, before
+// spending the PR lookup that could not have changed anything.
+func TestRunPathsBackfill_SkipsRuleWhoseSinglePathCannotNarrow(t *testing.T) {
 	db := openTestDB(t)
 	s := New(db, 0, map[string]string{})
 
@@ -122,9 +126,10 @@ func TestRunPathsBackfill_SkipsRulesWithExistingPaths(t *testing.T) {
 		{ID: "r1", Source: warden.SourceList{"copilot:PR#1"}, Paths: []string{"**/*.go"}},
 	}}
 
-	updated := s.runPathsBackfill(context.Background(), t.TempDir(), "anvil-a", rf)
-	assert.Empty(t, updated, "rule with existing Paths must be skipped")
-	assert.Equal(t, 0, calls, "stub fetcher must not be invoked for rules with existing Paths")
+	result := s.runPathsBackfill(context.Background(), t.TempDir(), "anvil-a", rf)
+	assert.Empty(t, result.Filled)
+	assert.Empty(t, result.Narrowed)
+	assert.Equal(t, 0, calls, "a rule that cannot be narrowed must cost no PR lookup")
 	assert.Equal(t, []string{"**/*.go"}, rf.Rules[0].Paths, "Paths must not be mutated")
 }
 
@@ -145,7 +150,7 @@ func TestRunPathsBackfill_PopulatesPathsFromPR(t *testing.T) {
 		{ID: "r1", Source: warden.SourceList{"copilot:PR#42"}},
 	}}
 
-	updated := s.runPathsBackfill(context.Background(), t.TempDir(), "anvil-a", rf)
+	updated := s.runPathsBackfill(context.Background(), t.TempDir(), "anvil-a", rf).Filled
 	assert.Equal(t, []string{"r1"}, updated)
 	assert.Equal(t, []string{"**/*.go", "**/*.ts"}, rf.Rules[0].Paths)
 }
@@ -169,7 +174,7 @@ func TestRunPathsBackfill_UnionsAcrossMultiplePRs(t *testing.T) {
 		{ID: "r1", Source: warden.SourceList{"copilot:PR#1", "copilot:PR#2"}},
 	}}
 
-	updated := s.runPathsBackfill(context.Background(), t.TempDir(), "anvil-a", rf)
+	updated := s.runPathsBackfill(context.Background(), t.TempDir(), "anvil-a", rf).Filled
 	assert.Equal(t, []string{"r1"}, updated)
 	assert.Equal(t, []string{"**/*.go", "**/*.ts"}, rf.Rules[0].Paths)
 }
@@ -189,7 +194,7 @@ func TestRunPathsBackfill_SkipsNonCopilotSources(t *testing.T) {
 		{ID: "r2", Source: warden.SourceList{"manual"}},
 	}}
 
-	updated := s.runPathsBackfill(context.Background(), t.TempDir(), "anvil-a", rf)
+	updated := s.runPathsBackfill(context.Background(), t.TempDir(), "anvil-a", rf).Filled
 	assert.Empty(t, updated)
 	assert.Equal(t, 0, calls, "rules without copilot sources must not trigger fetcher")
 	assert.Empty(t, rf.Rules[0].Paths)
@@ -208,7 +213,7 @@ func TestRunPathsBackfill_FetchErrorLeavesRuleUnchanged(t *testing.T) {
 		{ID: "r1", Source: warden.SourceList{"copilot:PR#42"}},
 	}}
 
-	updated := s.runPathsBackfill(context.Background(), t.TempDir(), "anvil-a", rf)
+	updated := s.runPathsBackfill(context.Background(), t.TempDir(), "anvil-a", rf).Filled
 	assert.Empty(t, updated, "fetch errors must not count as successful backfills")
 	assert.Empty(t, rf.Rules[0].Paths, "Paths must stay empty on error so a future flush can retry")
 }
@@ -228,7 +233,7 @@ func TestRunPathsBackfill_PartialFetchSucceedsWhenOnePRWorks(t *testing.T) {
 		{ID: "r1", Source: warden.SourceList{"copilot:PR#1", "copilot:PR#2"}},
 	}}
 
-	updated := s.runPathsBackfill(context.Background(), t.TempDir(), "anvil-a", rf)
+	updated := s.runPathsBackfill(context.Background(), t.TempDir(), "anvil-a", rf).Filled
 	assert.Equal(t, []string{"r1"}, updated)
 	assert.Equal(t, []string{"**/*.go"}, rf.Rules[0].Paths)
 }
@@ -245,7 +250,7 @@ func TestRunPathsBackfill_NoExtensionsLeavesRuleUnchanged(t *testing.T) {
 		{ID: "r1", Source: warden.SourceList{"copilot:PR#42"}},
 	}}
 
-	updated := s.runPathsBackfill(context.Background(), t.TempDir(), "anvil-a", rf)
+	updated := s.runPathsBackfill(context.Background(), t.TempDir(), "anvil-a", rf).Filled
 	assert.Empty(t, updated)
 	assert.Empty(t, rf.Rules[0].Paths)
 }
@@ -265,15 +270,17 @@ func TestRunPathsBackfill_Idempotency_RepeatedRunIsNoop(t *testing.T) {
 	}}
 
 	// First run: populates Paths.
-	first := s.runPathsBackfill(context.Background(), t.TempDir(), "anvil-a", rf)
+	first := s.runPathsBackfill(context.Background(), t.TempDir(), "anvil-a", rf).Filled
 	require.Equal(t, []string{"r1"}, first)
 	require.Equal(t, []string{"**/*.go"}, rf.Rules[0].Paths)
 
-	// Second run: rule has Paths, so the pass must skip it entirely — the
-	// stub fetcher must not be called a second time.
+	// Second run: the rule now carries a single glob that nothing narrower can
+	// be covered by, so the pass declines it before the lookup and the stub
+	// fetcher is not called again.
 	prevCalls := calls
 	second := s.runPathsBackfill(context.Background(), t.TempDir(), "anvil-a", rf)
-	assert.Empty(t, second, "second run must report no updates")
+	assert.Empty(t, second.Filled, "second run must report no fills")
+	assert.Empty(t, second.Narrowed, "second run must report no narrowings")
 	assert.Equal(t, prevCalls, calls, "second run must not invoke the fetcher")
 }
 
@@ -295,7 +302,7 @@ func TestRunPathsBackfill_HonorsCanceledContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	updated := s.runPathsBackfill(ctx, t.TempDir(), "anvil-a", rf)
+	updated := s.runPathsBackfill(ctx, t.TempDir(), "anvil-a", rf).Filled
 	assert.Empty(t, updated)
 	assert.Equal(t, 0, calls, "canceled context must short-circuit before any fetch")
 }
@@ -320,7 +327,7 @@ func TestRunPathsBackfill_MultiTokenSourceString(t *testing.T) {
 		{ID: "r1", Source: warden.SourceList{"copilot:PR#10, copilot:PR#20"}},
 	}}
 
-	updated := s.runPathsBackfill(context.Background(), t.TempDir(), "anvil-a", rf)
+	updated := s.runPathsBackfill(context.Background(), t.TempDir(), "anvil-a", rf).Filled
 	assert.Equal(t, []string{"r1"}, updated)
 	assert.Equal(t, []string{"**/*.go", "**/*.ts"}, rf.Rules[0].Paths)
 }
@@ -342,7 +349,7 @@ func TestRunPathsBackfill_CachesResultsAcrossRules(t *testing.T) {
 		{ID: "r2", Source: warden.SourceList{"copilot:PR#99"}},
 	}}
 
-	updated := s.runPathsBackfill(context.Background(), t.TempDir(), "anvil-a", rf)
+	updated := s.runPathsBackfill(context.Background(), t.TempDir(), "anvil-a", rf).Filled
 	assert.Equal(t, []string{"r1", "r2"}, updated)
 	assert.Equal(t, 1, calls, "fetch result must be cached and reused across rules")
 	assert.Equal(t, []string{"**/*.go"}, rf.Rules[0].Paths)
@@ -365,7 +372,7 @@ func TestRunPathsBackfill_DedupesSameSourceRepeated(t *testing.T) {
 		{ID: "r1", Source: warden.SourceList{"copilot:PR#7", "copilot:PR#7"}},
 	}}
 
-	updated := s.runPathsBackfill(context.Background(), t.TempDir(), "anvil-a", rf)
+	updated := s.runPathsBackfill(context.Background(), t.TempDir(), "anvil-a", rf).Filled
 	assert.Equal(t, []string{"r1"}, updated)
 	assert.Equal(t, 1, calls, "duplicate PR references must be deduplicated")
 	assert.Equal(t, []string{"**/*.go"}, rf.Rules[0].Paths)

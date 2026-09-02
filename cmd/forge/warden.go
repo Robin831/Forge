@@ -384,6 +384,9 @@ func renderConsolidateSummary(out, errOut io.Writer, anvilName, anvilPath string
 	if n := len(result.Passes.Backfilled); n > 0 {
 		fmt.Fprintf(out, "Backfilled:      %d rule(s)\n", n)
 	}
+	if n := len(result.Passes.Narrowed); n > 0 {
+		fmt.Fprintf(out, "Narrowed:        %d rule(s)\n", n)
+	}
 	if len(result.Passes.Contradictions) > 0 {
 		// Printed to stderr, and never folded into the change summary
 		// above: nothing was written for these, and a human has to pick

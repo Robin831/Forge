@@ -34,9 +34,18 @@ type PassResults struct {
 	// included here — they are surfaced through Consolidated.
 	Archived []warden.ArchivedRule
 
-	// Backfilled lists the IDs of rules whose Paths field was populated by
-	// Pass 3 from the changed files of the rule's source PR(s).
+	// Backfilled lists the IDs of rules whose EMPTY Paths field was populated
+	// by Pass 3 from the changed files of the rule's source PR(s).
 	Backfilled []string
+
+	// Narrowed lists the IDs of rules whose EXISTING Paths were replaced by a
+	// strictly narrower set derived from the same evidence. Its own field
+	// rather than more entries in Backfilled, on archivedByReason's argument:
+	// "this rule had no gate and now has one" and "this rule was gated on
+	// **/*.md because the PR that taught it also touched a doc, and no longer
+	// is" are different claims, and reported as one the count says a field was
+	// filled that was never empty.
+	Narrowed []string
 
 	// Contradictions holds pairs of rules from one source PR that prescribe
 	// opposite orderings. They are reported, never resolved — see
@@ -50,15 +59,16 @@ type PassResults struct {
 // false, callers should skip committing — the rules file is byte-identical
 // to main and a commit would be empty.
 func (p PassResults) HasChanges() bool {
-	return len(p.Added) > 0 || len(p.Consolidated) > 0 || len(p.Archived) > 0 || len(p.Backfilled) > 0
+	return len(p.Added) > 0 || len(p.Consolidated) > 0 || len(p.Archived) > 0 ||
+		len(p.Backfilled) > 0 || len(p.Narrowed) > 0
 }
 
 // buildCommitMessage renders the single commit message used for the
 // forge/warden-learn-batch/<anvil> PR. The message has a one-line subject
 // summarizing what happened (kept short for git log readability) followed
-// by up to five labeled sections — "Added:", "Consolidated:", "Archived:",
-// "Backfilled:" and "Contradictions:" — each listing the affected rule
-// identifiers. Sections with no entries are omitted. The subject always ends in "[no-changelog]" so the
+// by up to six labeled sections — "Added:", "Consolidated:", "Archived:",
+// "Backfilled:", "Narrowed:" and "Contradictions:" — each listing the affected
+// rule identifiers. Sections with no entries are omitted. The subject always ends in "[no-changelog]" so the
 // changelog validator skips this PR.
 func buildCommitMessage(passes PassResults) string {
 	subject := buildCommitSubject(passes)
@@ -91,6 +101,9 @@ func buildCommitSubject(passes PassResults) string {
 	if n := len(passes.Backfilled); n > 0 {
 		parts = append(parts, fmt.Sprintf("backfill paths on %d rule(s)", n))
 	}
+	if n := len(passes.Narrowed); n > 0 {
+		parts = append(parts, fmt.Sprintf("narrow paths on %d rule(s)", n))
+	}
 	if len(parts) == 0 {
 		// Defensive fallback: callers must not invoke buildCommitMessage when
 		// nothing happened, but keep the legacy form to avoid producing an
@@ -100,7 +113,7 @@ func buildCommitSubject(passes PassResults) string {
 	return "forge: " + strings.Join(parts, ", ") + " [no-changelog]"
 }
 
-// buildCommitBody renders the five labeled sections. Sections with no
+// buildCommitBody renders the six labeled sections. Sections with no
 // entries are omitted entirely so the body stays compact when only one
 // pass produced changes.
 func buildCommitBody(passes PassResults) string {
@@ -115,6 +128,9 @@ func buildCommitBody(passes PassResults) string {
 		sections = append(sections, s)
 	}
 	if s := formatBackfilledSection(passes.Backfilled); s != "" {
+		sections = append(sections, s)
+	}
+	if s := formatNarrowedSection(passes.Narrowed); s != "" {
 		sections = append(sections, s)
 	}
 	// Last, and phrased as unfinished work: a contradiction is the one thing
@@ -237,11 +253,22 @@ func archivedByReason(archived []warden.ArchivedRule) (stale, overCap int) {
 }
 
 func formatBackfilledSection(ids []string) string {
+	return formatIDSection("Backfilled", ids)
+}
+
+func formatNarrowedSection(ids []string) string {
+	return formatIDSection("Narrowed", ids)
+}
+
+// formatIDSection renders one "<Label>: N rule(s)" block with a sanitized
+// bullet per ID. One function for both of Pass 3's outcomes so the two sections
+// cannot drift into two shapes.
+func formatIDSection(label string, ids []string) string {
 	if len(ids) == 0 {
 		return ""
 	}
 	var sb strings.Builder
-	fmt.Fprintf(&sb, "Backfilled: %d rule(s)\n", len(ids))
+	fmt.Fprintf(&sb, "%s: %d rule(s)\n", label, len(ids))
 	for _, id := range ids {
 		fmt.Fprintf(&sb, "- %s\n", displayID(id))
 	}
@@ -339,6 +366,9 @@ func buildPRBody(passes PassResults) string {
 	if n := len(passes.Backfilled); n > 0 {
 		lines = append(lines, fmt.Sprintf("- %d rule(s) with paths backfilled from PR changed files.", n))
 	}
+	if n := len(passes.Narrowed); n > 0 {
+		lines = append(lines, fmt.Sprintf("- %d rule(s) whose paths were narrowed to the files their own source PR changed.", n))
+	}
 	if n := len(passes.Contradictions); n > 0 {
 		lines = append(lines, "", fmt.Sprintf("**%d contradictory rule pair(s) need a human decision.** Each pair was learned from one source PR and prescribes opposite orderings, so the Warden flags an implementation whichever convention it follows. Nothing was merged or dropped for them:", n))
 		for _, c := range passes.Contradictions {
@@ -374,6 +404,9 @@ func passResultsSummary(passes PassResults) string {
 	}
 	if n := len(passes.Backfilled); n > 0 {
 		parts = append(parts, fmt.Sprintf("%d backfilled", n))
+	}
+	if n := len(passes.Narrowed); n > 0 {
+		parts = append(parts, fmt.Sprintf("%d narrowed", n))
 	}
 	if n := len(passes.Contradictions); n > 0 {
 		parts = append(parts, fmt.Sprintf("%d contradiction(s) flagged", n))

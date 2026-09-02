@@ -521,16 +521,16 @@ func (s *Smelter) buildFlushRules(ctx context.Context, wtPath, anvilName string,
 	// rules that are leaving the file.
 	staleArchived = append(staleArchived, s.runFileCap(anvilName, rf)...)
 
-	// Pass 3 paths backfill: for each active rule whose Paths field is empty
-	// and whose Source carries a copilot:PR#N token, fetch the PR's changed
-	// files and derive file-extension globs. Idempotent: rules with non-empty
-	// Paths are skipped. Pass 3 only mutates existing rules in rf, so no
-	// archive write is required.
-	backfilledIDs := s.runPathsBackfill(ctx, wtPath, anvilName, rf)
-	if len(backfilledIDs) > 0 {
-		log.Printf("[smelter] paths backfilled on %d rule(s) for %s", len(backfilledIDs), anvilName)
-		_ = s.db.LogEvent(state.EventSmelterFlushed,
-			fmt.Sprintf("Backfilled paths on %d rule(s) for %s", len(backfilledIDs), anvilName), "", anvilName)
+	// Pass 3 paths: for each active rule whose Source carries a copilot:PR#N
+	// token, fetch the PR's changed files and derive the globs the rule should
+	// be gated on — filling an empty Paths field, or replacing an existing one
+	// when the derivation is strictly narrower than what is on file. Idempotent
+	// (the derivation is a fixed point). Pass 3 only mutates existing rules in
+	// rf, so no archive write is required.
+	backfill := s.runPathsBackfill(ctx, wtPath, anvilName, rf)
+	if summary := backfill.summary(anvilName); summary != "" {
+		log.Printf("[smelter] paths %s", summary)
+		_ = s.db.LogEvent(state.EventSmelterFlushed, "Paths "+summary, "", anvilName)
 	}
 
 	// Contradiction check: report (never resolve) rules from one source PR
@@ -544,7 +544,8 @@ func (s *Smelter) buildFlushRules(ctx context.Context, wtPath, anvilName string,
 			Added:          addedIDs,
 			Consolidated:   consolidationSummary,
 			Archived:       staleArchived,
-			Backfilled:     backfilledIDs,
+			Backfilled:     backfill.Filled,
+			Narrowed:       backfill.Narrowed,
 			Contradictions: contradictions,
 		},
 		archived:   archived,

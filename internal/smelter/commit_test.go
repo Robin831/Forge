@@ -125,6 +125,28 @@ func TestBuildCommitMessage_BackfilledOnly(t *testing.T) {
 	assert.Contains(t, msg, "- r2")
 }
 
+// A narrowed rule is not a backfilled one: its Paths field was never empty, so
+// a subject reporting it as a backfill describes work that did not happen.
+func TestBuildCommitMessage_NarrowedIsReportedApartFromBackfilled(t *testing.T) {
+	passes := PassResults{Backfilled: []string{"r1"}, Narrowed: []string{"r2", "r3"}}
+	msg := buildCommitMessage(passes)
+	assert.Contains(t, msg, "backfill paths on 1 rule(s)")
+	assert.Contains(t, msg, "narrow paths on 2 rule(s)")
+	assert.Contains(t, msg, "Backfilled: 1 rule(s)")
+	assert.Contains(t, msg, "Narrowed: 2 rule(s)")
+	assert.Contains(t, msg, "- r2")
+	assert.Contains(t, msg, "- r3")
+}
+
+func TestBuildCommitMessage_NarrowedOnlyStillCommits(t *testing.T) {
+	passes := PassResults{Narrowed: []string{"r1"}}
+	assert.True(t, passes.HasChanges(),
+		"a run whose only outcome is a narrowing has a changed rules file")
+	msg := buildCommitMessage(passes)
+	assert.Contains(t, msg, "narrow paths on 1 rule(s)")
+	assert.NotContains(t, msg, "Backfilled:")
+}
+
 func TestBuildCommitMessage_ConsolidatedEmptyReplacedIDs(t *testing.T) {
 	passes := PassResults{
 		Consolidated: []warden.MergeResult{

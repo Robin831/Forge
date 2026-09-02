@@ -73,3 +73,17 @@ those, not the logs.
 - **Both sides of a comparison use the same invocation** apart from the window
   flags. Changing `--anvil`, `--model-tier` or `--include-skipped` between the
   two produces two reports that cannot be compared.
+
+## Warden rule paths: repo-wide glob share (Forge-jehv, 2026-09-02)
+
+The before/after behind the Pass 3 narrowing, plus why the bead's own 51%
+baseline (munin) is not among the numbers.
+
+| File | What |
+|---|---|
+| [warden-paths-narrowing-20260902.md](warden-paths-narrowing-20260902.md) | the counts, the invocation that reproduces them, and the caveats |
+
+The tool is a skipped-by-default test rather than a script:
+`FORGE_MEASURE_ANVIL=<anvil> go test ./internal/smelter -run TestMeasureRepoWidePaths -v -timeout 60m`.
+It counts with the shipped `smelter.repoWideGlob`, so the number quoted for a
+run is counted by the same definition the rewrite acts on.

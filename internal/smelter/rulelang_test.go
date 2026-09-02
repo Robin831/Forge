@@ -362,7 +362,7 @@ func TestRunPathsBackfill_NarrowsToTheRulesOwnLanguage(t *testing.T) {
 		},
 	}}
 
-	updated := s.runPathsBackfill(context.Background(), t.TempDir(), "anvil-a", rf)
+	updated := s.runPathsBackfill(context.Background(), t.TempDir(), "anvil-a", rf).Filled
 	require.Equal(t, []string{"go-1", "ui-1", "any-1"}, updated)
 	assert.Equal(t, []string{"**/*.go"}, rf.Rules[0].Paths)
 	assert.Equal(t, []string{"**/*.ts", "**/*.tsx"}, rf.Rules[1].Paths)
