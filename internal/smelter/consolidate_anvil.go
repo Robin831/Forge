@@ -278,7 +278,9 @@ func ConsolidateAnvil(ctx context.Context, opts ConsolidateOptions) (Consolidate
 	// The ceiling runs through the same applyFileCap the scheduled flush uses,
 	// after the staleness sweep so an eviction never takes a slot from a rule
 	// staleness was about to remove anyway, and before the paths backfill so no
-	// PR lookup is spent on a rule that is leaving.
+	// PR lookup is spent on a rule that is leaving. It is the backstop behind
+	// the passes above rather than a replacement for them: what they merge and
+	// archive is what it never has to evict.
 	var capEmit func(string)
 	if opts.EventLogger != nil {
 		capEmit = func(message string) { opts.EventLogger("smelter_flushed", message) }
@@ -311,6 +313,12 @@ func ConsolidateAnvil(ctx context.Context, opts ConsolidateOptions) (Consolidate
 		Backfilled:     backfill.Filled,
 		Narrowed:       backfill.Narrowed,
 		Contradictions: contradictions,
+		// The occupancy after every pass, against the ceiling this run was
+		// actually held to — so `forge warden consolidate` reports a file that
+		// is one rule under its ceiling as such, which an eviction count of
+		// zero reads exactly like a file at half of it.
+		ActiveRules: len(rf.Rules),
+		RuleCap:     opts.MaxRulesInFile,
 	}
 
 	result := ConsolidateResult{

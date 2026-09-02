@@ -1151,7 +1151,7 @@ type WardenSettings struct {
 	// the Smelter's Pass 2 staleness sweep. A rule whose Added date is
 	// older than this threshold and has had no recent source activity is
 	// moved to the archive store with reason="stale". Zero falls back to
-	// the default of 180 days; a negative value disables the pass
+	// DefaultWardenArchiveAfterDays; a negative value disables the pass
 	// (callers may use it to mean "never archive").
 	ArchiveAfterDays int `mapstructure:"archive_after_days" yaml:"archive_after_days,omitempty"`
 	// DedupThreshold is the similarity score (0.0–1.0) above which two
@@ -1182,9 +1182,11 @@ type WardenSettings struct {
 	// criterion is never applied alone.
 	OverlapThreshold float64 `mapstructure:"overlap_threshold" yaml:"overlap_threshold,omitempty"`
 	// MaxRulesInFile is the hard ceiling on how many rules the active
-	// warden-rules.yaml may hold. The Smelter evicts the lowest-value rules
-	// past it (see warden.EvictOverCap) into the archive store with
-	// reason="over-cap". Zero falls back to DefaultWardenMaxRulesInFile; a
+	// warden-rules.yaml may hold — the unconditional backstop that runs after
+	// the consolidation and staleness passes rather than instead of them. The
+	// Smelter evicts the lowest-value rules past it (see warden.EvictOverCap)
+	// into the archive store with reason="over-cap". Zero falls back to
+	// DefaultWardenMaxRulesInFile; a
 	// negative value disables the ceiling, on DedupThreshold's rule — zero is
 	// the field's zero value and cannot mean "off" without disabling the
 	// ceiling for every deployment that never configured one.
@@ -1203,7 +1205,22 @@ type WardenSettings struct {
 // three is a difference nothing would report.
 const (
 	// DefaultWardenArchiveAfterDays is the staleness sweep threshold in days.
-	DefaultWardenArchiveAfterDays = 180
+	//
+	// 90 and not the 180 this shipped with, because at 180 the sweep is inert
+	// on the file it exists to bound: measured on one anvil, the rules added
+	// in 2026-04, -05 and -06 — the bulk of a file that had reached four
+	// figures — were every one of them under 180 days old, so Pass 2 archived
+	// nothing at all while the file kept growing. A threshold no rule in a
+	// growing file has crossed is not a lower bound on staleness, it is a pass
+	// that does not run.
+	//
+	// 90 days is still well past the window in which a learned rule is
+	// re-taught: a convention still being violated produces new Copilot
+	// comments, which refresh the rule's source activity and keep it out of
+	// the sweep, so what 90 removes is a rule that named a convention nothing
+	// has raised in a quarter — and the archive keeps it, so lengthening the
+	// threshold is enough to want it back.
+	DefaultWardenArchiveAfterDays = 90
 	// DefaultWardenDedupThreshold is the shipped Jaccard criterion.
 	DefaultWardenDedupThreshold = 0.6
 	// DefaultWardenOverlapThreshold is the shipped overlap (containment)
@@ -1211,10 +1228,24 @@ const (
 	// cannot import without a cycle.
 	DefaultWardenOverlapThreshold = 0.55
 	// DefaultWardenMaxRulesInFile is the shipped ceiling on the active rules
-	// file. It is set well above what any single review reads (30) and above
-	// what a healthy file holds, so it bounds unbounded growth without
-	// evicting from a file that is merely large.
-	DefaultWardenMaxRulesInFile = 1000
+	// file, and the unconditional backstop behind the three consolidation
+	// passes: whatever they merge, archive or re-scope, the file is under this
+	// count when the flush ends.
+	//
+	// 300 and not the 1000 it shipped with, because 1000 is four figures —
+	// the size the ceiling exists to prevent, set as the ceiling. A file that
+	// large is one a review samples 30 rules out of, so 970 of those rules
+	// compete for slots they will essentially never win; the two anvils
+	// measured (1793 and 727 rules) had 61 and 125 rules respectively that
+	// could reach any review in their whole PR history, so a ceiling in the
+	// low hundreds is above what is reachable rather than a cut into it.
+	//
+	// It stays a count and not a shorter archive_after_days for the reason
+	// EvictOverCap documents: an age threshold evicts nothing on a dormant
+	// anvil and everything on a busy one, while a count means what it says
+	// whatever the learning rate has been. The two are complements, and the
+	// ceiling is the one that holds when staleness does not.
+	DefaultWardenMaxRulesInFile = 300
 )
 
 // ResolvedArchiveAfterDays returns the effective archive-after threshold in

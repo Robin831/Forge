@@ -518,8 +518,16 @@ func (s *Smelter) buildFlushRules(ctx context.Context, wtPath, anvilName string,
 	// limit. It runs after staleness so an over-cap eviction never takes a
 	// slot from a rule the staleness sweep was about to remove anyway, and
 	// before the paths backfill so the backfill does not spend PR lookups on
-	// rules that are leaving the file.
-	staleArchived = append(staleArchived, s.runFileCap(anvilName, rf)...)
+	// rules that are leaving the file. It is a backstop and not a substitute
+	// for the passes above it: whatever they merged or archived, the file is
+	// under this count when the flush ends.
+	//
+	// Read once and carried, because the value comes from a hot-reloaded
+	// config closure: read again for the reported occupancy it could be a
+	// different number, and the flush would report a file measured against a
+	// ceiling that never ran.
+	ruleCap := s.ruleCap()
+	staleArchived = append(staleArchived, s.runFileCap(anvilName, rf, ruleCap)...)
 
 	// Pass 3 paths: for each active rule whose Source carries a copilot:PR#N
 	// token, fetch the PR's changed files and derive the globs the rule should
@@ -547,6 +555,13 @@ func (s *Smelter) buildFlushRules(ctx context.Context, wtPath, anvilName string,
 			Backfilled:     backfill.Filled,
 			Narrowed:       backfill.Narrowed,
 			Contradictions: contradictions,
+			// Measured here, after every pass, because that is the number the
+			// next flush starts from — and against the same ceiling the
+			// eviction pass was handed, read through the one accessor, so the
+			// reported occupancy cannot be measured against a ceiling other
+			// than the one that ran.
+			ActiveRules: len(rf.Rules),
+			RuleCap:     ruleCap,
 		},
 		archived:   archived,
 		flushedIDs: flushedIDs,
@@ -858,20 +873,30 @@ func (s *Smelter) runStaleness(anvilName string, rf *warden.RulesFile) []warden.
 	return stale
 }
 
-// runFileCap resolves the configured ceiling and runs the shared eviction pass
-// (applyFileCap) over rf, logging through the state DB. It is the scheduled
-// flush's half of the one implementation the off-cycle CLI path also calls, so
-// the two cannot come to evict by different rules.
+// runFileCap runs the shared eviction pass (applyFileCap) over rf against the
+// ceiling the caller resolved, logging through the state DB. It is the
+// scheduled flush's half of the one implementation the off-cycle CLI path also
+// calls, so the two cannot come to evict by different rules.
 //
-// When maxRulesInFile is nil or returns <= 0, the pass is a no-op.
-func (s *Smelter) runFileCap(anvilName string, rf *warden.RulesFile) []warden.ArchivedRule {
-	if s.maxRulesInFile == nil {
-		return nil
-	}
-	return applyFileCap(anvilName, rf, s.maxRulesInFile(), time.Now().UTC(),
+// max is passed in rather than read here so the number the pass evicts against
+// is the same one the flush reports its occupancy against. When it is <= 0
+// (including an unwired ceiling closure) the pass is a no-op.
+func (s *Smelter) runFileCap(anvilName string, rf *warden.RulesFile, max int) []warden.ArchivedRule {
+	return applyFileCap(anvilName, rf, max, time.Now().UTC(),
 		func(message string) {
 			_ = s.db.LogEvent(state.EventSmelterFlushed, message, "", anvilName)
 		})
+}
+
+// ruleCap reads the configured ceiling on the active rules file once. An
+// unwired closure is no ceiling (0), which applyFileCap and occupancyPhrase
+// both already read as "not in effect", so a Smelter built without the option
+// needs no nil check at either call site.
+func (s *Smelter) ruleCap() int {
+	if s.maxRulesInFile == nil {
+		return 0
+	}
+	return s.maxRulesInFile()
 }
 
 // persistRulesAndArchive writes the archive entries (when any) and then
