@@ -270,7 +270,8 @@ var wardenConsolidateCmd = &cobra.Command{
 	Long: `Off-cycle manual trigger for the same three-pass merge logic the
 scheduled smelter runs:
   Pass 1 — cluster near-duplicate rules and merge each cluster.
-  Pass 2 — archive rules whose Added date is older than archive_after_days.
+  Pass 2 — archive rules whose Added date is older than archive_after_days,
+           then evict the lowest-value rules over max_rules_in_file.
   Pass 3 — backfill the Paths field from each rule's source PR(s).
 
 Always writes .forge/warden-rules.yaml when any pass produced changes.
@@ -304,10 +305,11 @@ in the active rules file.`,
 			DedupThreshold:   cfg.Settings.Warden.ResolvedDedupThreshold(),
 			OverlapThreshold: cfg.Settings.Warden.ResolvedOverlapThreshold(),
 			ArchiveAfterDays: cfg.Settings.Warden.ResolvedArchiveAfterDays(),
+			MaxRulesInFile:   cfg.Settings.Warden.ResolvedMaxRulesInFile(),
 		}
 
-		fmt.Fprintf(os.Stderr, "Running three-pass consolidation against %s (dedup_threshold=%.2f, overlap_threshold=%.2f, archive_after_days=%d)...\n",
-			anvilName, opts.DedupThreshold, opts.OverlapThreshold, opts.ArchiveAfterDays)
+		fmt.Fprintf(os.Stderr, "Running three-pass consolidation against %s (dedup_threshold=%.2f, overlap_threshold=%.2f, archive_after_days=%d, max_rules_in_file=%d)...\n",
+			anvilName, opts.DedupThreshold, opts.OverlapThreshold, opts.ArchiveAfterDays, opts.MaxRulesInFile)
 
 		result, err := smelter.ConsolidateAnvil(rootCtx, opts)
 		if err != nil {
@@ -322,8 +324,16 @@ in the active rules file.`,
 		if n := len(result.Passes.Consolidated); n > 0 {
 			fmt.Printf("Consolidated:    %d cluster(s)\n", n)
 		}
-		if n := len(result.Passes.Archived); n > 0 {
-			fmt.Printf("Archived stale:  %d rule(s)\n", n)
+		// The archive list carries two reasons and they are printed as two
+		// lines: a rule evicted for losing a slot to the ceiling did not age
+		// out, and reporting it as stale is the one claim this summary must
+		// not make.
+		stale, overCap := result.Passes.ArchivedByReason()
+		if stale > 0 {
+			fmt.Printf("Archived stale:  %d rule(s)\n", stale)
+		}
+		if overCap > 0 {
+			fmt.Printf("Evicted:         %d rule(s) over the file ceiling\n", overCap)
 		}
 		if n := len(result.Passes.Backfilled); n > 0 {
 			fmt.Printf("Backfilled:      %d rule(s)\n", n)

@@ -283,16 +283,26 @@ func (rf *RulesFile) FormatChecklist() string {
 // When the filtered set is empty the result is "" (so the caller can omit the
 // "Learned Review Rules" section entirely).
 func (rf *RulesFile) FormatChecklistForDiff(diff string, changedFiles []string, cfg ReviewFilterConfig) string {
+	out, _ := rf.FormatChecklistForDiffWithStats(diff, changedFiles, cfg)
+	return out
+}
+
+// FormatChecklistForDiffWithStats is FormatChecklistForDiff plus the funnel
+// counts behind the result, so the caller can report how much of the rules file
+// reached the review. A checklist reads the same whether it is all of what
+// matched or a thirtieth of it, which is how a cap that could only ever emit
+// the file's oldest rules went unnoticed for months.
+func (rf *RulesFile) FormatChecklistForDiffWithStats(diff string, changedFiles []string, cfg ReviewFilterConfig) (string, FilterStats) {
 	if len(rf.Rules) == 0 {
-		return ""
+		return "", FilterStats{Cap: cfg.MaxRules}
 	}
-	filtered := FilterRules(rf.Rules, diff, changedFiles, cfg)
+	filtered, stats := FilterRulesWithStats(rf.Rules, diff, changedFiles, cfg)
 	if len(filtered) == 0 {
-		return ""
+		return "", stats
 	}
 	var sb strings.Builder
 	for i, r := range filtered {
 		fmt.Fprintf(&sb, "%d. [ ] Check: %s (pattern: %s)\n", i+1, r.Check, r.Pattern)
 	}
-	return sb.String()
+	return sb.String(), stats
 }

@@ -336,7 +336,12 @@ func buildReviewPrompt(beadID, beadTitle, beadDescription, diff, anvilPath, prio
 	rulesSection := ""
 	if rf, err := LoadRules(anvilPath); err == nil {
 		changedFiles := diffpkg.ChangedFiles(diff)
-		if checklist := rf.FormatChecklistForDiff(diff, changedFiles, GetActiveFilterConfig()); checklist != "" {
+		checklist, stats := rf.FormatChecklistForDiffWithStats(diff, changedFiles, GetActiveFilterConfig())
+		// One line per review saying how far the rules file got. Without it the
+		// only observable is the checklist, which looks identical whether the
+		// cap discarded nothing or nine hundred candidates.
+		log.Printf("[warden:%s] %s", beadID, stats.Line())
+		if checklist != "" {
 			rulesSection = "\n## Learned Review Rules\n\nThese are domain-specific patterns learned from past reviews. Check each one against the diff:\n\n" + checklist
 		}
 	} else {

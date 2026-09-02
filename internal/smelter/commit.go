@@ -21,10 +21,17 @@ type PassResults struct {
 	// Consolidated holds the per-cluster merge outcomes from Pass 1.
 	Consolidated []warden.MergeResult
 
-	// Archived holds the stale rules moved to the archive store by Pass 2
-	// (ArchiveReason="stale"). Pass 1 duplicates archived with
-	// ArchiveReason="duplicate" are *not* included here — they are surfaced
-	// through Consolidated.
+	// Archived holds the rules moved to the archive store by the two passes
+	// that remove rules from the active file: the staleness sweep
+	// (ArchiveReason="stale") and the file-ceiling eviction
+	// (ArchiveReason="over-cap"). One list because the archive store takes one
+	// write — but the two are different claims about a rule, so every
+	// aggregate rendered from it splits them again through archivedByReason
+	// (ArchivedByReason for callers outside this package). Reading
+	// len(Archived) as a stale count is the bug that helper exists to prevent.
+	//
+	// Pass 1 duplicates archived with ArchiveReason="duplicate" are *not*
+	// included here — they are surfaced through Consolidated.
 	Archived []warden.ArchivedRule
 
 	// Backfilled lists the IDs of rules whose Paths field was populated by
@@ -73,8 +80,13 @@ func buildCommitSubject(passes PassResults) string {
 	if n := len(passes.Consolidated); n > 0 {
 		parts = append(parts, fmt.Sprintf("consolidate %d cluster(s)", n))
 	}
-	if n := len(passes.Archived); n > 0 {
-		parts = append(parts, fmt.Sprintf("archive %d stale rule(s)", n))
+	if stale, overCap := archivedByReason(passes.Archived); stale > 0 || overCap > 0 {
+		if stale > 0 {
+			parts = append(parts, fmt.Sprintf("archive %d stale rule(s)", stale))
+		}
+		if overCap > 0 {
+			parts = append(parts, fmt.Sprintf("evict %d over-cap rule(s)", overCap))
+		}
 	}
 	if n := len(passes.Backfilled); n > 0 {
 		parts = append(parts, fmt.Sprintf("backfill paths on %d rule(s)", n))
@@ -193,6 +205,37 @@ func formatArchivedSection(archived []warden.ArchivedRule) string {
 	return strings.TrimRight(sb.String(), "\n")
 }
 
+// ArchivedByReason is archivedByReason over this result's own archive list,
+// exported for the surfaces outside this package that render it — `forge warden
+// consolidate`, which otherwise prints every eviction as a rule that "aged out
+// with no recent source activity".
+func (p PassResults) ArchivedByReason() (stale, overCap int) {
+	return archivedByReason(p.Archived)
+}
+
+// archivedByReason splits an archive list into the two reasons a pass in this
+// package can produce. PassResults.Archived is one list because the archive
+// store takes one write, but "aged out with no recent source activity" and
+// "lost a slot to the file ceiling" are different claims about a rule, and
+// every aggregate rendered from that list used to call all of them stale — a
+// commit subject reading "archive 12 stale rule(s)" for twelve rules that were
+// evicted the day they were learned. A reason this function does not recognise
+// (a duplicate folded in by some future caller) counts as neither, so a new
+// reason cannot silently be reported as an old one.
+func archivedByReason(archived []warden.ArchivedRule) (stale, overCap int) {
+	for _, r := range archived {
+		switch r.ArchiveReason {
+		case warden.ArchiveReasonOverCap:
+			overCap++
+		case warden.ArchiveReasonStale, "":
+			// An empty reason is rendered as "stale" by
+			// formatArchivedSection, so it is counted as one here too.
+			stale++
+		}
+	}
+	return stale, overCap
+}
+
 func formatBackfilledSection(ids []string) string {
 	if len(ids) == 0 {
 		return ""
@@ -285,8 +328,13 @@ func buildPRBody(passes PassResults) string {
 	if n := len(passes.Consolidated); n > 0 {
 		lines = append(lines, fmt.Sprintf("- %d cluster(s) of near-duplicate rules consolidated.", n))
 	}
-	if n := len(passes.Archived); n > 0 {
-		lines = append(lines, fmt.Sprintf("- %d stale rule(s) archived.", n))
+	if stale, overCap := archivedByReason(passes.Archived); stale > 0 || overCap > 0 {
+		if stale > 0 {
+			lines = append(lines, fmt.Sprintf("- %d stale rule(s) archived.", stale))
+		}
+		if overCap > 0 {
+			lines = append(lines, fmt.Sprintf("- %d rule(s) evicted into the archive because the active file was over its size ceiling.", overCap))
+		}
 	}
 	if n := len(passes.Backfilled); n > 0 {
 		lines = append(lines, fmt.Sprintf("- %d rule(s) with paths backfilled from PR changed files.", n))
@@ -316,8 +364,13 @@ func passResultsSummary(passes PassResults) string {
 	if n := len(passes.Consolidated); n > 0 {
 		parts = append(parts, fmt.Sprintf("%d consolidated", n))
 	}
-	if n := len(passes.Archived); n > 0 {
-		parts = append(parts, fmt.Sprintf("%d archived", n))
+	if stale, overCap := archivedByReason(passes.Archived); stale > 0 || overCap > 0 {
+		if stale > 0 {
+			parts = append(parts, fmt.Sprintf("%d archived", stale))
+		}
+		if overCap > 0 {
+			parts = append(parts, fmt.Sprintf("%d evicted over cap", overCap))
+		}
 	}
 	if n := len(passes.Backfilled); n > 0 {
 		parts = append(parts, fmt.Sprintf("%d backfilled", n))

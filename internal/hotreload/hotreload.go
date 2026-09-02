@@ -427,6 +427,11 @@ func applyChanges(old, new *config.Config) []string {
 			old.Settings.Warden.ResolvedArchiveAfterDays(), new.Settings.Warden.ResolvedArchiveAfterDays()))
 	}
 
+	if old.Settings.Warden.ResolvedMaxRulesInFile() != new.Settings.Warden.ResolvedMaxRulesInFile() {
+		changes = append(changes, fmt.Sprintf("warden.max_rules_in_file: %d → %d",
+			old.Settings.Warden.ResolvedMaxRulesInFile(), new.Settings.Warden.ResolvedMaxRulesInFile()))
+	}
+
 	oldSmelterEnabled := old.Settings.IsSmelterEnabled()
 	newSmelterEnabled := new.Settings.IsSmelterEnabled()
 	if oldSmelterEnabled != newSmelterEnabled {
