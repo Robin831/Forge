@@ -857,30 +857,20 @@ func (s *Smelter) runStaleness(anvilName string, rf *warden.RulesFile) []warden.
 	return stale
 }
 
-// runFileCap invokes warden.EvictOverCap on the active rules slice when a
-// ceiling is configured. Evicted rules are removed from rf in place and
-// returned as ArchivedRule entries so the caller persists them to the archive
-// store exactly as it does the stale ones.
+// runFileCap resolves the configured ceiling and runs the shared eviction pass
+// (applyFileCap) over rf, logging through the state DB. It is the scheduled
+// flush's half of the one implementation the off-cycle CLI path also calls, so
+// the two cannot come to evict by different rules.
 //
 // When maxRulesInFile is nil or returns <= 0, the pass is a no-op.
 func (s *Smelter) runFileCap(anvilName string, rf *warden.RulesFile) []warden.ArchivedRule {
 	if s.maxRulesInFile == nil {
 		return nil
 	}
-	max := s.maxRulesInFile()
-	if max <= 0 {
-		return nil
-	}
-	active, evicted := warden.EvictOverCap(rf.Rules, max, time.Now().UTC())
-	if len(evicted) == 0 {
-		return nil
-	}
-	rf.Rules = active
-	log.Printf("[smelter] evicted %d rule(s) over the file ceiling for %s (max=%d, kept=%d)",
-		len(evicted), anvilName, max, len(active))
-	_ = s.db.LogEvent(state.EventSmelterFlushed,
-		fmt.Sprintf("Evicted %d rule(s) over the %d-rule ceiling for %s", len(evicted), max, anvilName), "", anvilName)
-	return evicted
+	return applyFileCap(anvilName, rf, s.maxRulesInFile(), time.Now().UTC(),
+		func(message string) {
+			_ = s.db.LogEvent(state.EventSmelterFlushed, message, "", anvilName)
+		})
 }
 
 // persistRulesAndArchive writes the archive entries (when any) and then

@@ -17,7 +17,18 @@ type ReviewFilterConfig struct {
 	// MaxRules caps the number of rules emitted in the checklist. When zero or
 	// negative, no cap is applied.
 	MaxRules int
-	// UseAllRules bypasses all three filters and applies only the MaxRules cap.
+	// UseAllRules bypasses all three filters, leaving every rule on file a
+	// candidate for the MaxRules cap.
+	//
+	// It does not bypass the RANKING. A cap has to choose which rules reach
+	// the checklist, and the only orders available are a ranked one and file
+	// order — which is age order, and taking the head of it is the truncation
+	// this package exists to have stopped doing. So the candidates are still
+	// scored against the diff here, pattern relevance included: a filter says
+	// which rules MAY appear and a score says which of them appear FIRST, and
+	// turning the first off is not a statement about the second. FilterStats
+	// reports the bypass so the funnel line does not read as if three filters
+	// had run and kept everything.
 	UseAllRules bool
 	// FilterPathGlob enables filtering by Rule.Paths against the changed files.
 	FilterPathGlob bool
@@ -25,7 +36,13 @@ type ReviewFilterConfig struct {
 	// extension → category map (see categoriesForFile).
 	FilterCategory bool
 	// FilterPatternGrep enables filtering by ≥4-char words extracted from
-	// Rule.Pattern that must appear as substrings in the diff text.
+	// Rule.Pattern that must appear as substrings in the diff text (see
+	// minPatternWordHits).
+	//
+	// As with UseAllRules, this gates the exclusion and not the ranking: the
+	// word hits are counted for every candidate either way and feed
+	// patternRelevance, because they are the strongest topical signal a cap
+	// has to choose on and they are cheapest to compute exactly once.
 	FilterPatternGrep bool
 }
 
@@ -245,6 +262,11 @@ type FilterStats struct {
 	// limit that decided it (0 when uncapped).
 	Emitted int
 	Cap     int
+	// Bypassed records that UseAllRules was set, so the three survivor counts
+	// above are all just the file size rather than three filters that kept
+	// everything. Without it the funnel line reads identically in the two
+	// cases, which is the kind of silence this whole struct exists to end.
+	Bypassed bool
 }
 
 // Line renders the funnel as one log sentence.
@@ -253,6 +275,10 @@ func (s FilterStats) Line() string {
 	if s.Cap > 0 {
 		capText = strconv.Itoa(s.Cap)
 	}
+	if s.Bypassed {
+		return fmt.Sprintf("rules funnel: %d on file, filters bypassed (use_all_rules), %d ranked, %d emitted (cap %s)",
+			s.Total, s.Matched, s.Emitted, capText)
+	}
 	return fmt.Sprintf("rules funnel: %d on file, %d after paths, %d after category, %d matched, %d emitted (cap %s)",
 		s.Total, s.PathMatched, s.CategoryMatched, s.Matched, s.Emitted, capText)
 }
@@ -260,8 +286,9 @@ func (s FilterStats) Line() string {
 // FilterRules returns the rules to include in a review-time checklist: the
 // subset matching the diff (path-glob, category and pattern filters, in that
 // order, each gated by cfg), ranked, and cut to cfg.MaxRules. When
-// cfg.UseAllRules is true the three filters are skipped and every rule is
-// ranked against the diff instead.
+// cfg.UseAllRules is true the three filters are skipped and every rule on file
+// is ranked against the diff instead — the cap still has to choose, and it
+// chooses by rank there exactly as it does here.
 func FilterRules(rules []Rule, diff string, changedFiles []string, cfg ReviewFilterConfig) []Rule {
 	out, _ := FilterRulesWithStats(rules, diff, changedFiles, cfg)
 	return out
@@ -277,7 +304,7 @@ func FilterRules(rules []Rule, diff string, changedFiles []string, cfg ReviewFil
 // every PR ever opened, and nothing learned in the preceding four months could
 // reach a review at all.
 func FilterRulesWithStats(rules []Rule, diff string, changedFiles []string, cfg ReviewFilterConfig) ([]Rule, FilterStats) {
-	stats := FilterStats{Total: len(rules), Cap: cfg.MaxRules}
+	stats := FilterStats{Total: len(rules), Cap: cfg.MaxRules, Bypassed: cfg.UseAllRules}
 	diffLower := strings.ToLower(diff)
 
 	var (

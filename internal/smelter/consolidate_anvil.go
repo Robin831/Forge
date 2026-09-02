@@ -139,16 +139,22 @@ func ConsolidateAnvil(ctx context.Context, opts ConsolidateOptions) (Consolidate
 		}
 	}
 
-	var stale []warden.ArchivedRule
+	now := opts.Now
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+
+	// One list, because the archive store takes one write — but the entries in
+	// it carry two different reasons, and every aggregate rendered from it says
+	// so (see archivedByReason): folded together and described as stale, an
+	// over-cap eviction would be reported as a rule that aged out, which is the
+	// one thing it is not.
+	var archivedEntries []warden.ArchivedRule
 	if opts.ArchiveAfterDays > 0 {
-		now := opts.Now
-		if now.IsZero() {
-			now = time.Now().UTC()
-		}
-		var active []warden.Rule
-		active, stale = warden.ArchiveStale(rf.Rules, opts.ArchiveAfterDays, now)
+		active, stale := warden.ArchiveStale(rf.Rules, opts.ArchiveAfterDays, now)
 		if len(stale) > 0 {
 			rf.Rules = active
+			archivedEntries = append(archivedEntries, stale...)
 			log.Printf("[smelter] archived %d stale rule(s) for %s (threshold=%dd)", len(stale), opts.AnvilName, opts.ArchiveAfterDays)
 			if opts.EventLogger != nil {
 				opts.EventLogger("smelter_flushed",
@@ -157,24 +163,16 @@ func ConsolidateAnvil(ctx context.Context, opts ConsolidateOptions) (Consolidate
 		}
 	}
 
-	if opts.MaxRulesInFile > 0 {
-		now := opts.Now
-		if now.IsZero() {
-			now = time.Now().UTC()
-		}
-		active, evicted := warden.EvictOverCap(rf.Rules, opts.MaxRulesInFile, now)
-		if len(evicted) > 0 {
-			rf.Rules = active
-			stale = append(stale, evicted...)
-			log.Printf("[smelter] evicted %d rule(s) over the file ceiling for %s (max=%d, kept=%d)",
-				len(evicted), opts.AnvilName, opts.MaxRulesInFile, len(active))
-			if opts.EventLogger != nil {
-				opts.EventLogger("smelter_flushed",
-					fmt.Sprintf("Evicted %d rule(s) over the %d-rule ceiling for %s",
-						len(evicted), opts.MaxRulesInFile, opts.AnvilName))
-			}
-		}
+	// The ceiling runs through the same applyFileCap the scheduled flush uses,
+	// after the staleness sweep so an eviction never takes a slot from a rule
+	// staleness was about to remove anyway, and before the paths backfill so no
+	// PR lookup is spent on a rule that is leaving.
+	var capEmit func(string)
+	if opts.EventLogger != nil {
+		capEmit = func(message string) { opts.EventLogger("smelter_flushed", message) }
 	}
+	archivedEntries = append(archivedEntries,
+		applyFileCap(opts.AnvilName, rf, opts.MaxRulesInFile, now, capEmit)...)
 
 	backfilled := pathsBackfill(ctx, opts.AnvilPath, opts.AnvilName, rf)
 	if len(backfilled) > 0 {
@@ -198,7 +196,7 @@ func ConsolidateAnvil(ctx context.Context, opts ConsolidateOptions) (Consolidate
 
 	passes := PassResults{
 		Consolidated:   summary,
-		Archived:       stale,
+		Archived:       archivedEntries,
 		Backfilled:     backfilled,
 		Contradictions: contradictions,
 	}
@@ -220,7 +218,7 @@ func ConsolidateAnvil(ctx context.Context, opts ConsolidateOptions) (Consolidate
 		return result, nil
 	}
 
-	if err := persistRulesAndArchive(opts.AnvilPath, rf, replaced, summary, stale); err != nil {
+	if err := persistRulesAndArchive(opts.AnvilPath, rf, replaced, summary, archivedEntries); err != nil {
 		return result, fmt.Errorf("persisting warden rules: %w", err)
 	}
 

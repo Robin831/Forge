@@ -20,7 +20,10 @@ import (
 // the review-time ranking reads that do not depend on a diff: how narrowly the
 // rule's paths name a location, and how recently it was learned. Age alone
 // would evict a precise old rule in favour of a vague new one. Nothing is
-// evicted when max <= 0 (the disable) or the file already fits.
+// evicted when max <= 0 (the disable) or the file already fits, and in that
+// case rules is returned unchanged — a nil slice stays nil rather than becoming
+// an empty one, so a caller can still tell "not run" from "ran and kept none".
+// When it does evict, active holds exactly max rules and is never nil.
 //
 // Evicted rules are returned as ArchivedRule entries, not dropped: the archive
 // file is the record of what the cap took, and the same rules can be restored
@@ -30,12 +33,12 @@ func EvictOverCap(rules []Rule, max int, now time.Time) (active []Rule, archived
 		return rules, nil
 	}
 
-	type ranked struct {
-		index int
-		rule  Rule
-		value float64
-		added time.Time
-	}
+	// The ranking reuses ruleScore rather than a struct of its own so the two
+	// components eviction reads are the same fields, computed the same way, as
+	// the ones the review-time selection reads. Positions are carried
+	// alongside because the kept rules are returned in FILE order: the file is
+	// a record, and rewriting its order on every flush would churn the diff of
+	// a file nothing reads sequentially.
 	scored := make([]ruleScore, len(rules))
 	for i, r := range rules {
 		added, _ := parseRuleAdded(r)
@@ -43,19 +46,15 @@ func EvictOverCap(rules []Rule, max int, now time.Time) (active []Rule, archived
 	}
 	recencyScores(scored)
 
-	order := make([]ranked, len(rules))
+	order := make([]int, len(rules))
 	for i := range rules {
-		order[i] = ranked{
-			index: i,
-			rule:  rules[i],
-			value: specificityWeight*scored[i].specificity + recencyWeight*scored[i].recency,
-			added: scored[i].added,
-		}
+		order[i] = i
+		scored[i].total = specificityWeight*scored[i].specificity + recencyWeight*scored[i].recency
 	}
 	sort.SliceStable(order, func(i, j int) bool {
-		a, b := order[i], order[j]
-		if a.value != b.value {
-			return a.value > b.value
+		a, b := scored[order[i]], scored[order[j]]
+		if a.total != b.total {
+			return a.total > b.total
 		}
 		if !a.added.Equal(b.added) {
 			return a.added.After(b.added)
@@ -64,9 +63,10 @@ func EvictOverCap(rules []Rule, max int, now time.Time) (active []Rule, archived
 	})
 
 	keep := make(map[int]bool, max)
-	for _, r := range order[:max] {
-		keep[r.index] = true
+	for _, idx := range order[:max] {
+		keep[idx] = true
 	}
+	active = make([]Rule, 0, max)
 	for i, r := range rules {
 		if keep[i] {
 			active = append(active, r)

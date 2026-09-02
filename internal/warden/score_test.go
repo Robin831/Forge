@@ -208,3 +208,66 @@ func TestEvictOverCapIsIndependentOfFileOrder(t *testing.T) {
 		assert.True(t, wantSet[r.ID], "%s kept only under one ordering", r.ID)
 	}
 }
+
+// TestEvictOverCapPassesThroughUnchangedUnderTheCeiling pins the nil-vs-empty
+// contract: nothing evicted returns the caller's own slice (a nil stays nil),
+// and an eviction returns a non-nil slice of exactly max rules. Callers assign
+// the result straight onto RulesFile.Rules, so the two cases have to be
+// distinguishable.
+func TestEvictOverCapPassesThroughUnchangedUnderTheCeiling(t *testing.T) {
+	active, archived := EvictOverCap(nil, 10, time.Now())
+	assert.Nil(t, active)
+	assert.Nil(t, archived)
+
+	active, _ = EvictOverCap([]Rule{}, 10, time.Now())
+	assert.NotNil(t, active)
+	assert.Empty(t, active)
+
+	active, archived = EvictOverCap(syntheticRules(5), 3, time.Now())
+	require.NotNil(t, active)
+	assert.Len(t, active, 3)
+	assert.Len(t, archived, 2)
+}
+
+// TestFilterStatsLineReportsTheBypass: with UseAllRules the three survivor
+// counts are just the file size, so the ordinary funnel wording would claim
+// three filters ran and kept everything.
+func TestFilterStatsLineReportsTheBypass(t *testing.T) {
+	s := FilterStats{Total: 1793, PathMatched: 1793, CategoryMatched: 1793, Matched: 1793, Emitted: 30, Cap: 30, Bypassed: true}
+	line := s.Line()
+	assert.Contains(t, line, "1793 on file")
+	assert.Contains(t, line, "filters bypassed (use_all_rules)")
+	assert.Contains(t, line, "1793 ranked")
+	assert.Contains(t, line, "30 emitted (cap 30)")
+	assert.NotContains(t, line, "after paths")
+}
+
+// TestUseAllRulesStillRanks: bypassing the filters must not restore the file
+// order truncation. Every rule is a candidate, and the cap still takes the
+// best of them by rank — including the pattern-relevance component, which is a
+// ranking input and not the filter that was switched off.
+func TestUseAllRulesStillRanks(t *testing.T) {
+	diff := "+++ b/internal/warden/filter.go\n+ selection ranking candidates emitted\n"
+	changed := []string{"internal/warden/filter.go"}
+	rules := []Rule{
+		// Oldest and first in file order, but repo-wide and off-topic: file
+		// order would emit it, rank must not.
+		{ID: "old-broad", Category: "other", Added: "2026-01-01",
+			Pattern: "unrelated vocabulary about dockerfiles", Paths: []string{"**/*"}},
+		{ID: "narrow-relevant", Category: "other", Added: "2026-08-01",
+			Pattern: "selection ranking candidates", Paths: []string{"internal/warden/filter.go"}},
+	}
+	cfg := ReviewFilterConfig{MaxRules: 1, UseAllRules: true}
+
+	got, stats := FilterRulesWithStats(rules, diff, changed, cfg)
+	require.Len(t, got, 1)
+	assert.Equal(t, "narrow-relevant", got[0].ID)
+	assert.True(t, stats.Bypassed)
+	assert.Equal(t, len(rules), stats.Matched, "every rule on file is a candidate under UseAllRules")
+
+	// And the answer does not depend on which order the file held them in.
+	reversed := []Rule{rules[1], rules[0]}
+	got2, _ := FilterRulesWithStats(reversed, diff, changed, cfg)
+	require.Len(t, got2, 1)
+	assert.Equal(t, "narrow-relevant", got2[0].ID)
+}

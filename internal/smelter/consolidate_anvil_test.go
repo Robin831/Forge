@@ -312,3 +312,77 @@ func TestConsolidateAnvil_ContradictionsSurfaceWithoutChangingRules(t *testing.T
 	assert.Contains(t, events[0], "smelter_flushed:")
 	assert.Contains(t, events[0], "1 contradictory rule pair")
 }
+
+// TestConsolidateAnvil_FileCapPersistsWithItsOwnReason drives the CLI path's
+// eviction end to end. Both entry points now share applyFileCap, so this also
+// pins that the evicted rules reach the archive under over-cap and are never
+// folded into the staleness pass's count.
+func TestConsolidateAnvil_FileCapPersistsWithItsOwnReason(t *testing.T) {
+	dir := t.TempDir()
+	writeRulesFile(t, dir, &warden.RulesFile{
+		Rules: []warden.Rule{
+			{ID: "ancient", Category: "style", Pattern: "p0", Check: "c0", Source: warden.SourceList{"manual"}, Added: "2020-01-01"},
+			{ID: "broad", Category: "style", Pattern: "p1", Check: "c1", Source: warden.SourceList{"manual"}, Added: "2026-05-01", Paths: []string{"**/*"}},
+			{ID: "narrow", Category: "style", Pattern: "p2", Check: "c2", Source: warden.SourceList{"manual"}, Added: "2026-05-01", Paths: []string{"internal/warden/filter.go"}},
+		},
+	})
+
+	now := time.Date(2026, 5, 20, 0, 0, 0, 0, time.UTC)
+	res, err := ConsolidateAnvil(context.Background(), ConsolidateOptions{
+		AnvilPath:        dir,
+		AnvilName:        "test",
+		ArchiveAfterDays: 30,
+		MaxRulesInFile:   1,
+		Now:              now,
+	})
+	require.NoError(t, err)
+	require.True(t, res.Passes.HasChanges())
+
+	// The staleness sweep took "ancient"; the ceiling then took the broader of
+	// the two survivors. Two entries, two different reasons.
+	reasons := map[string]string{}
+	for _, a := range res.Passes.Archived {
+		reasons[a.ID] = a.ArchiveReason
+	}
+	assert.Equal(t, map[string]string{
+		"ancient": warden.ArchiveReasonStale,
+		"broad":   warden.ArchiveReasonOverCap,
+	}, reasons)
+
+	active, err := warden.LoadRules(dir)
+	require.NoError(t, err)
+	require.Len(t, active.Rules, 1)
+	assert.Equal(t, "narrow", active.Rules[0].ID)
+
+	archive, err := warden.LoadArchive(warden.ArchivePath(dir))
+	require.NoError(t, err)
+	assert.Len(t, archive.Rules, 2)
+
+	// And the rendered aggregates keep the two apart.
+	subject := buildCommitSubject(res.Passes)
+	assert.Contains(t, subject, "archive 1 stale rule(s)")
+	assert.Contains(t, subject, "evict 1 over-cap rule(s)")
+}
+
+// A ceiling of zero (unset) or negative is the disable, on dedup_threshold's
+// rule that 0 is the field's zero value and cannot mean "off" by itself.
+func TestConsolidateAnvil_FileCapDisabled(t *testing.T) {
+	for _, max := range []int{0, -1} {
+		dir := t.TempDir()
+		writeRulesFile(t, dir, &warden.RulesFile{
+			Rules: []warden.Rule{
+				{ID: "a", Category: "style", Pattern: "p1", Check: "c1", Source: warden.SourceList{"manual"}, Added: "2026-05-01"},
+				{ID: "b", Category: "style", Pattern: "p2", Check: "c2", Source: warden.SourceList{"manual"}, Added: "2026-05-01"},
+			},
+		})
+		res, err := ConsolidateAnvil(context.Background(), ConsolidateOptions{
+			AnvilPath:      dir,
+			AnvilName:      "test",
+			MaxRulesInFile: max,
+			Now:            time.Date(2026, 5, 20, 0, 0, 0, 0, time.UTC),
+		})
+		require.NoError(t, err)
+		assert.False(t, res.Passes.HasChanges(), "max=%d", max)
+		assert.Equal(t, 2, res.FinalActive, "max=%d", max)
+	}
+}
