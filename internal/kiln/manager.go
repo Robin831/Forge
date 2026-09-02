@@ -696,11 +696,18 @@ func (m *Manager) release(beadID string) {
 	delete(m.starting, beadID)
 }
 
-// commit publishes a fully started preview into the registry.
+// commit publishes a fully started preview into the registry and drops its
+// in-flight reservation in the SAME hold of the lock. Both are needed, because
+// a slot is held by envs or by starting and the bead moves from one to the
+// other: published first and released after, it sits in both for the width of
+// that window and counts twice against MaxConcurrent, so a concurrent Start
+// racing it is refused against a box that is not full. Start's deferred
+// release stays for the error paths and is a no-op once this has run.
 func (m *Manager) commit(env *Environment) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.envs[env.BeadID] = env
+	delete(m.starting, env.BeadID)
 }
 
 // rollback unwinds a start that failed after the worktree was created. It is

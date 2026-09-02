@@ -519,6 +519,34 @@ func TestManagerStartRejectsOverCap(t *testing.T) {
 	}
 }
 
+// TestCommitReleasesTheReservation is the deterministic half of the TOCTOU
+// case: a slot is held by envs or by starting, never by both. Publishing the
+// preview and dropping its reservation in two separate holds of the lock left
+// one bead counted twice for the width of that window, so a start racing it
+// was refused against a box with a free slot — which is how the concurrent
+// test above saw one preview start against a limit of two.
+func TestCommitReleasesTheReservation(t *testing.T) {
+	h := newHarness(t, ManagerConfig{MaxConcurrent: 2})
+	m := h.mgr
+
+	if _, err := m.reserve("Forge-aaa1"); err != nil {
+		t.Fatalf("reserve: %v", err)
+	}
+	m.commit(&Environment{BeadID: "Forge-aaa1"})
+
+	m.mu.Lock()
+	holders := m.slotHoldersLocked()
+	m.mu.Unlock()
+	if len(holders) != 1 || holders[0] != "Forge-aaa1" {
+		t.Fatalf("slot holders after commit = %v, want [Forge-aaa1]", holders)
+	}
+
+	// The second of two slots must still be available.
+	if _, err := m.reserve("Forge-bbb2"); err != nil {
+		t.Errorf("reserve for the free slot: %v", err)
+	}
+}
+
 // TestManagerStartRejectsOverCapConcurrently is the TOCTOU case: more starts
 // than slots, all at once. Exactly MaxConcurrent of them may win.
 func TestManagerStartRejectsOverCapConcurrently(t *testing.T) {
