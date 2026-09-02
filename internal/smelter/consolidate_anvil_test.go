@@ -555,6 +555,15 @@ func TestConsolidateAnvil_Pass1WorktreeFailureSkipsPass1AndKeepsLaterPasses(t *t
 	assert.Empty(t, sessionDirs, "no session may run once the worktree could not be created")
 	assert.Empty(t, res.Passes.Consolidated)
 
+	// A pass that never ran has established nothing about the file, so it
+	// must not read as one that found nothing to merge: no cluster was
+	// attempted, no cluster errored, and Pass1Complete is what keeps the
+	// caller from reporting steady state off those two zeros.
+	assert.True(t, res.Pass1Skipped)
+	assert.Zero(t, res.ClustersAttempted)
+	assert.Empty(t, res.ClusterErrors)
+	assert.False(t, res.Pass1Complete())
+
 	// Passes 2 and 3 need no session and are unaffected.
 	require.Len(t, res.Passes.Archived, 1)
 	assert.Equal(t, "ancient", res.Passes.Archived[0].ID)
@@ -589,6 +598,15 @@ func TestConsolidateAnvil_FirstClusterErrorReportedAndOthersStillMerge(t *testin
 
 	require.Len(t, res.Passes.Consolidated, 1, "the cluster that did not fail must still merge")
 	assert.ElementsMatch(t, []string{"handle-verbose", "handle-terse"}, res.Passes.Consolidated[0].ReplacedIDs)
+
+	// The denominator a summary needs: one cluster merged out of the two the
+	// pass found, and the one that did not is carried out rather than only
+	// logged.
+	assert.Equal(t, 2, res.ClustersAttempted)
+	require.Len(t, res.ClusterErrors, 1)
+	assert.Contains(t, res.ClusterErrors[0].Error(), "cluster is on fire")
+	assert.False(t, res.Pass1Complete())
+	assert.False(t, res.Pass1Skipped, "the pass ran; one cluster inside it failed")
 
 	active, err := warden.LoadRules(dir)
 	require.NoError(t, err)

@@ -78,6 +78,38 @@ type ConsolidateResult struct {
 	// the reason a cluster did not merge. The run proceeds despite any of
 	// them; callers may choose to surface it in their summary.
 	FirstError error
+	// ClustersAttempted is the number of near-duplicate clusters Pass 1
+	// found and tried to merge. It is the denominator behind
+	// len(Passes.Consolidated): without it "nothing needed merging" and
+	// "every cluster the pass found failed" are the same empty list, which
+	// is how a consolidation that had merged nothing for five months went on
+	// reporting the rules file as already at steady state.
+	ClustersAttempted int
+	// ClusterErrors holds every per-cluster failure of Pass 1, in cluster
+	// order — not just the first, which is all FirstError ever carried while
+	// the rest went to the log. A run with entries here has NOT established
+	// that the file has nothing left to merge.
+	ClusterErrors []error
+	// Pass1Skipped reports that Pass 1 never ran at all: its ephemeral
+	// worktree could not be created, so no cluster was attempted and
+	// ClustersAttempted is 0 for a file that may be full of duplicates. It
+	// is deliberately not folded into ClusterErrors — no cluster failed —
+	// but it is the second way a run reports no changes without having
+	// looked, so Pass1Complete reads both.
+	Pass1Skipped bool
+}
+
+// Pass1Complete reports whether Pass 1 got an answer for every cluster it
+// found. It is false when a cluster errored and when the pass never ran at
+// all — the two ways a run can report "no changes" without having
+// established that there are none, which is the claim a caller must not make
+// on its behalf.
+//
+// A worktree that leaked on teardown is not one of them: that pass ran to
+// completion and its "no changes" is true, so it stays a warning rather than
+// a verdict on the run.
+func (r ConsolidateResult) Pass1Complete() bool {
+	return !r.Pass1Skipped && len(r.ClusterErrors) == 0
 }
 
 // ConsolidateAnvil loads the warden rules file under opts.AnvilPath, runs
@@ -105,8 +137,9 @@ type ConsolidateResult struct {
 //     pending rules into the active file remains the smelter loop's
 //     responsibility.
 //   - When opts.Consolidator returns errors for individual clusters they
-//     are aggregated and the first one is reported in the result; the
-//     remaining clusters still merge.
+//     are aggregated onto ClusterErrors (the first one also lands in
+//     FirstError) and counted against ClustersAttempted; the remaining
+//     clusters still merge.
 //   - Pass 1's sessions run in a throwaway detached worktree of AnvilPath
 //     (warden.WithEphemeralWorktree), never in the anvil itself: Smith's
 //     pre-flight refuses a main checkout outright. Passes 2 and 3 spawn no
@@ -127,6 +160,9 @@ func ConsolidateAnvil(ctx context.Context, opts ConsolidateOptions) (Consolidate
 		summary      []warden.MergeResult
 		replaced     []warden.Rule
 		firstPassErr error
+		attempted    int
+		clusterErrs  []error
+		pass1Skipped bool
 	)
 	if opts.Consolidator != nil && opts.DedupThreshold > 0 {
 		var errs []error
@@ -153,7 +189,9 @@ func ConsolidateAnvil(ctx context.Context, opts ConsolidateOptions) (Consolidate
 		// so a checkout per cluster would be pure churn on a rules file the
 		// size of munin's.
 		runErr, cleanupErr := warden.WithEphemeralWorktree(ctx, opts.AnvilPath, func(wtPath string) error {
-			replaced, summary, errs = warden.ConsolidateWithParams(ctx, wtPath, rf, params, opts.Consolidator)
+			rep := warden.ConsolidateWithParamsReport(ctx, wtPath, rf, params, opts.Consolidator)
+			replaced, summary, errs = rep.Replaced, rep.Summary, rep.Errors
+			attempted = rep.ClustersAttempted
 			return nil
 		})
 		// The helper answers two different questions on two different
@@ -175,6 +213,7 @@ func ConsolidateAnvil(ctx context.Context, opts ConsolidateOptions) (Consolidate
 			runErr = fmt.Errorf("pass 1 worktree for %s: %w", opts.AnvilName, runErr)
 			log.Printf("[smelter] %v", runErr)
 			firstPassErr = runErr
+			pass1Skipped = true
 		}
 		if cleanupErr != nil {
 			cleanupErr = fmt.Errorf("pass 1 worktree cleanup for %s: %w", opts.AnvilName, cleanupErr)
@@ -184,6 +223,12 @@ func ConsolidateAnvil(ctx context.Context, opts ConsolidateOptions) (Consolidate
 				log.Printf("[smelter] %v", cleanupErr)
 			}
 		}
+		// Every cluster error is carried out on the result, not only logged:
+		// a caller that sees one error and an empty summary cannot tell a
+		// pass that merged nothing because there was nothing to merge from
+		// one whose every cluster failed, and the second reported as the
+		// first is the whole defect. The log lines stay as they were.
+		clusterErrs = errs
 		for i, e := range errs {
 			if i == 0 && firstPassErr == nil {
 				firstPassErr = e
@@ -269,11 +314,14 @@ func ConsolidateAnvil(ctx context.Context, opts ConsolidateOptions) (Consolidate
 	}
 
 	result := ConsolidateResult{
-		Passes:        passes,
-		Pass1Archived: replaced,
-		InitialCount:  initialCount,
-		FinalActive:   len(rf.Rules),
-		FirstError:    firstPassErr,
+		Passes:            passes,
+		Pass1Archived:     replaced,
+		InitialCount:      initialCount,
+		FinalActive:       len(rf.Rules),
+		FirstError:        firstPassErr,
+		ClustersAttempted: attempted,
+		ClusterErrors:     clusterErrs,
+		Pass1Skipped:      pass1Skipped,
 	}
 
 	if !passes.HasChanges() {

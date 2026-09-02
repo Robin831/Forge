@@ -249,8 +249,38 @@ func Consolidate(ctx context.Context, repoDir string, rf *RulesFile, threshold f
 // outright, so the overlap criterion is never applied on its own from
 // configuration.
 func ConsolidateWithParams(ctx context.Context, repoDir string, rf *RulesFile, params DedupParams, runner ConsolidationRunner) (replaced []Rule, summary []MergeResult, errs []error) {
+	rep := ConsolidateWithParamsReport(ctx, repoDir, rf, params, runner)
+	return rep.Replaced, rep.Summary, rep.Errors
+}
+
+// ConsolidationReport is what a consolidation pass DID, as opposed to what it
+// achieved. Replaced, Summary and Errors are the three values
+// ConsolidateWithParams has always returned; ClustersAttempted is the one a
+// caller cannot derive from them, and the one a summary needs in order to be
+// honest — "no clusters merged" and "every cluster the pass found failed"
+// are the same empty Summary, and reporting the second as the first is how a
+// consolidation that has merged nothing since May kept reporting the rules
+// file as already at steady state.
+type ConsolidationReport struct {
+	// Replaced lists the rules superseded by the merges in Summary.
+	Replaced []Rule
+	// Summary holds one entry per cluster that merged.
+	Summary []MergeResult
+	// Errors holds one entry per cluster that did not, in cluster order.
+	Errors []error
+	// ClustersAttempted is the number of near-duplicate clusters the pass
+	// found and tried to merge. It is the denominator: len(Summary) +
+	// len(Errors) == ClustersAttempted for every pass, so a caller can say
+	// "0/56 merged, 56 errored" rather than printing nothing at all.
+	ClustersAttempted int
+}
+
+// ConsolidateWithParamsReport is ConsolidateWithParams with the attempted
+// cluster count kept alongside the outcomes. The three-value form is a thin
+// adapter over it, so neither can count a cluster the other does not.
+func ConsolidateWithParamsReport(ctx context.Context, repoDir string, rf *RulesFile, params DedupParams, runner ConsolidationRunner) ConsolidationReport {
 	if rf == nil || params.IsZero() || len(rf.Rules) < 2 {
-		return nil, nil, nil
+		return ConsolidationReport{}
 	}
 
 	catOrder, byCat, posByCat := groupRulePositionsByCategory(rf.Rules)
@@ -378,8 +408,8 @@ func ConsolidateBatch(ctx context.Context, repoDir string, rf *RulesFile, batchI
 		}
 	}
 
-	replaced, summary, applyErrs := applyClusters(ctx, repoDir, rf, clusters, runner)
-	return replaced, summary, append(errs, applyErrs...)
+	rep := applyClusters(ctx, repoDir, rf, clusters, runner)
+	return rep.Replaced, rep.Summary, append(errs, rep.Errors...)
 }
 
 // securityCategory is the one category a cross-category merge may not move a
@@ -535,10 +565,20 @@ func dominantCategory(rules []Rule) string {
 // implementation both consolidation passes share, so neither can pick a
 // merged ID, order the rebuilt file or archive a replaced rule differently
 // from the other.
-func applyClusters(ctx context.Context, repoDir string, rf *RulesFile, clusters []categorizedCluster, runner ConsolidationRunner) (replaced []Rule, summary []MergeResult, errs []error) {
+func applyClusters(ctx context.Context, repoDir string, rf *RulesFile, clusters []categorizedCluster, runner ConsolidationRunner) ConsolidationReport {
+	// Counted here rather than by the caller because this is the one place a
+	// cluster is actually attempted: every cluster below leaves either a
+	// Summary entry or an Errors entry, so the denominator and the two
+	// numerators are established together and cannot come apart.
+	report := ConsolidationReport{ClustersAttempted: len(clusters)}
 	if len(clusters) == 0 {
-		return nil, nil, nil
+		return report
 	}
+	var (
+		replaced []Rule
+		summary  []MergeResult
+		errs     []error
+	)
 
 	// Track which rule POSITIONS are removed so we can rebuild rf.Rules in
 	// stable order after all clusters are processed. Positions and not IDs:
@@ -594,7 +634,8 @@ func applyClusters(ctx context.Context, repoDir string, rf *RulesFile, clusters 
 	}
 
 	if len(merged) == 0 {
-		return nil, nil, errs
+		report.Errors = errs
+		return report
 	}
 
 	// Rebuild rf.Rules: keep original order minus removed, then append
@@ -609,7 +650,10 @@ func applyClusters(ctx context.Context, repoDir string, rf *RulesFile, clusters 
 	newRules = append(newRules, merged...)
 	rf.Rules = newRules
 
-	return replaced, summary, errs
+	report.Replaced = replaced
+	report.Summary = summary
+	report.Errors = errs
+	return report
 }
 
 // FormatConsolidationSummary renders a human-readable bullet list of the
