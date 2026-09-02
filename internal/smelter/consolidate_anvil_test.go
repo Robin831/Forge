@@ -3,9 +3,11 @@ package smelter
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -484,4 +486,229 @@ func TestConsolidateAnvil_Pass1RunsInAWorktreeNotTheAnvil(t *testing.T) {
 		assert.NotContains(t, string(out), dir)
 		assert.NoDirExists(t, dir)
 	}
+}
+
+// emptyGitAnvilFixture builds a repository with no commits. It is the
+// cheapest deterministic way to make the ephemeral worktree impossible to
+// create: HEAD resolves to nothing, so there is no commit to detach at.
+func emptyGitAnvilFixture(t *testing.T) string {
+	t.Helper()
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available on PATH")
+	}
+	dir := t.TempDir()
+	cmd := exec.Command("git", "-C", dir, "init", "-b", "main")
+	cmd.Env = append(executil.CleanGitEnv(), "LC_ALL=C", "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null")
+	out, err := cmd.CombinedOutput()
+	require.NoErrorf(t, err, "git init: %s", out)
+	return dir
+}
+
+// secondOverlapPair is a second cluster, disjoint in vocabulary from
+// overlapOnlyPair's, so a file holding both produces two clusters and a
+// consolidator can fail one while the other merges.
+func secondOverlapPair() []warden.Rule {
+	short := "the handle must be deleted only when the caller still owns it, " +
+		"checking the generation counter before the close"
+	long := short + ", so that a recycled descriptor belonging to another " +
+		"session is never closed and no unrelated request loses its socket"
+	return []warden.Rule{
+		{ID: "handle-verbose", Category: "style", Pattern: "handle ownership", Check: long, Source: warden.SourceList{"manual"}, Added: "2026-05-01"},
+		{ID: "handle-terse", Category: "style", Pattern: "handle ownership", Check: short, Source: warden.SourceList{"manual"}, Added: "2026-05-02"},
+	}
+}
+
+// The design decision this change exists for, stated as a test: when the
+// ephemeral worktree cannot be created there is NO fallback to AnvilPath —
+// that is the arrangement that failed every cluster while reporting the pass
+// as run — the reason lands in FirstError (the only Pass 1 diagnostic the
+// CLI prints), and Passes 2 and 3, which spawn no session, still run.
+//
+// Nothing else in this file reaches the branch: every other fixture is
+// either a bare t.TempDir (which WithEphemeralWorktree passes straight
+// through) or a healthy checkout. A regression that reinstated the fallback,
+// or swallowed the error, would leave the whole suite green.
+func TestConsolidateAnvil_Pass1WorktreeFailureSkipsPass1AndKeepsLaterPasses(t *testing.T) {
+	anvil := emptyGitAnvilFixture(t)
+	rules := append(overlapOnlyPair(),
+		warden.Rule{ID: "ancient", Category: "documentation", Pattern: "p", Check: "c", Source: warden.SourceList{"manual"}, Added: "2020-01-01"})
+	writeRulesFile(t, anvil, &warden.RulesFile{Rules: rules})
+
+	var sessionDirs []string
+	consolidator := func(_ context.Context, dir, _ string) ([]byte, error) {
+		sessionDirs = append(sessionDirs, dir)
+		return nil, nil
+	}
+
+	res, err := ConsolidateAnvil(context.Background(), ConsolidateOptions{
+		AnvilPath:        anvil,
+		AnvilName:        "test",
+		Consolidator:     consolidator,
+		DedupThreshold:   0.6,
+		ArchiveAfterDays: 30,
+		Now:              time.Date(2026, 5, 20, 0, 0, 0, 0, time.UTC),
+	})
+	require.NoError(t, err, "a worktree failure is not fatal to the run")
+	require.Error(t, res.FirstError, "the reason Pass 1 did not run must reach the caller")
+	assert.Contains(t, res.FirstError.Error(), "pass 1 worktree for test")
+
+	assert.Empty(t, sessionDirs, "no session may run once the worktree could not be created")
+	assert.Empty(t, res.Passes.Consolidated)
+
+	// Passes 2 and 3 need no session and are unaffected.
+	require.Len(t, res.Passes.Archived, 1)
+	assert.Equal(t, "ancient", res.Passes.Archived[0].ID)
+
+	// The pair Pass 1 would have merged is still there, unmerged.
+	active, err := warden.LoadRules(anvil)
+	require.NoError(t, err)
+	ids := make([]string, 0, len(active.Rules))
+	for _, r := range active.Rules {
+		ids = append(ids, r.ID)
+	}
+	assert.ElementsMatch(t, []string{"verbose", "terse"}, ids)
+}
+
+// The pre-existing contract the FirstError field carries: a cluster the
+// runner failed is reported, and the remaining clusters still merge. No test
+// made the consolidator fail at all, so dropping the assignment (or the
+// `continue` behind it) changed nothing anybody checked.
+func TestConsolidateAnvil_FirstClusterErrorReportedAndOthersStillMerge(t *testing.T) {
+	dir := t.TempDir()
+	writeRulesFile(t, dir, &warden.RulesFile{Rules: append(overlapOnlyPair(), secondOverlapPair()...)})
+
+	res, err := ConsolidateAnvil(context.Background(), ConsolidateOptions{
+		AnvilPath:      dir,
+		AnvilName:      "test",
+		Consolidator:   failingClusterConsolidator(t, "documentation filename"),
+		DedupThreshold: 0.6,
+	})
+	require.NoError(t, err)
+	require.Error(t, res.FirstError)
+	assert.Contains(t, res.FirstError.Error(), "cluster is on fire")
+
+	require.Len(t, res.Passes.Consolidated, 1, "the cluster that did not fail must still merge")
+	assert.ElementsMatch(t, []string{"handle-verbose", "handle-terse"}, res.Passes.Consolidated[0].ReplacedIDs)
+
+	active, err := warden.LoadRules(dir)
+	require.NoError(t, err)
+	ids := make([]string, 0, len(active.Rules))
+	for _, r := range active.Rules {
+		ids = append(ids, r.ID)
+	}
+	assert.ElementsMatch(t, []string{"verbose", "terse", "merged-handle"}, ids)
+}
+
+// A teardown failure after a completed Pass 1 is the other error
+// WithEphemeralWorktree returns, and it is NOT the reason a cluster failed to
+// merge: it must stay out of FirstError while a cluster error is there to
+// claim it. Reported the other way round — which is what a single untyped
+// worktree error produced — the operator reads `Warning: first consolidation
+// cluster error: ... removing /tmp/...` for a pass whose merges were kept and
+// persisted, and the one error worth reading is gone.
+func TestConsolidateAnvil_ClusterErrorOutranksWorktreeCleanupFailure(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("cleanup cannot be made to fail as root")
+	}
+	anvil := gitAnvilFixture(t)
+	writeRulesFile(t, anvil, &warden.RulesFile{Rules: append(overlapOnlyPair(), secondOverlapPair()...)})
+
+	inner := failingClusterConsolidator(t, "documentation filename")
+	consolidator := func(ctx context.Context, dir, prompt string) ([]byte, error) {
+		sealWorktreeParent(t, dir)
+		return inner(ctx, dir, prompt)
+	}
+
+	res, err := ConsolidateAnvil(context.Background(), ConsolidateOptions{
+		AnvilPath:      anvil,
+		AnvilName:      "test",
+		Consolidator:   consolidator,
+		DedupThreshold: 0.6,
+	})
+	require.NoError(t, err)
+	require.Error(t, res.FirstError)
+	assert.Contains(t, res.FirstError.Error(), "cluster is on fire")
+	assert.NotContains(t, res.FirstError.Error(), "worktree",
+		"a temp directory that outlived a pass that RAN must not displace the cluster error")
+
+	// The pass ran, so its merge is kept and persisted.
+	require.Len(t, res.Passes.Consolidated, 1)
+	active, err := warden.LoadRules(anvil)
+	require.NoError(t, err)
+	ids := make([]string, 0, len(active.Rules))
+	for _, r := range active.Rules {
+		ids = append(ids, r.ID)
+	}
+	assert.ElementsMatch(t, []string{"verbose", "terse", "merged-handle"}, ids)
+}
+
+// The other half of that precedence: with no cluster error to report, the
+// leaked checkout is worth surfacing rather than living in the log alone —
+// and it says cleanup, not that Pass 1 never ran.
+func TestConsolidateAnvil_CleanupFailureReportedWhenNoClusterFailed(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("cleanup cannot be made to fail as root")
+	}
+	anvil := gitAnvilFixture(t)
+	writeRulesFile(t, anvil, &warden.RulesFile{Rules: overlapOnlyPair()})
+
+	inner := stubConsolidator(t, "merged-log-filename", "documentation filename", "the documented filename must match the code")
+	consolidator := func(ctx context.Context, dir, prompt string) ([]byte, error) {
+		sealWorktreeParent(t, dir)
+		return inner(ctx, dir, prompt)
+	}
+
+	res, err := ConsolidateAnvil(context.Background(), ConsolidateOptions{
+		AnvilPath:      anvil,
+		AnvilName:      "test",
+		Consolidator:   consolidator,
+		DedupThreshold: 0.6,
+	})
+	require.NoError(t, err)
+	require.Error(t, res.FirstError)
+	assert.Contains(t, res.FirstError.Error(), "pass 1 worktree cleanup for test")
+
+	require.Len(t, res.Passes.Consolidated, 1, "the pass completed; only its checkout outlived it")
+	active, err := warden.LoadRules(anvil)
+	require.NoError(t, err)
+	require.Len(t, active.Rules, 1)
+	assert.Equal(t, "merged-log-filename", active.Rules[0].ID)
+}
+
+// failingClusterConsolidator fails the cluster whose prompt names marker and
+// merges every other one, so a run can hold one failing and one successful
+// cluster.
+func failingClusterConsolidator(t *testing.T, marker string) warden.ConsolidationRunner {
+	t.Helper()
+	return func(_ context.Context, _, prompt string) ([]byte, error) {
+		if strings.Contains(prompt, marker) {
+			return nil, errors.New("cluster is on fire")
+		}
+		body, err := json.Marshal(map[string]string{
+			"id":      "merged-handle",
+			"pattern": "handle ownership",
+			"check":   "delete the handle only when you still own it",
+		})
+		require.NoError(t, err)
+		return body, nil
+	}
+}
+
+// sealWorktreeParent drops the write bit on the temp directory holding the
+// ephemeral checkout, which is what makes its teardown fail: nothing can be
+// unlinked from a directory that cannot be written. It is the portable stand-in
+// for the Windows file lock that teardown is really guarding against, and the
+// test unseals and removes the directory afterwards — it lives under
+// os.MkdirTemp rather than t.TempDir, so nothing else would.
+func sealWorktreeParent(t *testing.T, worktreeDir string) {
+	t.Helper()
+	parent := filepath.Dir(worktreeDir)
+	if fi, err := os.Stat(parent); err != nil || !fi.IsDir() {
+		return
+	}
+	t.Cleanup(func() {
+		_ = os.Chmod(parent, 0o700)
+		_ = os.RemoveAll(parent)
+	})
+	require.NoError(t, os.Chmod(parent, 0o500))
 }

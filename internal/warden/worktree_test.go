@@ -2,6 +2,7 @@ package warden
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -169,5 +170,67 @@ func TestWithEphemeralWorktree(t *testing.T) {
 		// refuses, so an unresolvable HEAD must not degrade to it.
 		require.Error(t, err)
 		assert.False(t, called)
+	})
+}
+
+// The doc comment's other half: with fn successful, a teardown failure IS
+// the returned error, since nothing else would report it — and it is
+// returned as a *WorktreeCleanupError so a caller can tell it from the
+// checkout never having been created at all. ConsolidateAnvil branches on
+// exactly that distinction, and without this case the assignment on the
+// named return is exercised by nothing.
+//
+// The failure is forced without mocking git: fn drops the write bit on the
+// temp directory holding the checkout, which is what a Windows file lock
+// amounts to here — neither `git worktree remove` nor the RemoveAll behind
+// it can unlink anything inside.
+func TestWithEphemeralWorktree_CleanupFailure(t *testing.T) {
+	// Root ignores the permission bits the failure is built on.
+	if os.Geteuid() == 0 {
+		t.Skip("cleanup cannot be made to fail as root")
+	}
+
+	// sealTmpParent makes the checkout's temp parent undeletable and
+	// arranges for the test to unseal and remove it afterwards: it lives
+	// under os.MkdirTemp rather than t.TempDir, so nothing else would.
+	sealTmpParent := func(t *testing.T, wtPath string) error {
+		t.Helper()
+		parent := filepath.Dir(wtPath)
+		t.Cleanup(func() {
+			_ = os.Chmod(parent, 0o700)
+			_ = os.RemoveAll(parent)
+		})
+		return os.Chmod(parent, 0o500)
+	}
+
+	t.Run("a cleanup failure after a successful fn is reported as one", func(t *testing.T) {
+		repo := gitRepoFixture(t)
+
+		var seen string
+		err := WithEphemeralWorktree(context.Background(), repo, func(wt string) error {
+			seen = wt
+			return sealTmpParent(t, wt)
+		})
+		require.Error(t, err, "a cleanup failure must not be swallowed on a successful run")
+
+		var cleanupErr *WorktreeCleanupError
+		require.ErrorAs(t, err, &cleanupErr,
+			"the caller must be able to tell a teardown failure from a checkout that never existed")
+		assert.Equal(t, seen, cleanupErr.WorktreePath)
+	})
+
+	t.Run("fn's error still wins over a cleanup failure", func(t *testing.T) {
+		repo := gitRepoFixture(t)
+
+		err := WithEphemeralWorktree(context.Background(), repo, func(wt string) error {
+			require.NoError(t, sealTmpParent(t, wt))
+			return assert.AnError
+		})
+		require.ErrorIs(t, err, assert.AnError,
+			"the reason the run failed is worth more than the reason a temp dir survived")
+
+		var cleanupErr *WorktreeCleanupError
+		assert.False(t, errors.As(err, &cleanupErr),
+			"a cleanup failure must never displace fn's own error")
 	})
 }

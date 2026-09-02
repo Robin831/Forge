@@ -1,28 +1,45 @@
 package warden
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"log"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"strings"
 	"time"
 
-	"github.com/Robin831/Forge/internal/executil"
 	"github.com/Robin831/Forge/internal/worktree"
 )
 
-// ephemeralWorktreeCleanupTimeout bounds the git commands that tear the
-// throwaway checkout down. They run on a background context so a caller
-// whose own context was cancelled still gets its worktree removed.
+// ephemeralWorktreeCleanupTimeout bounds the teardown of the throwaway
+// checkout. It runs on a background context so a caller whose own context was
+// cancelled still gets its worktree removed.
 const ephemeralWorktreeCleanupTimeout = 60 * time.Second
 
-// ephemeralGitTimeout bounds the git commands that create the checkout.
-const ephemeralGitTimeout = 5 * time.Minute
+// WorktreeCleanupError reports that fn ran to completion and only the
+// teardown of its throwaway checkout failed.
+//
+// It exists because WithEphemeralWorktree's single error return answers two
+// structurally different questions, and its callers act on them in opposite
+// ways: a checkout that could not be created means fn never ran, while this
+// one means fn ran, its results are in hand and all that outlived it is a
+// directory. Reported as one kind, a temp-dir teardown reads to an operator
+// as the reason a pass produced nothing — the "a run that did work must never
+// be reported as one that did not" rule the Assay partial/failed/skipped split
+// exists for.
+type WorktreeCleanupError struct {
+	// WorktreePath is the checkout that could not be torn down.
+	WorktreePath string
+	// Err is what the teardown reported.
+	Err error
+}
+
+func (e *WorktreeCleanupError) Error() string {
+	return fmt.Sprintf("cleaning up ephemeral worktree %s: %v", e.WorktreePath, e.Err)
+}
+
+func (e *WorktreeCleanupError) Unwrap() error { return e.Err }
 
 // WithEphemeralWorktree materializes a throwaway detached checkout of
 // anvilPath at its current HEAD, calls fn with that checkout's path, and
@@ -39,10 +56,11 @@ const ephemeralGitTimeout = 5 * time.Minute
 // spawned. The guard is right; what was missing was a valid worktree to hand
 // it.
 //
-// The checkout is detached at HEAD and lives under os.MkdirTemp rather than
-// inside the anvil, so it collides with neither the worker worktrees under
-// <anvil>/.workers/ nor Kiln's preview checkouts under <anvil>/.previews/,
-// and the daemon's orphan-worktree sweep never sees it.
+// The checkout itself is worktree.CreateEphemeral's: that package owns every
+// git-worktree lifecycle in the tree, so the stale core.worktree self-heal,
+// the post-creation .git pointer check, the timeout tiers and the
+// Windows-aware teardown are the ones the preview and worker checkouts get
+// rather than a second set that drifts from them.
 //
 // A path the pre-flight would accept as it stands is passed through to fn
 // unchanged; see the check at the top for why that is the same question and
@@ -56,8 +74,10 @@ const ephemeralGitTimeout = 5 * time.Minute
 //
 // Cleanup errors are logged and never mask fn's error: a leaked directory
 // costs one temp dir, while swallowing the reason a consolidation failed
-// costs the diagnosis. When fn succeeded, a cleanup failure IS the run's
-// error, since nothing else would report it.
+// costs the diagnosis. When fn succeeded, a cleanup failure IS the returned
+// error, since nothing else would report it — but it is returned as a
+// *WorktreeCleanupError, so a caller can tell "fn never ran" from "fn ran and
+// its checkout outlived it" instead of reporting the second as the first.
 func WithEphemeralWorktree(ctx context.Context, anvilPath string, fn func(worktreePath string) error) (err error) {
 	if fn == nil {
 		return errors.New("WithEphemeralWorktree: fn is nil")
@@ -74,31 +94,18 @@ func WithEphemeralWorktree(ctx context.Context, anvilPath string, fn func(worktr
 		return fn(anvilPath)
 	}
 
-	head, err := ephemeralHead(ctx, anvilPath)
+	wt, err := worktree.CreateEphemeral(ctx, anvilPath)
 	if err != nil {
 		return err
-	}
-
-	tmp, err := os.MkdirTemp("", "forge-consolidate-*")
-	if err != nil {
-		return fmt.Errorf("creating temp dir for ephemeral worktree: %w", err)
-	}
-	// The basename is what git registers the worktree under; git resolves a
-	// collision itself, so two concurrent runs against one anvil are safe.
-	wtPath := filepath.Join(tmp, "worktree")
-
-	if _, err := runEphemeralGit(ctx, anvilPath, "worktree", "add", "--detach", wtPath, head); err != nil {
-		_ = os.RemoveAll(tmp)
-		return fmt.Errorf("creating ephemeral worktree for %s at %s: %w", anvilPath, head, err)
 	}
 
 	defer func() {
 		cleanupCtx, cancel := context.WithTimeout(context.Background(), ephemeralWorktreeCleanupTimeout)
 		defer cancel()
-		if cleanupErr := removeEphemeralWorktree(cleanupCtx, anvilPath, wtPath, tmp); cleanupErr != nil {
-			log.Printf("[warden] cleaning up ephemeral worktree %s: %v", wtPath, cleanupErr)
+		if cleanupErr := wt.Remove(cleanupCtx); cleanupErr != nil {
+			log.Printf("[warden] cleaning up ephemeral worktree %s: %v", wt.Path, cleanupErr)
 			if err == nil {
-				err = cleanupErr
+				err = &WorktreeCleanupError{WorktreePath: wt.Path, Err: cleanupErr}
 			}
 		}
 	}()
@@ -113,47 +120,13 @@ func WithEphemeralWorktree(ctx context.Context, anvilPath string, fn func(worktr
 	// the anvil's real rules file, so nothing is ever read back off disk
 	// here.
 	for _, name := range []string{RulesFileName, ArchiveFileName} {
-		if copyErr := copyIntoWorktree(anvilPath, wtPath, name); copyErr != nil {
+		if copyErr := copyIntoWorktree(anvilPath, wt.Path, name); copyErr != nil {
 			log.Printf("[warden] ephemeral worktree: copying %s: %v", name, copyErr)
 		}
 	}
 
-	err = fn(wtPath)
+	err = fn(wt.Path)
 	return err
-}
-
-// ephemeralHead resolves the commit the throwaway checkout is created at.
-// An anvil with no commits cannot produce one, and the error says so rather
-// than surfacing as a bare `git worktree add` failure.
-func ephemeralHead(ctx context.Context, anvilPath string) (string, error) {
-	out, err := runEphemeralGit(ctx, anvilPath, "rev-parse", "HEAD")
-	if err != nil {
-		return "", fmt.Errorf("resolving HEAD of %s: %w", anvilPath, err)
-	}
-	head := strings.TrimSpace(out)
-	if head == "" {
-		return "", fmt.Errorf("resolving HEAD of %s: empty output", anvilPath)
-	}
-	return head, nil
-}
-
-// removeEphemeralWorktree unregisters the checkout and deletes its temp dir.
-// Every step is attempted even when an earlier one failed: `worktree remove`
-// declining (a git that never registered it, a directory already gone) must
-// not leave the administrative entry behind for `prune` to find, nor the
-// temp dir on disk.
-func removeEphemeralWorktree(ctx context.Context, anvilPath, wtPath, tmpDir string) error {
-	var errs []error
-	if _, err := runEphemeralGit(ctx, anvilPath, "worktree", "remove", "--force", wtPath); err != nil {
-		errs = append(errs, fmt.Errorf("git worktree remove %s: %w", wtPath, err))
-	}
-	if _, err := runEphemeralGit(ctx, anvilPath, "worktree", "prune"); err != nil {
-		errs = append(errs, fmt.Errorf("git worktree prune: %w", err))
-	}
-	if err := os.RemoveAll(tmpDir); err != nil {
-		errs = append(errs, fmt.Errorf("removing %s: %w", tmpDir, err))
-	}
-	return errors.Join(errs...)
 }
 
 // copyIntoWorktree copies one anvil-relative file into the worktree,
@@ -173,28 +146,4 @@ func copyIntoWorktree(anvilPath, wtPath, relName string) error {
 		return err
 	}
 	return os.WriteFile(dst, data, 0o644)
-}
-
-// runEphemeralGit runs one git command against the anvil. The environment is
-// stripped of git's repo-location overrides so an ambient GIT_DIR cannot
-// answer for another repository, and LC_ALL is pinned so the diagnostics
-// that reach the log read the same on every host.
-func runEphemeralGit(ctx context.Context, dir string, args ...string) (string, error) {
-	cmdCtx, cancel := context.WithTimeout(ctx, ephemeralGitTimeout)
-	defer cancel()
-
-	full := append([]string{"-C", dir}, args...)
-	cmd := executil.HideWindow(exec.CommandContext(cmdCtx, "git", full...))
-	cmd.Env = append(executil.CleanGitEnv(), "LC_ALL=C")
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		msg := strings.TrimSpace(stderr.String())
-		if msg == "" {
-			return "", err
-		}
-		return "", fmt.Errorf("%w: %s", err, msg)
-	}
-	return stdout.String(), nil
 }

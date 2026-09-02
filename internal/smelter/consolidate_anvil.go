@@ -2,6 +2,7 @@ package smelter
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"time"
@@ -72,8 +73,11 @@ type ConsolidateResult struct {
 	// FirstError is the first non-fatal error encountered during Pass 1 —
 	// typically an AI runner failure for a single cluster, or the failure
 	// to materialize the ephemeral worktree the pass's sessions run in,
-	// which skips the pass entirely. The run proceeds despite either;
-	// callers may choose to surface it in their summary.
+	// which skips the pass entirely. A failure to tear that worktree down
+	// again lands here only when the pass itself reported nothing: it says
+	// a temp directory outlived a pass that ran, so it must never displace
+	// the reason a cluster did not merge. The run proceeds despite any of
+	// them; callers may choose to surface it in their summary.
 	FirstError error
 }
 
@@ -109,7 +113,10 @@ type ConsolidateResult struct {
 //     pre-flight refuses a main checkout outright. Passes 2 and 3 spawn no
 //     session and read the anvil directly. A worktree that cannot be
 //     created skips Pass 1 and lands in FirstError rather than falling back
-//     to the anvil, which is the arrangement that failed every cluster.
+//     to the anvil, which is the arrangement that failed every cluster. A
+//     worktree that cannot be REMOVED afterwards is the opposite case — the
+//     pass ran and its merges are kept — so it is logged and only reported
+//     as FirstError when no cluster error claimed the field first.
 func ConsolidateAnvil(ctx context.Context, opts ConsolidateOptions) (ConsolidateResult, error) {
 	rf, err := warden.LoadRules(opts.AnvilPath)
 	if err != nil {
@@ -150,15 +157,28 @@ func ConsolidateAnvil(ctx context.Context, opts ConsolidateOptions) (Consolidate
 			replaced, summary, errs = warden.ConsolidateWithParams(ctx, wtPath, rf, params, opts.Consolidator)
 			return nil
 		})
+		// The helper answers two different questions with one error, and
+		// they call for opposite handling. A *WorktreeCleanupError means the
+		// pass RAN — every merge it made is already in summary/replaced and
+		// will be persisted — and only its throwaway checkout outlived it,
+		// so it must not evict a genuine cluster error from FirstError (the
+		// only Pass 1 diagnostic the CLI prints) or be logged as the reason
+		// nothing merged. Anything else means the checkout could not be
+		// created, so Pass 1 did not run at all.
+		var cleanupErr error
 		if wtErr != nil {
-			// No fallback to AnvilPath: that is the arrangement that
-			// produced a cluster error for every cluster and reported it as
-			// a completed pass. Passes 2 and 3 need no session and still
-			// run; the reason Pass 1 did not is reported like a cluster
-			// error, which is the field the CLI already prints.
-			wtErr = fmt.Errorf("pass 1 worktree for %s: %w", opts.AnvilName, wtErr)
-			log.Printf("[smelter] %v", wtErr)
-			if firstPassErr == nil {
+			var wce *warden.WorktreeCleanupError
+			if errors.As(wtErr, &wce) {
+				cleanupErr = fmt.Errorf("pass 1 worktree cleanup for %s: %w", opts.AnvilName, wtErr)
+				log.Printf("[smelter] %v (pass 1 itself completed)", cleanupErr)
+			} else {
+				// No fallback to AnvilPath: that is the arrangement that
+				// produced a cluster error for every cluster and reported it
+				// as a completed pass. Passes 2 and 3 need no session and
+				// still run; the reason Pass 1 did not is reported like a
+				// cluster error, which is the field the CLI already prints.
+				wtErr = fmt.Errorf("pass 1 worktree for %s: %w", opts.AnvilName, wtErr)
+				log.Printf("[smelter] %v", wtErr)
 				firstPassErr = wtErr
 			}
 		}
@@ -168,6 +188,12 @@ func ConsolidateAnvil(ctx context.Context, opts ConsolidateOptions) (Consolidate
 				continue
 			}
 			log.Printf("[smelter] additional consolidation error for %s: %v", opts.AnvilName, e)
+		}
+		// Last claim on the field: a leaked checkout is worth surfacing when
+		// nothing else is, and worth nothing beside a cluster that failed to
+		// merge.
+		if firstPassErr == nil {
+			firstPassErr = cleanupErr
 		}
 		if len(summary) > 0 {
 			log.Printf("[smelter] consolidated %d cluster(s) for %s", len(summary), opts.AnvilName)
