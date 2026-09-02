@@ -1,0 +1,2 @@
+category: Fixed
+- **`forge warden consolidate` reports cluster failures instead of hiding them** - A consolidation pass whose every cluster failed rendered byte-for-byte like a file with nothing left to merge ("No changes — active rules file already at steady state.") and exited 0, with only the first error on stderr as a warning. The summary now prints `Clusters: 0/56 merged, 56 errored` plus the distinct failure messages, reserves the steady-state line for a pass that got an answer for every cluster it found, and the command exits non-zero when it did not. (Forge-5puu)

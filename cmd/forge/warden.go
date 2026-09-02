@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"strconv"
 	"strings"
@@ -274,14 +275,24 @@ scheduled smelter runs:
            then evict the lowest-value rules over max_rules_in_file.
   Pass 3 — backfill the Paths field from each rule's source PR(s).
 
+Exits non-zero when Pass 1 did not get an answer for every cluster it found
+(a cluster the AI provider failed, or a pass that could not run at all). Such
+a run has established nothing about the rules file, so it is never reported
+as already being at steady state.
+
 Always writes .forge/warden-rules.yaml when any pass produced changes.
 .forge/warden-rules.archive.yaml is written only when Pass 1 or Pass 2
 produced archive entries (duplicate or stale rules); a backfill-only run
 leaves the archive file unchanged. The pending warden rules queue in
 state.db is NOT consulted — this command only operates on what is already
 in the active rules file.`,
-	Args:    cobra.ExactArgs(1),
-	Example: "  forge warden consolidate munin",
+	Args: cobra.ExactArgs(1),
+	// A cluster that failed to consolidate exits non-zero, and that is a
+	// runtime outcome rather than a misuse of the command: without this the
+	// summary would be followed by the full usage text, which reads as "you
+	// typed it wrong" for a run that was typed correctly and failed.
+	SilenceUsage: true,
+	Example:      "  forge warden consolidate munin",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		anvilName := args[0]
 
@@ -301,14 +312,14 @@ in the active rules file.`,
 		opts := smelter.ConsolidateOptions{
 			AnvilPath:        anvil.Path,
 			AnvilName:        anvilName,
-			Consolidator:     warden.DefaultConsolidationRunner(),
+			Consolidator:     consolidationRunner(),
 			DedupThreshold:   cfg.Settings.Warden.ResolvedDedupThreshold(),
 			OverlapThreshold: cfg.Settings.Warden.ResolvedOverlapThreshold(),
 			ArchiveAfterDays: cfg.Settings.Warden.ResolvedArchiveAfterDays(),
 			MaxRulesInFile:   cfg.Settings.Warden.ResolvedMaxRulesInFile(),
 		}
 
-		fmt.Fprintf(os.Stderr, "Running three-pass consolidation against %s (dedup_threshold=%.2f, overlap_threshold=%.2f, archive_after_days=%d, max_rules_in_file=%d)...\n",
+		fmt.Fprintf(cmd.ErrOrStderr(), "Running three-pass consolidation against %s (dedup_threshold=%.2f, overlap_threshold=%.2f, archive_after_days=%d, max_rules_in_file=%d)...\n",
 			anvilName, opts.DedupThreshold, opts.OverlapThreshold, opts.ArchiveAfterDays, opts.MaxRulesInFile)
 
 		result, err := smelter.ConsolidateAnvil(rootCtx, opts)
@@ -316,48 +327,124 @@ in the active rules file.`,
 			return fmt.Errorf("consolidate %s: %w", anvilName, err)
 		}
 
-		// Print a structured summary.
-		fmt.Printf("Anvil:           %s\n", anvilName)
-		fmt.Printf("Active before:   %d\n", result.InitialCount)
-		fmt.Printf("Active after:    %d\n", result.FinalActive)
-		fmt.Printf("Archive size:    %d\n", result.ArchiveCount)
-		if n := len(result.Passes.Consolidated); n > 0 {
-			fmt.Printf("Consolidated:    %d cluster(s)\n", n)
-		}
-		// The archive list carries two reasons and they are printed as two
-		// lines: a rule evicted for losing a slot to the ceiling did not age
-		// out, and reporting it as stale is the one claim this summary must
-		// not make.
-		stale, overCap := result.Passes.ArchivedByReason()
-		if stale > 0 {
-			fmt.Printf("Archived stale:  %d rule(s)\n", stale)
-		}
-		if overCap > 0 {
-			fmt.Printf("Evicted:         %d rule(s) over the file ceiling\n", overCap)
-		}
-		if n := len(result.Passes.Backfilled); n > 0 {
-			fmt.Printf("Backfilled:      %d rule(s)\n", n)
-		}
-		if len(result.Passes.Contradictions) > 0 {
-			// Printed to stderr, and never folded into the change summary
-			// above: nothing was written for these, and a human has to pick
-			// which convention the codebase actually follows.
-			fmt.Fprintf(os.Stderr, "\n%s\n", warden.FormatContradictions(result.Passes.Contradictions))
-		}
-		if !result.Passes.HasChanges() {
-			fmt.Println("No changes — active rules file already at steady state.")
-		} else {
-			fmt.Printf("\nWrote %s\n", warden.RulesPath(anvil.Path))
-			if len(result.Passes.Consolidated) > 0 || len(result.Passes.Archived) > 0 {
-				fmt.Printf("Wrote %s\n", warden.ArchivePath(anvil.Path))
-			}
-			fmt.Println("Review and commit the changes when ready.")
-		}
-		if result.FirstError != nil {
-			fmt.Fprintf(os.Stderr, "Warning: first consolidation cluster error: %v\n", result.FirstError)
-		}
-		return nil
+		return renderConsolidateSummary(cmd.OutOrStdout(), cmd.ErrOrStderr(), anvilName, anvil.Path, result)
 	},
+}
+
+// consolidationRunner is the seam the consolidate command's AI provider is
+// resolved through. It is a variable so a test can force every cluster to
+// fail and assert on what the command then reports and exits with — the one
+// property that cannot be established by reading the code, since the defect
+// being fixed was precisely that a failing pass rendered as a successful one.
+var consolidationRunner = warden.DefaultConsolidationRunner
+
+// maxConsolidateErrorsListed caps the distinct cluster-error messages the
+// summary prints. A pass that fails every cluster usually fails them all the
+// same way, and after deduplication that is one line; the cap is for the
+// case where it is not.
+const maxConsolidateErrorsListed = 3
+
+// renderConsolidateSummary writes the `forge warden consolidate` summary and
+// returns the error the command exits with.
+//
+// Two claims in here have to be earned rather than assumed. The first is the
+// cluster line: len(Passes.Consolidated) alone reads identically whether the
+// pass found nothing to merge or asked about 56 clusters and lost every one
+// of them, so the attempted count and the error count are printed beside it
+// whenever anything failed. The second is "already at steady state", which is
+// a statement about the FILE — that nothing in it is left to merge — and only
+// a pass that got an answer for every cluster it found is entitled to make
+// it. A run that could not ask is reported as a run that could not ask.
+func renderConsolidateSummary(out, errOut io.Writer, anvilName, anvilPath string, result smelter.ConsolidateResult) error {
+	fmt.Fprintf(out, "Anvil:           %s\n", anvilName)
+	fmt.Fprintf(out, "Active before:   %d\n", result.InitialCount)
+	fmt.Fprintf(out, "Active after:    %d\n", result.FinalActive)
+	fmt.Fprintf(out, "Archive size:    %d\n", result.ArchiveCount)
+	if n := len(result.Passes.Consolidated); n > 0 {
+		fmt.Fprintf(out, "Consolidated:    %d cluster(s)\n", n)
+	}
+	if len(result.ClusterErrors) > 0 {
+		fmt.Fprintf(out, "Clusters:        %d/%d merged, %d errored\n",
+			len(result.Passes.Consolidated), result.ClustersAttempted, len(result.ClusterErrors))
+		for _, line := range distinctErrorLines(result.ClusterErrors, maxConsolidateErrorsListed) {
+			fmt.Fprintf(out, "  - %s\n", line)
+		}
+	}
+	// The archive list carries two reasons and they are printed as two
+	// lines: a rule evicted for losing a slot to the ceiling did not age
+	// out, and reporting it as stale is the one claim this summary must
+	// not make.
+	stale, overCap := result.Passes.ArchivedByReason()
+	if stale > 0 {
+		fmt.Fprintf(out, "Archived stale:  %d rule(s)\n", stale)
+	}
+	if overCap > 0 {
+		fmt.Fprintf(out, "Evicted:         %d rule(s) over the file ceiling\n", overCap)
+	}
+	if n := len(result.Passes.Backfilled); n > 0 {
+		fmt.Fprintf(out, "Backfilled:      %d rule(s)\n", n)
+	}
+	if len(result.Passes.Contradictions) > 0 {
+		// Printed to stderr, and never folded into the change summary
+		// above: nothing was written for these, and a human has to pick
+		// which convention the codebase actually follows.
+		fmt.Fprintf(errOut, "\n%s\n", warden.FormatContradictions(result.Passes.Contradictions))
+	}
+	switch {
+	case result.Passes.HasChanges():
+		fmt.Fprintf(out, "\nWrote %s\n", warden.RulesPath(anvilPath))
+		if len(result.Passes.Consolidated) > 0 || len(result.Passes.Archived) > 0 {
+			fmt.Fprintf(out, "Wrote %s\n", warden.ArchivePath(anvilPath))
+		}
+		fmt.Fprintln(out, "Review and commit the changes when ready.")
+	case result.Pass1Complete():
+		fmt.Fprintln(out, "No changes — active rules file already at steady state.")
+	case result.Pass1Skipped:
+		fmt.Fprintln(out, "No changes — consolidation did not run, so nothing about the rules file was established.")
+	default:
+		fmt.Fprintln(out, "No changes — every cluster consolidation failed, so nothing about the rules file was established.")
+	}
+	if result.FirstError != nil {
+		fmt.Fprintf(errOut, "Warning: pass 1 did not complete cleanly: %v\n", result.FirstError)
+	}
+	if !result.Pass1Complete() {
+		// Non-zero exit, because a run that could not consolidate is a
+		// failed run whatever the later passes managed: printed among four
+		// lines of counts, a warning on stderr is exactly what let this go
+		// unnoticed for five months.
+		if result.Pass1Skipped {
+			return fmt.Errorf("consolidation pass did not run for %s", anvilName)
+		}
+		return fmt.Errorf("%d of %d cluster(s) failed to consolidate for %s",
+			len(result.ClusterErrors), result.ClustersAttempted, anvilName)
+	}
+	return nil
+}
+
+// distinctErrorLines renders up to max distinct error messages in first-seen
+// order, with an "and N more" tail counting the DISTINCT messages left over.
+// Deduplicated because the interesting number is how many ways the pass
+// failed: 56 clusters failing on one dead provider is one message, and
+// printing three copies of it says nothing the count above has not.
+func distinctErrorLines(errs []error, max int) []string {
+	seen := make(map[string]struct{}, len(errs))
+	var distinct []string
+	for _, e := range errs {
+		if e == nil {
+			continue
+		}
+		msg := e.Error()
+		if _, ok := seen[msg]; ok {
+			continue
+		}
+		seen[msg] = struct{}{}
+		distinct = append(distinct, msg)
+	}
+	if len(distinct) <= max {
+		return distinct
+	}
+	out := append([]string(nil), distinct[:max]...)
+	return append(out, fmt.Sprintf("... and %d more distinct error(s)", len(distinct)-max))
 }
 
 var wardenRestoreCmd = &cobra.Command{
