@@ -2,12 +2,16 @@ package smelter
 
 import (
 	"context"
+	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 	"time"
 
+	"github.com/Robin831/Forge/internal/executil"
 	"github.com/Robin831/Forge/internal/warden"
+	"github.com/Robin831/Forge/internal/worktree"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -384,5 +388,100 @@ func TestConsolidateAnvil_FileCapDisabled(t *testing.T) {
 		require.NoError(t, err)
 		assert.False(t, res.Passes.HasChanges(), "max=%d", max)
 		assert.Equal(t, 2, res.FinalActive, "max=%d", max)
+	}
+}
+
+// gitAnvilFixture builds a MAIN checkout with one commit. The shape matters:
+// an anvil is a main checkout by definition, and a main checkout is exactly
+// what Smith's pre-flight refuses to run a session in.
+//
+// CleanGitEnv rather than os.Environ, because these tests run inside a
+// worker worktree that exports GIT_DIR/GIT_WORK_TREE — inherited, `git -C
+// <tmp> init` reinitializes THAT repository and the fixture silently is not
+// a repository at all, which is the one condition this test exists to set up.
+func gitAnvilFixture(t *testing.T) string {
+	t.Helper()
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available on PATH")
+	}
+	dir := t.TempDir()
+	run := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+		cmd.Env = append(executil.CleanGitEnv(), "LC_ALL=C", "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null")
+		out, err := cmd.CombinedOutput()
+		require.NoErrorf(t, err, "git %v: %s", args, out)
+	}
+	run("init", "-b", "main")
+	run("config", "user.email", "forge@example.com")
+	run("config", "user.name", "Forge Test")
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "README.md"), []byte("anvil\n"), 0o644))
+	run("add", "README.md")
+	run("commit", "-m", "initial")
+	return dir
+}
+
+// The bug this guards: Pass 1 spawns one AI session per cluster, and
+// smith.SpawnWithOptions refuses any working directory that is inside a git
+// repository without being a linked worktree. Handed the anvil path — a main
+// checkout — every cluster failed the pre-flight before a provider was
+// spawned, so `forge warden consolidate` had never merged a single cluster
+// on a real anvil while reporting the pass as run.
+//
+// It cannot be caught by the other tests in this file: their fixtures are
+// bare t.TempDirs, which sit outside any repository and which the pre-flight
+// accepts as they stand. Only a fixture that is a real checkout reproduces
+// the refusal.
+func TestConsolidateAnvil_Pass1RunsInAWorktreeNotTheAnvil(t *testing.T) {
+	anvil := gitAnvilFixture(t)
+	writeRulesFile(t, anvil, &warden.RulesFile{Rules: overlapOnlyPair()})
+
+	var sessionDirs []string
+	consolidator := func(_ context.Context, dir, _ string) ([]byte, error) {
+		sessionDirs = append(sessionDirs, dir)
+		// The exact question smith asks before it spawns anything.
+		if err := worktree.ValidateWorktreeDir(dir); err != nil {
+			return nil, err
+		}
+		body, err := json.Marshal(map[string]string{
+			"id":      "merged-log-filename",
+			"pattern": "documentation filename",
+			"check":   "the documented filename must match the code",
+		})
+		require.NoError(t, err)
+		return body, nil
+	}
+
+	res, err := ConsolidateAnvil(context.Background(), ConsolidateOptions{
+		AnvilPath:      anvil,
+		AnvilName:      "test",
+		Consolidator:   consolidator,
+		DedupThreshold: 0.6,
+	})
+	require.NoError(t, err)
+	require.NoError(t, res.FirstError, "no cluster may fail the pre-flight")
+	require.Len(t, res.Passes.Consolidated, 1)
+
+	require.NotEmpty(t, sessionDirs)
+	for _, dir := range sessionDirs {
+		assert.NotEqual(t, anvil, dir, "a session must never run in the main checkout")
+	}
+
+	// The merge is applied to the anvil's own rules file, not to whatever
+	// the throwaway checkout holds: the merged rule comes back as JSON and
+	// the file the caller loaded is the file it writes.
+	active, err := warden.LoadRules(anvil)
+	require.NoError(t, err)
+	require.Len(t, active.Rules, 1)
+	assert.Equal(t, "merged-log-filename", active.Rules[0].ID)
+
+	// And nothing is left registered against the anvil.
+	list := exec.Command("git", "-C", anvil, "worktree", "list")
+	list.Env = append(executil.CleanGitEnv(), "LC_ALL=C")
+	out, err := list.CombinedOutput()
+	require.NoErrorf(t, err, "git worktree list: %s", out)
+	for _, dir := range sessionDirs {
+		assert.NotContains(t, string(out), dir)
+		assert.NoDirExists(t, dir)
 	}
 }
