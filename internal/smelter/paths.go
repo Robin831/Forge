@@ -240,7 +240,12 @@ func (r backfillResult) summary(anvilName string) string {
 //
 // Best-effort: a fetch failure for a single PR is logged and the next PR is
 // tried. A rule is only modified when at least one fetch succeeded and produced
-// at least one glob.
+// at least one glob — except for a NARROWING, which additionally requires every
+// one of the rule's source PRs to have been read. The globs replacing a
+// populated Paths field are a claim about all of the rule's evidence, and one
+// transient gh failure would otherwise re-gate the rule onto the surviving PR's
+// files alone and never put the rest back: a later run re-derives the full,
+// wider set, which isStrictlyNarrower declines.
 //
 // Returns the IDs it changed, split by which of the two things happened, in the
 // order the rules were visited.
@@ -267,10 +272,27 @@ func pathsBackfill(ctx context.Context, wtPath, anvilName string, rf *warden.Rul
 			continue
 		}
 
-		files, ok := sourcePRFiles(ctx, wtPath, anvilName, rule, prCache)
+		ev, ok := sourcePRFiles(ctx, wtPath, anvilName, rule, prCache)
 		if !ok {
 			continue
 		}
+
+		// A narrowing is a claim about the WHOLE of a rule's evidence: the
+		// globs replacing what is on file must cover every source PR the rule
+		// names, because the ones that failed to fetch are exactly the ones
+		// whose paths would be dropped. A transient gh failure would otherwise
+		// re-gate the rule onto the surviving PR's files alone, and permanently
+		// — the next run re-derives the full, WIDER set, which
+		// isStrictlyNarrower then declines, so nothing ever puts the lost
+		// paths back. Filling an empty field is the opposite case and stays
+		// best-effort: partial evidence there replaces a rule that is gated on
+		// nothing at all, and a later run can still narrow it further.
+		if !filling && !ev.complete() {
+			log.Printf("[smelter] paths narrow: rule %s on %s: skipped, %d of %d source PR(s) could not be fetched",
+				rule.ID, anvilName, ev.failed, ev.failed+ev.fetched)
+			continue
+		}
+		files := ev.files
 
 		// Derived from the rule's own text as well as the PR's files: the PR
 		// says which extensions were touched, the rule says which language it
@@ -304,11 +326,31 @@ func pathsBackfill(ctx context.Context, wtPath, anvilName string, rf *warden.Rul
 	return result
 }
 
+// sourceEvidence is what a rule's source PRs could be made to say: the union
+// of their changed files, and how many of those PRs the union actually rests
+// on. The two fetch counts are carried rather than folded into the file list
+// because a caller cannot tell a rule whose PR touched only Go files from one
+// whose second PR failed to fetch — and the two license different rewrites.
+type sourceEvidence struct {
+	files []string
+	// fetched and failed count the rule's distinct source PRs by outcome, so
+	// fetched+failed is the number of PRs the rule names.
+	fetched int
+	failed  int
+}
+
+// complete reports whether every source PR the rule names was read. Only then
+// is the derived glob set the whole of what the rule's evidence covers.
+func (e sourceEvidence) complete() bool { return e.failed == 0 }
+
 // sourcePRFiles returns the union of the files changed by the PRs a rule's
 // Source names, reporting false when the rule names no copilot:PR#N token or
-// when every fetch for it failed. Fetches are served from prCache, which is
-// what keeps one PR's files to one gh call however many rules cite it.
-func sourcePRFiles(ctx context.Context, wtPath, anvilName string, rule *warden.Rule, prCache map[int]prFetchResult) ([]string, bool) {
+// when every fetch for it failed. A partial result is returned with ok true and
+// complete() false — whether partial evidence is enough is the caller's call,
+// and it differs between filling an empty Paths field and narrowing a populated
+// one. Fetches are served from prCache, which is what keeps one PR's files to
+// one gh call however many rules cite it.
+func sourcePRFiles(ctx context.Context, wtPath, anvilName string, rule *warden.Rule, prCache map[int]prFetchResult) (sourceEvidence, bool) {
 	// Collect unique PR numbers referenced by this rule's sources.
 	// extractPRNumbers handles source strings that contain multiple
 	// copilot:PR#N tokens (e.g. "copilot:PR#1, copilot:PR#2").
@@ -324,13 +366,10 @@ func sourcePRFiles(ctx context.Context, wtPath, anvilName string, rule *warden.R
 		}
 	}
 	if len(prNums) == 0 {
-		return nil, false
+		return sourceEvidence{}, false
 	}
 
-	var (
-		files      []string
-		anySuccess bool
-	)
+	var ev sourceEvidence
 	for _, prNum := range prNums {
 		res, cached := prCache[prNum]
 		if !cached {
@@ -339,16 +378,17 @@ func sourcePRFiles(ctx context.Context, wtPath, anvilName string, rule *warden.R
 			prCache[prNum] = res
 		}
 		if res.err != nil {
+			ev.failed++
 			log.Printf("[smelter] paths backfill: PR#%d for rule %s on %s: %v", prNum, rule.ID, anvilName, res.err)
 			continue
 		}
-		anySuccess = true
-		files = append(files, res.files...)
+		ev.fetched++
+		ev.files = append(ev.files, res.files...)
 	}
-	if !anySuccess {
-		return nil, false
+	if ev.fetched == 0 {
+		return sourceEvidence{}, false
 	}
-	return files, true
+	return ev, true
 }
 
 // logPathsDerived writes the one line that says what a rule's Paths became and

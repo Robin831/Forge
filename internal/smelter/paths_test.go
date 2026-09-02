@@ -423,3 +423,140 @@ func TestSafeGlobListCapsTheList(t *testing.T) {
 	assert.NotContains(t, out, "**/*.e10")
 	assert.Contains(t, out, "and 3 more")
 }
+
+// TestRunPathsBackfill_NarrowingRequiresEverySourcePR is the completeness rule
+// on the rewrite branch. Narrowing replaces the gate a rule already carries, so
+// the globs doing the replacing have to cover ALL of the rule's evidence: a
+// transient gh failure on one of two source PRs leaves the derived set holding
+// only the surviving PR's extensions, which is strictly narrower and matches
+// its own source — both guards pass — and re-gating on it drops the failed PR's
+// paths for good, since the next run derives the full, WIDER set and
+// isStrictlyNarrower declines that.
+func TestRunPathsBackfill_NarrowingRequiresEverySourcePR(t *testing.T) {
+	db := openTestDB(t)
+	s := New(db, 0, map[string]string{})
+
+	withStubFetcher(t, func(_ context.Context, _ string, prNum int) ([]string, error) {
+		if prNum == 1 {
+			return nil, errors.New("gh exploded")
+		}
+		return []string{"internal/a.go"}, nil
+	})
+
+	rf := &warden.RulesFile{Rules: []warden.Rule{{
+		ID:     "r1",
+		Source: warden.SourceList{"copilot:PR#1", "copilot:PR#2"},
+		Paths:  []string{"**/*.go", "**/*.md"},
+	}}}
+
+	result := s.runPathsBackfill(context.Background(), t.TempDir(), "anvil-a", rf)
+	assert.Empty(t, result.Narrowed, "a rule whose evidence is incomplete must not be narrowed")
+	assert.Empty(t, result.Filled)
+	assert.Equal(t, []string{"**/*.go", "**/*.md"}, rf.Rules[0].Paths,
+		"the paths the failed PR justifies must survive the failure")
+}
+
+// The counterpart: the identical rule and the identical derived set, with both
+// fetches succeeding, IS narrowed — so the case above is refused for the
+// missing evidence and not because the narrowing itself was unavailable.
+func TestRunPathsBackfill_NarrowsWhenEverySourcePRIsRead(t *testing.T) {
+	db := openTestDB(t)
+	s := New(db, 0, map[string]string{})
+
+	withStubFetcher(t, func(_ context.Context, _ string, prNum int) ([]string, error) {
+		if prNum == 1 {
+			return []string{"internal/b.go"}, nil
+		}
+		return []string{"internal/a.go"}, nil
+	})
+
+	rf := &warden.RulesFile{Rules: []warden.Rule{{
+		ID:     "r1",
+		Source: warden.SourceList{"copilot:PR#1", "copilot:PR#2"},
+		Paths:  []string{"**/*.go", "**/*.md"},
+	}}}
+
+	result := s.runPathsBackfill(context.Background(), t.TempDir(), "anvil-a", rf)
+	assert.Equal(t, []string{"r1"}, result.Narrowed)
+	assert.Equal(t, []string{"**/*.go"}, rf.Rules[0].Paths)
+}
+
+// Filling an empty Paths field keeps the best-effort behaviour it has always
+// had: partial evidence there replaces a rule gated on nothing at all, and
+// nothing is lost by acting on it — a later run that reads every source PR can
+// still narrow the result further, which is the branch the completeness rule
+// guards.
+func TestRunPathsBackfill_PartialFetchStillFillsEmptyPaths(t *testing.T) {
+	db := openTestDB(t)
+	s := New(db, 0, map[string]string{})
+
+	withStubFetcher(t, func(_ context.Context, _ string, prNum int) ([]string, error) {
+		if prNum == 1 {
+			return nil, errors.New("gh exploded")
+		}
+		return []string{"internal/a.go"}, nil
+	})
+
+	rf := &warden.RulesFile{Rules: []warden.Rule{{
+		ID:     "r1",
+		Source: warden.SourceList{"copilot:PR#1", "copilot:PR#2"},
+	}}}
+
+	result := s.runPathsBackfill(context.Background(), t.TempDir(), "anvil-a", rf)
+	assert.Equal(t, []string{"r1"}, result.Filled)
+	assert.Empty(t, result.Narrowed)
+	assert.Equal(t, []string{"**/*.go"}, rf.Rules[0].Paths)
+}
+
+// A fetch failure is cached with the PR, so a second rule citing the same
+// failed PR must reach the same refusal without a second gh call — and must
+// reach it as a refusal, not as an unnoticed partial narrowing.
+func TestRunPathsBackfill_CachedFetchFailureStillBlocksNarrowing(t *testing.T) {
+	db := openTestDB(t)
+	s := New(db, 0, map[string]string{})
+
+	var calls int
+	withStubFetcher(t, func(_ context.Context, _ string, prNum int) ([]string, error) {
+		calls++
+		if prNum == 1 {
+			return nil, errors.New("gh exploded")
+		}
+		return []string{"internal/a.go"}, nil
+	})
+
+	rf := &warden.RulesFile{Rules: []warden.Rule{
+		{ID: "r1", Source: warden.SourceList{"copilot:PR#1", "copilot:PR#2"}, Paths: []string{"**/*.go", "**/*.md"}},
+		{ID: "r2", Source: warden.SourceList{"copilot:PR#1", "copilot:PR#2"}, Paths: []string{"**/*.go", "**/*.md"}},
+	}}
+
+	result := s.runPathsBackfill(context.Background(), t.TempDir(), "anvil-a", rf)
+	assert.Empty(t, result.Narrowed)
+	assert.Equal(t, 2, calls, "both outcomes, the failure included, are cached per PR")
+	assert.Equal(t, []string{"**/*.go", "**/*.md"}, rf.Rules[1].Paths)
+}
+
+// sourceEvidence is what the two branches read the fetch outcome off, so the
+// counts it carries have to survive a mix of outcomes rather than collapsing
+// to "something worked".
+func TestSourcePRFilesReportsIncompleteEvidence(t *testing.T) {
+	withStubFetcher(t, func(_ context.Context, _ string, prNum int) ([]string, error) {
+		if prNum == 1 {
+			return nil, errors.New("gh exploded")
+		}
+		return []string{"internal/a.go"}, nil
+	})
+
+	rule := &warden.Rule{ID: "r1", Source: warden.SourceList{"copilot:PR#1", "copilot:PR#2"}}
+	ev, ok := sourcePRFiles(context.Background(), t.TempDir(), "anvil-a", rule, map[int]prFetchResult{})
+	require.True(t, ok, "one successful fetch is still usable evidence")
+	assert.False(t, ev.complete())
+	assert.Equal(t, 1, ev.fetched)
+	assert.Equal(t, 1, ev.failed)
+	assert.Equal(t, []string{"internal/a.go"}, ev.files)
+
+	rule2 := &warden.Rule{ID: "r2", Source: warden.SourceList{"copilot:PR#2"}}
+	ev2, ok := sourcePRFiles(context.Background(), t.TempDir(), "anvil-a", rule2, map[int]prFetchResult{})
+	require.True(t, ok)
+	assert.True(t, ev2.complete())
+	assert.Equal(t, 0, ev2.failed)
+}
