@@ -69,10 +69,14 @@ type ConsolidateResult struct {
 	// ArchiveCount is the entry count in the archive file after the run.
 	// Zero when no archive file exists.
 	ArchiveCount int
-	// FirstError is the first non-fatal error encountered during Pass 1
-	// (typically an AI runner failure for a single cluster). The run
-	// proceeds despite this; callers may choose to surface it in their
-	// summary.
+	// FirstError is the first non-fatal error encountered during Pass 1 —
+	// typically an AI runner failure for a single cluster, or the failure
+	// to materialize the ephemeral worktree the pass's sessions run in,
+	// which skips the pass entirely. A failure to tear that worktree down
+	// again lands here only when the pass itself reported nothing: it says
+	// a temp directory outlived a pass that ran, so it must never displace
+	// the reason a cluster did not merge. The run proceeds despite any of
+	// them; callers may choose to surface it in their summary.
 	FirstError error
 }
 
@@ -103,6 +107,15 @@ type ConsolidateResult struct {
 //   - When opts.Consolidator returns errors for individual clusters they
 //     are aggregated and the first one is reported in the result; the
 //     remaining clusters still merge.
+//   - Pass 1's sessions run in a throwaway detached worktree of AnvilPath
+//     (warden.WithEphemeralWorktree), never in the anvil itself: Smith's
+//     pre-flight refuses a main checkout outright. Passes 2 and 3 spawn no
+//     session and read the anvil directly. A worktree that cannot be
+//     created skips Pass 1 and lands in FirstError rather than falling back
+//     to the anvil, which is the arrangement that failed every cluster. A
+//     worktree that cannot be REMOVED afterwards is the opposite case — the
+//     pass ran and its merges are kept — so it is logged and only reported
+//     as FirstError when no cluster error claimed the field first.
 func ConsolidateAnvil(ctx context.Context, opts ConsolidateOptions) (ConsolidateResult, error) {
 	rf, err := warden.LoadRules(opts.AnvilPath)
 	if err != nil {
@@ -122,13 +135,67 @@ func ConsolidateAnvil(ctx context.Context, opts ConsolidateOptions) (Consolidate
 			overlap = warden.DefaultOverlapThreshold
 		}
 		params := warden.DedupParams{Jaccard: opts.DedupThreshold, Overlap: overlap}
-		replaced, summary, errs = warden.ConsolidateWithParams(ctx, opts.AnvilPath, rf, params, opts.Consolidator)
+		// Pass 1 spawns an AI session per cluster, and a session refuses to
+		// run in a main checkout: smith's pre-flight rejects any working
+		// directory that is inside a git repository without being a linked
+		// worktree, so that the model's own tool calls can never write to
+		// the branch the anvil has checked out. AnvilPath is a main
+		// checkout by definition, so handing it over failed every cluster
+		// before a provider was spawned — which is why this pass had never
+		// merged anything on the `forge warden consolidate` path. The
+		// scheduled flush does not have the problem: flushAnvil already
+		// runs its passes inside the batch-branch worktree.
+		//
+		// One worktree for the whole pass rather than one per cluster: the
+		// distillation is stateless between clusters (each merge is decided
+		// from the prompt and returned as JSON, applied by this function to
+		// rf, which was loaded from — and is written back to — the anvil),
+		// so a checkout per cluster would be pure churn on a rules file the
+		// size of munin's.
+		runErr, cleanupErr := warden.WithEphemeralWorktree(ctx, opts.AnvilPath, func(wtPath string) error {
+			replaced, summary, errs = warden.ConsolidateWithParams(ctx, wtPath, rf, params, opts.Consolidator)
+			return nil
+		})
+		// The helper answers two different questions on two different
+		// returns, and they call for opposite handling. runErr means the
+		// checkout could not be created, so Pass 1 did not run at all.
+		// cleanupErr means only the throwaway checkout outlived the call —
+		// every merge the pass made is already in summary/replaced and will
+		// be persisted — so it must not evict a genuine cluster error from
+		// FirstError (the only Pass 1 diagnostic the CLI prints) or be
+		// logged as the reason nothing merged. The distinction is which
+		// return it arrived on and never the error's type: fn is free to
+		// return a *WorktreeCleanupError of its own.
+		if runErr != nil {
+			// No fallback to AnvilPath: that is the arrangement that
+			// produced a cluster error for every cluster and reported it
+			// as a completed pass. Passes 2 and 3 need no session and
+			// still run; the reason Pass 1 did not is reported like a
+			// cluster error, which is the field the CLI already prints.
+			runErr = fmt.Errorf("pass 1 worktree for %s: %w", opts.AnvilName, runErr)
+			log.Printf("[smelter] %v", runErr)
+			firstPassErr = runErr
+		}
+		if cleanupErr != nil {
+			cleanupErr = fmt.Errorf("pass 1 worktree cleanup for %s: %w", opts.AnvilName, cleanupErr)
+			if runErr == nil {
+				log.Printf("[smelter] %v (pass 1 itself completed)", cleanupErr)
+			} else {
+				log.Printf("[smelter] %v", cleanupErr)
+			}
+		}
 		for i, e := range errs {
-			if i == 0 {
+			if i == 0 && firstPassErr == nil {
 				firstPassErr = e
 				continue
 			}
 			log.Printf("[smelter] additional consolidation error for %s: %v", opts.AnvilName, e)
+		}
+		// Last claim on the field: a leaked checkout is worth surfacing when
+		// nothing else is, and worth nothing beside a cluster that failed to
+		// merge.
+		if firstPassErr == nil {
+			firstPassErr = cleanupErr
 		}
 		if len(summary) > 0 {
 			log.Printf("[smelter] consolidated %d cluster(s) for %s", len(summary), opts.AnvilName)
