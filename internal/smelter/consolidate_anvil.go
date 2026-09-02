@@ -286,12 +286,11 @@ func ConsolidateAnvil(ctx context.Context, opts ConsolidateOptions) (Consolidate
 	archivedEntries = append(archivedEntries,
 		applyFileCap(opts.AnvilName, rf, opts.MaxRulesInFile, now, capEmit)...)
 
-	backfilled := pathsBackfill(ctx, opts.AnvilPath, opts.AnvilName, rf)
-	if len(backfilled) > 0 {
-		log.Printf("[smelter] paths backfilled on %d rule(s) for %s", len(backfilled), opts.AnvilName)
+	backfill := pathsBackfill(ctx, opts.AnvilPath, opts.AnvilName, rf)
+	if summary := backfill.summary(opts.AnvilName); summary != "" {
+		log.Printf("[smelter] paths %s", summary)
 		if opts.EventLogger != nil {
-			opts.EventLogger("smelter_flushed",
-				fmt.Sprintf("Backfilled paths on %d rule(s) for %s", len(backfilled), opts.AnvilName))
+			opts.EventLogger("smelter_flushed", "Paths "+summary)
 		}
 	}
 
@@ -309,7 +308,8 @@ func ConsolidateAnvil(ctx context.Context, opts ConsolidateOptions) (Consolidate
 	passes := PassResults{
 		Consolidated:   summary,
 		Archived:       archivedEntries,
-		Backfilled:     backfilled,
+		Backfilled:     backfill.Filled,
+		Narrowed:       backfill.Narrowed,
 		Contradictions: contradictions,
 	}
 
