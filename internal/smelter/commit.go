@@ -205,6 +205,14 @@ func formatArchivedSection(archived []warden.ArchivedRule) string {
 	return strings.TrimRight(sb.String(), "\n")
 }
 
+// ArchivedByReason is archivedByReason over this result's own archive list,
+// exported for the surfaces outside this package that render it — `forge warden
+// consolidate`, which otherwise prints every eviction as a rule that "aged out
+// with no recent source activity".
+func (p PassResults) ArchivedByReason() (stale, overCap int) {
+	return archivedByReason(p.Archived)
+}
+
 // archivedByReason splits an archive list into the two reasons a pass in this
 // package can produce. PassResults.Archived is one list because the archive
 // store takes one write, but "aged out with no recent source activity" and
@@ -214,14 +222,6 @@ func formatArchivedSection(archived []warden.ArchivedRule) string {
 // evicted the day they were learned. A reason this function does not recognise
 // (a duplicate folded in by some future caller) counts as neither, so a new
 // reason cannot silently be reported as an old one.
-// ArchivedByReason is archivedByReason over this result's own archive list,
-// exported for the surfaces outside this package that render it — `forge warden
-// consolidate`, which otherwise prints every eviction as a rule that "aged out
-// with no recent source activity".
-func (p PassResults) ArchivedByReason() (stale, overCap int) {
-	return archivedByReason(p.Archived)
-}
-
 func archivedByReason(archived []warden.ArchivedRule) (stale, overCap int) {
 	for _, r := range archived {
 		switch r.ArchiveReason {
