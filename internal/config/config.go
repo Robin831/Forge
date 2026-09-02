@@ -1285,8 +1285,9 @@ func (w WardenSettings) ResolvedMaxRulesInFile() int {
 }
 
 // ResolvedMaxRulesPerReview returns the cap to pass to FilterRules.
-// Zero (unset) → 30 (default). Negative → 0 (no cap; capRules treats ≤0 as
-// unlimited). Positive → returned as-is.
+// Zero (unset) → 30 (default). Negative → 0 (no cap; warden's selectRules
+// treats ≤0 as unlimited and returns every candidate in ranked order).
+// Positive → returned as-is.
 func (w WardenSettings) ResolvedMaxRulesPerReview() int {
 	switch {
 	case w.MaxRulesPerReview == 0:

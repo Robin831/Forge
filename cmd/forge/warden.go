@@ -324,8 +324,16 @@ in the active rules file.`,
 		if n := len(result.Passes.Consolidated); n > 0 {
 			fmt.Printf("Consolidated:    %d cluster(s)\n", n)
 		}
-		if n := len(result.Passes.Archived); n > 0 {
-			fmt.Printf("Archived stale:  %d rule(s)\n", n)
+		// The archive list carries two reasons and they are printed as two
+		// lines: a rule evicted for losing a slot to the ceiling did not age
+		// out, and reporting it as stale is the one claim this summary must
+		// not make.
+		stale, overCap := result.Passes.ArchivedByReason()
+		if stale > 0 {
+			fmt.Printf("Archived stale:  %d rule(s)\n", stale)
+		}
+		if overCap > 0 {
+			fmt.Printf("Evicted:         %d rule(s) over the file ceiling\n", overCap)
 		}
 		if n := len(result.Passes.Backfilled); n > 0 {
 			fmt.Printf("Backfilled:      %d rule(s)\n", n)

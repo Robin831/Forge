@@ -85,16 +85,28 @@ func globNarrowness(glob string) float64 {
 	return 1 - 1/(1+w)
 }
 
-// ruleSpecificity scores how narrowly a rule's paths name the files this diff
-// touched. It is the narrowness of the rule's most specific MATCHING glob,
+// specificity is the one definition of how narrowly a rule's paths name a
+// location: the narrowness of the rule's most specific IN-SCOPE glob,
 // discounted by how many repo-wide globs the rule carries besides — a rule that
 // names `api/**/*.cs` and nothing else is a claim about the backend, while the
 // same glob beside three `**/*` entries is a rule that fires everywhere and
 // happens to mention the backend.
 //
+// inScope decides which globs are eligible to set the best score. Review-time
+// ranking passes the diff-matching test; a nil predicate means every glob is in
+// scope, which is the static form eviction reads when there is no diff to match
+// against. The discount is applied to every path either way — a shotgun rule is
+// a shotgun rule whether or not this diff touched what it names.
+//
+// It is parameterised rather than copied because EvictOverCap's contract is
+// that it values rules by the properties the review-time ranking reads: two
+// copies of this arithmetic would let a retuned discount leave eviction ranking
+// by the old rule, with no failing test and no symptom beyond the wrong rules
+// quietly disappearing.
+//
 // A rule with no paths at all scores 0: it is in scope everywhere, which is the
 // same statement a repo-wide glob makes.
-func ruleSpecificity(r Rule, changedFiles []string) float64 {
+func specificity(r Rule, inScope func(glob string) bool) float64 {
 	if len(r.Paths) == 0 {
 		return 0
 	}
@@ -106,7 +118,7 @@ func ruleSpecificity(r Rule, changedFiles []string) float64 {
 		if globWeight(p) == 0 {
 			broad++
 		}
-		if !globMatchesAny(p, changedFiles) {
+		if inScope != nil && !inScope(p) {
 			continue
 		}
 		if n := globNarrowness(p); n > best {
@@ -114,6 +126,12 @@ func ruleSpecificity(r Rule, changedFiles []string) float64 {
 		}
 	}
 	return best / float64(1+broad)
+}
+
+// ruleSpecificity is specificity restricted to the globs this diff's files
+// actually match.
+func ruleSpecificity(r Rule, changedFiles []string) float64 {
+	return specificity(r, func(glob string) bool { return globMatchesAny(glob, changedFiles) })
 }
 
 func globMatchesAny(pattern string, changedFiles []string) bool {
@@ -196,10 +214,14 @@ func recencyScores(scores []ruleScore) {
 	}
 }
 
-// scoreCandidates builds the ranking components for every candidate. patternHits
-// carries the per-rule word-hit counts already computed by the pattern filter,
-// keyed by candidate index, so the diff is scanned once per rule rather than
-// twice.
+// scoreCandidates builds the ranking components for every candidate. hits and
+// words are the per-rule pattern vocabulary counts already computed by the
+// pattern filter — how many of the rule's ≥4-char words the diff contains, and
+// how many it has — so the diff is scanned once per rule rather than twice.
+//
+// All three slices are indexed by candidate: hits[i] and words[i] describe
+// rules[i], and a caller that lets them fall out of alignment scores every rule
+// against another rule's pattern.
 func scoreCandidates(rules []Rule, changedFiles []string, hits, words []int) []ruleScore {
 	scores := make([]ruleScore, len(rules))
 	for i, r := range rules {
@@ -232,6 +254,21 @@ func ruleTieKey(r Rule) string {
 	}, "\x00")
 }
 
+// higherRanked is the one ordering both selections use — the review-time
+// checklist and the file-ceiling eviction — so a tie-break added here cannot
+// apply to one and leave the other ranking by the old rule. Score first, then
+// recency, then the content key, and never position: position is age order,
+// which is the truncation this ranking replaces.
+func higherRanked(a, b ruleScore) bool {
+	if a.total != b.total {
+		return a.total > b.total
+	}
+	if !a.added.Equal(b.added) {
+		return a.added.After(b.added)
+	}
+	return ruleTieKey(a.rule) < ruleTieKey(b.rule)
+}
+
 // selectRules ranks the candidates and returns the best max of them. The order
 // is total and deterministic — score, then recency, then a content key — so the
 // emitted set does not depend on the order the candidates arrived in, which is
@@ -240,16 +277,7 @@ func ruleTieKey(r Rule) string {
 // max <= 0 means no cap; the candidates are still returned in ranked order, so
 // the highest-value rules head the checklist either way.
 func selectRules(scores []ruleScore, max int) []Rule {
-	sort.SliceStable(scores, func(i, j int) bool {
-		a, b := scores[i], scores[j]
-		if a.total != b.total {
-			return a.total > b.total
-		}
-		if !a.added.Equal(b.added) {
-			return a.added.After(b.added)
-		}
-		return ruleTieKey(a.rule) < ruleTieKey(b.rule)
-	})
+	sort.SliceStable(scores, func(i, j int) bool { return higherRanked(scores[i], scores[j]) })
 	if max > 0 && len(scores) > max {
 		scores = scores[:max]
 	}

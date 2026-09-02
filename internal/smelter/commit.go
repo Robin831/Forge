@@ -21,10 +21,17 @@ type PassResults struct {
 	// Consolidated holds the per-cluster merge outcomes from Pass 1.
 	Consolidated []warden.MergeResult
 
-	// Archived holds the stale rules moved to the archive store by Pass 2
-	// (ArchiveReason="stale"). Pass 1 duplicates archived with
-	// ArchiveReason="duplicate" are *not* included here — they are surfaced
-	// through Consolidated.
+	// Archived holds the rules moved to the archive store by the two passes
+	// that remove rules from the active file: the staleness sweep
+	// (ArchiveReason="stale") and the file-ceiling eviction
+	// (ArchiveReason="over-cap"). One list because the archive store takes one
+	// write — but the two are different claims about a rule, so every
+	// aggregate rendered from it splits them again through archivedByReason
+	// (ArchivedByReason for callers outside this package). Reading
+	// len(Archived) as a stale count is the bug that helper exists to prevent.
+	//
+	// Pass 1 duplicates archived with ArchiveReason="duplicate" are *not*
+	// included here — they are surfaced through Consolidated.
 	Archived []warden.ArchivedRule
 
 	// Backfilled lists the IDs of rules whose Paths field was populated by
@@ -207,6 +214,14 @@ func formatArchivedSection(archived []warden.ArchivedRule) string {
 // evicted the day they were learned. A reason this function does not recognise
 // (a duplicate folded in by some future caller) counts as neither, so a new
 // reason cannot silently be reported as an old one.
+// ArchivedByReason is archivedByReason over this result's own archive list,
+// exported for the surfaces outside this package that render it — `forge warden
+// consolidate`, which otherwise prints every eviction as a rule that "aged out
+// with no recent source activity".
+func (p PassResults) ArchivedByReason() (stale, overCap int) {
+	return archivedByReason(p.Archived)
+}
+
 func archivedByReason(archived []warden.ArchivedRule) (stale, overCap int) {
 	for _, r := range archived {
 		switch r.ArchiveReason {

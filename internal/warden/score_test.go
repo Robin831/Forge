@@ -271,3 +271,53 @@ func TestUseAllRulesStillRanks(t *testing.T) {
 	require.Len(t, got2, 1)
 	assert.Equal(t, "narrow-relevant", got2[0].ID)
 }
+
+// The file ceiling values a rule by the same specificity the review-time
+// ranking reads, with no diff to match against. That contract is only true
+// while the two are one function: where every one of a rule's globs matches the
+// changed files, the scope predicate excludes nothing and the two forms are
+// defined to agree. A copy of the arithmetic in filecap.go would pass every
+// existing test while quietly drifting from a retuned discount here.
+func TestStaticSpecificityMatchesRuleSpecificity(t *testing.T) {
+	changed := []string{"internal/warden/filter.go", "internal/warden/score.go"}
+	rules := []Rule{
+		{Paths: []string{"internal/warden/*.go"}},
+		{Paths: []string{"internal/warden/*.go", "**/*"}},
+		{Paths: []string{"**/*", "**/*", "**/*"}},
+		{Paths: []string{"internal/**/*.go", "**/*.go"}},
+		{Paths: nil},
+	}
+	for _, r := range rules {
+		assert.InDelta(t, ruleSpecificity(r, changed), staticSpecificity(r), 1e-12,
+			"paths=%v: eviction and review-time specificity must agree when every glob matches", r.Paths)
+	}
+
+	// The predicate is the only difference: a glob this diff does not touch is
+	// still a claim about the rule's own scope, so the static form reads it and
+	// the review-time form does not.
+	unmatched := Rule{Paths: []string{"docs/*.md"}}
+	assert.Equal(t, 0.0, ruleSpecificity(unmatched, changed))
+	assert.Greater(t, staticSpecificity(unmatched), 0.0)
+}
+
+// Both selections order by the same comparator, so a tie-break added to one
+// cannot leave the other ranking by the old rule.
+func TestHigherRankedOrdersScoreThenRecencyThenContent(t *testing.T) {
+	day := func(s string) time.Time {
+		ts, err := time.Parse(staleAddedLayout, s)
+		require.NoError(t, err)
+		return ts
+	}
+	high := ruleScore{rule: Rule{ID: "a"}, total: 2, added: day("2026-01-01")}
+	low := ruleScore{rule: Rule{ID: "b"}, total: 1, added: day("2026-06-01")}
+	assert.True(t, higherRanked(high, low), "score leads")
+
+	newer := ruleScore{rule: Rule{ID: "a"}, total: 1, added: day("2026-06-01")}
+	older := ruleScore{rule: Rule{ID: "b"}, total: 1, added: day("2026-01-01")}
+	assert.True(t, higherRanked(newer, older), "recency breaks a score tie")
+
+	first := ruleScore{rule: Rule{ID: "a"}, total: 1, added: day("2026-01-01")}
+	second := ruleScore{rule: Rule{ID: "b"}, total: 1, added: day("2026-01-01")}
+	assert.True(t, higherRanked(first, second), "the content key breaks the rest")
+	assert.False(t, higherRanked(second, first))
+}

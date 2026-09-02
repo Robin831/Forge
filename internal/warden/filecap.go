@@ -33,9 +33,12 @@ func EvictOverCap(rules []Rule, max int, now time.Time) (active []Rule, archived
 		return rules, nil
 	}
 
-	// The ranking reuses ruleScore rather than a struct of its own so the two
-	// components eviction reads are the same fields, computed the same way, as
-	// the ones the review-time selection reads. Positions are carried
+	// The ranking reuses ruleScore, staticSpecificity (the review-time
+	// specificity under a nil scope predicate) and higherRanked (the ordering
+	// selectRules uses) rather than arithmetic of its own, so the two
+	// components eviction reads are the same fields, computed the same way and
+	// ordered by the same comparator, as the ones the review-time selection
+	// reads. Positions are carried
 	// alongside because the kept rules are returned in FILE order: the file is
 	// a record, and rewriting its order on every flush would churn the diff of
 	// a file nothing reads sequentially.
@@ -52,14 +55,7 @@ func EvictOverCap(rules []Rule, max int, now time.Time) (active []Rule, archived
 		scored[i].total = specificityWeight*scored[i].specificity + recencyWeight*scored[i].recency
 	}
 	sort.SliceStable(order, func(i, j int) bool {
-		a, b := scored[order[i]], scored[order[j]]
-		if a.total != b.total {
-			return a.total > b.total
-		}
-		if !a.added.Equal(b.added) {
-			return a.added.After(b.added)
-		}
-		return ruleTieKey(a.rule) < ruleTieKey(b.rule)
+		return higherRanked(scored[order[i]], scored[order[j]])
 	})
 
 	keep := make(map[int]bool, max)
@@ -82,25 +78,12 @@ func EvictOverCap(rules []Rule, max int, now time.Time) (active []Rule, archived
 	return active, archived
 }
 
-// staticSpecificity is ruleSpecificity with no diff to match against: the
-// narrowness of the rule's most specific glob, discounted by how many repo-wide
-// globs it carries beside it. Eviction has no diff, so it reads what the rule
-// claims about its own scope rather than what it matched.
+// staticSpecificity is the review-time specificity with no diff to match
+// against — the same function under a nil scope predicate, so every glob is
+// eligible. Eviction has no diff, so it reads what the rule claims about its
+// own scope rather than what it matched; where every glob does match, the two
+// agree by construction, which is what
+// TestStaticSpecificityMatchesRuleSpecificity pins.
 func staticSpecificity(r Rule) float64 {
-	if len(r.Paths) == 0 {
-		return 0
-	}
-	var (
-		best  float64
-		broad int
-	)
-	for _, p := range r.Paths {
-		if globWeight(p) == 0 {
-			broad++
-		}
-		if n := globNarrowness(p); n > best {
-			best = n
-		}
-	}
-	return best / float64(1+broad)
+	return specificity(r, nil)
 }

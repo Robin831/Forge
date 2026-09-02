@@ -1466,6 +1466,7 @@ func TestLoad_WardenSettings_Default(t *testing.T) {
 	assert.Equal(t, 180, cfg.Settings.Warden.ResolvedArchiveAfterDays())
 	assert.InDelta(t, 0.6, cfg.Settings.Warden.ResolvedDedupThreshold(), 1e-9)
 	assert.InDelta(t, 0.55, cfg.Settings.Warden.ResolvedOverlapThreshold(), 1e-9)
+	assert.Equal(t, DefaultWardenMaxRulesInFile, cfg.Settings.Warden.ResolvedMaxRulesInFile())
 }
 
 func TestLoad_WardenSettings_Custom(t *testing.T) {
@@ -1482,6 +1483,7 @@ settings:
     archive_after_days: 90
     dedup_threshold: 0.8
     overlap_threshold: 0.7
+    max_rules_in_file: 250
 `
 	require.NoError(t, os.WriteFile(cfgPath, []byte(content), 0o644))
 
@@ -1495,6 +1497,7 @@ settings:
 	assert.Equal(t, 90, cfg.Settings.Warden.ResolvedArchiveAfterDays())
 	assert.InDelta(t, 0.8, cfg.Settings.Warden.ResolvedDedupThreshold(), 1e-9)
 	assert.InDelta(t, 0.7, cfg.Settings.Warden.ResolvedOverlapThreshold(), 1e-9)
+	assert.Equal(t, 250, cfg.Settings.Warden.ResolvedMaxRulesInFile())
 }
 
 // TestWardenSettings_OverlapThresholdCanBeDisabled: a negative value is
@@ -1528,6 +1531,39 @@ func TestLoad_WardenDedupThresholdDisablesOnNegative(t *testing.T) {
 	zeroCfg, err := Load(zeroPath)
 	require.NoError(t, err)
 	assert.InDelta(t, DefaultWardenDedupThreshold, zeroCfg.Settings.Warden.ResolvedDedupThreshold(), 1e-9)
+}
+
+// The file ceiling reads its off switch the way dedup_threshold does, and for
+// the same reason: zero is the field's zero value, so an unset setting and an
+// explicit `max_rules_in_file: 0` are one number by the time either reaches
+// applyFileCap. A negative value is the only way an operator switches eviction
+// off, and it has to survive Defaults(), the viper default and mapstructure
+// decoding to get there — a default that overrode an explicit value would turn
+// that off switch into eviction at 1000 rules with nothing failing.
+func TestLoad_WardenMaxRulesInFileDisablesOnNegative(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "forge.yaml")
+	require.NoError(t, os.WriteFile(cfgPath, []byte("settings:\n  warden:\n    max_rules_in_file: -1\n"), 0o644))
+
+	cfg, err := Load(cfgPath)
+	require.NoError(t, err)
+	assert.Equal(t, -1, cfg.Settings.Warden.ResolvedMaxRulesInFile(),
+		"a negative max_rules_in_file must reach the smelter as the off switch")
+
+	// Unset resolves to the shipped ceiling, not to "off".
+	unsetPath := filepath.Join(dir, "unset.yaml")
+	require.NoError(t, os.WriteFile(unsetPath, []byte("settings:\n  max_total_smiths: 2\n"), 0o644))
+	unsetCfg, err := Load(unsetPath)
+	require.NoError(t, err)
+	assert.Equal(t, DefaultWardenMaxRulesInFile, unsetCfg.Settings.Warden.ResolvedMaxRulesInFile())
+
+	// An explicit zero is indistinguishable from unset and so resolves to the
+	// default too.
+	zeroPath := filepath.Join(dir, "zero.yaml")
+	require.NoError(t, os.WriteFile(zeroPath, []byte("settings:\n  warden:\n    max_rules_in_file: 0\n"), 0o644))
+	zeroCfg, err := Load(zeroPath)
+	require.NoError(t, err)
+	assert.Equal(t, DefaultWardenMaxRulesInFile, zeroCfg.Settings.Warden.ResolvedMaxRulesInFile())
 }
 
 func TestTemperStepConfig_VerifyNoConflictMarkersRoundTrip(t *testing.T) {
