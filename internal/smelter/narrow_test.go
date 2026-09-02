@@ -97,7 +97,11 @@ func TestMatchesAnySource(t *testing.T) {
 func TestMayNarrow(t *testing.T) {
 	assert.True(t, mayNarrow([]string{"**/*.go", "**/*.md"}))
 	assert.True(t, mayNarrow([]string{"**/*"}), "everything is narrower than **/*")
-	assert.False(t, mayNarrow([]string{"**/*.go"}))
+	assert.True(t, mayNarrow([]string{"**/*.go"}),
+		"a bare language glob names no location, so an area-scoped one is narrower")
+	assert.False(t, mayNarrow([]string{"internal/**/*.go"}),
+		"a glob that already names an area covers nothing but itself")
+	assert.False(t, mayNarrow([]string{"changelog.d/**"}))
 	assert.False(t, mayNarrow(nil))
 }
 
@@ -124,7 +128,7 @@ func TestRunPathsBackfill_NarrowsAnOverBroadRule(t *testing.T) {
 	result := s.runPathsBackfill(context.Background(), t.TempDir(), "anvil-a", rf)
 	assert.Empty(t, result.Filled, "the rule had paths, so nothing was filled")
 	assert.Equal(t, []string{"go-1"}, result.Narrowed)
-	assert.Equal(t, []string{"**/*.go"}, rf.Rules[0].Paths)
+	assert.Equal(t, []string{"internal/**/*.go"}, rf.Rules[0].Paths)
 }
 
 // Narrowing is a fixed point: the globs are a function of the rule's text and
@@ -148,11 +152,11 @@ func TestRunPathsBackfill_NarrowingIsIdempotent(t *testing.T) {
 
 	first := s.runPathsBackfill(context.Background(), t.TempDir(), "anvil-a", rf)
 	require.Equal(t, []string{"go-1"}, first.Narrowed)
-	require.Equal(t, []string{"**/*.go"}, rf.Rules[0].Paths)
+	require.Equal(t, []string{"internal/**/*.go"}, rf.Rules[0].Paths)
 
 	second := s.runPathsBackfill(context.Background(), t.TempDir(), "anvil-a", rf)
 	assert.Empty(t, second.Narrowed, "the second run derives the set already on file")
-	assert.Equal(t, []string{"**/*.go"}, rf.Rules[0].Paths)
+	assert.Equal(t, []string{"internal/**/*.go"}, rf.Rules[0].Paths)
 }
 
 // A candidate that names files the rule was never gated on is not a narrowing,

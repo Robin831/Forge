@@ -60,7 +60,7 @@ func TestExtractPRNumbers(t *testing.T) {
 	}
 }
 
-func TestGlobsFromExtensions(t *testing.T) {
+func TestExtGlobs(t *testing.T) {
 	t.Run("derives unique globs sorted", func(t *testing.T) {
 		files := []string{
 			"cmd/forge/main.go",
@@ -69,7 +69,7 @@ func TestGlobsFromExtensions(t *testing.T) {
 			"web/src/components/Foo.ts",
 			"docs/README.md",
 		}
-		globs := globsFromExtensions(files)
+		globs := warden.ExtGlobs(files)
 		// Deduped and sorted.
 		assert.Equal(t, []string{"**/*.go", "**/*.md", "**/*.ts"}, globs)
 	})
@@ -80,22 +80,22 @@ func TestGlobsFromExtensions(t *testing.T) {
 		// but we intentionally accept any leading-dot extension. The bare files
 		// (Makefile, LICENSE) have no extension and should be skipped. The
 		// dotfile contributes a glob.
-		globs := globsFromExtensions(files)
+		globs := warden.ExtGlobs(files)
 		assert.Equal(t, []string{"**/*.gitignore"}, globs)
 	})
 
 	t.Run("empty input returns nil", func(t *testing.T) {
-		assert.Nil(t, globsFromExtensions(nil))
-		assert.Nil(t, globsFromExtensions([]string{}))
+		assert.Nil(t, warden.ExtGlobs(nil))
+		assert.Nil(t, warden.ExtGlobs([]string{}))
 	})
 
 	t.Run("all files extensionless returns nil", func(t *testing.T) {
-		assert.Nil(t, globsFromExtensions([]string{"Makefile", "Dockerfile"}))
+		assert.Nil(t, warden.ExtGlobs([]string{"Makefile", "Dockerfile"}))
 	})
 
 	t.Run("dot-only filename is skipped", func(t *testing.T) {
 		// filepath.Ext("foo.") returns ".", which is a degenerate extension.
-		assert.Nil(t, globsFromExtensions([]string{"foo."}))
+		assert.Nil(t, warden.ExtGlobs([]string{"foo."}))
 	})
 }
 
@@ -108,10 +108,10 @@ func withStubFetcher(t *testing.T, fn func(context.Context, string, int) ([]stri
 	t.Cleanup(func() { fetchChangedFiles = prev })
 }
 
-// A rule whose Paths hold one glob that is not `**/*` admits no narrower set —
-// a candidate has to be covered by what is on file, and the only thing that one
-// glob covers is itself. So the pass declines it from the globs alone, before
-// spending the PR lookup that could not have changed anything.
+// A rule whose single glob already names a location admits no narrower set — a
+// candidate has to be covered by what is on file, and an area-scoped glob covers
+// only itself. So the pass declines it from the globs alone, before spending the
+// PR lookup that could not have changed anything.
 func TestRunPathsBackfill_SkipsRuleWhoseSinglePathCannotNarrow(t *testing.T) {
 	db := openTestDB(t)
 	s := New(db, 0, map[string]string{})
@@ -119,18 +119,39 @@ func TestRunPathsBackfill_SkipsRuleWhoseSinglePathCannotNarrow(t *testing.T) {
 	var calls int
 	withStubFetcher(t, func(_ context.Context, _ string, _ int) ([]string, error) {
 		calls++
-		return []string{"a.go"}, nil
+		return []string{"internal/a.go"}, nil
 	})
 
 	rf := &warden.RulesFile{Rules: []warden.Rule{
-		{ID: "r1", Source: warden.SourceList{"copilot:PR#1"}, Paths: []string{"**/*.go"}},
+		{ID: "r1", Source: warden.SourceList{"copilot:PR#1"}, Paths: []string{"internal/**/*.go"}},
 	}}
 
 	result := s.runPathsBackfill(context.Background(), t.TempDir(), "anvil-a", rf)
 	assert.Empty(t, result.Filled)
 	assert.Empty(t, result.Narrowed)
 	assert.Equal(t, 0, calls, "a rule that cannot be narrowed must cost no PR lookup")
-	assert.Equal(t, []string{"**/*.go"}, rf.Rules[0].Paths, "Paths must not be mutated")
+	assert.Equal(t, []string{"internal/**/*.go"}, rf.Rules[0].Paths, "Paths must not be mutated")
+}
+
+// The mirror image, and the population this scoping exists for: a rule gated on
+// one BARE language glob names no location at all, so it does admit a narrower
+// set and is worth the lookup. Held to the old "a single glob covers only
+// itself" rule it would have been skipped before any fetch and never placed.
+func TestRunPathsBackfill_NarrowsARuleGatedOnOneBareLanguageGlob(t *testing.T) {
+	db := openTestDB(t)
+	s := New(db, 0, map[string]string{})
+
+	withStubFetcher(t, func(_ context.Context, _ string, _ int) ([]string, error) {
+		return []string{"api/Controllers/Orders.cs", "api/Services/Pricing.cs"}, nil
+	})
+
+	rf := &warden.RulesFile{Rules: []warden.Rule{
+		{ID: "r1", Source: warden.SourceList{"copilot:PR#1"}, Paths: []string{"**/*.cs"}},
+	}}
+
+	result := s.runPathsBackfill(context.Background(), t.TempDir(), "anvil-a", rf)
+	assert.Equal(t, []string{"r1"}, result.Narrowed)
+	assert.Equal(t, []string{"api/**/*.cs"}, rf.Rules[0].Paths)
 }
 
 func TestRunPathsBackfill_PopulatesPathsFromPR(t *testing.T) {
@@ -152,7 +173,8 @@ func TestRunPathsBackfill_PopulatesPathsFromPR(t *testing.T) {
 
 	updated := s.runPathsBackfill(context.Background(), t.TempDir(), "anvil-a", rf).Filled
 	assert.Equal(t, []string{"r1"}, updated)
-	assert.Equal(t, []string{"**/*.go", "**/*.ts"}, rf.Rules[0].Paths)
+	assert.Equal(t, []string{"cmd/**/*.go", "internal/**/*.go", "web/**/*.ts"}, rf.Rules[0].Paths,
+		"one glob per (area, extension) pair the PR actually touched")
 }
 
 func TestRunPathsBackfill_UnionsAcrossMultiplePRs(t *testing.T) {
@@ -162,9 +184,9 @@ func TestRunPathsBackfill_UnionsAcrossMultiplePRs(t *testing.T) {
 	withStubFetcher(t, func(_ context.Context, _ string, prNum int) ([]string, error) {
 		switch prNum {
 		case 1:
-			return []string{"a.go", "b.go"}, nil
+			return []string{"internal/a.go", "internal/b.go"}, nil
 		case 2:
-			return []string{"c.ts", "d.ts"}, nil
+			return []string{"web/c.ts", "web/d.ts"}, nil
 		}
 		t.Fatalf("unexpected PR #%d", prNum)
 		return nil, nil
@@ -176,7 +198,7 @@ func TestRunPathsBackfill_UnionsAcrossMultiplePRs(t *testing.T) {
 
 	updated := s.runPathsBackfill(context.Background(), t.TempDir(), "anvil-a", rf).Filled
 	assert.Equal(t, []string{"r1"}, updated)
-	assert.Equal(t, []string{"**/*.go", "**/*.ts"}, rf.Rules[0].Paths)
+	assert.Equal(t, []string{"internal/**/*.go", "web/**/*.ts"}, rf.Rules[0].Paths)
 }
 
 func TestRunPathsBackfill_SkipsNonCopilotSources(t *testing.T) {
@@ -226,7 +248,7 @@ func TestRunPathsBackfill_PartialFetchSucceedsWhenOnePRWorks(t *testing.T) {
 		if prNum == 1 {
 			return nil, errors.New("gh exploded")
 		}
-		return []string{"foo.go"}, nil
+		return []string{"internal/foo.go"}, nil
 	})
 
 	rf := &warden.RulesFile{Rules: []warden.Rule{
@@ -235,7 +257,7 @@ func TestRunPathsBackfill_PartialFetchSucceedsWhenOnePRWorks(t *testing.T) {
 
 	updated := s.runPathsBackfill(context.Background(), t.TempDir(), "anvil-a", rf).Filled
 	assert.Equal(t, []string{"r1"}, updated)
-	assert.Equal(t, []string{"**/*.go"}, rf.Rules[0].Paths)
+	assert.Equal(t, []string{"internal/**/*.go"}, rf.Rules[0].Paths)
 }
 
 func TestRunPathsBackfill_NoExtensionsLeavesRuleUnchanged(t *testing.T) {
@@ -262,7 +284,7 @@ func TestRunPathsBackfill_Idempotency_RepeatedRunIsNoop(t *testing.T) {
 	var calls int
 	withStubFetcher(t, func(_ context.Context, _ string, _ int) ([]string, error) {
 		calls++
-		return []string{"foo.go"}, nil
+		return []string{"internal/foo.go"}, nil
 	})
 
 	rf := &warden.RulesFile{Rules: []warden.Rule{
@@ -272,7 +294,7 @@ func TestRunPathsBackfill_Idempotency_RepeatedRunIsNoop(t *testing.T) {
 	// First run: populates Paths.
 	first := s.runPathsBackfill(context.Background(), t.TempDir(), "anvil-a", rf).Filled
 	require.Equal(t, []string{"r1"}, first)
-	require.Equal(t, []string{"**/*.go"}, rf.Rules[0].Paths)
+	require.Equal(t, []string{"internal/**/*.go"}, rf.Rules[0].Paths)
 
 	// Second run: the rule now carries a single glob that nothing narrower can
 	// be covered by, so the pass declines it before the lookup and the stub
@@ -329,7 +351,7 @@ func TestRunPathsBackfill_MultiTokenSourceString(t *testing.T) {
 
 	updated := s.runPathsBackfill(context.Background(), t.TempDir(), "anvil-a", rf).Filled
 	assert.Equal(t, []string{"r1"}, updated)
-	assert.Equal(t, []string{"**/*.go", "**/*.ts"}, rf.Rules[0].Paths)
+	assert.Equal(t, []string{"cmd/**/*.go", "web/**/*.ts"}, rf.Rules[0].Paths)
 }
 
 func TestRunPathsBackfill_CachesResultsAcrossRules(t *testing.T) {
@@ -340,7 +362,7 @@ func TestRunPathsBackfill_CachesResultsAcrossRules(t *testing.T) {
 	withStubFetcher(t, func(_ context.Context, _ string, prNum int) ([]string, error) {
 		calls++
 		assert.Equal(t, 99, prNum)
-		return []string{"a.go"}, nil
+		return []string{"internal/a.go"}, nil
 	})
 
 	// Two rules both reference the same PR — the fetcher must only be called once.
@@ -352,8 +374,8 @@ func TestRunPathsBackfill_CachesResultsAcrossRules(t *testing.T) {
 	updated := s.runPathsBackfill(context.Background(), t.TempDir(), "anvil-a", rf).Filled
 	assert.Equal(t, []string{"r1", "r2"}, updated)
 	assert.Equal(t, 1, calls, "fetch result must be cached and reused across rules")
-	assert.Equal(t, []string{"**/*.go"}, rf.Rules[0].Paths)
-	assert.Equal(t, []string{"**/*.go"}, rf.Rules[1].Paths)
+	assert.Equal(t, []string{"internal/**/*.go"}, rf.Rules[0].Paths)
+	assert.Equal(t, []string{"internal/**/*.go"}, rf.Rules[1].Paths)
 }
 
 func TestRunPathsBackfill_DedupesSameSourceRepeated(t *testing.T) {
@@ -364,7 +386,7 @@ func TestRunPathsBackfill_DedupesSameSourceRepeated(t *testing.T) {
 	withStubFetcher(t, func(_ context.Context, _ string, prNum int) ([]string, error) {
 		calls++
 		assert.Equal(t, 7, prNum)
-		return []string{"x.go"}, nil
+		return []string{"internal/x.go"}, nil
 	})
 
 	// Two entries for the same PR should only trigger one fetch.
@@ -375,7 +397,7 @@ func TestRunPathsBackfill_DedupesSameSourceRepeated(t *testing.T) {
 	updated := s.runPathsBackfill(context.Background(), t.TempDir(), "anvil-a", rf).Filled
 	assert.Equal(t, []string{"r1"}, updated)
 	assert.Equal(t, 1, calls, "duplicate PR references must be deduplicated")
-	assert.Equal(t, []string{"**/*.go"}, rf.Rules[0].Paths)
+	assert.Equal(t, []string{"internal/**/*.go"}, rf.Rules[0].Paths)
 }
 
 // TestSafeGlobListNeutralizesPRDerivedBytes pins the log-site treatment of a
@@ -385,7 +407,7 @@ func TestRunPathsBackfill_DedupesSameSourceRepeated(t *testing.T) {
 // a newline (there is no later dot in the payload to cut it short) — which, printed raw, is a line of the operator's daemon.log that
 // Forge did not write.
 func TestSafeGlobListNeutralizesPRDerivedBytes(t *testing.T) {
-	forged := globsFromExtensions([]string{"a/b.go\n[smelter] paths backfill: rule x on y kept everything"})
+	forged := warden.ExtGlobs([]string{"a/b.go\n[smelter] paths backfill: rule x on y kept everything"})
 	require.Len(t, forged, 1)
 	require.Contains(t, forged[0], "\n", "the raw glob carries the injected newline")
 
@@ -478,7 +500,7 @@ func TestRunPathsBackfill_NarrowsWhenEverySourcePRIsRead(t *testing.T) {
 
 	result := s.runPathsBackfill(context.Background(), t.TempDir(), "anvil-a", rf)
 	assert.Equal(t, []string{"r1"}, result.Narrowed)
-	assert.Equal(t, []string{"**/*.go"}, rf.Rules[0].Paths)
+	assert.Equal(t, []string{"internal/**/*.go"}, rf.Rules[0].Paths)
 }
 
 // Filling an empty Paths field keeps the best-effort behaviour it has always
@@ -505,7 +527,7 @@ func TestRunPathsBackfill_PartialFetchStillFillsEmptyPaths(t *testing.T) {
 	result := s.runPathsBackfill(context.Background(), t.TempDir(), "anvil-a", rf)
 	assert.Equal(t, []string{"r1"}, result.Filled)
 	assert.Empty(t, result.Narrowed)
-	assert.Equal(t, []string{"**/*.go"}, rf.Rules[0].Paths)
+	assert.Equal(t, []string{"internal/**/*.go"}, rf.Rules[0].Paths)
 }
 
 // A fetch failure is cached with the PR, so a second rule citing the same

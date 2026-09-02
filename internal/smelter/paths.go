@@ -9,9 +9,7 @@ import (
 	"io"
 	"log"
 	"os/exec"
-	"path/filepath"
 	"regexp"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -116,48 +114,6 @@ func fetchChangedFilesViaGH(ctx context.Context, repoDir string, prNum int) ([]s
 	return files, nil
 }
 
-// extGlobPrefix is the shape globsFromExtensions emits: one doublestar glob
-// per file extension. It is a constant rather than a literal inside the loop
-// below because rulelang.go classifies an inferred glob by testing for it —
-// a glob carrying it names an extension and can be compared against the
-// PR-derived set, anything else (a directory glob like changelog.d/**) cannot.
-//
-// What the constant buys is that the emitted shape and the shape the
-// classifier tests for are one string: the intersection rulelang.go takes is
-// only meaningful while an inferred **/*.go and a PR-derived **/*.go are
-// byte-identical, and written twice they could drift apart. It does not make
-// the classification itself safe from a change of shape — the globs actually
-// tested against it are the hand-written literals in languageSignals, so
-// changing this constant would silently move every one of them into the
-// directory branch without failing to compile. TestGlobsForRule is what
-// catches that, not the compiler.
-const extGlobPrefix = "**/*."
-
-// globsFromExtensions returns the unique doublestar globs derived from the
-// extensions of files. Files without an extension are skipped. The result is
-// sorted so the field encoded into warden-rules.yaml is deterministic across
-// runs — this keeps the smelter PR's diff stable when nothing material has
-// changed.
-func globsFromExtensions(files []string) []string {
-	seen := make(map[string]struct{})
-	for _, f := range files {
-		ext := filepath.Ext(f)
-		if ext == "" || ext == "." {
-			continue
-		}
-		seen[extGlobPrefix+strings.TrimPrefix(ext, ".")] = struct{}{}
-	}
-	if len(seen) == 0 {
-		return nil
-	}
-	globs := make([]string, 0, len(seen))
-	for g := range seen {
-		globs = append(globs, g)
-	}
-	sort.Strings(globs)
-	return globs
-}
-
 // prFetchResult caches the outcome of a single gh API call for one PR.
 type prFetchResult struct {
 	files []string
@@ -201,8 +157,10 @@ func (r backfillResult) summary(anvilName string) string {
 
 // runPathsBackfill iterates the active rules in rf and, for each rule whose
 // Source carries one or more copilot:PR#N tokens, fetches the changed files for
-// those PRs and derives the globs globsForRule reads out of those files and the
-// rule's own text. What it then does with them depends on the rule:
+// those PRs and derives the globs warden.DeriveRulePaths reads out of those
+// files and the rule's own text — the same function the learner placed the rule
+// with, so this pass is a re-derivation of one answer rather than a second
+// opinion on it. What it then does with them depends on the rule:
 //
 //   - Paths empty → populated with the derived globs, the pass's original
 //     behaviour, unchanged.
@@ -225,7 +183,12 @@ func (r backfillResult) summary(anvilName string) string {
 // Idempotency survives the change because the derivation is a fixed point: the
 // globs are a function of the rule's text and its PRs' files, neither of which
 // a rewrite moves, so a second run derives the set already on file and
-// isStrictlyNarrower declines an equal set.
+// isStrictlyNarrower declines an equal set. It holds for a rule this pass has
+// never seen for the same reason once warden.DeriveRulePaths is what placed it:
+// the learner's evidence (a comment's anchors) is a subset of this pass's (the
+// whole PR), so the candidate carries areas the rule's own set does not cover
+// and the narrowing is declined rather than re-placing a rule learned minutes
+// earlier.
 //
 // What it does NOT survive is the fetch: a rule whose paths are already narrow
 // still has to be re-derived to find that out, so the pass now costs one gh
@@ -234,7 +197,7 @@ func (r backfillResult) summary(anvilName string) string {
 // 2295-rule one — a couple of minutes per anvil, once per smelter_interval).
 // That is accepted rather than optimised away with a marker on the rule: a
 // persisted "already narrowed" flag is a claim about a derivation that changes
-// whenever languageSignals does, and a rule wrongly carrying it would never be
+// whenever warden's language signals do, and a rule wrongly carrying it would never be
 // looked at again. mayNarrow is the part that can be decided without the
 // network, and it is decided there.
 //
@@ -297,8 +260,8 @@ func pathsBackfill(ctx context.Context, wtPath, anvilName string, rf *warden.Rul
 		// Derived from the rule's own text as well as the PR's files: the PR
 		// says which extensions were touched, the rule says which language it
 		// is about, and only the intersection is a path filter that narrows
-		// anything. See globsForRule.
-		globs := globsForRule(*rule, files)
+		// anything. See warden.DeriveRulePaths.
+		globs := warden.DeriveRulePaths(*rule, files)
 		if len(globs) == 0 {
 			continue
 		}
@@ -405,7 +368,7 @@ func sourcePRFiles(ctx context.Context, wtPath, anvilName string, rule *warden.R
 // being reviewed. Both lists are PR-derived, so both go out through
 // safeGlobList.
 func logPathsDerived(action string, rule *warden.Rule, anvilName string, before, after []string) {
-	langs := languageOutcomes(ruleText(*rule), after)
+	langs := warden.LanguageOutcomes(warden.RuleText(*rule), after)
 	if len(langs) == 0 {
 		langs = []string{"none"}
 	}

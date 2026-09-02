@@ -3,6 +3,7 @@ package smelter
 import (
 	"strings"
 
+	"github.com/Robin831/Forge/internal/warden"
 	"github.com/bmatcuk/doublestar/v4"
 )
 
@@ -65,14 +66,28 @@ func anyRepoWide(globs []string) bool {
 // cannot prove counts as not covered, which leaves the rule as it is.
 //
 // The pairs it has to decide are narrow by construction: Pass 3 derives
-// candidates from globsFromExtensions (`**/*.ext`) and the languageSignals
-// table (`**/*.go`, `**/*.ts`, `**/*.tsx`, `changelog.d/**`), so equality
-// carries almost all of them and `**/*` is the one relation left worth naming.
+// candidates from warden.DerivePaths (`api/**/*.cs`, the root-level `*.cs`, and
+// the bare `**/*.ext` where there was no file to place) and warden's language
+// signal table (`**/*.go`, `**/*.ts`, `**/*.tsx`, `changelog.d/**`), so equality
+// carries most of them and two relations are left worth naming.
+//
+// The second is area scoping, and it is a containment this CAN prove rather
+// than a guess: every path matching `api/**/*.cs` matches `**/*.cs`, and every
+// path matching the root-level `*.cs` does too, because warden.BaseGlob strips
+// exactly the part of the glob that restricts WHERE — so a glob and its base
+// differ only in a location the base does not constrain. Without it a scoped
+// candidate is comparable to nothing on file and Pass 3 declines the whole
+// point of the scoping: the rules carrying `**/*.cs` beside `**/*.md` would
+// stay exactly as they are.
 func globCovers(broad, narrow string) bool {
-	if strings.TrimSpace(broad) == strings.TrimSpace(narrow) {
+	b, n := strings.TrimSpace(broad), strings.TrimSpace(narrow)
+	if b == n {
 		return true
 	}
-	return matchesEverything(broad)
+	if matchesEverything(b) {
+		return true
+	}
+	return b == warden.BaseGlob(n)
 }
 
 func coveredBy(glob string, set []string) bool {
@@ -142,16 +157,20 @@ func matchesAnySource(paths, sourceFiles []string) bool {
 // mayNarrow reports whether a rule's existing Paths could possibly be narrowed,
 // deciding it from the globs alone so that a rule that cannot benefit costs no
 // PR lookup. Narrowing needs some current glob left uncovered by the candidate,
-// and a candidate must be covered by current — so a single glob that is not
-// `**/*` admits only itself, and an equal set is not narrower.
+// and a candidate must be covered by current — so a set of two or more always
+// admits a subset, and a single glob admits something narrower exactly when it
+// is repo-wide.
+//
+// The single-glob test is anyRepoWide and not matchesEverything because a bare
+// `**/*.cs` now covers a strictly narrower glob: the area-scoped `api/**/*.cs`.
+// Held to matchesEverything, every rule gated on one bare language glob — which
+// is most of the population this scoping exists for — would be skipped before
+// any lookup and never placed. The cost is that such a rule is now re-derived
+// every flush, one gh call per distinct source PR, which is the same bargain
+// runPathsBackfill already documents.
 func mayNarrow(current []string) bool {
 	if len(current) >= 2 {
 		return true
 	}
-	for _, g := range current {
-		if matchesEverything(g) {
-			return true
-		}
-	}
-	return false
+	return anyRepoWide(current)
 }

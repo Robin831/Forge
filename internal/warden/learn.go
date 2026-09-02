@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	diffpkg "github.com/Robin831/Forge/internal/diff"
 	"github.com/Robin831/Forge/internal/executil"
 	"github.com/Robin831/Forge/internal/provider"
 	"github.com/Robin831/Forge/internal/smith"
@@ -274,8 +275,50 @@ Respond with ONLY a JSON object (no markdown fences, no explanation) in this exa
 	}
 	rule.Source = SourceList(sources)
 	rule.Added = time.Now().Format("2006-01-02")
+	// Derived, never taken from the model's answer: the output contract asks
+	// for no paths, so anything that arrived in that field is invented, while
+	// the files the comments sit on are observed. A rule written with the
+	// repo-wide `**/*.cs` a model would guess is one that fires on every C#
+	// diff in the repository, which is the shape this derivation exists to
+	// remove.
+	//
+	// DeriveRulePaths and not the bare DerivePaths, because the smelter's Pass
+	// 3 re-derives this same field from this same rule later and the two must
+	// be the same function: scoping the evidence and stopping here, while Pass
+	// 3 also intersected the extensions with the rule's own language, made the
+	// backfill rewrite rules the learner had placed minutes earlier — the one
+	// property a shared derivation is for.
+	rule.Paths = DeriveRulePaths(rule, commentPaths(comments))
 
 	return &rule, nil
+}
+
+// commentPaths returns the repository-relative files the review comments a rule
+// was distilled from were anchored to, deduplicated in order of first
+// appearance.
+//
+// This is the rule's own evidence, and it is a tighter set than the source PR's
+// whole diff: a comment sits on the line that provoked it, so a rule distilled
+// from comments on `api/Foo.cs` is about the backend whatever else that pull
+// request happened to touch. A PR-level comment carries no path at all and
+// contributes nothing, which is why the result can legitimately be empty — the
+// rule is then written with no Paths and the smelter's Pass 3 derives them from
+// the PR later, exactly as it does for every rule learned before this existed.
+func commentPaths(comments []PRComment) []string {
+	seen := make(map[string]struct{}, len(comments))
+	var out []string
+	for _, c := range comments {
+		p := strings.TrimSpace(c.Path)
+		if p == "" {
+			continue
+		}
+		if _, dup := seen[p]; dup {
+			continue
+		}
+		seen[p] = struct{}{}
+		out = append(out, p)
+	}
+	return out
 }
 
 // lintRulePattern matches ESLint-style rule IDs such as:
@@ -481,6 +524,11 @@ Respond with ONLY a JSON object (no markdown fences, no explanation) using this 
 	rule.ID = ruleID
 	rule.Source = SourceList{source}
 	rule.Added = time.Now().Format("2006-01-02")
+	// The fix diff is this rule's evidence: the files a CI lint failure was
+	// actually fixed in are the files the rule is about. Same derivation the
+	// Copilot path and the smelter's backfill use, so a rule learned here is
+	// gated the way a rule learned anywhere else is.
+	rule.Paths = DeriveRulePaths(rule, diffpkg.ChangedFiles(fixDiff))
 	return &rule, nil
 }
 
