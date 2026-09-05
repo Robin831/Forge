@@ -1,0 +1,2 @@
+category: Fixed
+- **Consolidated dependency bead is scoped to its anvil** - depcheck found the bead by title prefix across the whole beads database, so two anvils sharing one pool (Munin and Explorer do, deliberately) merged their package lists into one bead and overwrote each other every cycle. Ownership is now recorded per anvil in the Forge state database and the lookup is by bead id, so a retitled bead is still found and no anvil can absorb another's packages.

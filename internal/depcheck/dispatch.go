@@ -8,10 +8,11 @@ import (
 	"github.com/Robin831/Forge/internal/state"
 )
 
-// FindOrCreateBeadID locates any existing open consolidated dependency-update bead
-// for the given anvil (prefix-based match), running a fresh scan and creating the
-// bead if none exists yet. An existing bead from a previous day is reused rather
-// than creating a new one each time the date changes.
+// FindOrCreateBeadID locates the given anvil's open consolidated dependency-update
+// bead, running a fresh scan and creating the bead if it has none yet. An existing
+// bead from a previous day is reused rather than creating a new one each time the
+// date changes, and a bead belonging to another anvil in the same pool is never
+// returned.
 //
 // Returns:
 //   - (beadID, nil)  when a bead was found or created successfully
@@ -19,9 +20,10 @@ import (
 //   - ("", err)      when the scan or bead-creation step failed
 func FindOrCreateBeadID(ctx context.Context, db *state.DB, anvilName, anvilPath string) (string, error) {
 	title := consolidatedBeadTitle(time.Now())
+	s := newScanner(db)
 
-	// Fast path: any open "Package updates" bead already exists for this anvil.
-	existing, err := findConsolidatedBead(ctx, anvilPath)
+	// Fast path: this anvil already has an open consolidated bead.
+	existing, err := findConsolidatedBead(ctx, s.owners, anvilPath, anvilName)
 	if err != nil {
 		return "", fmt.Errorf("querying existing bead: %w", err)
 	}
@@ -30,7 +32,6 @@ func FindOrCreateBeadID(ctx context.Context, db *state.DB, anvilName, anvilPath 
 	}
 
 	// No bead yet — run the dependency scan to find outdated packages.
-	s := newScanner(db)
 	results := s.ScanAnvilDeps(ctx, anvilName, anvilPath)
 
 	var firstScanErr error
@@ -64,7 +65,7 @@ func FindOrCreateBeadID(ctx context.Context, db *state.DB, anvilName, anvilPath 
 	s.createConsolidatedBead(ctx, results, anvilPath, anvilName, title)
 
 	// Re-query to retrieve the newly created bead's ID.
-	created, err := findConsolidatedBead(ctx, anvilPath)
+	created, err := findConsolidatedBead(ctx, s.owners, anvilPath, anvilName)
 	if err != nil {
 		return "", fmt.Errorf("querying created bead: %w", err)
 	}

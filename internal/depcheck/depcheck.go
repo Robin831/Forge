@@ -74,6 +74,7 @@ type failureStore interface {
 type Scanner struct {
 	events      eventSink
 	failures    failureStore
+	owners      beadOwnerStore
 	interval    time.Duration
 	timeout     time.Duration
 	anvilPaths  map[string]string // anvil name -> path
@@ -103,8 +104,8 @@ func New(db *state.DB, interval, timeout time.Duration, anvilPaths map[string]st
 	return s
 }
 
-// newScanner builds a scanner that can scan: its two database-backed
-// capabilities, and the timeout floor every ecosystem scan runs under. It is
+// newScanner builds a scanner that can scan: its database-backed capabilities,
+// and the timeout floor every ecosystem scan runs under. It is
 // separate from New because the on-demand dispatch path builds a scanner
 // without the periodic loop's interval and its configured timeout — but NOT
 // without a usable timeout, which is why the floor is applied here rather than
@@ -120,8 +121,21 @@ func newScanner(db *state.DB) *Scanner {
 	if db != nil {
 		s.events = db
 		s.failures = db
+		s.owners = db
 	}
 	return s
+}
+
+// rememberConsolidatedBead pins the bead as this anvil's, tolerating a scanner
+// built without a database. Without the pin the next scan falls back to the
+// description header, which is a weaker claim on the same bead.
+func (s *Scanner) rememberConsolidatedBead(anvil, beadID string) {
+	if s.owners == nil || beadID == "" {
+		return
+	}
+	if err := s.owners.SetConsolidatedBead(anvil, beadID); err != nil {
+		log.Printf("[depcheck] %s: could not record consolidated bead %s: %v", anvil, beadID, err)
+	}
 }
 
 // emit records an event, tolerating a scanner built without a database (which
@@ -394,17 +408,17 @@ func parseSemver(v string) (major, minor, patch string) {
 }
 
 // findOrCreateConsolidatedBead is the main bead management entry point.
-// It searches for any existing open bead whose title starts with the consolidated
-// title prefix (prefix-based match, not date-specific). An open bead from a
-// previous day is reused rather than creating a new duplicate.
-// If found, it appends any new packages to the description.
-// If not found, it creates a new bead. The bead is intentionally left untagged;
-// the user can apply the anvil's configured auto-dispatch label or workflow when they are
-// ready to dispatch the update. (In auto_dispatch: all mode the bead is eligible immediately.)
+// It looks up this anvil's own open consolidated bead — not date-specific, so an
+// open bead from a previous day is reused rather than duplicated, and not shared
+// with another anvil in the same pool. If found, it appends any new packages to
+// the description. If not found, it creates a new bead. The bead is intentionally
+// left untagged; the user can apply the anvil's configured auto-dispatch label or
+// workflow when they are ready to dispatch the update. (In auto_dispatch: all mode
+// the bead is eligible immediately.)
 func (s *Scanner) findOrCreateConsolidatedBead(ctx context.Context, allResults []*CheckResult, anvilPath, anvilName string) {
 	title := consolidatedBeadTitle(time.Now())
 
-	existing, err := findConsolidatedBead(ctx, anvilPath)
+	existing, err := findConsolidatedBead(ctx, s.owners, anvilPath, anvilName)
 	if err != nil {
 		log.Printf("[depcheck] %s: could not query existing beads — skipping bead creation: %v", anvilName, err)
 		s.emit(state.EventDepcheckFailed,
@@ -465,6 +479,7 @@ func (s *Scanner) createConsolidatedBead(ctx context.Context, allResults []*Chec
 	}
 	_ = executil.DecodeJSON(output, &created)
 	if created.ID != "" {
+		s.rememberConsolidatedBead(anvilName, created.ID)
 		log.Printf("[depcheck] %s: created consolidated bead %s", anvilName, created.ID)
 		s.emit(state.EventDepcheckBeadCreated,
 			fmt.Sprintf("Created consolidated dep bead for %s: %s", anvilName, created.ID), "", anvilName)
