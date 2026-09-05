@@ -340,22 +340,33 @@ func (s *Scanner) CreateBeads(ctx context.Context, results []ScanResult) (int, e
 				return created, ctx.Err()
 			}
 
-			title := fmt.Sprintf("Security: %s — %s", vuln.ID, truncate(vuln.Summary, 60))
+			title := fmt.Sprintf("%s%s — %s", vulnBeadTitlePrefix, vuln.ID, truncate(vuln.Summary, 60))
 			description := buildBeadDescription(vuln, result.Anvil)
 			priority := severityToPriority(vuln.Severity)
 
-			// Check if a bead already exists for this vuln (search by OSV ID)
-			if exists, _ := s.beadExists(ctx, result.Path, vuln.ID); exists {
-				s.logger.Debug("bead already exists for vuln", "vuln", vuln.ID, "anvil", result.Anvil)
+			lookup := s.vulnBeadLookupFor(ctx, result.Anvil, result.Path, vuln.ID)
+			existing, err := lookup.resolve()
+			if err != nil {
+				s.logger.Error("could not look up this anvil's bead for the vulnerability; skipping bead creation",
+					"vuln", vuln.ID, "anvil", result.Anvil, "error", err)
+				continue
+			}
+			if existing != nil {
+				s.logger.Debug("bead already exists for this anvil's vuln",
+					"vuln", vuln.ID, "anvil", result.Anvil, "bead", existing.ID)
 				continue
 			}
 
-			if err := s.createBead(ctx, result.Path, title, description, priority); err != nil {
+			beadID, err := s.createBead(ctx, result.Path, title, description, priority)
+			if err != nil {
 				s.logger.Error("failed to create bead for vuln", "vuln", vuln.ID, "anvil", result.Anvil, "error", err)
 				continue
 			}
+			// Pin it before the next scan can look for it by text.
+			lookup.Remember(beadID)
 
-			s.logger.Info("created bead for vulnerability", "vuln", vuln.ID, "anvil", result.Anvil, "priority", priority)
+			s.logger.Info("created bead for vulnerability",
+				"vuln", vuln.ID, "anvil", result.Anvil, "priority", priority, "bead", beadID)
 			s.db.LogEvent(state.EventVulnBeadCreated,
 				fmt.Sprintf("created bead for %s in %s (P%d)", vuln.ID, result.Anvil, priority),
 				"", result.Anvil)
@@ -366,28 +377,9 @@ func (s *Scanner) CreateBeads(ctx context.Context, results []ScanResult) (int, e
 	return created, nil
 }
 
-// beadExists checks whether an *open* bead already references this vulnerability ID.
-// It restricts the search to open beads so that a resolved vulnerability whose bead
-// was closed does not suppress a new bead if the vulnerability reappears.
-func (s *Scanner) beadExists(ctx context.Context, anvilPath, vulnID string) (bool, error) {
-	cmd, cancel := executil.BdCommand(ctx, "list", "--status=open", "--json")
-	defer cancel()
-	cmd.Dir = anvilPath
-
-	out, err := cmd.Output()
-	if err != nil {
-		if ctx.Err() != nil {
-			return false, ctx.Err()
-		}
-		// If we can't query, allow creation rather than silently suppressing beads.
-		return false, nil
-	}
-
-	return strings.Contains(string(out), vulnID), nil
-}
-
-// createBead calls `bd create` to make a new issue.
-func (s *Scanner) createBead(ctx context.Context, anvilPath, title, description string, priority int) error {
+// createBead calls `bd create` to make a new issue and returns its id, or "" if
+// bd's response did not carry one.
+func (s *Scanner) createBead(ctx context.Context, anvilPath, title, description string, priority int) (string, error) {
 	cmd, cancel := executil.BdCommand(ctx, "create",
 		"--title", title,
 		"--description", description,
@@ -400,9 +392,9 @@ func (s *Scanner) createBead(ctx context.Context, anvilPath, title, description 
 
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("bd create: %w: %s", err, string(out))
+		return "", fmt.Errorf("bd create: %w: %s", err, string(out))
 	}
-	return nil
+	return executil.BdCreatedBeadID(out), nil
 }
 
 // buildBeadDescription formats a vulnerability into a detailed bead description.

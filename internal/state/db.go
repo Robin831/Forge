@@ -736,6 +736,15 @@ CREATE TABLE IF NOT EXISTS depcheck_consolidated_beads (
     bead_id    TEXT NOT NULL DEFAULT '',
     updated_at TEXT NOT NULL DEFAULT ''
 );
+
+CREATE TABLE IF NOT EXISTS anvil_beads (
+    anvil      TEXT NOT NULL,
+    kind       TEXT NOT NULL,
+    lookup_key TEXT NOT NULL,
+    bead_id    TEXT NOT NULL DEFAULT '',
+    updated_at TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (anvil, kind, lookup_key)
+);
 `
 
 // dbTimeLayout is the canonical, fixed-width layout used for timestamps

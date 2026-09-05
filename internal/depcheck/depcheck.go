@@ -471,18 +471,11 @@ func (s *Scanner) createConsolidatedBead(ctx context.Context, allResults []*Chec
 		return
 	}
 
-	// Extract the bead ID from the JSON output for logging.
-	// bd create --json may emit trailing diagnostics (e.g. orphan detection
-	// warnings) after the JSON object; use DecodeJSON to tolerate the noise.
-	var created struct {
-		ID string `json:"id"`
-	}
-	_ = executil.DecodeJSON(output, &created)
-	if created.ID != "" {
-		s.rememberConsolidatedBead(anvilName, created.ID)
-		log.Printf("[depcheck] %s: created consolidated bead %s", anvilName, created.ID)
+	if createdID := executil.BdCreatedBeadID(output); createdID != "" {
+		s.rememberConsolidatedBead(anvilName, createdID)
+		log.Printf("[depcheck] %s: created consolidated bead %s", anvilName, createdID)
 		s.emit(state.EventDepcheckBeadCreated,
-			fmt.Sprintf("Created consolidated dep bead for %s: %s", anvilName, created.ID), "", anvilName)
+			fmt.Sprintf("Created consolidated dep bead for %s: %s", anvilName, createdID), "", anvilName)
 	} else {
 		log.Printf("[depcheck] %s: created consolidated dep bead %q: %s", anvilName, title, strings.TrimSpace(string(output)))
 		s.emit(state.EventDepcheckBeadCreated,

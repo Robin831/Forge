@@ -502,27 +502,13 @@ func findConsolidatedBead(ctx context.Context, owners beadOwnerStore, anvilPath,
 // forgetting a pin on a timeout is how an anvil ends up with a second bead.
 func showBead(ctx context.Context, anvilPath, beadID string) (*bdBead, error) {
 	out := fetchBeadShow(ctx, anvilPath, beadID)
-	if b := decodeBead(out); b != nil {
+	if b := executil.DecodeOneBead(out, func(b bdBead) string { return b.ID }); b != nil {
 		return b, nil
 	}
-	if beadNotFound(out) {
+	if executil.BdReportsNoSuchBead(out) {
 		return nil, nil
 	}
 	return nil, fmt.Errorf("bd show %s in %s returned no bead", beadID, anvilPath)
-}
-
-// beadNotFound reports whether bd's output is its "no such bead" answer rather
-// than a failure to reach the database. bd exits non-zero for both, so the
-// message is the only thing that separates them.
-func beadNotFound(out []byte) bool {
-	var resp struct {
-		Error string `json:"error"`
-	}
-	if executil.DecodeJSON(out, &resp) != nil {
-		return false
-	}
-	msg := strings.ToLower(resp.Error)
-	return strings.Contains(msg, "no issue found") || strings.Contains(msg, "no issues found")
 }
 
 // fetchConsolidatedCandidates lists the open beads that could be this anvil's
@@ -567,21 +553,4 @@ func consolidatedCandidatesQuery(anvilName string) string {
 func likePattern(s string) string {
 	r := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`, `'`, `''`)
 	return r.Replace(s)
-}
-
-// decodeBead reads one bead from bd output, which is an array on some bd
-// versions and a bare object on others.
-func decodeBead(out []byte) *bdBead {
-	if len(out) == 0 {
-		return nil
-	}
-	var beads []bdBead
-	if err := executil.DecodeJSON(out, &beads); err == nil && len(beads) > 0 {
-		return &beads[0]
-	}
-	var single bdBead
-	if err := executil.DecodeJSON(out, &single); err == nil && single.ID != "" {
-		return &single
-	}
-	return nil
 }

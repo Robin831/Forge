@@ -474,16 +474,6 @@ func TestResolve_ForgetsABeadBdReportsAsAbsent(t *testing.T) {
 	assert.Empty(t, owners.pins)
 }
 
-// TestBeadNotFound separates bd's "no such bead" answer from every other way a
-// bd show can come back empty, which is what makes the pin safe to drop.
-func TestBeadNotFound(t *testing.T) {
-	assert.True(t, beadNotFound([]byte(`{"error":"no issues found matching the provided IDs","schema_version":1}`)))
-	assert.True(t, beadNotFound([]byte(`Error fetching x: no issue found matching "x"`+"\n"+`{"error":"no issue found matching \"x\""}`)))
-	assert.False(t, beadNotFound([]byte(`{"error":"dial tcp 127.0.0.1:3306: connection refused"}`)))
-	assert.False(t, beadNotFound(nil))
-	assert.False(t, beadNotFound([]byte("bd: command not found")))
-}
-
 // TestSelectConsolidatedBead_MostRecentOfThisAnvilsWins: duplicates within one
 // anvil still collapse to the most recently updated, and the other anvil's newer
 // bead does not win the tie-break.

@@ -2,10 +2,8 @@ package questgiver
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log/slog"
-	"strings"
 	"sync"
 	"time"
 	"unicode/utf8"
@@ -199,75 +197,37 @@ func (m *Monitor) runQuest(ctx context.Context, anvilName, anvilPath string, que
 	m.logEvent(state.EventAdventurerFailed,
 		fmt.Sprintf("%s: step %d — %s", quest.Name, result.FailedStep, result.ErrorMessage), anvilName)
 
-	if isDuplicate(ctx, anvilPath, quest.Name) {
-		m.logger.Info("duplicate bead exists, skipping creation", "quest", quest.Name, "anvil", anvilName)
+	lookup := m.questBeadLookupFor(ctx, anvilName, anvilPath, quest.Name)
+	existing, err := lookup.resolve()
+	if err != nil {
+		// The answer is unknown, so do not create: a scheduled scan that files a
+		// bead whenever it cannot check would file one every cycle.
+		m.logger.Error("could not look up this anvil's bead for the quest; skipping bead creation",
+			"quest", quest.Name, "anvil", anvilName, "error", err)
+		return
+	}
+	if existing != nil {
+		m.logger.Info("bead already exists for this anvil's quest, skipping creation",
+			"quest", quest.Name, "anvil", anvilName, "bead", existing.ID)
 		return
 	}
 
-	m.createBead(ctx, anvilName, anvilPath, quest, result)
-}
-
-// bdBead is a minimal struct for parsing bd list --json output.
-type bdBead struct {
-	Title  string `json:"title"`
-	Status string `json:"status"`
-}
-
-// isDuplicate checks if an open or in_progress bead already exists for this
-// quest. If bd list fails, it returns true to prevent creating duplicate beads
-// when deduplication state is unknown.
-func isDuplicate(ctx context.Context, anvilPath, questName string) bool {
-	prefix := "E2E failure: " + questName
-
-	for _, status := range []string{"open", "in_progress"} {
-		cmd, cancel := executil.BdCommand(ctx,
-			"list", "--status="+status, "--limit", "0", "--json")
-		cmd.Dir = anvilPath
-		out, err := cmd.Output()
-		cancel()
-
-		if err != nil {
-			slog.Error("bd list failed during quest deduplication; treating as duplicate and skipping bead creation",
-				"anvil_path", anvilPath,
-				"quest_name", questName,
-				"status", status,
-				"error", err)
-			return true
-		}
-
-		var beads []bdBead
-		if err := json.Unmarshal(out, &beads); err != nil {
-			if strings.Contains(string(out), prefix) {
-				return true
-			}
-			continue
-		}
-		for _, b := range beads {
-			if strings.Contains(b.Title, prefix) {
-				return true
-			}
-		}
-	}
-
-	return false
+	m.createBead(ctx, anvilName, anvilPath, quest, result, lookup)
 }
 
 // createBead creates a bug bead for a failed quest.
-func (m *Monitor) createBead(ctx context.Context, anvilName, anvilPath string, quest *Quest, result *QuestResult) {
+func (m *Monitor) createBead(ctx context.Context, anvilName, anvilPath string, quest *Quest, result *QuestResult, lookup questBeadLookup) {
 	stepAction := ""
 	if result.FailedStep >= 0 && result.FailedStep < len(quest.Steps) {
 		stepAction = quest.Steps[result.FailedStep].Action
 	}
 
-	title := fmt.Sprintf("E2E failure: %s — step %d (%s)", quest.Name, result.FailedStep, result.ErrorMessage)
+	title := fmt.Sprintf("%s%s — step %d (%s)", questBeadTitlePrefix, quest.Name, result.FailedStep, result.ErrorMessage)
 	if len(title) > 200 {
 		title = truncateUTF8(title, 197) + "..."
 	}
 
-	description := fmt.Sprintf(
-		"Quest: %s\nFailed step: %d (action: %s)\nError: %s\nQuest file: %s\nReproduce: forge quest run %s",
-		quest.Name, result.FailedStep, stepAction, result.ErrorMessage, quest.FilePath, quest.Name,
-	)
+	description := questBeadDescription(anvilName, quest, result, stepAction)
 
 	cmd, cancel := executil.BdCommand(ctx,
 		"create", "--title", title, "--description", description,
@@ -282,7 +242,16 @@ func (m *Monitor) createBead(ctx context.Context, anvilName, anvilPath string, q
 		return
 	}
 
-	m.logger.Info("created bead for quest failure", "quest", quest.Name, "anvil", anvilName)
+	// Pin the new bead to this anvil now. Without a pin the next run falls back
+	// to the description scan, which finds it too; with one, a bead a human has
+	// retitled or reworded is still this anvil's bead for this quest.
+	if created := executil.BdCreatedBeadID(out); created != "" {
+		lookup.Remember(created)
+		m.logger.Info("created bead for quest failure",
+			"quest", quest.Name, "anvil", anvilName, "bead", created)
+	} else {
+		m.logger.Info("created bead for quest failure", "quest", quest.Name, "anvil", anvilName)
+	}
 	if m.db != nil {
 		if err := m.db.LogEvent(state.EventTestBeadCreated,
 			fmt.Sprintf("E2E failure: %s", quest.Name), "", anvilName); err != nil {
