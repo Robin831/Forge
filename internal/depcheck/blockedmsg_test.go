@@ -21,7 +21,7 @@ const dirtyTreeEvidence = "error: Your local changes to the following files woul
 // "fatal: ..." and said neither which anvil had stopped being scanned nor what
 // to do about it. The evidence is still there — last, under its own label.
 func TestBlockedMessageLeadsWithTheAnvilNotWithGit(t *testing.T) {
-	msg := blockedMessage("heimdall", "/srv/anvils/heimdall", nil, "fatal: You are not currently on a branch.")
+	msg := blockedMessage("heimdall", "/srv/anvils/heimdall", nil, "fatal: You are not currently on a branch.", "")
 
 	assert.True(t, strings.HasPrefix(msg, "Anvil heimdall"), "the message opens with the anvil, got: %s", msg)
 	assert.Contains(t, msg, "/srv/anvils/heimdall")
@@ -33,7 +33,7 @@ func TestBlockedMessageLeadsWithTheAnvilNotWithGit(t *testing.T) {
 // TestBlockedMessageOmitsAnEmptyGitOutput: the label is a promise that evidence
 // follows it, so a failure that produced no text must not render an empty one.
 func TestBlockedMessageOmitsAnEmptyGitOutput(t *testing.T) {
-	msg := blockedMessage("heimdall", "/srv/anvils/heimdall", nil, "")
+	msg := blockedMessage("heimdall", "/srv/anvils/heimdall", nil, "", "")
 
 	assert.NotContains(t, msg, "git output:")
 	assert.Contains(t, msg, "To resolve:")
@@ -45,7 +45,7 @@ func TestBlockedMessageOmitsAnEmptyGitOutput(t *testing.T) {
 // says nothing about which is which.
 func TestBlockedMessageAnnotatesTheKnownPaths(t *testing.T) {
 	paths := []string{".beads/.gitignore", ".beads/config.yaml", "internal/foo.go"}
-	msg := blockedMessage("heimdall", "/srv/anvils/heimdall", paths, dirtyTreeEvidence)
+	msg := blockedMessage("heimdall", "/srv/anvils/heimdall", paths, dirtyTreeEvidence, "")
 
 	assert.Contains(t, msg, "Blocking paths (3 paths)")
 	assert.Contains(t, msg, ".beads/config.yaml (pod-local sync.remote override")
@@ -61,7 +61,7 @@ func TestBlockedMessageAnnotatesTheKnownPaths(t *testing.T) {
 // anvil's beads connection. With nothing else modified there is no cleanup to
 // propose and the message must say so instead of inventing one.
 func TestBlockedMessageWithOnlyExpectedPathsProposesNoCleanup(t *testing.T) {
-	msg := blockedMessage("heimdall", "/srv/anvils/heimdall", []string{".beads/config.yaml", ".beads/.gitignore"}, dirtyTreeEvidence)
+	msg := blockedMessage("heimdall", "/srv/anvils/heimdall", []string{".beads/config.yaml", ".beads/.gitignore"}, dirtyTreeEvidence, "")
 
 	assert.Contains(t, msg, "nothing unexpected is modified")
 	assert.NotContains(t, msg, "stash push")
@@ -75,7 +75,7 @@ func TestBlockedMessageCapsThePathList(t *testing.T) {
 	for i := 0; i < maxBlockingPathsListed+7; i++ {
 		paths = append(paths, fmt.Sprintf("pkg/file%02d.go", i))
 	}
-	msg := blockedMessage("heimdall", "/srv/anvils/heimdall", paths, dirtyTreeEvidence)
+	msg := blockedMessage("heimdall", "/srv/anvils/heimdall", paths, dirtyTreeEvidence, "")
 
 	assert.Contains(t, msg, fmt.Sprintf("Blocking paths (%d paths)", len(paths)))
 	assert.Contains(t, msg, "and 7 more")
@@ -103,7 +103,7 @@ func TestBlockedMessageCommandCoversTheWholeSetAtTheCap(t *testing.T) {
 	for i := 0; i < maxCommandPathsListed; i++ {
 		paths = append(paths, fmt.Sprintf("pkg/file%02d.go", i))
 	}
-	msg := blockedMessage("heimdall", "/srv/anvils/heimdall", paths, dirtyTreeEvidence)
+	msg := blockedMessage("heimdall", "/srv/anvils/heimdall", paths, dirtyTreeEvidence, "")
 
 	assert.Contains(t, msg, "To resolve: set the unexpected changes aside (recoverable) with "+
 		"`git -C /srv/anvils/heimdall stash push -u -- pkg/file00.go pkg/file01.go pkg/file02.go pkg/file03.go pkg/file04.go`.")
@@ -123,7 +123,7 @@ func TestBlockedMessageKeepClauseFollowsTheRenderedList(t *testing.T) {
 	// Sorts last, so it lands past the cap and is never rendered.
 	paths = append(paths, "zz/.beads/config.yaml")
 
-	msg := blockedMessage("heimdall", "/srv/anvils/heimdall", paths, dirtyTreeEvidence)
+	msg := blockedMessage("heimdall", "/srv/anvils/heimdall", paths, dirtyTreeEvidence, "")
 
 	assert.NotContains(t, msg, "zz/.beads/config.yaml", "the annotated path is past the list cap")
 	assert.NotContains(t, msg, "annotated as expected",
@@ -135,7 +135,7 @@ func TestBlockedMessageKeepClauseFollowsTheRenderedList(t *testing.T) {
 // stripping — the same surfaces, and so the same treatment, as git's own words.
 func TestBlockedMessageSanitisesPaths(t *testing.T) {
 	msg := blockedMessage("heimdall", "/srv/anvils/heimdall",
-		[]string{"pkg/\x1b[31mred\x1b[0m.go\nfatal: forged line"}, dirtyTreeEvidence)
+		[]string{"pkg/\x1b[31mred\x1b[0m.go\nfatal: forged line"}, dirtyTreeEvidence, "")
 
 	assert.NotContains(t, msg, "\x1b")
 	assert.NotContains(t, msg, "\n")
@@ -151,12 +151,12 @@ func TestBlockedMessageSanitisesPaths(t *testing.T) {
 func TestBlockedMessageOnlyEnumeratesWhenTheTreeIsTheBlocker(t *testing.T) {
 	paths := []string{".beads/config.yaml"}
 
-	detached := blockedMessage("heimdall", "/srv/anvils/heimdall", paths, "fatal: You are not currently on a branch.")
+	detached := blockedMessage("heimdall", "/srv/anvils/heimdall", paths, "fatal: You are not currently on a branch.", "")
 	assert.NotContains(t, detached, "Blocking paths")
 	assert.NotContains(t, detached, ".beads/config.yaml")
 	assert.Contains(t, detached, "--set-upstream-to=origin/<branch>")
 
-	dirty := blockedMessage("heimdall", "/srv/anvils/heimdall", paths, dirtyTreeEvidence)
+	dirty := blockedMessage("heimdall", "/srv/anvils/heimdall", paths, dirtyTreeEvidence, "")
 	assert.Contains(t, dirty, "Blocking paths")
 }
 
@@ -189,7 +189,7 @@ func TestBlockedMessageRemediationPerCause(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			msg := blockedMessage("heimdall", "/srv/anvils/heimdall", nil, tc.evidence)
+			msg := blockedMessage("heimdall", "/srv/anvils/heimdall", nil, tc.evidence, "")
 			for _, want := range tc.wants {
 				assert.Contains(t, msg, want)
 			}
@@ -200,7 +200,7 @@ func TestBlockedMessageRemediationPerCause(t *testing.T) {
 // TestBlockedMessageWithoutACheckout: the path is optional at the call site, so
 // the command must degrade to a template rather than render `git -C  status`.
 func TestBlockedMessageWithoutACheckout(t *testing.T) {
-	msg := blockedMessage("heimdall", "", nil, "fatal: You are not currently on a branch.")
+	msg := blockedMessage("heimdall", "", nil, "fatal: You are not currently on a branch.", "")
 
 	assert.NotContains(t, msg, "Checkout:")
 	assert.Contains(t, msg, "git -C <checkout> checkout <branch>")
@@ -384,7 +384,7 @@ func TestEnumerationDoesNotChangeSuppression(t *testing.T) {
 // nothing unexpected when a non-empty set was inspected and every member of it
 // was annotated.
 func TestDirtyTreeRemediationWithNoEnumeratedPaths(t *testing.T) {
-	msg := blockedMessage("heimdall", "/srv/anvils/heimdall", nil, dirtyTreeEvidence)
+	msg := blockedMessage("heimdall", "/srv/anvils/heimdall", nil, dirtyTreeEvidence, "")
 
 	assert.NotContains(t, msg, "nothing unexpected is modified")
 	assert.Contains(t, msg, "To resolve: Forge could not list what is modified here")
@@ -398,7 +398,7 @@ func TestDirtyTreeRemediationWithNoEnumeratedPaths(t *testing.T) {
 // the quoting is load-bearing.
 func TestBlockedMessageQuotesPathsForTheShell(t *testing.T) {
 	paths := []string{"a b.go", "a'b.go", "x;rm -rf ~"}
-	msg := blockedMessage("heimdall", "/srv/anvils/heimdall", paths, dirtyTreeEvidence)
+	msg := blockedMessage("heimdall", "/srv/anvils/heimdall", paths, dirtyTreeEvidence, "")
 
 	assert.Contains(t, msg, `stash push -u -- 'a b.go' 'a'\''b.go' 'x;rm -rf ~'`+"`")
 	// Each is one shell word, so nothing after the first is read as a second
@@ -412,7 +412,7 @@ func TestBlockedMessageQuotesPathsForTheShell(t *testing.T) {
 // operator read, so no command may carry it.
 func TestBlockedMessageDropsTheCommandForAnOverLongPath(t *testing.T) {
 	long := "pkg/" + strings.Repeat("d", maxBlockingPathLen) + "/main.go"
-	msg := blockedMessage("heimdall", "/srv/anvils/heimdall", []string{long}, dirtyTreeEvidence)
+	msg := blockedMessage("heimdall", "/srv/anvils/heimdall", []string{long}, dirtyTreeEvidence, "")
 
 	assert.NotContains(t, msg, "stash push -u -- pkg/")
 	assert.Contains(t, msg, "stash push -u -- <path>")
@@ -427,7 +427,7 @@ func TestBlockedMessageDropsTheCommandForAnOverLongPath(t *testing.T) {
 // be a claim the message has not earned.
 func TestBlockedMessageLabelsAnUnmodelledTreeAsContext(t *testing.T) {
 	msg := blockedMessage("heimdall", "/srv/anvils/heimdall", []string{"internal/foo.go"},
-		"fatal: refusing to merge unrelated histories")
+		"fatal: refusing to merge unrelated histories", "")
 
 	assert.Contains(t, msg, "Working tree (1 path): internal/foo.go")
 	assert.NotContains(t, msg, "Blocking paths")
@@ -445,7 +445,7 @@ func TestBlockedMessageFitsTheDetailBound(t *testing.T) {
 		paths = append(paths, fmt.Sprintf("pkg/%s/file%03d.go", strings.Repeat("deep", 30), i))
 	}
 	msg := blockedMessage("heimdall", "/srv/anvils/heimdall", paths,
-		strings.Repeat("error: your local changes to the following files would be overwritten by merge: x ", 200))
+		strings.Repeat("error: your local changes to the following files would be overwritten by merge: x ", 200), "")
 
 	assert.LessOrEqual(t, len(msg), maxFailureDetailBytes, "the whole detail is what the bound sizes")
 	// Bounded, not gutted: the parts an operator acts on all survive, and git's
@@ -464,7 +464,7 @@ func TestBlockedMessageFitsTheBoundWithMultibytePaths(t *testing.T) {
 	for i := 0; i < 50; i++ {
 		paths = append(paths, fmt.Sprintf("pkg/%s/fil%03d.go", strings.Repeat("é", 90), i))
 	}
-	msg := blockedMessage("heimdall", "/srv/anvils/heimdall", paths, dirtyTreeEvidence)
+	msg := blockedMessage("heimdall", "/srv/anvils/heimdall", paths, dirtyTreeEvidence, "")
 
 	assert.LessOrEqual(t, len(msg), maxFailureDetailBytes)
 	assert.True(t, utf8.ValidString(msg), "a bound applied through a rune leaves a replacement character")
@@ -502,7 +502,7 @@ func TestCausePatternsAreAllBlockedPatterns(t *testing.T) {
 // unverifiable, so the evidence keeps minEvidenceBytes whatever is left.
 func TestBlockedMessageAlwaysShowsSomeEvidence(t *testing.T) {
 	checkout := "/srv/anvils/" + strings.Repeat("deep/", 400)
-	msg := blockedMessage("heimdall", checkout, nil, strings.Repeat("error: cannot lock ref refs/remotes/origin/main ", 100))
+	msg := blockedMessage("heimdall", checkout, nil, strings.Repeat("error: cannot lock ref refs/remotes/origin/main ", 100), "")
 
 	assert.Contains(t, msg, "git output: error: cannot lock ref")
 	assert.GreaterOrEqual(t, len(msg)-strings.Index(msg, "git output: "), minEvidenceBytes)
@@ -642,7 +642,7 @@ func TestParsePorcelainZKeepsWhitespacePathsOutOfTheCommand(t *testing.T) {
 	assert.Empty(t, spec, "a path sanitization would rewrite is never written into a command")
 	assert.Zero(t, covered)
 
-	msg := blockedMessage("heimdall", "/srv/anvils/heimdall", paths, dirtyTreeEvidence)
+	msg := blockedMessage("heimdall", "/srv/anvils/heimdall", paths, dirtyTreeEvidence, "")
 	assert.Contains(t, msg, "stash push -u -- <path>")
 	assert.NotContains(t, msg, "stash push -u -- dir/x")
 }
@@ -747,7 +747,7 @@ func TestCommandPathspecStopsOnTheByteBudget(t *testing.T) {
 	}
 	assert.Equal(t, covered, len(strings.Fields(spec)))
 
-	msg := blockedMessage("heimdall", "/srv/anvils/heimdall", paths, dirtyTreeEvidence)
+	msg := blockedMessage("heimdall", "/srv/anvils/heimdall", paths, dirtyTreeEvidence, "")
 	assert.Contains(t, msg, fmt.Sprintf("%d paths are unexpectedly modified, more than fit one command", len(paths)))
 	assert.Contains(t, msg, fmt.Sprintf("sets the first %d aside", covered))
 }
@@ -767,7 +767,7 @@ func TestCommandPathspecCoveringOnePathReadsAsOne(t *testing.T) {
 	require.Equal(t, 1, covered, "two maximal paths do not both fit maxCommandPathspecBytes")
 	require.Equal(t, a, spec)
 
-	msg := blockedMessage("heimdall", "/srv/anvils/heimdall", []string{a, b}, dirtyTreeEvidence)
+	msg := blockedMessage("heimdall", "/srv/anvils/heimdall", []string{a, b}, dirtyTreeEvidence, "")
 	assert.Contains(t, msg, "sets the first one aside")
 	assert.NotContains(t, msg, "sets the first 1 aside")
 	assert.Contains(t, msg, "2 paths are unexpectedly modified, more than fit one command")
@@ -793,7 +793,7 @@ func TestBlockedMessageFitsTheBoundWithWorstCasePaths(t *testing.T) {
 	}
 
 	msg := blockedMessage("heimdall", "/srv/anvils/heimdall", paths,
-		strings.Repeat("error: your local changes to the following files would be overwritten by merge: x ", 200))
+		strings.Repeat("error: your local changes to the following files would be overwritten by merge: x ", 200), "")
 
 	assert.LessOrEqual(t, len(msg), maxFailureDetailBytes, "the whole detail is what the bound sizes")
 	assert.Contains(t, msg, "Anvil heimdall")
@@ -810,7 +810,7 @@ func TestBlockedMessageFitsTheBoundWithWorstCasePaths(t *testing.T) {
 // modified" is the one sentence that tells the operator the checkout is healthy
 // while the entry exists precisely because it is not.
 func TestDirtyTreeRemediationMakesNoClaimAboutAnUninspectedTree(t *testing.T) {
-	msg := blockedMessage("heimdall", "/srv/anvils/heimdall", nil, dirtyTreeEvidence)
+	msg := blockedMessage("heimdall", "/srv/anvils/heimdall", nil, dirtyTreeEvidence, "")
 
 	// No claim about the tree, and no enumeration to rest one on.
 	assert.NotContains(t, msg, "nothing unexpected is modified")

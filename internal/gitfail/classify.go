@@ -115,6 +115,19 @@ var BlockedPatterns = []string{
 	"refusing to fetch into branch",
 	// The checkout itself is not usable.
 	"not a git repository",
+	// The REMOTE is not a repository, which needs its own entry: git's wording
+	// is "does not appear to be a git repository", and that does not contain
+	// the substring above.
+	//
+	// Blocked and not transient, even though the next line git prints is
+	// "Could not read from remote repository" — a transient pattern that used
+	// to win, since it was the only one either set matched. A remote that is a
+	// deleted directory does not become a repository by being fetched again.
+	// An anvil whose origin had been repointed at a worker worktree that then
+	// vanished retried this quietly every ten minutes for a day and escalated
+	// nothing, because the message read as an outage. Blocked patterns are
+	// tested first, so naming it here is what settles the order.
+	"does not appear to be a git repository",
 }
 
 // TransientPatterns are the failures a later run has a real chance of getting

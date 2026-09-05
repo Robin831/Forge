@@ -6,6 +6,7 @@ import (
 	"log"
 	"strings"
 
+	"github.com/Robin831/Forge/internal/gitfail"
 	"github.com/Robin831/Forge/internal/state"
 	"github.com/Robin831/Forge/internal/termtext"
 	"github.com/Robin831/Forge/internal/textfmt"
@@ -194,7 +195,27 @@ func blockedFailureDetail(ctx context.Context, anvil, path string, err error) st
 		paths = dirty
 	}
 
-	return blockedMessage(anvil, path, paths, evidence)
+	return blockedMessage(anvil, path, paths, evidence, originForDetail(ctx, anvil, path, evidence))
+}
+
+// originForDetail reads the checkout's origin URL, but only for the one cause
+// whose message uses it. It is a second git command in a checkout already known
+// to be failing, so it is not spent on the causes that would ignore the answer —
+// and, like the path enumeration beside it, it is best-effort: an escalation
+// with no URL in it is worth far more than no escalation.
+func originForDetail(ctx context.Context, anvil, path, evidence string) string {
+	if causeOf(evidence) != causeBadRemote {
+		return ""
+	}
+	origin, err := gitfail.OriginURL(ctx, path, runGit)
+	if err != nil {
+		log.Printf("[depcheck] %s: could not read the checkout's origin for the escalation: %s", anvil, failureEvidence(err))
+		return ""
+	}
+	// A config value rather than git's prose, but it reaches the same rendered
+	// feed row and log line and Forge did not write it — which is the whole
+	// reason it is being reported.
+	return safeBlockingPath(origin)
 }
 
 // failureEvidence renders git's own words for a failure, bounded and stripped
