@@ -146,7 +146,7 @@ func TestDeployFailureRendering(t *testing.T) {
 func TestNeedsAttentionBeads_IncludesDeployFailures(t *testing.T) {
 	db := openTestDB(t)
 
-	items, err := db.NeedsAttentionBeads(5, 5, 3)
+	items, err := db.NeedsAttentionBeads(5, 5, 3, StalenessParams{})
 	if err != nil {
 		t.Fatalf("NeedsAttentionBeads: %v", err)
 	}
@@ -160,7 +160,7 @@ func TestNeedsAttentionBeads_IncludesDeployFailures(t *testing.T) {
 		t.Fatalf("RecordDeployFailure: %v", err)
 	}
 
-	items, err = db.NeedsAttentionBeads(5, 5, 3)
+	items, err = db.NeedsAttentionBeads(5, 5, 3, StalenessParams{})
 	if err != nil {
 		t.Fatalf("NeedsAttentionBeads: %v", err)
 	}
@@ -197,7 +197,7 @@ func TestNeedsAttentionBeads_IncludesDeployFailures(t *testing.T) {
 	if _, err := db.ClearDeployFailures("forge"); err != nil {
 		t.Fatalf("ClearDeployFailures: %v", err)
 	}
-	items, _ = db.NeedsAttentionBeads(5, 5, 3)
+	items, _ = db.NeedsAttentionBeads(5, 5, 3, StalenessParams{})
 	for _, it := range items {
 		if it.Kind == AttentionKindDeploy {
 			t.Fatalf("the entry must clear itself once resolved: %+v", it)

@@ -70,11 +70,21 @@ type failureStore interface {
 	PruneDepcheckFailures(keep []string) error
 }
 
+// checkRecorder stamps that a checker started and completed a cycle for an
+// anvil. It is the staleness backstop's only contact with this package: nothing
+// here reads it back or reacts to it, precisely so a scan cannot both cause and
+// judge its own silence.
+type checkRecorder interface {
+	BeginCheck(anvil, checker string) error
+	RecordCheckSuccess(anvil, checker string) error
+}
+
 // Scanner checks anvils for outdated dependencies across all supported ecosystems.
 type Scanner struct {
 	events      eventSink
 	failures    failureStore
 	owners      beadOwnerStore
+	checks      checkRecorder
 	interval    time.Duration
 	timeout     time.Duration
 	anvilPaths  map[string]string // anvil name -> path
@@ -122,8 +132,33 @@ func newScanner(db *state.DB) *Scanner {
 		s.events = db
 		s.failures = db
 		s.owners = db
+		s.checks = db
 	}
 	return s
+}
+
+// beginCheck registers that this anvil's scan has started, so a scan that never
+// once succeeds is still visible as stale rather than as absent.
+func (s *Scanner) beginCheck(anvil string) {
+	if s.checks == nil {
+		return
+	}
+	if err := s.checks.BeginCheck(anvil, state.CheckerDepcheck); err != nil {
+		log.Printf("[depcheck] %s: could not register the scan: %v", anvil, err)
+	}
+}
+
+// recordCheckSuccess stamps a COMPLETED scan. It is called at the end of
+// scanAnvil rather than beside clearBlocked, which fires as soon as the
+// manifests are readable and would therefore report a scan whose every
+// ecosystem failed as a healthy one.
+func (s *Scanner) recordCheckSuccess(anvil string) {
+	if s.checks == nil {
+		return
+	}
+	if err := s.checks.RecordCheckSuccess(anvil, state.CheckerDepcheck); err != nil {
+		log.Printf("[depcheck] %s: could not record the completed scan: %v", anvil, err)
+	}
 }
 
 // rememberConsolidatedBead pins the bead as this anvil's, tolerating a scanner
@@ -286,6 +321,8 @@ func (s *Scanner) ecosystemScanners() []ecosystemScanner {
 // data instead: the ecosystem tools still run in the checkout, and what they
 // report is reconciled against the versions the tracking ref actually pins.
 func (s *Scanner) scanAnvil(ctx context.Context, name, path string) {
+	s.beginCheck(name)
+
 	src, err := s.refSourceFor(ctx, name, path)
 	if err != nil {
 		// The git plumbing is where the two failure classes live and where the
@@ -338,6 +375,11 @@ func (s *Scanner) scanAnvil(ctx context.Context, name, path string) {
 	if len(allResults) > 0 {
 		s.findOrCreateConsolidatedBead(ctx, allResults, path, name)
 	}
+
+	// The scan reached the end: the manifests were read and every ecosystem
+	// present was scanned. An anvil with no outdated packages arrives here with
+	// an empty allResults, which is a completed cycle and not a skipped one.
+	s.recordCheckSuccess(name)
 }
 
 // refSourceFor resolves the anvil's upstream tracking branch, fetches it, and

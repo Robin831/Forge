@@ -745,6 +745,14 @@ CREATE TABLE IF NOT EXISTS anvil_beads (
     updated_at TEXT NOT NULL DEFAULT '',
     PRIMARY KEY (anvil, kind, lookup_key)
 );
+
+CREATE TABLE IF NOT EXISTS anvil_check_success (
+    anvil           TEXT NOT NULL,
+    checker         TEXT NOT NULL,
+    first_seen_at   TEXT NOT NULL DEFAULT '',
+    last_success_at TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (anvil, checker)
+);
 `
 
 // dbTimeLayout is the canonical, fixed-width layout used for timestamps
@@ -3914,6 +3922,12 @@ const (
 	// worse than no entry. Like the other non-bead kinds it carries no bead and
 	// clears itself, on the next scan that reads the anvil's manifests.
 	AttentionKindDepcheck = "depcheck"
+	// AttentionKindStale marks a checker that has stopped completing cycles for
+	// an anvil. It is its own kind because it is the one entry that makes no
+	// claim about a cause: every other kind is raised by code that classified a
+	// specific failure, and this one is raised precisely because no such
+	// classification can be trusted to have fired.
+	AttentionKindStale = "stale"
 )
 
 // NeedsAttentionBeads returns all beads with needs_human=1, clarification_needed=1,
@@ -3932,7 +3946,7 @@ const (
 // did not survive a daemon restart. A paused bead is, by definition, awaiting a human
 // decision (resume or discard), so it belongs in Needs Attention regardless of whether
 // a live pipeline goroutine is still parked for it.
-func (db *DB) NeedsAttentionBeads(maxCI, maxRev, maxRebase int) ([]NeedsAttentionBead, error) {
+func (db *DB) NeedsAttentionBeads(maxCI, maxRev, maxRebase int, staleness StalenessParams) ([]NeedsAttentionBead, error) {
 	rows, err := db.conn.Query(
 		`SELECT bead_id, anvil, needs_human, clarification_needed, reason, title, description, failure_count
 		 FROM (
@@ -4108,6 +4122,25 @@ func (db *DB) NeedsAttentionBeads(maxCI, maxRev, maxRebase int) ([]NeedsAttentio
 			Reason:     bf.Detail,
 			NeedsHuman: true,
 			Kind:       AttentionKindDepcheck,
+		})
+	}
+
+	// Last: checkers that have stopped completing cycles for an anvil. These are
+	// derived from anvil_check_success rather than stored, so there is no row to
+	// clear — a completed cycle withdraws the entry by moving the timestamp.
+	// Nothing here reads an error classification, which is the point: it is the
+	// backstop for a failure that was classified transient and retried quietly.
+	stale, err := db.StaleChecks(staleness)
+	if err != nil {
+		return nil, fmt.Errorf("fetching stale anvil checks: %w", err)
+	}
+	for _, sc := range stale {
+		beads = append(beads, NeedsAttentionBead{
+			Anvil:      sc.Anvil,
+			Title:      sc.Title(),
+			Reason:     sc.Detail(),
+			NeedsHuman: true,
+			Kind:       AttentionKindStale,
 		})
 	}
 

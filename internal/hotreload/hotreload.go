@@ -31,6 +31,14 @@
 // setting is reported — see restartOnlyKeys and reportIgnored — rather than
 // silently dropped: the whole point of the warning is that the file on disk and
 // the running daemon otherwise disagree with nothing to say so.
+//
+// Two settings are outside that claim entirely: settings.staleness_check and
+// settings.staleness_multiplier are read by HEARTH, not by the daemon, so the
+// generic "a daemon restart is required" fallback overstates the case for an
+// edit that touches only those — restarting the daemon changes nothing, and
+// reopening Hearth is what applies them. They are deliberately not in
+// restartOnlyKeys, since naming them there would make the same wrong claim in
+// a more confident voice.
 package hotreload
 
 import (

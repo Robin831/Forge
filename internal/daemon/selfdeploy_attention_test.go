@@ -30,7 +30,7 @@ func TestSelfDeployAttentionSink_RaisesAndResolves(t *testing.T) {
 		Timestamp:    failedAt,
 	}))
 
-	items, err := db.NeedsAttentionBeads(5, 5, 3)
+	items, err := db.NeedsAttentionBeads(5, 5, 3, state.StalenessParams{})
 	require.NoError(t, err)
 	var found *state.NeedsAttentionBead
 	for i := range items {
@@ -47,7 +47,7 @@ func TestSelfDeployAttentionSink_RaisesAndResolves(t *testing.T) {
 
 	// An unqualified clear is what a successful deploy issues.
 	require.NoError(t, sink.ClearNeedsAttention())
-	items, err = db.NeedsAttentionBeads(5, 5, 3)
+	items, err = db.NeedsAttentionBeads(5, 5, 3, state.StalenessParams{})
 	require.NoError(t, err)
 	for _, it := range items {
 		require.NotEqual(t, state.AttentionKindDeploy, it.Kind, "the entry must clear on a later successful deploy")

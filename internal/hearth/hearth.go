@@ -107,6 +107,7 @@ const (
 	AttentionAnvilWedged                        // Anvil's beads database is mid-merge with unresolved conflicts
 	AttentionSelfDeploy                         // Self-deploy deferred, failed, or rolled back — the binary is not the merged code
 	AttentionDepcheckBlocked                    // Anvil's dependency scan is blocked by a git condition that repeats every run
+	AttentionCheckStale                         // A per-anvil checker has stopped completing cycles, whatever it reported while doing so
 )
 
 // NeedsAttentionItem represents a bead requiring human attention.
@@ -142,6 +143,12 @@ func (i NeedsAttentionItem) IsDepcheckBlocked() bool {
 	return i.Kind == state.AttentionKindDepcheck
 }
 
+// IsCheckStale reports whether this entry describes a checker that has stopped
+// completing cycles for an anvil, whatever it was reporting while doing so.
+func (i NeedsAttentionItem) IsCheckStale() bool {
+	return i.Kind == state.AttentionKindStale
+}
+
 // IsBeadScoped reports whether this entry identifies a bead (or its PR) and so
 // supports the bead-scoped actions: retry, dismiss, notes, description. The
 // non-bead kinds carry an empty bead ID, so every action path must branch on
@@ -157,6 +164,12 @@ func nonBeadAttentionHint(item NeedsAttentionItem) string {
 	}
 	if item.IsDepcheckBlocked() {
 		return fmt.Sprintf("Anvil %s cannot be scanned for dependency updates — fix the checkout's git state; this clears on the next successful scan", item.Anvil)
+	}
+	if item.IsCheckStale() {
+		// Deliberately prescribes no fix. This entry is raised because a checker
+		// stopped completing, with no claim about why — naming a remedy here
+		// would invent the diagnosis the entry exists to say Forge does not have.
+		return fmt.Sprintf("%s — Forge is not saying why; check the anvil's recent events and daemon.log. This clears on the next completed cycle", item.Title)
 	}
 	return fmt.Sprintf("Anvil %s is wedged — resolve the beads merge conflict; this clears automatically", item.Anvil)
 }
@@ -3987,6 +4000,8 @@ func attentionReasonIcon(cat AttentionReason) string {
 		return lipgloss.NewStyle().Foreground(colorDanger).Render("⚙ DEPLOY")
 	case AttentionDepcheckBlocked:
 		return lipgloss.NewStyle().Foreground(colorWarning).Render("⛔ DEPCHECK")
+	case AttentionCheckStale:
+		return lipgloss.NewStyle().Foreground(colorWarning).Render("⏱ STALE")
 	default:
 		return lipgloss.NewStyle().Foreground(colorMuted).Render("⚠ UNKNOWN")
 	}
