@@ -207,7 +207,7 @@ func TestNeedsAttentionBeads_IncludesWedgedAnvils(t *testing.T) {
 	db := openTestDB(t)
 
 	// Healthy: no anvil entry at all.
-	items, err := db.NeedsAttentionBeads(5, 5, 3)
+	items, err := db.NeedsAttentionBeads(5, 5, 3, StalenessParams{})
 	if err != nil {
 		t.Fatalf("NeedsAttentionBeads: %v", err)
 	}
@@ -221,7 +221,7 @@ func TestNeedsAttentionBeads_IncludesWedgedAnvils(t *testing.T) {
 		t.Fatalf("MarkAnvilWedged: %v", err)
 	}
 
-	items, err = db.NeedsAttentionBeads(5, 5, 3)
+	items, err = db.NeedsAttentionBeads(5, 5, 3, StalenessParams{})
 	if err != nil {
 		t.Fatalf("NeedsAttentionBeads: %v", err)
 	}
@@ -254,7 +254,7 @@ func TestNeedsAttentionBeads_IncludesWedgedAnvils(t *testing.T) {
 	if _, err := db.ClearAnvilWedged("munin"); err != nil {
 		t.Fatalf("ClearAnvilWedged: %v", err)
 	}
-	items, err = db.NeedsAttentionBeads(5, 5, 3)
+	items, err = db.NeedsAttentionBeads(5, 5, 3, StalenessParams{})
 	if err != nil {
 		t.Fatalf("NeedsAttentionBeads: %v", err)
 	}

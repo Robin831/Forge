@@ -1852,7 +1852,7 @@ func TestDB_StalledWorkers(t *testing.T) {
 	}
 
 	// Stalled worker should appear in NeedsAttentionBeads
-	attention, err := db.NeedsAttentionBeads(DefaultMaxCIFixAttempts, DefaultMaxReviewFixAttempts, DefaultMaxRebaseAttempts)
+	attention, err := db.NeedsAttentionBeads(DefaultMaxCIFixAttempts, DefaultMaxReviewFixAttempts, DefaultMaxRebaseAttempts, StalenessParams{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2129,7 +2129,7 @@ func TestDB_NeedsAttentionBeads_SurfacesPaused(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	beads, err := db.NeedsAttentionBeads(DefaultMaxCIFixAttempts, DefaultMaxReviewFixAttempts, DefaultMaxRebaseAttempts)
+	beads, err := db.NeedsAttentionBeads(DefaultMaxCIFixAttempts, DefaultMaxReviewFixAttempts, DefaultMaxRebaseAttempts, StalenessParams{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2783,7 +2783,7 @@ func TestDB_NeedsAttentionBeads_IncludesExhaustedPRs(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	beads, err := db.NeedsAttentionBeads(5, 5, 3)
+	beads, err := db.NeedsAttentionBeads(5, 5, 3, StalenessParams{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3344,7 +3344,7 @@ func TestDB_NeedsAttentionBeads_Description(t *testing.T) {
 	}
 
 	// 3. Verify description flows through NeedsAttentionBeads
-	beads, err := db.NeedsAttentionBeads(5, 5, 3)
+	beads, err := db.NeedsAttentionBeads(5, 5, 3, StalenessParams{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3377,7 +3377,7 @@ func TestDB_NeedsAttentionBeads_Description(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	beads, err = db.NeedsAttentionBeads(5, 5, 3)
+	beads, err = db.NeedsAttentionBeads(5, 5, 3, StalenessParams{})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"sort"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/spf13/cobra"
@@ -97,6 +98,10 @@ var hearthCmd = &cobra.Command{
 			AutoMergeAnvils: func() map[string]bool { return autoMergeAnvils },
 			WicketEnabled:   cfg.Settings.WicketEnabled,
 			AnvilRepoURLs:   anvilRepoURLs,
+			// Built from the same config the daemon schedules from, so the
+			// thresholds are multiples of the intervals the checkers actually
+			// run at. staleness_check: false yields nil, which judges nothing.
+			StalenessThresholds: stalenessThresholds(cfg),
 		}
 
 		model := hearth.NewModel(ds)
@@ -574,4 +579,32 @@ func ipcError(resp *ipc.Response) error {
 		return fmt.Errorf("daemon: %s", payload.Message)
 	}
 	return fmt.Errorf("daemon returned: %s", resp.Type)
+}
+
+// stalenessThresholds resolves the age per checker at which Hearth reports a
+// missing cycle, or nil when the check is switched off.
+//
+// Hearth is a separate process from the daemon and reads config once at
+// startup, so a change to these settings takes effect when Hearth is
+// restarted — the same as every other threshold on DataSource.
+func stalenessThresholds(cfg *config.Config) map[string]time.Duration {
+	if !cfg.Settings.IsStalenessCheckEnabled() {
+		return nil
+	}
+	return state.StalenessThresholds(state.StalenessIntervals{
+		Multiplier: cfg.Settings.StalenessMultiplier,
+		Depcheck:   cfg.Settings.DepcheckInterval,
+		Vulncheck:  vulncheckInterval(cfg),
+		Questgiver: cfg.Settings.QuestgiverInterval,
+		Poll:       cfg.Settings.PollInterval,
+	})
+}
+
+// vulncheckInterval reports the vulnerability scan's cadence, or 0 when scanning
+// is switched off — a disabled scanner must not be judged for never running.
+func vulncheckInterval(cfg *config.Config) time.Duration {
+	if !cfg.Settings.IsVulncheckEnabled() {
+		return 0
+	}
+	return cfg.Settings.VulncheckInterval
 }

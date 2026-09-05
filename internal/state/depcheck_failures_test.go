@@ -198,7 +198,7 @@ func TestBlockedScanSurfacesInNeedsAttention(t *testing.T) {
 		t.Fatalf("RecordDepcheckFailure: %v", err)
 	}
 
-	items, err := db.NeedsAttentionBeads(5, 5, 3)
+	items, err := db.NeedsAttentionBeads(5, 5, 3, StalenessParams{})
 	if err != nil {
 		t.Fatalf("NeedsAttentionBeads: %v", err)
 	}
@@ -221,7 +221,7 @@ func TestBlockedScanSurfacesInNeedsAttention(t *testing.T) {
 	if _, err := db.ClearDepcheckFailure("heimdall"); err != nil {
 		t.Fatalf("ClearDepcheckFailure: %v", err)
 	}
-	items, err = db.NeedsAttentionBeads(5, 5, 3)
+	items, err = db.NeedsAttentionBeads(5, 5, 3, StalenessParams{})
 	if err != nil {
 		t.Fatalf("NeedsAttentionBeads: %v", err)
 	}
@@ -254,7 +254,7 @@ func TestDepcheckAttentionTitleSurvivesAnEmptyTitleColumn(t *testing.T) {
 		t.Fatalf("blanking the title column: %v", err)
 	}
 
-	items, err := db.NeedsAttentionBeads(5, 5, 3)
+	items, err := db.NeedsAttentionBeads(5, 5, 3, StalenessParams{})
 	if err != nil {
 		t.Fatalf("NeedsAttentionBeads: %v", err)
 	}

@@ -145,7 +145,7 @@ func TestCheckAnvilHealth_StateMachine(t *testing.T) {
 		assert.Equal(t, 1, wedgedEventCount(t, db, state.EventAnvilWedged))
 
 		// It is also surfaced in needs-attention as an anvil-kind entry.
-		items, err := db.NeedsAttentionBeads(5, 5, 3)
+		items, err := db.NeedsAttentionBeads(5, 5, 3, state.StalenessParams{})
 		require.NoError(t, err)
 		var anvilItems int
 		for _, it := range items {
@@ -197,7 +197,7 @@ func TestCheckAnvilHealth_StateMachine(t *testing.T) {
 		assert.Equal(t, 1, wedgedEventCount(t, db, state.EventAnvilRecovered))
 		assert.Contains(t, logs.String(), "anvil recovered")
 
-		items, err := db.NeedsAttentionBeads(5, 5, 3)
+		items, err := db.NeedsAttentionBeads(5, 5, 3, state.StalenessParams{})
 		require.NoError(t, err)
 		for _, it := range items {
 			assert.NotEqual(t, state.AttentionKindAnvil, it.Kind)

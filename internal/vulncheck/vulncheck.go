@@ -182,6 +182,13 @@ func (s *Scanner) ScanAll(ctx context.Context) []ScanResult {
 
 		s.logger.Info("scanning anvil for vulnerabilities", "anvil", name)
 		s.db.LogEvent(state.EventVulnScanStarted, fmt.Sprintf("scanning %s", name), "", name)
+		// Registered here and not on success, so a scan that has never once
+		// finished is visible as stale rather than as a checker nobody enabled.
+		// A non-Go anvil is skipped above and so never registers, which is the
+		// answer we want: it has no vulnerability scan to be overdue.
+		if err := s.db.BeginCheck(name, state.CheckerVulncheck); err != nil {
+			s.logger.Warn("could not register the vulnerability scan", "anvil", name, "error", err)
+		}
 
 		result := s.scanAnvil(ctx, name, anvil.Path)
 		results = append(results, result)
@@ -193,6 +200,9 @@ func (s *Scanner) ScanAll(ctx context.Context) []ScanResult {
 			s.logger.Info("vulncheck complete", "anvil", name, "vulns", len(result.Vulns))
 			s.db.LogEvent(state.EventVulnScanDone,
 				fmt.Sprintf("found %d vulnerabilities in %s", len(result.Vulns), name), "", name)
+			if err := s.db.RecordCheckSuccess(name, state.CheckerVulncheck); err != nil {
+				s.logger.Warn("could not record the completed vulnerability scan", "anvil", name, "error", err)
+			}
 		}
 	}
 

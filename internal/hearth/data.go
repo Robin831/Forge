@@ -15,6 +15,24 @@ import (
 	"github.com/Robin831/Forge/internal/state"
 )
 
+// stalenessParams assembles what StaleChecks needs. The anvil set is bounded by
+// AnvilNames so a deregistered anvil's rows cannot show as permanently stale
+// with no action that would clear them. The map is always non-nil, which is
+// what tells StaleChecks to filter at all: nil there means "do not filter", and
+// a Hearth with no anvils configured must report nothing rather than every row
+// in the table.
+func (ds *DataSource) stalenessParams() state.StalenessParams {
+	known := make(map[string]bool, len(ds.AnvilNames))
+	for _, n := range ds.AnvilNames {
+		known[n] = true
+	}
+	return state.StalenessParams{
+		Thresholds:  ds.StalenessThresholds,
+		KnownAnvils: known,
+		Now:         time.Now(),
+	}
+}
+
 // classifyAttentionReason determines the AttentionReason category from a
 // NeedsAttentionBead's fields. The classification is ordered by specificity:
 // clarification flag, circuit breaker prefix, reason text patterns, stalled.
@@ -29,6 +47,8 @@ func classifyAttentionReason(b state.NeedsAttentionBead) AttentionReason {
 		return AttentionSelfDeploy
 	case state.AttentionKindDepcheck:
 		return AttentionDepcheckBlocked
+	case state.AttentionKindStale:
+		return AttentionCheckStale
 	}
 	if b.ClarificationNeeded {
 		return AttentionClarification
@@ -103,6 +123,12 @@ type DataSource struct {
 	// AnvilNames lists all registered anvil names (sorted) so the Queue panel
 	// can show empty anvils with a (0) count.
 	AnvilNames []string
+	// StalenessThresholds is the age per checker at which a missing cycle is
+	// reported, built from config at startup the way the exhaustion thresholds
+	// above are. Nil (the zero value, and what staleness_check: false produces)
+	// judges nothing, so a Hearth built without it simply shows no stale
+	// entries rather than showing wrong ones.
+	StalenessThresholds map[string]time.Duration
 	// Cost limits from config for the Usage panel display.
 	DailyCostLimit           float64
 	CopilotDailyRequestLimit int
@@ -891,6 +917,7 @@ func FetchNeedsAttention(ds *DataSource) tea.Cmd {
 			ds.MaxCIFixAttempts,
 			ds.MaxReviewFixAttempts,
 			ds.MaxRebaseAttempts,
+			ds.stalenessParams(),
 		)
 		if err != nil {
 			return NeedsAttentionErrorMsg{Err: fmt.Errorf("failed to fetch needs attention beads: %w", err)}

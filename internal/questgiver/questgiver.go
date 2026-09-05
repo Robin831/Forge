@@ -122,8 +122,14 @@ func (m *Monitor) scan(ctx context.Context) {
 			return
 		}
 
+		m.beginCheck(anvilName)
+
 		quests, err := DiscoverQuests(anvilPath)
 		if err != nil {
+			// Left as a continue, but no longer a silent one: the anvil is now
+			// registered above, so an anvil whose quests have been undiscoverable
+			// since Forge started shows up as overdue instead of leaving no trace
+			// at all.
 			m.logger.Error("failed to discover quests", "anvil", anvilName, "error", err)
 			continue
 		}
@@ -134,12 +140,43 @@ func (m *Monitor) scan(ctx context.Context) {
 			}
 			m.runQuest(ctx, anvilName, anvilPath, &quests[i])
 		}
+
+		// A completed pass over the anvil's quests. Deliberately not conditional
+		// on the quests PASSING — a failing quest is reported as its own bead,
+		// and treating it as a stale checker would raise a second entry for a
+		// fault already on the panel. An anvil with no quest files completes
+		// here too, which is correct: it has nothing that could be overdue.
+		m.recordCheckSuccess(anvilName)
 	}
 
 	if m.db != nil {
 		if err := m.db.LogEvent(state.EventQuestgiverScanDone, "quest scan complete", "", ""); err != nil {
 			m.logger.Warn("failed to log scan-done event", "error", err)
 		}
+	}
+}
+
+// beginCheck registers that this anvil's quest pass has started, so an anvil
+// that has never completed one is visible rather than absent.
+func (m *Monitor) beginCheck(anvil string) {
+	if m.db == nil {
+		return
+	}
+	if err := m.db.BeginCheck(anvil, state.CheckerQuestgiver); err != nil {
+		m.logger.Warn("could not register the quest pass", "anvil", anvil, "error", err)
+	}
+}
+
+// recordCheckSuccess stamps a completed pass over one anvil's quests. The
+// existing questgiver_scan_done event cannot serve this purpose: it is written
+// once per scan with an empty anvil field, so it cannot say which anvils were
+// actually reached.
+func (m *Monitor) recordCheckSuccess(anvil string) {
+	if m.db == nil {
+		return
+	}
+	if err := m.db.RecordCheckSuccess(anvil, state.CheckerQuestgiver); err != nil {
+		m.logger.Warn("could not record the completed quest pass", "anvil", anvil, "error", err)
 	}
 }
 

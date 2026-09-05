@@ -1013,6 +1013,15 @@ func (d *Daemon) reconcileOpenPRs(ctx context.Context) {
 		if anvilCfg.Path == "" {
 			continue
 		}
+		// Registered before the call that can fail, so an anvil whose PR listing
+		// has failed on every cycle since startup is visible as overdue. This
+		// path used to persist nothing at all: a WARN line and a continue, every
+		// cycle, forever, which is one of the two loops that stayed silent for a
+		// day while the anvil's origin was unusable.
+		if err := d.db.BeginCheck(anvilName, state.CheckerPRReconcile); err != nil {
+			d.logger.Warn("reconcile: could not register the check", "anvil", anvilName, "err", err)
+		}
+
 		prs, err := d.vcsForAnvil(anvilName).ListOpenPRs(ctx, anvilCfg.Path)
 		if err != nil {
 			d.logger.Warn("reconcile: could not list open PRs", "anvil", anvilName, "err", err)
@@ -1090,6 +1099,13 @@ func (d *Daemon) reconcileOpenPRs(ctx context.Context) {
 					_ = d.db.UpdatePRBellowsManaged(dbPR.ID, false)
 				}
 			}
+		}
+
+		// The anvil's open PRs were listed and every one of them reconciled. An
+		// anvil with no open PRs completes here too — it was reached, and there
+		// was nothing to do.
+		if err := d.db.RecordCheckSuccess(anvilName, state.CheckerPRReconcile); err != nil {
+			d.logger.Warn("reconcile: could not record the completed check", "anvil", anvilName, "err", err)
 		}
 	}
 }
@@ -3650,7 +3666,7 @@ func (d *Daemon) pollAndDispatch(ctx context.Context, fullPoll bool) {
 	// into state.db. A minimum-age guard inside RecoverOrphanedBeads prevents
 	// it from reopening legitimately in-flight beads on each periodic check.
 	count := d.pollCount.Add(1)
-	if count%10 == 0 {
+	if count%state.ReconcilePollDivisor == 0 {
 		if recovered := d.shutdownMgr.RecoverOrphanedBeads(); recovered > 0 {
 			d.logger.Info("periodic bead recovery", "recovered", recovered)
 		}

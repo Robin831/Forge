@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/Robin831/Forge/internal/executil"
+	"github.com/Robin831/Forge/internal/state"
 	"github.com/Robin831/Forge/internal/vcs"
 	"github.com/spf13/viper"
 	"gopkg.in/yaml.v3"
@@ -710,6 +711,18 @@ type SettingsConfig struct {
 	// needs-attention and skipped for dispatch until the conflicts clear.
 	// Default: true.
 	AnvilHealthCheck *bool `mapstructure:"anvil_health_check" yaml:"anvil_health_check,omitempty"`
+	// StalenessCheck controls the backstop that reports a per-anvil checker
+	// which has stopped completing cycles. It reads no error classification —
+	// it exists for the case where the classification was wrong — so it fires
+	// on a checker that is failing, one that was retrying quietly, and one
+	// whose goroutine is simply gone. Default: true.
+	StalenessCheck *bool `mapstructure:"staleness_check" yaml:"staleness_check,omitempty"`
+	// StalenessMultiplier is how many of a checker's OWN intervals may pass
+	// with no completed cycle before it is reported. A multiple rather than a
+	// fixed age because the intervals differ by three orders of magnitude
+	// (poll-driven reconcile in minutes, depcheck in days), so one duration
+	// would be far too tight for one and useless for the other. Default: 3.
+	StalenessMultiplier float64 `mapstructure:"staleness_multiplier" yaml:"staleness_multiplier,omitempty"`
 	// LogRetentionDays is how many days a preserved bead-log directory under
 	// ~/.forge/logs/<beadID>/ is kept after its newest file. The retention
 	// sweep removes older directories (unless the bead has a running worker).
@@ -1381,6 +1394,8 @@ func (s SettingsConfig) MarshalYAML() (interface{}, error) {
 		VulncheckTimeout          string              `yaml:"vulncheck_timeout,omitempty"`
 		VulncheckEnabled          *bool               `yaml:"vulncheck_enabled,omitempty"`
 		AnvilHealthCheck          *bool               `yaml:"anvil_health_check,omitempty"`
+		StalenessCheck            *bool               `yaml:"staleness_check,omitempty"`
+		StalenessMultiplier       float64             `yaml:"staleness_multiplier,omitempty"`
 		LogRetentionDays          int                 `yaml:"log_retention_days"`
 		LogSweepInterval          string              `yaml:"log_sweep_interval,omitempty"`
 		GoRaceDetection           bool                `yaml:"go_race_detection"`
@@ -1469,6 +1484,8 @@ func (s SettingsConfig) MarshalYAML() (interface{}, error) {
 		StaleInterval:             durationString(s.StaleInterval),
 		VulncheckEnabled:          s.VulncheckEnabled,
 		AnvilHealthCheck:          s.AnvilHealthCheck,
+		StalenessCheck:            s.StalenessCheck,
+		StalenessMultiplier:       s.StalenessMultiplier,
 		LogRetentionDays:          s.LogRetentionDays,
 		GoRaceDetection:           s.GoRaceDetection,
 		TemperOutputCap:           s.TemperOutputCap,
@@ -1649,6 +1666,16 @@ func (s SettingsConfig) IsAnvilHealthCheckEnabled() bool {
 		return true
 	}
 	return *s.AnvilHealthCheck
+}
+
+// IsStalenessCheckEnabled returns true unless staleness_check is explicitly
+// false. Defaults to true: judging it costs one table read at render time and
+// nothing at all in the checkers beyond a timestamp write per completed cycle.
+func (s SettingsConfig) IsStalenessCheckEnabled() bool {
+	if s.StalenessCheck == nil {
+		return true
+	}
+	return *s.StalenessCheck
 }
 
 // IsAutoMergeCrucibleChildren returns true unless auto_merge_crucible_children
@@ -2471,6 +2498,7 @@ func Defaults() Config {
 			DepcheckTimeout:        5 * time.Minute,
 			VulncheckInterval:      24 * time.Hour,
 			VulncheckTimeout:       10 * time.Minute,
+			StalenessMultiplier:    state.DefaultStalenessMultiplier,
 			LogRetentionDays:       30,
 			LogSweepInterval:       24 * time.Hour,
 			SmelterInterval:        8 * time.Hour,
@@ -2580,6 +2608,8 @@ func Load(configFile string) (*Config, error) {
 	v.SetDefault("settings.vulncheck_interval", "24h")
 	v.SetDefault("settings.vulncheck_timeout", "10m")
 	v.SetDefault("settings.vulncheck_enabled", true)
+	v.SetDefault("settings.staleness_check", true)
+	v.SetDefault("settings.staleness_multiplier", state.DefaultStalenessMultiplier)
 	v.SetDefault("settings.log_retention_days", 30)
 	v.SetDefault("settings.log_sweep_interval", "24h")
 	v.SetDefault("settings.smelter_enabled", true)
@@ -3054,6 +3084,16 @@ func (c *Config) Validate() []string {
 	}
 	if c.Settings.AdventurerTimeout < 0 {
 		errs = append(errs, "settings.adventurer_timeout must not be negative")
+	}
+
+	// A multiplier below 1 would report a checker before its own interval had
+	// even elapsed, so every checker would be permanently stale. Rejected
+	// rather than clamped: silently correcting it hides a setting that does not
+	// mean what whoever wrote it thought.
+	if c.Settings.StalenessMultiplier < 0 {
+		errs = append(errs, "settings.staleness_multiplier must not be negative (set staleness_check: false to disable)")
+	} else if c.Settings.StalenessMultiplier > 0 && c.Settings.StalenessMultiplier < 1 {
+		errs = append(errs, "settings.staleness_multiplier must be >= 1 (it is a multiple of each checker's own interval)")
 	}
 
 	if c.Settings.PreviewMaxConcurrent < 0 {
