@@ -43,6 +43,7 @@ const (
 	causeDetachedHead = gitfail.CauseDetachedHead
 	causeRefLock      = gitfail.CauseRefLock
 	causeNotARepo     = gitfail.CauseNotARepo
+	causeBadRemote    = gitfail.CauseBadRemote
 )
 
 var (
@@ -76,12 +77,36 @@ func dirtyPaths(ctx context.Context, repoDir string) ([]string, error) {
 // read by somebody who has not yet looked at the checkout, and a destructive
 // one-liner in that position throws away work the message never claimed to have
 // inspected.
-func remediation(cause blockedCause, anvil, checkout string, paths []string) string {
+func remediation(cause blockedCause, anvil, checkout, origin string, paths []string) string {
 	at := checkout
 	if at == "" {
 		at = "<checkout>"
 	}
 	switch cause {
+	case causeBadRemote:
+		// Forge cannot name the URL to restore. An anvil's config carries a
+		// path, not a repository address; only the deployment's bootstrap knows
+		// the address, which is why a pod restart fixes this and a scan does
+		// not. So the remedy names the command and leaves the value to the
+		// operator rather than inventing one.
+		if gitfail.SelfReferentialRemote(origin, checkout) {
+			// Worth its own sentence: this is not a remote that moved, it is a
+			// remote pointing back inside the anvil at a worker's worktree,
+			// which is deleted when the worker finishes. Nothing retries past
+			// it, and nothing in Forge writes it — so the operator is being
+			// told where to look for the writer as well as what to run.
+			return fmt.Sprintf("To resolve: `origin` points at %s, a path inside this anvil's own checkout — a "+
+				"repository is never its own upstream, and a worker worktree under `.workers/` is deleted when its "+
+				"bead finishes. Repoint it with `git -C %s remote set-url origin <url>`. Forge never writes this "+
+				"value, so something with a shell in the checkout did.", origin, at)
+		}
+		if origin != "" {
+			return fmt.Sprintf("To resolve: `origin` is %s, which is not a repository git can read. Repoint it with "+
+				"`git -C %s remote set-url origin <url>`.", origin, at)
+		}
+		return fmt.Sprintf("To resolve: the checkout's `origin` is not a repository git can read — inspect it with "+
+			"`git -C %s remote -v` and repoint it with `git -C %s remote set-url origin <url>`.", at, at)
+
 	case causeUnmerged:
 		return fmt.Sprintf("To resolve: finish the merge in the checkout, or abandon it with `git -C %s merge --abort` "+
 			"(`rebase --abort` if it is a rebase).", at)
@@ -195,7 +220,7 @@ func remediation(cause blockedCause, anvil, checkout string, paths []string) str
 // the evidence rather than the assembled string is the one order that is safe:
 // a blind cut of the whole message lands mid-command, and a command truncated to
 // a shorter pathspec is a pasted line that names a different set of files.
-func blockedMessage(anvil, checkout string, paths []string, gitOut string) string {
+func blockedMessage(anvil, checkout string, paths []string, gitOut, origin string) string {
 	cause := causeOf(gitOut)
 
 	var b strings.Builder
@@ -216,7 +241,7 @@ func blockedMessage(anvil, checkout string, paths []string, gitOut string) strin
 		fmt.Fprintf(&b, " %s (%s): %s.", label, textfmt.Count(len(paths), "path"), renderBlockingPaths(paths))
 	}
 
-	fmt.Fprintf(&b, " %s", remediation(cause, anvil, checkout, paths))
+	fmt.Fprintf(&b, " %s", remediation(cause, anvil, checkout, origin, paths))
 	b.WriteString(" Forge clears this entry automatically once the anvil scans again.")
 
 	if gitOut != "" {

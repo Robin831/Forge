@@ -19,6 +19,11 @@ const (
 	CauseDetachedHead
 	CauseRefLock
 	CauseNotARepo
+	// CauseBadRemote is the checkout being fine and its `origin` not being a
+	// repository. It is separate from CauseNotARepo because the remedy is: one
+	// is "point the anvil at a checkout", the other "repoint the checkout's
+	// origin", and the two are read by an operator looking at different things.
+	CauseBadRemote
 )
 
 // CausePatterns map git's own words onto a cause. They are matched lowercased,
@@ -62,6 +67,12 @@ var CausePatterns = []struct {
 	{"another git process seems to be running", CauseRefLock},
 	{"refusing to fetch into branch", CauseRefLock},
 
+	// Before CauseNotARepo, so that a message naming both the remote and the
+	// local checkout is reported as the remote it is. The two patterns do not
+	// overlap as substrings today — "does not appear to be a git repository"
+	// does not contain "not a git repository" — and the order is what keeps
+	// that from being load-bearing.
+	{"does not appear to be a git repository", CauseBadRemote},
 	{"not a git repository", CauseNotARepo},
 }
 

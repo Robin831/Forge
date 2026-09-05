@@ -580,6 +580,13 @@ func (m *Manager) Remove(ctx context.Context, anvilPath string, wt *Worktree) er
 			"anvil", anvilPath, "error", err)
 	}
 
+	// The same class of damage on the same shared config file, one key over:
+	// an `origin` repointed at the worktree that was just deleted. Checked
+	// here because this is the last moment the bead that held that worktree is
+	// known — after this the remote names a path with nothing to attribute it
+	// to, which is how the condition went a day without an explanation.
+	CheckAnvilOrigin(ctx, anvilPath, wt.BeadID)
+
 	return nil
 }
 
