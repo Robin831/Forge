@@ -1278,6 +1278,12 @@ self_deploy:
   branch: main              # optional: base branch a merge must target (default "main")
   build_target: ./cmd/forge # optional: go build target (default "./cmd/forge")
   max_drain_wait: 30m       # optional: how long to wait for workers to finish (default 30m)
+  skew_check_interval: 15m  # optional: how often to compare the running build against
+                            # the branch tip (default 15m; NEGATIVE disables)
+  skew_retry_interval: 2h   # optional: shortest gap between two skew-triggered deploys
+                            # for the same commit (default 2h)
+  skew_attention_commits: 3 # optional: commits behind before a stalled skew is escalated
+  skew_attention_age: 24h   # optional: age of the skew before it is escalated
 ```
 
 | Key | Type | Default | Description |
@@ -1293,6 +1299,10 @@ self_deploy:
 | `build_target` | string | `./cmd/forge` | The `go build` package target. |
 | `max_drain_wait` | duration | `30m` | How long the daemon keeps dispatch paused waiting for active workers to finish before giving up and resuming. The drain check is re-run every 10s for the whole window; the deploy proceeds as soon as the forge is idle. `0`/omitted uses the default; a negative value is rejected at load. |
 | `drain_timeout` | duration | — | **Deprecated** alias for `max_drain_wait`. |
+| `skew_check_interval` | duration | `15m` | How often the daemon compares its own running build against the tip of `branch` and triggers a deploy when it has fallen behind. `0`/omitted uses the default; a **negative** value disables the check. |
+| `skew_retry_interval` | duration | `2h` | Shortest gap between two skew-triggered deploys for the *same* branch tip. A deploy that could not go live for one commit will not go live for it on the next tick either, and each attempt pauses dispatch for a drain window. Negative leaves one attempt per tip. |
+| `skew_attention_commits` | int | `3` | How many commits behind the running build must be before a *stalled* skew becomes a Needs Attention entry. Negative disables this threshold. |
+| `skew_attention_age` | duration | `24h` | How long the running build must have been behind — measured from the oldest undeployed commit — before a stalled skew is escalated. Negative disables this threshold. |
 
 `max_drain_wait` was previously called `drain_timeout`. The old key is still
 read, so existing configs keep working; `max_drain_wait` wins when both are set
@@ -1384,10 +1394,15 @@ console and stays out of the daemon's Ctrl-C group.
 
 ### How it behaves
 
-- Triggered only by a `pr_merged` event whose anvil matches `self_deploy.anvil`
-  and whose base branch matches `self_deploy.branch`. A merged PR with no
-  recorded base branch is skipped rather than assumed to target `branch`, so an
-  unrelated merge cannot trigger a production restart.
+- Triggered by a `pr_merged` event whose anvil matches `self_deploy.anvil` and
+  whose base branch matches `self_deploy.branch`. A merged PR with no recorded
+  base branch is skipped rather than assumed to target `branch`, so an unrelated
+  merge cannot trigger a production restart.
+- **…and by the periodic skew check**, which is what covers every merge that
+  emits no such event: an `ext-*` PR is not Bellows-managed, so a PR merged by
+  hand produces nothing for the handler to accept, and a direct push, a merge
+  from the GitHub UI or a merge landed while the daemon was down produce nothing
+  either. See *Version-skew check* below.
 - **Drain guardrail** — dispatch is paused, then the drain check is re-run every
   10s until no worker is active (including operator-paused workers, which still
   hold a worktree). "Active" means a worker that owns a live process or pipeline
@@ -1431,11 +1446,60 @@ console and stays out of the daemon's Ctrl-C group.
 - **Needs Attention** — a deploy that ends anywhere other than "new binary live
   and restarting" also raises an entry in Hearth's Needs Attention list. See the
   next section.
-- **Single-flight** — a second merge while a deploy is in progress is ignored;
-  the in-flight deploy already pulls the latest tip.
+- **Single-flight** — a second trigger while a deploy is in progress is ignored,
+  whichever path it came from; the in-flight deploy already pulls the latest tip.
 
 The systemd unit should use `Restart=always` (or an equivalent) so the daemon
 comes back after the restart terminates the running process.
+
+### Version-skew check
+
+A merge event is not the same claim as "`main` moved". `ext-*` PRs are not
+Bellows-managed, so a PR merged by hand emits no `pr_merged` event at all —
+between 2026-09-02 and 2026-09-07 six PRs were merged that way and the running
+daemon fell seven commits and five days behind `origin/main` with no deploy, no
+failure and nothing in any list saying so. A direct push to `branch`, a merge
+from the GitHub UI and a merge landed while the daemon was down are the same
+hole.
+
+So the daemon also compares its **own running build** against the branch tip on
+a timer (`skew_check_interval`, default 15m), which is the one measurement that
+answers the question whatever moved the branch and whoever moved it:
+
+- It **fetches** `origin/<branch>` and reads it — the fetch writes inside `.git`
+  only, so a checkout with local modifications (Forge's own reliably has some)
+  is measured exactly as it stands. Nothing here pulls, builds or restarts.
+- The running build is `forge version`'s build stamp. A build that carries no
+  commit id (`unknown`, `dev`, a version string) cannot be placed in the
+  branch's history, so the check is inert for it and says so at debug level. A
+  `-dirty` suffix is stripped: that binary was still built from that commit.
+- When the build is behind, the deploy goes through **the same drain-and-rebuild
+  path** a merge event takes — same single-flight guard, same drain wait, same
+  stash discipline, same rollback. Never a bare restart.
+- A skew that cannot be *measured* (fetch failure, a build the checkout has
+  never seen, a force-pushed branch that no longer contains the build) is logged
+  and never deployed on: "I could not tell" must arrive as neither "nothing to
+  do" nor "restart now".
+- The same tip is not re-deployed every tick. Once a deploy has been dispatched
+  for a commit, the next attempt for that same commit waits out
+  `skew_retry_interval` (default 2h) — a build that fails, fails identically,
+  and every attempt pauses dispatch for a drain window. A tip that *moves* is a
+  new question and deploys immediately. That record is persisted (in
+  `daemon_settings`), because the outcome it guards against is a deploy that
+  restarts the daemon without putting the merged code live — a `binary_path`
+  that is not the one the unit runs — and a restart is exactly what would clear
+  an in-memory one, leaving such a host redeploying itself every few minutes.
+- Past `skew_attention_commits` **or** `skew_attention_age`, a skew that a
+  deploy has already been attempted for becomes a `version_skew` Needs Attention
+  entry (below). Two thresholds because they catch different shapes of the same
+  failure: a burst of merges is many commits and minutes old, one merge nothing
+  ever deployed is a single commit and a week old.
+- The entry is withdrawn the moment the running build is current again — by a
+  deploy that goes live, or by an operator who rebuilt by hand.
+
+Set `skew_check_interval` to a negative duration to turn the check off. `0`
+means *unset* and selects the 15m default: a deployment that has never heard of
+this setting is exactly the one that silently falls behind.
 
 ### Needs Attention on a failed or rolled-back deploy
 
@@ -1453,6 +1517,7 @@ non-restart outcome is therefore persisted (in the `deploy_failures` table of
 | `swap_failed` | Self-deploy failed / rolled back: binary swap failed | The new binary could not be moved into place. The previous binary is restored when one existed. | The next deploy reaches its restart. |
 | `restart_failed` | Self-deploy rolled back: restart failed | The new binary was installed but the restart never started; the previous binary was put back. | The next deploy reaches its restart. |
 | `rollback_failed` | Self-deploy failed: restart AND rollback failed | The worst case: the on-disk binary is the new, never-started build while the running process is still the old one. A stop/start or a crash-restart will bring up the untested build. | The next deploy reaches its restart. |
+| `version_skew` | Self-deploy stalled: the running build is behind the deploy branch | The merged code is not the code running. A deploy for that commit was dispatched and the daemon is still the old build — the other entries (or `daemon.log`) say why, and there may be none, which is the point. | The running build is current again — a deploy that goes live, or a manual rebuild. |
 
 The title carries the targeted unit (`… (unit forge)`), and the detail line
 answers "is the merged fix live?" without a shell:
@@ -1472,9 +1537,15 @@ the existing entry rather than stacking duplicates.
 
 Entries are anvil-level, not bead-scoped — there is no worker to retry and no
 bead to dismiss. They clear themselves rather than needing an operator action:
-the `drain_timeout` entry the moment a later deploy drains, everything else once
-a deploy gets as far as requesting its restart. An entry that is still listed
-therefore means the condition still holds.
+the `drain_timeout` entry the moment a later deploy drains, `version_skew` the
+moment the running build is current again, everything else once a deploy gets as
+far as requesting its restart. An entry that is still listed therefore means the
+condition still holds.
+
+`version_skew` is the only reason here that no single deploy produces. Every
+other one names the step a deploy stopped at; this one says that whatever those
+steps report — including nothing at all — the merged code is still not the code
+running.
 
 ### Spotting a stale binary
 
@@ -1510,8 +1581,10 @@ journalctl -u forge --since '1 hour ago'
   put the old binary back (`mv -f ~/bin/forge.prev ~/bin/forge`) before anything
   restarts the unit for you.
 
-Nothing retries automatically. A deferred or failed deploy is picked up by the
-next merge on `self_deploy.branch`; to deploy immediately, use the manual path
+A deferred or failed deploy is retried by the next merge on
+`self_deploy.branch`, and — since the skew check compares the running build
+rather than waiting for an event — by the next skew check whose
+`skew_retry_interval` has elapsed. To deploy immediately, use the manual path
 below.
 
 ### Manual fallback — `restart.sh`

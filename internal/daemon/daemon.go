@@ -421,6 +421,18 @@ type Daemon struct {
 	// pull/build/restart cycles. Set true while a deploy is draining or running.
 	selfDeployInFlight atomic.Bool
 
+	// selfDeployRun is the deploy body triggerSelfDeploy launches. nil selects
+	// runSelfDeploy; tests substitute a stub so the trigger and skew-backoff
+	// decisions can be driven without a checkout, a compiler or systemd.
+	selfDeployRun func(config.SelfDeployConfig)
+
+	// selfDeploySkewAttempt records the branch tip the periodic skew check last
+	// dispatched a deploy for, and when. It is what keeps a tip whose deploy
+	// cannot go live from being re-attempted every tick, and what marks the
+	// point past which the skew is reported as stalled rather than as work in
+	// progress. nil means no skew-triggered deploy has run this daemon lifetime.
+	selfDeploySkewAttempt atomic.Pointer[selfDeploySkewAttempt]
+
 	// Per-anvil VCS providers for PR operations (GitHub, GitLab, etc.).
 	vcsProviders   map[string]vcs.Provider
 	vcsProvidersMu sync.RWMutex
@@ -1514,6 +1526,13 @@ func (d *Daemon) Run(ctx context.Context) error {
 		func() int { return d.config().Settings.LogRetentionDays },
 	)
 	go logSweep.RunScheduled(ctx)
+
+	// Start the self-deploy version-skew check. Unconditional: the loop reads
+	// the live config each tick, so enabling self-deploy (or its check) by hot
+	// reload takes effect without a restart — which matters more here than
+	// elsewhere, since the thing this loop deploys is the daemon that would
+	// otherwise need restarting to pick the setting up.
+	go d.runSelfDeploySkewCheck(ctx)
 
 	// Start the weekly Assay spend report. It only reads assay_runs, so it is
 	// unconditional: an anvil that never runs Assay has no rows in the window
@@ -2990,20 +3009,47 @@ func (d *Daemon) handleSelfDeploy(_ context.Context, event bellows.PREvent) {
 	if !d.selfDeployAccepts(event) {
 		return
 	}
+	d.triggerSelfDeploy(d.config().SelfDeploy, selfDeployReasonPRMerged)
+}
 
-	// Single-flight: a second merge event while a deploy is already draining or
-	// running is a no-op — the in-flight deploy already pulls the latest tip.
+// Reasons a deploy was triggered, logged on the trigger so the two paths are
+// distinguishable in daemon.log after the fact.
+const (
+	// selfDeployReasonPRMerged: a bellows pr_merged event on the watched branch.
+	selfDeployReasonPRMerged = "pr_merged"
+	// selfDeployReasonSkew: the periodic check found the running build behind
+	// the deploy branch. This is the path that covers every merge bellows never
+	// reports — a manually merged PR (an ext-* row is not bellows-managed), a
+	// direct push, a merge landed while the daemon was down.
+	selfDeployReasonSkew = "skew"
+)
+
+// triggerSelfDeploy starts a deploy on its own goroutine, reporting whether it
+// started. It is the ONE entry point into the deploy flow: both the merge event
+// and the periodic skew check go through it, so neither can acquire the
+// single-flight guard differently, and a deploy launched by one is the same
+// drain-and-rebuild the other launches.
+//
+// Single-flight: a second trigger while a deploy is draining or running is a
+// no-op rather than a queued deploy — the in-flight one pulls the branch tip as
+// it stands when it gets there, which is at least as new as whatever prompted
+// the second trigger.
+func (d *Daemon) triggerSelfDeploy(sd config.SelfDeployConfig, reason string) bool {
 	if !d.selfDeployInFlight.CompareAndSwap(false, true) {
-		d.logger.Info("self-deploy already in flight; ignoring merge event",
-			"anvil", event.Anvil, "pr", event.PRNumber)
-		return
+		d.logger.Info("self-deploy already in flight; ignoring trigger",
+			"anvil", sd.Anvil, "reason", reason)
+		return false
 	}
-
-	sd := d.config().SelfDeploy
+	d.logger.Info("self-deploy triggered", "anvil", sd.Anvil, "reason", reason)
+	run := d.selfDeployRun
+	if run == nil {
+		run = d.runSelfDeploy
+	}
 	go func() {
 		defer d.selfDeployInFlight.Store(false)
-		d.runSelfDeploy(sd)
+		run(sd)
 	}()
+	return true
 }
 
 // selfDeployAccepts reports whether a bellows event qualifies to trigger a

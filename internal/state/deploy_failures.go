@@ -26,6 +26,13 @@ const (
 	// about where the stashed work went. selfdeploy withdraws it only once the
 	// stash stack no longer holds an entry it labelled.
 	DeployReasonStashRetained = "stash_retained"
+	// DeployReasonVersionSkew: the running binary is behind the deploy branch
+	// and a deploy for that tip has already been attempted without going live.
+	// Unlike every other reason here it is not raised by a deploy at all — the
+	// periodic skew check raises it — because the failure it reports is that
+	// the merged code is not running, which is true whether a deploy failed,
+	// was deferred, or was never triggered in the first place.
+	DeployReasonVersionSkew = "version_skew"
 )
 
 // shaDisplayLen bounds how much of a build SHA is shown in the needs-attention
@@ -77,6 +84,7 @@ var deployReasonLabels = map[string]string{
 	DeployReasonRollbackFailed: "restart AND rollback failed",
 	DeployReasonPullBlocked:    "the checkout blocks the pull",
 	DeployReasonStashRetained:  "local changes left in a stash",
+	DeployReasonVersionSkew:    "the running build is behind the deploy branch",
 }
 
 func deployReasonLabel(reason string) string {
@@ -104,6 +112,11 @@ func (f DeployFailure) Title() string {
 		return "Self-deploy abandoned: local changes left in a stash"
 	case f.Reason == DeployReasonPullBlocked:
 		return "Self-deploy blocked: the checkout cannot be fast-forwarded"
+	case f.Reason == DeployReasonVersionSkew:
+		// Neither "failed" nor "rolled back": the deploy machinery may have
+		// reported nothing at all. What an operator has to know is that the
+		// merged code is not the code running.
+		return "Self-deploy stalled: the running build is behind the deploy branch"
 	case f.RolledBack:
 		return "Self-deploy rolled back: " + deployReasonLabel(f.Reason)
 	default:

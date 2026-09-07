@@ -37,6 +37,17 @@ const (
 	// any other deploy failure's — no later deploy restores those changes, and
 	// the message is the only record of where they went.
 	ReasonStashRetained FailureReason = "stash_retained"
+	// ReasonVersionSkew: the running binary is behind the deploy branch and a
+	// deploy for that tip has already been attempted without going live. It is
+	// raised by the periodic skew check rather than by a deploy, and it is the
+	// only entry here that describes a state no single deploy produced: every
+	// other reason names the step one deploy stopped at, while this one says
+	// that whatever those steps report, the merged code is still not running.
+	// It exists because the skew was ONLY ever visible as an absence — the
+	// daemon ran five days and seven commits behind main with every deploy
+	// surface reporting nothing at all, because no deploy had been triggered to
+	// report anything (Forge-6858).
+	ReasonVersionSkew FailureReason = "version_skew"
 )
 
 // AllReasons is every failure reason a deploy can raise. It exists so that
@@ -51,6 +62,7 @@ var AllReasons = []FailureReason{
 	ReasonRollbackFailed,
 	ReasonPullBlocked,
 	ReasonStashRetained,
+	ReasonVersionSkew,
 }
 
 // IsSticky reports whether a later deploy is forbidden from withdrawing this

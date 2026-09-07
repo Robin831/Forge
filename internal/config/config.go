@@ -92,6 +92,36 @@ type SelfDeployConfig struct {
 	//
 	// Deprecated: use MaxDrainWait (self_deploy.max_drain_wait).
 	DrainTimeout time.Duration `mapstructure:"drain_timeout" yaml:"drain_timeout,omitempty"`
+	// SkewCheckInterval is how often the daemon compares its own running build
+	// against the deploy branch's tip and triggers a deploy when it has fallen
+	// behind. Defaults to 15m; NEGATIVE disables the check.
+	//
+	// Zero means "unset" rather than "off" — the same reading warden's
+	// dedup_threshold and max_rules_in_file take — because the check is what
+	// makes self-deploy fire at all for a merge nothing emitted an event for
+	// (a manually merged PR, a direct push, a merge while the daemon was down).
+	// A deployment that has never heard of this setting is exactly the one that
+	// silently falls behind, so an unset value has to mean the check runs.
+	SkewCheckInterval time.Duration `mapstructure:"skew_check_interval" yaml:"skew_check_interval,omitempty"`
+	// SkewRetryInterval is the shortest gap between two skew-triggered deploys
+	// for the SAME branch tip. It exists because a deploy that did not go live
+	// for a given commit will not go live for it on the next tick either — a
+	// build that fails, fails identically — while a drain that timed out might.
+	// Defaults to 2h; negative disables the retry, leaving one attempt per tip.
+	SkewRetryInterval time.Duration `mapstructure:"skew_retry_interval" yaml:"skew_retry_interval,omitempty"`
+	// SkewAttentionCommits is how many commits behind the running build must be
+	// before a stalled skew is escalated into Needs Attention. Defaults to 3;
+	// negative disables the commit-count threshold (the age one still applies).
+	SkewAttentionCommits int `mapstructure:"skew_attention_commits" yaml:"skew_attention_commits,omitempty"`
+	// SkewAttentionAge is how long the running build must have been behind
+	// before a stalled skew is escalated, measured from the oldest undeployed
+	// commit. Defaults to 24h; negative disables the age threshold.
+	//
+	// Two thresholds rather than one because they catch different failures: a
+	// burst of merges is many commits and minutes old, while a single merge
+	// nothing ever deployed is one commit and a week old. Either alone would
+	// leave the other silent.
+	SkewAttentionAge time.Duration `mapstructure:"skew_attention_age" yaml:"skew_attention_age,omitempty"`
 }
 
 // DefaultSelfDeployMaxDrainWait is the fallback used when neither MaxDrainWait
@@ -103,6 +133,23 @@ const DefaultSelfDeployMaxDrainWait = 30 * time.Minute
 //
 // Deprecated: use DefaultSelfDeployMaxDrainWait.
 const DefaultSelfDeployDrainTimeout = DefaultSelfDeployMaxDrainWait
+
+const (
+	// DefaultSelfDeploySkewCheckInterval is how often the running build is
+	// compared against the deploy branch when SkewCheckInterval is unset. Short
+	// enough that a merge is live within the quarter hour, long enough that the
+	// fetch it performs is negligible beside the Bellows poll running anyway.
+	DefaultSelfDeploySkewCheckInterval = 15 * time.Minute
+	// DefaultSelfDeploySkewRetryInterval is the default gap before a
+	// skew-triggered deploy is attempted again for the same branch tip.
+	DefaultSelfDeploySkewRetryInterval = 2 * time.Hour
+	// DefaultSelfDeploySkewAttentionCommits is the default commit-count
+	// threshold past which a stalled skew is escalated.
+	DefaultSelfDeploySkewAttentionCommits = 3
+	// DefaultSelfDeploySkewAttentionAge is the default age threshold past which
+	// a stalled skew is escalated.
+	DefaultSelfDeploySkewAttentionAge = 24 * time.Hour
+)
 
 // ResolvedBinaryPath returns the configured binary path with a leading "~"
 // expanded to the user's home directory, defaulting to ~/bin/forge.
@@ -178,6 +225,58 @@ func (s SelfDeployConfig) ResolvedMaxDrainWait() time.Duration {
 // Deprecated: use ResolvedMaxDrainWait.
 func (s SelfDeployConfig) ResolvedDrainTimeout() time.Duration {
 	return s.ResolvedMaxDrainWait()
+}
+
+// ResolvedSkewCheckInterval returns how often the version-skew check runs: the
+// configured interval when positive, the 15m default when unset, and zero
+// (disabled) when negative. Zero cannot be the off switch here because it is the
+// field's zero value, and a deployment that never configured self-deploy skew
+// checking is precisely the one the check exists for.
+func (s SelfDeployConfig) ResolvedSkewCheckInterval() time.Duration {
+	if s.SkewCheckInterval < 0 {
+		return 0
+	}
+	if s.SkewCheckInterval == 0 {
+		return DefaultSelfDeploySkewCheckInterval
+	}
+	return s.SkewCheckInterval
+}
+
+// ResolvedSkewRetryInterval returns the shortest gap between two skew-triggered
+// deploys for one branch tip, with the same unset/negative reading as
+// ResolvedSkewCheckInterval. Zero means one attempt per tip and no retry.
+func (s SelfDeployConfig) ResolvedSkewRetryInterval() time.Duration {
+	if s.SkewRetryInterval < 0 {
+		return 0
+	}
+	if s.SkewRetryInterval == 0 {
+		return DefaultSelfDeploySkewRetryInterval
+	}
+	return s.SkewRetryInterval
+}
+
+// ResolvedSkewAttentionCommits returns the commit-count escalation threshold, or
+// 0 when the threshold is disabled.
+func (s SelfDeployConfig) ResolvedSkewAttentionCommits() int {
+	if s.SkewAttentionCommits < 0 {
+		return 0
+	}
+	if s.SkewAttentionCommits == 0 {
+		return DefaultSelfDeploySkewAttentionCommits
+	}
+	return s.SkewAttentionCommits
+}
+
+// ResolvedSkewAttentionAge returns the age escalation threshold, or 0 when the
+// threshold is disabled.
+func (s SelfDeployConfig) ResolvedSkewAttentionAge() time.Duration {
+	if s.SkewAttentionAge < 0 {
+		return 0
+	}
+	if s.SkewAttentionAge == 0 {
+		return DefaultSelfDeploySkewAttentionAge
+	}
+	return s.SkewAttentionAge
 }
 
 // expandHomePath expands a leading "~" (or "~/") in p to the current user's
