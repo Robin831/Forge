@@ -843,9 +843,25 @@ func runStep(ctx context.Context, worktreePath string, step Step, defaultTimeout
 	// exit -1, and so is a command that never started.
 	cancelled := stepCtx.Err() != nil || errors.Is(err, exec.ErrWaitDelay)
 
+	// The VERDICT is the direct child's own exit status wherever it produced
+	// one, and never the error Wait returned. The two differ in exactly the
+	// case cmd.WaitDelay above introduces: a command that exits 0 while a
+	// descendant still holds the inherited stdout pipe makes Wait give up on
+	// the pipe and return exec.ErrWaitDelay, with ProcessState reporting the
+	// clean exit underneath it. Read off the error that is a FAIL at exit -1,
+	// and — since the wait delay also satisfies `cancelled` — a TIMEOUT: `npm
+	// run lint` exiting 0 over a lingering `eslint` would be reported exactly
+	// as the killed, failed step this whole change exists to stop inventing,
+	// arriving from the other side. ps.Exited() is what separates the two:
+	// false for a process a signal ended (ExitCode -1) and for one that never
+	// started at all, where the error is all there is to go on.
 	exitCode := 0
 	passed := true
-	if err != nil {
+	switch {
+	case ps != nil && ps.Exited():
+		exitCode = ps.ExitCode()
+		passed = exitCode == 0
+	case err != nil:
 		passed = false
 		if exitErr, ok := err.(*exec.ExitError); ok {
 			exitCode = exitErr.ExitCode()
@@ -859,6 +875,13 @@ func runStep(ctx context.Context, worktreePath string, step Step, defaultTimeout
 	// where the deadline expired in the moment after it did, and calling that
 	// killed would be the same misattribution in reverse.
 	terminated := !passed && cancelled
+
+	// A step that PASSED while the wait delay fired still leaves two things
+	// worth saying: descendants outlived the command (the post-Run
+	// KillProcessTree above is what reaped them), and the retained output stops
+	// wherever os/exec closed the pipes, so it may be short of what those
+	// descendants went on to print. Neither changes the verdict.
+	pipeHeldPastExit := passed && errors.Is(err, exec.ErrWaitDelay)
 
 	outStr := output.String()
 
@@ -910,6 +933,15 @@ func runStep(ctx context.Context, worktreePath string, step Step, defaultTimeout
 	// errors, 3 warnings)", which is a run that would have exited 0. Without
 	// this line the pairing reads as a real lint failure, which is what trains
 	// people to distrust Temper.
+	if pipeHeldPastExit {
+		log.Printf("[temper] step %q: exited 0 in %.1fs but a descendant held its output pipe past the %s kill grace — reaped; retained output may be truncated",
+			step.Name, duration.Seconds(), StepKillGrace)
+		outStr += fmt.Sprintf(
+			"\n\n[temper] NOTE: step %q exited 0 after %.1fs, but a process it spawned was still holding its output pipe open\n"+
+				"%s later; Forge stopped waiting and killed the process group. The command's own exit status is the verdict —\n"+
+				"this step PASSED — but the output above may stop short of what those descendants went on to print.\n",
+			step.Name, duration.Seconds(), StepKillGrace)
+	}
 	if !passed && terminated {
 		outStr += fmt.Sprintf(
 			"\n\n[temper] NOTE: step %q was TERMINATED by Forge after %.1fs (deadline %s, %s kill grace) — it did not exit on its own.\n"+

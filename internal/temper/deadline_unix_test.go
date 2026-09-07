@@ -204,3 +204,34 @@ func TestKilledStepIsNotToleratedAsAHostCrash(t *testing.T) {
 	assert.True(t, res.Terminated)
 	assert.Equal(t, ClassificationTimeout, res.Classification)
 }
+
+// The mirror image of the bug above, and the one the fix for it introduces if
+// the verdict is read off the error rather than off the process: cmd.WaitDelay
+// makes Wait give up on output pipes an orphan is holding and return
+// exec.ErrWaitDelay — even when the command itself exited 0. Read as a failure
+// that is once again "a passing lint recorded as a killed, failed step",
+// arriving from the other side.
+func TestCommandExitingZeroWithLingeringDescendantPasses(t *testing.T) {
+	dir := t.TempDir()
+
+	// The shell exits 0 immediately; the `sleep` it spawned inherits the write
+	// end of the stdout pipe and holds it open well past the kill grace.
+	res, elapsed := runStepBounded(t, context.Background(), dir, Step{
+		Name:    "exits-clean-leaves-server",
+		Command: "sh",
+		Args:    []string{"-c", "echo 3 problems '(0 errors, 3 warnings)'; sleep 300 &"},
+		Timeout: 30 * time.Second,
+	})
+
+	assert.True(t, res.Passed, "the command's own exit status is the verdict — a descendant on the pipe is not a failure")
+	assert.False(t, res.Terminated, "nothing killed this command; it exited on its own")
+	assert.Equal(t, 0, res.ExitCode)
+	assert.Empty(t, res.Classification, "a passing step carries no failure classification")
+	assert.Equal(t, "PASS", stepStatus(res))
+	assert.NotContains(t, res.Output, "TERMINATED by Forge")
+
+	// Still bounded: the wait delay is what stops Wait blocking on the orphan,
+	// so the step returns shortly after the grace rather than after 300s.
+	assert.Less(t, elapsed, stepGraceBudget,
+		"WaitDelay must stop the wait on the inherited pipe rather than blocking until the descendant exits")
+}
