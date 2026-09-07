@@ -17,6 +17,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/Robin831/Forge/internal/config"
+	"github.com/Robin831/Forge/internal/executil"
 	"github.com/Robin831/Forge/internal/ipc"
 	"github.com/Robin831/Forge/internal/prompt"
 	"github.com/Robin831/Forge/internal/state"
@@ -99,6 +100,7 @@ type testCfg struct {
 	maxWorkers   int
 	logLevel     slog.Level
 	generation   string
+	dbPath       string
 }
 
 type testOpt func(*testCfg)
@@ -125,6 +127,17 @@ func withLogLevel(l slog.Level) testOpt {
 // but a test driving two generations against one database does.
 func withGeneration(gen string) testOpt {
 	return func(c *testCfg) { c.generation = gen }
+}
+
+// withDBPath points the env at an existing state.db instead of creating one in
+// its own temp directory. It is what makes a RESTART expressible: the leak the
+// generation column exists to close is a row written by a lifetime that ended,
+// and the only faithful way to produce one is a second daemon over the first
+// one's database. Planting a made-up generation string states the same
+// condition; opening the same file proves the two daemons disagree about
+// ownership of a row neither of them was told about.
+func withDBPath(path string) testOpt {
+	return func(c *testCfg) { c.dbPath = path }
 }
 
 // testEnv is one daemon, one database and one temp directory, torn down
@@ -172,7 +185,10 @@ func newTestDaemon(t *testing.T, opts ...testOpt) *testEnv {
 	}
 
 	dir := t.TempDir()
-	dbPath := filepath.Join(dir, "state.db")
+	dbPath := cfg.dbPath
+	if dbPath == "" {
+		dbPath = filepath.Join(dir, "state.db")
+	}
 	db, err := state.Open(dbPath)
 	require.NoError(t, err, "opening state.db at %s", dbPath)
 
@@ -469,11 +485,22 @@ func (w *dummyWorker) kill() {
 //
 // The process is killed and reaped by a registered cleanup whether or not the
 // test kills it itself, so a package run with -count=N leaks nothing.
+//
+// It starts in its OWN process group, which is not a detail: the daemon's
+// killWorkerProcess resolves a worker's group from its pid and signals the
+// whole group, so a child left in the test binary's group would have any test
+// that plants this pid on a worker row and drives kill_worker, stop_bead or
+// detach_bellows deliver SIGINT and then SIGKILL to `go test` itself. The call
+// is executil's rather than a bare SysProcAttr because Setpgid does not exist
+// on Windows, where the same helper sets CREATE_NEW_PROCESS_GROUP — and it is
+// what production spawns use, so the child this fixture hands a test is
+// grouped exactly as the process a real worker row names.
 func (e *testEnv) spawnDummyWorker(t *testing.T) (int, *exec.Cmd) {
 	t.Helper()
 
 	cmd := exec.Command(os.Args[0], "-test.run=^TestHelperSleep$")
 	cmd.Env = append(os.Environ(), helperProcessEnv+"=1")
+	executil.SetProcessGroup(cmd)
 	require.NoError(t, cmd.Start(), "starting dummy worker process")
 
 	pid := cmd.Process.Pid
@@ -491,8 +518,12 @@ func (e *testEnv) spawnDummyWorker(t *testing.T) (int, *exec.Cmd) {
 // genuinely gone rather than a zombie.
 //
 // A pid this harness spawned is reaped through its own dummyWorker (see
-// dummyWorker.kill for why the reap is not optional). A pid it did not spawn is
-// signalled and then waited for, since only its real parent can collect it.
+// dummyWorker.kill for why the reap is not optional). A pid it did not spawn
+// can only be signalled and then POLLED — nothing here can collect it, since
+// only its real parent may wait on it — so on such a pid the wait below runs
+// until the child's own parent reaps it or the timeout fires: a zombie still
+// answers processAlive's kill(pid, 0), which is the reap dummyWorker.kill
+// exists to perform.
 func (e *testEnv) killWorker(pid int) {
 	e.t.Helper()
 

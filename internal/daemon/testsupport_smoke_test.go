@@ -108,4 +108,65 @@ func TestHarnessSmoke(t *testing.T) {
 	// context.
 	e.start()
 	e.stop()
+
+	t.Run("two generations over one database", func(t *testing.T) {
+		// The condition the ownership columns exist for, produced rather than
+		// asserted: one daemon writes a row, that lifetime ends, and a second
+		// daemon comes up over the same file. withGeneration names the two
+		// lifetimes and withDBPath is what makes them share a database.
+		first := newTestDaemon(t,
+			withGeneration("gen-first-lifetime"),
+			withLogLevel(slog.LevelWarn))
+
+		first.seedBead("Forge-smoke3", "in_progress")
+		row := first.seedWorkerRow(workerRow{
+			BeadID:     "Forge-smoke3",
+			Status:     state.WorkerRunning,
+			Phase:      "smith",
+			Generation: first.generation(),
+			Heartbeat:  time.Now(),
+		})
+
+		// Owned by the lifetime that wrote it, on that lifetime's own reading.
+		own, err := first.db.WorkerOwnershipOf(row.ID)
+		require.NoError(t, err)
+		assert.Equal(t, first.generation(), own.Generation)
+
+		// withLogLevel raises the sink's floor, so a record below it is
+		// dropped rather than recorded — which is what keeps a level
+		// assertion an assertion about the level.
+		first.d.logger.Info("below the capture floor")
+		assert.False(t, first.hasLog(slog.LevelInfo, "below the capture floor"))
+		first.d.logger.Warn("at the capture floor")
+		assert.True(t, first.hasLog(slog.LevelWarn, "at the capture floor"))
+
+		// The restart. The second daemon opens the first one's database and
+		// reads the same row.
+		second := newTestDaemon(t,
+			withDBPath(first.dbPath),
+			withGeneration("gen-second-lifetime"))
+		require.Equal(t, first.dbPath, second.dbPath)
+
+		own, err = second.db.WorkerOwnershipOf(row.ID)
+		require.NoError(t, err)
+		assert.Equal(t, "gen-first-lifetime", own.Generation,
+			"the row must survive the restart carrying the generation that wrote it")
+		assert.NotEqual(t, second.generation(), own.Generation,
+			"a row of an ended lifetime must not read as owned by the running one")
+
+		// And the second lifetime's own rows are its own, so the two are
+		// distinguishable in both directions rather than everything reading
+		// as foreign.
+		second.seedBead("Forge-smoke4", "in_progress")
+		mine := second.seedWorkerRow(workerRow{
+			BeadID:     "Forge-smoke4",
+			Status:     state.WorkerRunning,
+			Phase:      "smith",
+			Generation: second.generation(),
+			Heartbeat:  time.Now(),
+		})
+		own, err = second.db.WorkerOwnershipOf(mine.ID)
+		require.NoError(t, err)
+		assert.Equal(t, second.generation(), own.Generation)
+	})
 }
