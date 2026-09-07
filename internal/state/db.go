@@ -41,6 +41,12 @@ type DB struct {
 	// Bus is wired (see SetFindingsBus), in which case PublishFindingsChanged is
 	// a no-op and the findings stream falls back to polling.
 	findingsBus *Bus
+	// currentGeneration is the daemon-lifetime marker stamped onto every worker
+	// row this process inserts, so a row can later be shown to belong to a
+	// daemon that no longer exists. Empty until SetDaemonGeneration is called,
+	// which is the right value for a process that owns no worker goroutines
+	// (a CLI subcommand, a test). See leakedworkers.go.
+	currentGeneration generationHolder
 }
 
 // SetBus wires the daemon-owned event Bus into the DB so LogEvent can fan out
@@ -225,6 +231,21 @@ func (db *DB) migrate() error {
 		// reconcile rewrites those on every cycle, so a detach recorded there
 		// would not survive the next pass.
 		{"prs", "bellows_detached", `ALTER TABLE prs ADD COLUMN bellows_detached INTEGER NOT NULL DEFAULT 0`},
+		// daemon_generation / heartbeat_at are the leaked-worker reaper's
+		// evidence that the goroutine which owned a row is gone (see
+		// internal/state/leakedworkers.go and internal/daemon/reaper.go).
+		//
+		// Both default to the empty string rather than being backfilled,
+		// because there is no value that would be true: a row written before
+		// this migration belongs to a daemon lifetime nobody can name. Empty
+		// is read as "no generation recorded", which the reaper treats exactly
+		// as it treats a generation that is not the running one — such a row
+		// cannot be owned by a goroutine in THIS process, which is the whole
+		// claim the reaper acts on. An empty heartbeat is likewise read as
+		// "never recorded" and falls back to started_at, never as a heartbeat
+		// at the zero time (which would read as infinitely stale).
+		{"workers", "daemon_generation", `ALTER TABLE workers ADD COLUMN daemon_generation TEXT NOT NULL DEFAULT ''`},
+		{"workers", "heartbeat_at", `ALTER TABLE workers ADD COLUMN heartbeat_at TEXT NOT NULL DEFAULT ''`},
 	}
 	for _, m := range migrations {
 		exists, err := db.columnExists(m.table, m.column)
@@ -301,7 +322,9 @@ CREATE TABLE IF NOT EXISTS workers (
     log_path    TEXT NOT NULL DEFAULT '',
     prev_status TEXT NOT NULL DEFAULT '',
     session_id  TEXT NOT NULL DEFAULT '',
-    model       TEXT NOT NULL DEFAULT ''
+    model       TEXT NOT NULL DEFAULT '',
+    daemon_generation TEXT NOT NULL DEFAULT '',
+    heartbeat_at TEXT NOT NULL DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS prs (
@@ -1061,12 +1084,18 @@ func (db *DB) InsertWorker(w *Worker) error {
 	// INSERT OR REPLACE so that a pending claim row (inserted at claim time to
 	// survive the claim→worktree crash window) is atomically overwritten when
 	// the pipeline records the fully-initialized running worker.
+	//
+	// The daemon generation and an opening heartbeat are stamped here rather
+	// than by the caller: every insert path must carry them, and an unstamped
+	// row reads to the reaper as one a previous daemon lifetime left behind —
+	// see leakedworkers.go for what that would cost.
+	now := time.Now().Format(dbTimeLayout)
 	_, err := db.conn.Exec(
-		`INSERT OR REPLACE INTO workers (id, bead_id, anvil, branch, pid, status, phase, title, pr_number, started_at, log_path, stale_timeout)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT OR REPLACE INTO workers (id, bead_id, anvil, branch, pid, status, phase, title, pr_number, started_at, log_path, stale_timeout, daemon_generation, heartbeat_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		w.ID, w.BeadID, w.Anvil, w.Branch, w.PID, string(w.Status), w.Phase, w.Title,
 		w.PRNumber, w.StartedAt.Format(dbTimeLayout), w.LogPath,
-		int64(w.StaleTimeout.Seconds()),
+		int64(w.StaleTimeout.Seconds()), db.generation(), now,
 	)
 	return err
 }
@@ -1075,12 +1104,13 @@ func (db *DB) InsertWorker(w *Worker) error {
 // already exists. This avoids unnecessary WAL churn on repeated poll cycles
 // (e.g. bellows upserts) where the row is stable between polls.
 func (db *DB) InsertWorkerIfMissing(w *Worker) error {
+	now := time.Now().Format(dbTimeLayout)
 	_, err := db.conn.Exec(
-		`INSERT OR IGNORE INTO workers (id, bead_id, anvil, branch, pid, status, phase, title, pr_number, started_at, log_path, stale_timeout)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT OR IGNORE INTO workers (id, bead_id, anvil, branch, pid, status, phase, title, pr_number, started_at, log_path, stale_timeout, daemon_generation, heartbeat_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		w.ID, w.BeadID, w.Anvil, w.Branch, w.PID, string(w.Status), w.Phase, w.Title,
 		w.PRNumber, w.StartedAt.Format(dbTimeLayout), w.LogPath,
-		int64(w.StaleTimeout.Seconds()),
+		int64(w.StaleTimeout.Seconds()), db.generation(), now,
 	)
 	return err
 }
@@ -2785,11 +2815,22 @@ const (
 	// an exit path nobody wrote a status update for — rather than an outcome of
 	// the work, so a recurrence is a bug report and not a failed bead.
 	EventWorkerAbandoned EventType = "worker_abandoned"
-	EventBeadTagged      EventType = "bead_tagged"
-	EventBeadClosed      EventType = "bead_closed"
-	EventPRReadyToMerge  EventType = "pr_ready_to_merge"
-	EventPRReviewNeeded  EventType = "pr_review_needed"
-	EventAssaySkipped    EventType = "assay_skipped"
+	// EventWorkerLeaked fires when the leaked-worker reaper ends a row whose
+	// owning goroutine is provably gone — one from a previous daemon lifetime,
+	// or one from this lifetime that nothing has tracked or heartbeated since.
+	//
+	// It is its own type because it names the one thing its neighbours cannot:
+	// worker_abandoned reports an exit path inside a LIVE daemon that wrote no
+	// status, and worker_process_gone reports a session that died while the
+	// daemon watched. This one reports a row that outlived the process that
+	// owned it — a crash, a kill -9, a restart — where by construction no exit
+	// path ran and no detector was watching.
+	EventWorkerLeaked   EventType = "worker_leaked"
+	EventBeadTagged     EventType = "bead_tagged"
+	EventBeadClosed     EventType = "bead_closed"
+	EventPRReadyToMerge EventType = "pr_ready_to_merge"
+	EventPRReviewNeeded EventType = "pr_review_needed"
+	EventAssaySkipped   EventType = "assay_skipped"
 	// EventAssayPartial fires when an Assay run reviewed a head with only some
 	// of its passes. The message is rendered by assay.RunEvent.Message from the
 	// run record, so the missing passes are named in the activity feed and not
