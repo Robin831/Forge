@@ -53,7 +53,14 @@ func signalKill(pid, pgid int, pgidKnown bool) {
 // processAlive reports whether the process with the given PID is still running.
 // Uses OpenProcess + GetExitCodeProcess, the Windows equivalent of Unix
 // kill(pid, 0). A process is considered alive iff its exit code is STILL_ACTIVE.
+//
+// A pid of 0 or less is refused before the call, matching the Unix half: 0 is
+// the System Idle Process rather than anything a worker row could describe, and
+// a row that records no pid must not read as one holding a live process.
 func processAlive(pid int) bool {
+	if pid <= 0 {
+		return false
+	}
 	h, err := syscall.OpenProcess(processQueryLimitedInformation, false, uint32(pid))
 	if err != nil {
 		return false

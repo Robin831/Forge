@@ -275,11 +275,24 @@ func TotalActiveCount(db *state.DB) (int, error) {
 	return len(workers), nil
 }
 
+// DispatchActiveWorkers returns the active dispatch pipeline workers across all
+// anvils — the rows DispatchTotalActiveCount counts, and therefore the rows
+// that occupy max_total_smiths.
+//
+// It adds nothing to state.DB.ActiveDispatchWorkers and exists only so the
+// dispatch-cap vocabulary stays in one package: DispatchTotalActiveCount is
+// derived from this function rather than from a second call of its own, so the
+// count a caller compares against the cap and the identities it names as
+// holding it are provably the same set of rows.
+func DispatchActiveWorkers(db *state.DB) ([]state.Worker, error) {
+	return db.ActiveDispatchWorkers()
+}
+
 // DispatchTotalActiveCount returns the total number of active dispatch pipeline
 // workers across all anvils, excluding lifecycle workers (quench, burnish).
 // This is the correct value to compare against max_total_smiths.
 func DispatchTotalActiveCount(db *state.DB) (int, error) {
-	workers, err := db.ActiveDispatchWorkers()
+	workers, err := DispatchActiveWorkers(db)
 	if err != nil {
 		return 0, err
 	}

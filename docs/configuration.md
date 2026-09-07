@@ -66,6 +66,7 @@ settings:
   copilot_daily_request_limit: 300  # 300 for Pro, 1500 for Pro+
   bellows_interval: 2m
   stale_interval: 5m
+  wedged_limit_polls: 3            # Consecutive polls one worker may hold max_total_smiths before a WARN
   go_race_detection: false         # Enable Go race detector globally (-race flag in Temper)
   temper_step_timeout: 5m          # Default timeout for a Temper step (per-step timeout still overrides)
   temper_git_timeout: 30s          # Timeout for internal git calls during Temper (e.g. VerifyClean)
@@ -615,7 +616,8 @@ row above).
 | `max_lifecycle_workers` | int | `2` | `0` (use default) | Global cap on concurrent lifecycle/bellows fix workers (quench/cifix, burnish/reviewfix, rebase, assay) across all PRs and anvils. Each fix worker spawns its own Claude session and is **not** counted against `max_total_smiths`, so this independent ceiling prevents a burst of stuck PRs from fanning out unbounded Claude sessions and OOM-crashing the host. `0` or unset falls back to the default of `2`. |
 | `merge_strategy` | string | `"squash"` | | How PRs are merged from Hearth TUI. Valid: `squash`, `merge`, `rebase`. |
 | `empty_diff_action` | string | `"attention"` | | What to do when a run is approved but its branch has **no commits** against the base — the work already landed on the base branch (e.g. a sibling PR shipped it first). The pipeline skips PR creation (it would fail with `No commits between <base> and <branch>`) and records a `smith_empty_result` event; the outcome never schedules a retry or counts against the dispatch circuit breaker, because a re-run reproduces the identical empty branch. Valid: `attention` (raise a Needs Attention entry and leave the bead open for the operator) and `close` (close the bead with a note). Unrecognised values log a warning and fall back to `attention`. |
-| `stale_interval` | duration | `5m` | `30s` or `0` | How long a worker's log can go without modification before marking as stalled. `0` disables stale detection. |
+| `stale_interval` | duration | `5m` | `30s` or `0` | How long a worker's log can go without modification before marking as stalled. `0` disables stale detection. A silent worker whose recorded **process is gone** is marked `failed` instead of `stalled` — `stalled` is a recoverable mask cleared by fresh writes from the very session that has died, so it would pin the row (and the `max_total_smiths` slot it holds) until an operator cleared it by hand. The same gone process must be observed on **two consecutive detector passes** (so a worker is failed roughly one further interval after it goes silent): a healthy pipeline briefly presents the identical row — the phase flips to `smith` before the new spawn records its pid, over a log a long verification phase has already left stale — and `failed` is terminal, so one sighting is not enough to end a worker on. The check applies to the `smith` and `schematic` phases only — the two that record a pid — because a row that has moved on to `temper` or `warden` still carries the pid of the Smith that finished before it, and a test suite outrunning `stale_interval` must not read as an abandoned worker. Rows deliberately handed off live (`monitoring` to Bellows, an operator `paused`) and rows recording no pid also keep the ordinary stalled behaviour. |
+| `wedged_limit_polls` | int | `3` | `0` (use default), negative to disable | How many **consecutive** poll cycles one worker may hold the global `max_total_smiths` limit before the daemon reports it at WARN, naming the blocking worker, its bead, phase and age. Saturation is the normal state of a busy Forge and keeps its ordinary `global smith limit reached, skipping dispatch` INFO line either way — the WARN is additional, and fires only for a worker that repeats across polls, which ordinary saturation does not do. Announced once per holder per continuous run and re-armed when that worker stops holding the limit, so a wedged worker does not re-announce itself every poll interval. `0` or unset takes the default of `3`; a **negative** value disables the WARN. |
 | `go_race_detection` | bool | `false` | | Enable the `-race` flag for Go tests in Temper globally. Per-anvil `go_race_detection` overrides this. |
 | `temper_step_timeout` | duration | `5m` | | Default timeout applied to a Temper verification step whose own per-step `timeout` is unset. A per-step timeout still overrides this. Raise it for long-but-legitimate test suites so they finish instead of being killed and reported as a phantom failure (timeouts are retried once without Smith, then escalated). |
 | `temper_git_timeout` | duration | `30s` | | Timeout for internal git invocations made during Temper verification (e.g. the `VerifyClean` status check). |
@@ -2376,6 +2378,7 @@ Environment variables with the `FORGE_` prefix override YAML values. Nested keys
 | `FORGE_SETTINGS_MERGE_STRATEGY` | `settings.merge_strategy` |
 | `FORGE_SETTINGS_EMPTY_DIFF_ACTION` | `settings.empty_diff_action` |
 | `FORGE_SETTINGS_STALE_INTERVAL` | `settings.stale_interval` |
+| `FORGE_SETTINGS_WEDGED_LIMIT_POLLS` | `settings.wedged_limit_polls` |
 | `FORGE_SETTINGS_TEMPER_STEP_TIMEOUT` | `settings.temper_step_timeout` |
 | `FORGE_SETTINGS_TEMPER_GIT_TIMEOUT` | `settings.temper_git_timeout` |
 | `FORGE_SETTINGS_WORKTREE_GIT_TIMEOUT` | `settings.worktree_git_timeout` |
@@ -2498,6 +2501,7 @@ The daemon watches `forge.yaml` via fsnotify. When the file changes, **only a su
 - `poll_interval` is re-read and the new value takes effect on the next cycle
 - `smith_timeout` is re-read and used for newly started smiths
 - `max_total_smiths` is re-read and applied to subsequent scheduling decisions
+- `wedged_limit_polls` is re-read by the dispatch step on every poll, so a new threshold applies to the next cycle
 - `max_lifecycle_workers` is re-read and applied to subsequent lifecycle fix-worker dispatches
 - `claude_flags` are re-read and used for newly started smiths
 - `smith_providers` and `stage_providers` are re-read and used for newly dispatched beads

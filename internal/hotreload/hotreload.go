@@ -327,6 +327,16 @@ func applyChanges(old, new *config.Config) []string {
 			old.Settings.MaxTotalSmiths, new.Settings.MaxTotalSmiths))
 	}
 
+	// Read live by the dispatch step on every poll, so a reload applies to the
+	// next cycle and this comparison only has to report it — but it has to
+	// report it, because reload swaps nothing in unless applyChanges names a
+	// change, and an unlisted live-read setting is reloadable in shape and
+	// inert in fact.
+	if old.Settings.WedgedLimitPolls != new.Settings.WedgedLimitPolls {
+		changes = append(changes, fmt.Sprintf("wedged_limit_polls: %d → %d",
+			old.Settings.WedgedLimitPolls, new.Settings.WedgedLimitPolls))
+	}
+
 	if !sliceEqual(old.Settings.ClaudeFlags, new.Settings.ClaudeFlags) {
 		changes = append(changes, "claude_flags changed")
 	}

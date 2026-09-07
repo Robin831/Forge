@@ -351,6 +351,18 @@ type Daemon struct {
 	// Last successful poll timestamp
 	lastPollTime atomic.Value // stores time.Time
 
+	// limitHolders tracks which workers have been occupying the global
+	// max_total_smiths limit across consecutive polls, so one that has stopped
+	// making progress while holding a slot can be named at WARN instead of
+	// hiding behind the ordinary saturation INFO line. Zero value is usable.
+	limitHolders limitHolderTracker
+
+	// deadPIDs remembers which stale worker rows named a process that no longer
+	// exists, so the liveness half of stale detection acts on a condition seen
+	// on two consecutive passes rather than on one sighting. Zero value is
+	// usable.
+	deadPIDs deadPIDWatch
+
 	// Per-anvil last-poll snapshot. Updated on every poll completion (success
 	// or error) by the OnAnvilDone callback. Replaces the historic
 	// EventPoll-row-per-success approach that drowned the events table —
@@ -3683,15 +3695,59 @@ func (d *Daemon) runStaleDetection(ctx context.Context) {
 }
 
 // checkStaleWorkers runs a single stale-detection pass for the given interval:
-// it marks newly-stalled workers and un-stalls any previously-stalled worker
-// whose log file has become fresh again (self-healing recovery). It is factored
-// out of runStaleDetection's ticker loop so it can be exercised directly in tests.
+// it fails any already-stalled worker whose recorded process has been confirmed
+// gone, marks newly-stalled workers, and un-stalls any previously-stalled
+// worker whose log file has become fresh again (self-healing recovery). It is
+// factored out of runStaleDetection's ticker loop so it can be exercised
+// directly in tests.
+//
+// The liveness escalation runs FIRST and over the rows that are already
+// stalled, which is what makes it a two-pass rule rather than a one-sighting
+// one: a row cannot be failed on the tick that first found it silent, only on a
+// later tick that finds it silent, still naming the same pid, and that pid
+// still gone. The pre-spawn window a healthy pipeline passes through — phase
+// flipped to `smith` before the new spawn writes its pid, over a log a long
+// temper run has already left stale — is therefore answered with the
+// recoverable 'stalled' mask, and the next tick either recovers it (the spawn
+// is writing) or sees a different pid. Running it before the new-stall loop is
+// what keeps the two sightings on two ticks: handled after, a row this pass has
+// just stalled would be re-read as an already-stalled one and confirmed against
+// the sighting taken seconds earlier.
 func (d *Daemon) checkStaleWorkers(interval time.Duration) {
+	silent, err := d.db.SilentStalledWorkers(interval)
+	if err != nil {
+		d.logger.Warn("stale detection: failed to query stalled workers", "error", err)
+		// Not fatal to the pass: the new-stall and recovery halves below are
+		// independent of it, and skipping the escalation only defers it.
+		silent = nil
+	}
+
 	stalled, err := d.db.StalledWorkers(interval)
 	if err != nil {
 		d.logger.Warn("stale detection: failed to query workers", "error", err)
 		return
 	}
+
+	// The rows this pass leaves silent and stalled, which are the only ones
+	// whose dead-pid sighting may still be confirmed by the NEXT pass: a row
+	// that has left the stale set, or that this pass has just failed, is no
+	// longer presenting the condition being confirmed.
+	watched := make(map[string]struct{}, len(silent)+len(stalled))
+	defer func() { d.deadPIDs.retain(watched) }()
+
+	for _, w := range silent {
+		// A stalled row whose process is confirmed gone is failed here: the
+		// mask can only be cleared by fresh writes from the session that has
+		// died, so left alone it holds its max_total_smiths slot
+		// (ActiveDispatchWorkers counts 'stalled') until an operator intervenes.
+		// This is also the only path that reaches a row stalled by an earlier
+		// daemon lifetime, which nothing else re-examines.
+		if d.terminateDeadStaleWorker(w) {
+			continue
+		}
+		watched[w.ID] = struct{}{}
+	}
+
 	for _, w := range stalled {
 		// Defensive skip: a paused (parked) worker legitimately stops producing
 		// log output while an operator pause holds it, so it must never be flagged
@@ -3701,6 +3757,21 @@ func (d *Daemon) checkStaleWorkers(interval time.Duration) {
 		if w.Status == state.WorkerPaused {
 			continue
 		}
+		// A worker whose process is GONE is not stalled, it is finished badly:
+		// 'stalled' is a mask that says "this may resume", and the recovery
+		// pass that would clear it is driven by fresh writes from the very
+		// session that has just been established as dead. Left stalled the row
+		// holds a dispatch slot forever (ActiveDispatchWorkers counts
+		// 'stalled'), which on a max_total_smiths of 1 stops the forge until an
+		// operator clears it by hand.
+		//
+		// The row is not ended here, though: this is the tick a healthy
+		// pipeline's pre-spawn window lands on, so the sighting is only
+		// recorded and the recoverable mask goes on as before. The escalation
+		// above acts on it the next time this row comes round still silent,
+		// still naming the same gone process.
+		d.noteStaleWorkerLiveness(w)
+		watched[w.ID] = struct{}{}
 		d.logger.Warn("marking worker as stalled — no log activity",
 			"worker", w.ID, "bead", w.BeadID, "anvil", w.Anvil,
 			"phase", w.Phase, "stale_interval", interval)
@@ -3724,6 +3795,10 @@ func (d *Daemon) checkStaleWorkers(interval time.Duration) {
 		return
 	}
 	for _, w := range recovered {
+		// Log activity resumed, so whatever this row's pid said is superseded:
+		// the sighting is dropped rather than left to be confirmed by a pass on
+		// the other side of a recovery.
+		d.deadPIDs.forget(w.ID)
 		d.logger.Info("un-stalling worker — log activity resumed",
 			"worker", w.ID, "bead", w.BeadID, "anvil", w.Anvil,
 			"phase", w.Phase, "stale_interval", interval)
@@ -4033,15 +4108,24 @@ func (d *Daemon) pollAndDispatch(ctx context.Context, fullPoll bool) {
 	// had already called InsertWorker: the DB count included them AND the
 	// thisCycle counter reduced the max for them, causing only one dispatch per
 	// cycle after the initial batch completed.
-	globalActive, err := worker.DispatchTotalActiveCount(d.db)
+	//
+	// The ROWS are read rather than only their count, because when they fill
+	// the cap the next question is which workers are holding it: one query
+	// answers both, where a count followed by a second lookup could report a
+	// limit held by a set that had already changed.
+	globalHolders, err := worker.DispatchActiveWorkers(d.db)
 	if err != nil {
 		d.logger.Error("checking global capacity", "error", err)
 		return
 	}
+	globalActive := len(globalHolders)
 	if globalActive >= maxTotal {
-		d.logger.Info("global smith limit reached, skipping dispatch", "max", maxTotal)
+		d.reportGlobalLimitReached(globalHolders, maxTotal)
 		return
 	}
+	// Dispatch is not limit-blocked this cycle, so no worker is holding it
+	// shut: every consecutive-poll count and every announcement is dropped.
+	d.limitHolders.release()
 
 	// Pause switch: skip all new dispatch while paused. Running workers are
 	// untouched and finish normally; only new claims/dispatch are skipped.

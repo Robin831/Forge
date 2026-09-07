@@ -5257,3 +5257,91 @@ func TestDB_ClearNeedsHumanIfReasonPrefix(t *testing.T) {
 		t.Errorf("the literal prefix should match, got cleared=%v err=%v", cleared, err)
 	}
 }
+
+// TestDB_SilentStalledWorkers pins the complement RecoveredStalledWorkers does
+// not return: the rows already carrying the 'stalled' mask whose logs are still
+// silent. StalledWorkers deliberately never returns a stalled row, so this is
+// the only query that gives a caller a SECOND look at one — which is what the
+// daemon's liveness check needs to confirm a dead pid it saw on an earlier
+// pass, and the only thing that ever re-examines a row stalled by a previous
+// daemon lifetime.
+func TestDB_SilentStalledWorkers(t *testing.T) {
+	tmpDir := t.TempDir()
+	db, err := Open(filepath.Join(tmpDir, "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	staleLog := func(name string) string {
+		p := filepath.Join(tmpDir, name)
+		if err := os.WriteFile(p, []byte("log"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		old := time.Now().Add(-20 * time.Minute)
+		if err := os.Chtimes(p, old, old); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	freshLog := filepath.Join(tmpDir, "fresh.log")
+	if err := os.WriteFile(freshLog, []byte("recent"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	insert := func(w Worker) {
+		if err := db.InsertWorker(&w); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Still silent → returned.
+	insert(Worker{ID: "w-silent", BeadID: "BD-1", Anvil: "anvil-1",
+		Status: WorkerStalled, Phase: "smith",
+		StartedAt: time.Now().Add(-25 * time.Minute), LogPath: staleLog("silent.log")})
+	// Stalled on age with no log at all → still silent, since nothing has ever
+	// spoken for it (RecoveredStalledWorkers declines to recover it for the
+	// same reason).
+	insert(Worker{ID: "w-nolog", BeadID: "BD-2", Anvil: "anvil-1",
+		Status: WorkerStalled, Phase: "smith",
+		StartedAt: time.Now().Add(-25 * time.Minute)})
+	// Writing again → the recovery pass's row, not this one's.
+	insert(Worker{ID: "w-fresh", BeadID: "BD-3", Anvil: "anvil-1",
+		Status: WorkerStalled, Phase: "smith",
+		StartedAt: time.Now().Add(-25 * time.Minute), LogPath: freshLog})
+	// Not stalled at all → out of scope; StalledWorkers owns that row.
+	insert(Worker{ID: "w-running", BeadID: "BD-4", Anvil: "anvil-1",
+		Status: WorkerRunning, Phase: "smith",
+		StartedAt: time.Now().Add(-25 * time.Minute), LogPath: staleLog("running.log")})
+	// A background phase is excluded exactly as it is from the global stall
+	// pass, so the two queries agree on which rows they speak for.
+	insert(Worker{ID: "w-bellows", BeadID: "BD-5", Anvil: "anvil-1",
+		Status: WorkerStalled, Phase: "bellows",
+		StartedAt: time.Now().Add(-25 * time.Minute), LogPath: staleLog("bellows.log")})
+
+	silent, err := db.SilentStalledWorkers(5 * time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := make(map[string]bool, len(silent))
+	for _, w := range silent {
+		got[w.ID] = true
+	}
+	want := map[string]bool{"w-silent": true, "w-nolog": true}
+	if len(got) != len(want) {
+		t.Fatalf("expected %v, got %v", want, got)
+	}
+	for id := range want {
+		if !got[id] {
+			t.Errorf("expected %s among the still-silent stalled rows, got %v", id, got)
+		}
+	}
+
+	// Disabled stale detection asks nothing of the database.
+	off, err := db.SilentStalledWorkers(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if off != nil {
+		t.Errorf("a non-positive threshold must return nothing, got %v", off)
+	}
+}
