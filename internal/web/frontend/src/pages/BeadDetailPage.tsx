@@ -25,7 +25,11 @@ import {
   type StatusResponse,
   type WorkerInfo,
 } from '../api'
-import { steerDisabledReason, steerIsResumeDelivery } from '../lib/workerStatus'
+import {
+  isSteerTargetStatus,
+  steerDisabledReason,
+  steerIsResumeDelivery,
+} from '../lib/workerStatus'
 import AppHeader from '../components/AppHeader'
 import BeadDepModal from '../components/BeadDepModal'
 import BeadLogsSection from '../components/BeadLogsSection'
@@ -150,18 +154,18 @@ export default function BeadDetailPage() {
 
   // activeWorker is the bead's in-flight Smith, if any. The bead is a steer
   // target across the whole daemon acceptance matrix: a live Smith
-  // (running/pending), a reviewing Warden (mode-B queue), or a paused-but-parked
-  // pipeline (steered via resume-with-message). The bead is "active" — and thus
-  // a steer target — exactly when one such worker exists.
+  // (running/pending), a reviewing Warden (mode-B queue), a paused-but-parked
+  // pipeline (steered via resume-with-message), or any of those masked
+  // 'stalled' by the watchdog. The bead is "active" — and thus a steer target —
+  // exactly when one such worker exists.
+  //
+  // isSteerTargetStatus is the shared set (lib/workerStatus) rather than a
+  // fourth inline copy: this page decides WHICH worker the composer aims at and
+  // steerDisabledReason then decides whether it may be used, so the two must
+  // read one list — written out here, a status added to the matrix left the
+  // composer unrendered on this page and no reason string could say why.
   const activeWorker = useMemo<BeadDetailWorker | null>(
-    () =>
-      (data?.workers ?? []).find(
-        (w) =>
-          w.status === 'running' ||
-          w.status === 'pending' ||
-          w.status === 'reviewing' ||
-          w.status === 'paused',
-      ) ?? null,
+    () => (data?.workers ?? []).find((w) => isSteerTargetStatus(w.status)) ?? null,
     [data?.workers],
   )
 

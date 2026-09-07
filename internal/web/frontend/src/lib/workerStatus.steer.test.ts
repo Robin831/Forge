@@ -13,7 +13,9 @@ describe('steerDisabledReason', () => {
   })
 
   it('rejects terminal statuses (done/failed/killed) as having no active pipeline', () => {
-    for (const status of ['done', 'failed', 'killed', 'timeout', 'stalled', 'monitoring']) {
+    // 'stalled' is deliberately absent: it is not terminal, it is a watchdog
+    // mask over a live row — see the stalled case below.
+    for (const status of ['done', 'failed', 'killed', 'timeout', 'monitoring']) {
       const w: Steerable = { status, session_id: 'sess-1', model: 'claude-opus-4-6' }
       expect(steerDisabledReason(w)).toMatch(/no active pipeline/i)
     }
@@ -41,6 +43,21 @@ describe('steerDisabledReason', () => {
   it('allows a paused worker (delivered as resume-with-message)', () => {
     const w: Steerable = { status: 'paused', session_id: 'sess-1', model: 'claude-opus-4-6' }
     expect(steerDisabledReason(w)).toBeNull()
+  })
+
+  it('allows a stalled worker — its process is running and the daemon accepts', () => {
+    // The watchdog writes 'stalled' over a live row when its LOG goes quiet;
+    // the pipeline goroutine and its steer mailbox are untouched, and the
+    // daemon gates on that handle rather than on the status. Disabled, the
+    // composer claimed 'no active pipeline' about a worker whose process is
+    // still running.
+    const w: Steerable = { status: 'stalled', session_id: 'sess-1', model: 'claude-opus-4-6' }
+    expect(steerDisabledReason(w)).toBeNull()
+  })
+
+  it('rejects a stalled non-Claude session like any other', () => {
+    const w: Steerable = { status: 'stalled', model: 'gemini-2.5-pro' }
+    expect(steerDisabledReason(w)).toMatch(/not a claude session/i)
   })
 
   it('allows a running Claude worker before its session id is captured', () => {
@@ -74,8 +91,10 @@ describe('steerIsResumeDelivery', () => {
     expect(steerIsResumeDelivery({ status: 'paused' })).toBe(true)
   })
 
-  it('is false for running/pending/reviewing and terminal statuses', () => {
-    for (const status of ['running', 'pending', 'reviewing', 'done', 'failed']) {
+  it('is false for running/pending/reviewing/stalled and terminal statuses', () => {
+    // A stalled worker is steered through the steer endpoint, not resumed:
+    // nothing parked it, so there is no resume for a message to ride on.
+    for (const status of ['running', 'pending', 'reviewing', 'stalled', 'done', 'failed']) {
       expect(steerIsResumeDelivery({ status })).toBe(false)
     }
   })

@@ -141,6 +141,26 @@ describe('WorkerPanel actions', () => {
     expect(screen.queryByTestId('worker-panel-kill-w1')).not.toBeInTheDocument()
     expect(screen.getByTestId('worker-panel-w1')).toBeInTheDocument()
   })
+
+  it('offers the kill button for a stalled worker', async () => {
+    // The daemon's killWorkerProcess applies no status gate — it signals the
+    // PID on the row — and a stalled worker's process is still running, so it
+    // is exactly the one an operator wants to end from the panel that stays
+    // visible for it.
+    const user = userEvent.setup()
+    renderPanel(worker({ id: 'w1', status: 'stalled' }))
+
+    await user.click(screen.getByTestId('worker-panel-kill-w1'))
+    const confirm = await screen.findByRole('button', { name: 'Kill worker' })
+    await user.click(confirm)
+
+    expect(killWorkerMock).toHaveBeenCalledWith('w1')
+  })
+
+  it('hides the kill button for a terminal worker', () => {
+    renderPanel(worker({ id: 'w1', status: 'failed', completed_at: '2024-01-01T00:05:00Z' }))
+    expect(screen.queryByTestId('worker-panel-kill-w1')).not.toBeInTheDocument()
+  })
 })
 
 describe('WorkerPanel pause/resume', () => {
