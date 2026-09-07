@@ -42,7 +42,9 @@ func (g *GitLabProvider) CreatePR(ctx context.Context, params CreateParams) (*PR
 	if params.Body == "" {
 		params.Body = buildPRBody(params)
 	} else {
-		params.Body = InjectClosesLine(params.Body, params.ExternalRef)
+		params.Body = EnsureIssueReferences(params.Body,
+			ParseIssueRef(params.ExternalRef), params.ExternalRefNoClose,
+			ParseSourceRefs(params.BeadDescription))
 	}
 	// Always include the forge-managed marker on MRs Forge creates so
 	// reconcileOpenPRs can distinguish them from external MRs that merely

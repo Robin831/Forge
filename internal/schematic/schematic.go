@@ -84,6 +84,12 @@ const (
 	// rather than duplicated.
 	EventKindDecomposeFailed = "schematic_decompose_failed"
 
+	// EventKindIssueSyncFailed is emitted when decomposition created sub-beads
+	// but pushing them to GitHub (bd github push) failed or left children
+	// without an external_ref. Without an issue, a child's PR closes nothing
+	// on merge and the bead claim goes stale.
+	EventKindIssueSyncFailed = "schematic_issue_sync_failed"
+
 	// EventKindParseFailed is emitted when the AI verdict could not be parsed
 	// and the schematic skipped rather than acting on unstructured output.
 	EventKindParseFailed = "schematic_parse_failed"
@@ -400,6 +406,12 @@ func Run(ctx context.Context, cfg Config, bead poller.Bead, anvilPath string, pv
 					bead.ID, len(subs), err))
 		} else {
 			result.SubBeads = subs
+			// Make sure every child has a GitHub issue (external_ref) before
+			// any of them can be dispatched. bd's per-command auto-sync
+			// targets only the last-touched bead of each command, so a
+			// decomposition's children routinely end up issueless — and a PR
+			// for an issueless bead closes nothing on merge (Forge-jhf1).
+			syncSubBeadIssues(ctx, cfg, bead, subs, anvilPath, defaultRunCmd)
 		}
 
 	case "clarify":
@@ -1264,4 +1276,118 @@ Output your verdict as a JSON block:
 `)
 
 	return b.String()
+}
+
+// githubSyncUnconfigured reports whether a bd github push failure means the
+// anvil simply has no GitHub sync configured (no token/repository) — expected
+// on deployments that do not mirror beads to GitHub issues — as opposed to a
+// real sync failure on a deployment that does.
+func githubSyncUnconfigured(out []byte, err error) bool {
+	text := strings.ToLower(string(out))
+	if err != nil {
+		text += " " + strings.ToLower(err.Error())
+	}
+	return strings.Contains(text, "is not configured")
+}
+
+// subBeadExternalRef fetches a sub-bead's external_ref via bd show. An empty
+// string with a nil error means the bead exists but has no GitHub issue yet.
+func subBeadExternalRef(ctx context.Context, anvilPath, beadID string, run bdRunner) (string, error) {
+	showCtx, cancel := context.WithTimeout(ctx, executil.BdTimeout())
+	defer cancel()
+	out, err := run(showCtx, anvilPath, "show", beadID, "--json")
+	if err != nil {
+		return "", fmt.Errorf("bd show %s: %w: %s", beadID, err, strings.TrimSpace(string(out)))
+	}
+
+	// bd show --json returns an array with one element; tolerate a bare object
+	// and trailing diagnostics (same treatment as parseDepsFromShow).
+	var items []json.RawMessage
+	if derr := executil.DecodeJSON(out, &items); derr != nil || len(items) == 0 {
+		items = []json.RawMessage{json.RawMessage(out)}
+	}
+	var parsed struct {
+		ExternalRef string `json:"external_ref"`
+	}
+	if derr := executil.DecodeJSON(items[0], &parsed); derr != nil {
+		return "", fmt.Errorf("bd show %s: parsing external_ref: %w", beadID, derr)
+	}
+	return parsed.ExternalRef, nil
+}
+
+// subBeadsWithoutExternalRef returns the IDs from ids whose beads have no
+// external_ref. A bead whose lookup fails is counted as missing — the sync
+// exists to guarantee the ref, and over-syncing is idempotent while
+// under-syncing recreates the orphaned-claim bug.
+func subBeadsWithoutExternalRef(ctx context.Context, anvilPath string, ids []string, run bdRunner) []string {
+	var missing []string
+	for _, id := range ids {
+		ref, err := subBeadExternalRef(ctx, anvilPath, id, run)
+		if err != nil {
+			log.Printf("[schematic] external_ref lookup failed for %s (counting as missing): %v", id, err)
+			missing = append(missing, id)
+			continue
+		}
+		if ref == "" {
+			missing = append(missing, id)
+		}
+	}
+	return missing
+}
+
+// syncSubBeadIssues guarantees that every sub-bead created by a decomposition
+// has a GitHub issue (external_ref) before any of them can be dispatched. bd's
+// GitHub auto-sync runs per command and targets only the bead a command last
+// touched, so a decomposition — N bd creates, each immediately followed by dep
+// wiring that touches the parent — routinely leaves children with no issue at
+// all. Their PRs then have no issue to close, the beads' claims go stale, and
+// operators hand-close both (Forge-jhf1).
+//
+// Best-effort by design: a failure is logged and surfaced as a
+// schematic_issue_sync_failed event, and the PR step's own external_ref guard
+// is the backstop that syncs an individual bead just before its PR is created.
+func syncSubBeadIssues(ctx context.Context, cfg Config, parent poller.Bead, subs []SubBead, anvilPath string, run bdRunner) {
+	if len(subs) == 0 {
+		return
+	}
+	ids := make([]string, len(subs))
+	for i, sb := range subs {
+		ids[i] = sb.ID
+	}
+
+	missing := subBeadsWithoutExternalRef(ctx, anvilPath, ids, run)
+	if len(missing) == 0 {
+		log.Printf("[schematic:%s] All %d sub-beads already have external_refs", parent.ID, len(ids))
+		return
+	}
+
+	pushCtx, cancel := context.WithTimeout(ctx, executil.BdTimeout())
+	pushArgs := append([]string{"github", "push"}, missing...)
+	out, err := run(pushCtx, anvilPath, pushArgs...)
+	cancel()
+	if githubSyncUnconfigured(out, err) {
+		// No GitHub sync on this anvil — nothing to guarantee.
+		log.Printf("[schematic:%s] GitHub sync not configured; skipping issue sync for %d sub-bead(s)", parent.ID, len(missing))
+		return
+	}
+	if err != nil {
+		msg := fmt.Sprintf("Decomposition of %s: bd github push failed for %d sub-bead(s) (%s): %v: %s",
+			parent.ID, len(missing), strings.Join(missing, ", "), err, strings.TrimSpace(string(out)))
+		log.Printf("[schematic:%s] %s", parent.ID, msg)
+		cfg.emitEvent(EventKindIssueSyncFailed, msg)
+		return
+	}
+
+	// Verify the push actually produced refs — a push that "succeeds" without
+	// linking issues is exactly the silence this function exists to break.
+	still := subBeadsWithoutExternalRef(ctx, anvilPath, missing, run)
+	if len(still) > 0 {
+		msg := fmt.Sprintf("Decomposition of %s: %d sub-bead(s) still have no external_ref after bd github push: %s",
+			parent.ID, len(still), strings.Join(still, ", "))
+		log.Printf("[schematic:%s] %s", parent.ID, msg)
+		cfg.emitEvent(EventKindIssueSyncFailed, msg)
+		return
+	}
+	log.Printf("[schematic:%s] Synced GitHub issues for %d sub-bead(s): %s",
+		parent.ID, len(missing), strings.Join(missing, ", "))
 }

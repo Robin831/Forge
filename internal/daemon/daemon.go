@@ -447,6 +447,13 @@ type Daemon struct {
 	// replaced in tests.
 	beadShower func(anvilPath, beadID string) (stdout []byte, stderr string, err error)
 
+	// githubPusher runs `bd github push <bead>` so a bead that reached the PR
+	// step without an external_ref gets its GitHub issue created before the PR
+	// is opened (bd's per-command auto-sync can miss beads written in batch,
+	// e.g. decomposition children). Defaults to defaultGitHubPusher; may be
+	// replaced in tests.
+	githubPusher func(anvilPath, beadID string) (output string, err error)
+
 	// beadFetcher fetches a full bead by ID (via `bd show`) for the manual
 	// create-PR-from-existing-branch recovery. Defaults to crucible.FetchBead;
 	// may be replaced in tests to avoid a real bd invocation.
@@ -724,6 +731,7 @@ func New(cfg *config.Config, configPath string) (*Daemon, error) {
 		return nil
 	}
 	d.beadShower = defaultBeadShower
+	d.githubPusher = defaultGitHubPusher
 	d.beadFetcher = crucible.FetchBead
 	d.parentCloser = func(anvilPath, beadID, reason string) error {
 		// Use context.Background() so the bd close call succeeds even during
@@ -1199,6 +1207,9 @@ func (d *Daemon) Run(ctx context.Context) error {
 	// agree on the same id.
 	forgeID := d.cfg.Load().Settings.ResolvedForgeID()
 	vcs.SetForgeID(forgeID)
+	// Publish the no-close label set (default: innmeldt) used by the PR-body
+	// builders to decide Closes vs Refs for an external_ref issue.
+	vcs.SetNoCloseLabels(d.cfg.Load().Settings.GitHubNoCloseLabels)
 
 	d.logger.Info("daemon started",
 		"pid", os.Getpid(),
@@ -1288,6 +1299,11 @@ func (d *Daemon) Run(ctx context.Context) error {
 			if oldID != newID {
 				vcs.SetForgeID(newID)
 				d.logger.Info("forge_id changed via config reload", "old", oldID, "new", newID)
+			}
+			if !slices.Equal(old.Settings.GitHubNoCloseLabels, new.Settings.GitHubNoCloseLabels) {
+				vcs.SetNoCloseLabels(new.Settings.GitHubNoCloseLabels)
+				d.logger.Info("github_no_close_labels changed via config reload",
+					"old", old.Settings.GitHubNoCloseLabels, "new", new.Settings.GitHubNoCloseLabels)
 			}
 			if d.lifecycleMgr != nil {
 				d.lifecycleMgr.SetThresholds(
@@ -4950,12 +4966,10 @@ func (d *Daemon) finalizePipeline(ctx context.Context, outcome *pipeline.Outcome
 		reviewerNotes = outcome.ReviewResult.Summary
 	}
 
-	// Last-chance lookup: fetch the latest external_ref from bd in case it
-	// was empty at dispatch time (e.g. GitHub auto-sync hadn't run yet).
-	externalRef := bead.ExternalRef
-	if externalRef == "" {
-		externalRef = d.fetchExternalRef(anvilPath, bead.ID)
-	}
+	// Guarantee an external_ref before the PR exists: snapshot → fresh bd
+	// show → explicit bd github push (decomposition children routinely miss
+	// bd's per-command auto-sync).
+	externalRef := d.ensureExternalRef(anvilPath, bead)
 
 	// Wrap CreatePR in transient-failure retry: a momentary gh/GitHub blip
 	// (transient 401, rate-limited 403, 5xx, network) is retried with bounded
@@ -5169,11 +5183,9 @@ func (d *Daemon) applyNoChangesNeededOutcome(ctx context.Context, bead poller.Be
 		// causes of the orphaned-branch scenario in the first place.
 		prCtx, prCancel := context.WithTimeout(context.Background(), 2*time.Minute)
 		defer prCancel()
-		// Last-chance external_ref lookup for orphaned branch PR creation.
-		orphanExtRef := bead.ExternalRef
-		if orphanExtRef == "" {
-			orphanExtRef = d.fetchExternalRef(anvilPath, bead.ID)
-		}
+		// Guarantee an external_ref for orphaned branch PR creation (bd github
+		// push fallback included).
+		orphanExtRef := d.ensureExternalRef(anvilPath, bead)
 		pr, prErr := d.vcsForAnvil(bead.Anvil).CreatePR(prCtx, vcs.CreateParams{
 			WorktreePath:    anvilPath,
 			BeadID:          bead.ID,
@@ -5532,11 +5544,9 @@ func (d *Daemon) recoverStrandedBranchPR(ctx context.Context, bead poller.Bead, 
 	prCtx, prCancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer prCancel()
 
-	// Last-chance external_ref lookup in case it was empty at dispatch time.
-	externalRef := bead.ExternalRef
-	if externalRef == "" {
-		externalRef = d.fetchExternalRef(anvilPath, bead.ID)
-	}
+	// Guarantee an external_ref before the PR exists (bd github push fallback
+	// included).
+	externalRef := d.ensureExternalRef(anvilPath, bead)
 
 	pr, err := provider.CreatePR(prCtx,
 		d.buildPRCreateParams(bead, anvilPath, branch, "", "", externalRef))
@@ -5720,11 +5730,9 @@ func (d *Daemon) openPRForExistingBranch(ctx context.Context, beadID, anvilName 
 		return 0, "", fmt.Errorf("origin/%s does not carry a changelog fragment (changelog.d/%s.md or %s.<lang>.md); refusing to open a PR for incomplete work", branch, beadID, beadID)
 	}
 
-	// Last-chance external_ref lookup in case it was empty in the bead record.
-	externalRef := bead.ExternalRef
-	if externalRef == "" {
-		externalRef = d.fetchExternalRef(anvilPath, bead.ID)
-	}
+	// Guarantee an external_ref before the PR exists (bd github push fallback
+	// included).
+	externalRef := d.ensureExternalRef(anvilPath, bead)
 
 	// Dedicated timeout for PR creation independent of the caller ctx, which may
 	// carry a short IPC deadline.
@@ -9236,6 +9244,61 @@ func (d *Daemon) fetchExternalRef(anvilPath, beadID string) string {
 		d.logger.Info("last-chance lookup found external_ref", "bead", beadID, "external_ref", resp.ExternalRef)
 	}
 	return resp.ExternalRef
+}
+
+// defaultGitHubPusher is the real implementation behind Daemon.githubPusher:
+// one `bd github push <bead>` invocation in the anvil directory, combined
+// output returned for classification.
+func defaultGitHubPusher(anvilPath, beadID string) (string, error) {
+	cmd, cancel := executil.BdCommand(context.Background(), "github", "push", beadID)
+	defer cancel()
+	cmd.Dir = anvilPath
+	out, err := cmd.CombinedOutput()
+	return string(out), err
+}
+
+// ensureExternalRef returns the bead's external_ref, doing everything it can
+// to produce one before a PR is created: the dispatch-time snapshot, a fresh
+// bd show (GitHub auto-sync may have run since dispatch), and finally an
+// explicit `bd github push` followed by a re-fetch. The last step is what
+// guarantees decomposition children — which bd's per-command auto-sync
+// routinely skips — get their issue before their PR exists, so the PR's
+// Closes reference has something to point at and the bead's claim cannot go
+// stale on merge. Returns "" when the anvil has no GitHub sync configured or
+// every attempt failed (logged; the PR is still created, without a reference).
+func (d *Daemon) ensureExternalRef(anvilPath string, bead poller.Bead) string {
+	if bead.ExternalRef != "" {
+		return bead.ExternalRef
+	}
+	if ref := d.fetchExternalRef(anvilPath, bead.ID); ref != "" {
+		return ref
+	}
+	if d.githubPusher == nil {
+		return ""
+	}
+	out, err := d.githubPusher(anvilPath, bead.ID)
+	lower := strings.ToLower(out)
+	if err != nil {
+		lower += " " + strings.ToLower(err.Error())
+	}
+	if strings.Contains(lower, "is not configured") {
+		// No GitHub sync on this anvil — a missing external_ref is normal.
+		d.logger.Debug("bead has no external_ref and GitHub sync is not configured", "bead", bead.ID)
+		return ""
+	}
+	if err != nil {
+		d.logger.Warn("bd github push failed; PR will carry no issue reference",
+			"bead", bead.ID, "error", err, "output", strings.TrimSpace(out))
+		return ""
+	}
+	ref := d.fetchExternalRef(anvilPath, bead.ID)
+	if ref == "" {
+		d.logger.Warn("bead still has no external_ref after bd github push; PR will carry no issue reference",
+			"bead", bead.ID)
+		return ""
+	}
+	d.logger.Info("created GitHub issue for bead at PR step", "bead", bead.ID, "external_ref", ref)
+	return ref
 }
 
 // maybeCloseDecomposedParent auto-closes a decomposed parent bead when it has

@@ -220,7 +220,7 @@ avoid addressing legitimate review feedback.
 **Parent**: {{.Bead.Parent}}
 {{- end}}
 {{- if .Bead.ExternalRef}}
-**External Reference**: {{.Bead.ExternalRef}} — if this is a GitHub issue (e.g. a URL like https://github.com/org/repo/issues/42 or a shorthand like "gh-42"), include ` + "`" + `Closes #N` + "`" + ` in your PR body with the issue number. For non-GitHub references (e.g. "jira-123"), omit the closing keyword.
+**External Reference**: {{.Bead.ExternalRef}} — do NOT write ` + "`" + `Closes` + "`" + `/` + "`" + `Fixes` + "`" + `/` + "`" + `Resolves` + "`" + ` issue references in your PR body, commit messages, or changelog fragment: the Forge derives the correct reference from this external_ref and appends it to the PR body itself. A hand-written closing reference is demoted, and one pointing at another bead's issue would close the wrong issue.
 {{- end}}
 
 ### Description

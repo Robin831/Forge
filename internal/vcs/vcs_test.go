@@ -317,44 +317,6 @@ func TestGitHubIssueNumber(t *testing.T) {
 	}
 }
 
-func TestInjectClosesLine(t *testing.T) {
-	t.Run("injects when external_ref is gh shorthand", func(t *testing.T) {
-		body := "Some PR body"
-		got := InjectClosesLine(body, "gh-42")
-		assert.Contains(t, got, "Closes #42")
-	})
-
-	t.Run("injects when external_ref is GitHub URL", func(t *testing.T) {
-		body := "Some PR body"
-		got := InjectClosesLine(body, "https://github.com/org/repo/issues/7")
-		assert.Contains(t, got, "Closes #7")
-	})
-
-	t.Run("no injection for non-GitHub ref", func(t *testing.T) {
-		body := "Some PR body"
-		got := InjectClosesLine(body, "jira-123")
-		assert.Equal(t, body, got)
-	})
-
-	t.Run("no injection for empty ref", func(t *testing.T) {
-		body := "Some PR body"
-		got := InjectClosesLine(body, "")
-		assert.Equal(t, body, got)
-	})
-
-	t.Run("no duplicate when body already has Closes", func(t *testing.T) {
-		body := "Some PR body\n\nCloses #42"
-		got := InjectClosesLine(body, "gh-42")
-		assert.Equal(t, body, got)
-	})
-
-	t.Run("no duplicate case insensitive", func(t *testing.T) {
-		body := "Some PR body\n\ncloses #42"
-		got := InjectClosesLine(body, "gh-42")
-		assert.Equal(t, body, got)
-	})
-}
-
 func TestBuildPRBody_ExternalRef(t *testing.T) {
 	t.Run("includes Closes line when external_ref is set", func(t *testing.T) {
 		body := buildPRBody(CreateParams{
@@ -363,6 +325,15 @@ func TestBuildPRBody_ExternalRef(t *testing.T) {
 			ExternalRef: "gh-42",
 		})
 		assert.Contains(t, body, "Closes #42")
+	})
+
+	t.Run("qualified form for a full issue URL", func(t *testing.T) {
+		body := buildPRBody(CreateParams{
+			BeadID:      "Forge-test",
+			Branch:      "forge/test",
+			ExternalRef: "https://github.com/FHIDev/Munin/issues/5574",
+		})
+		assert.Contains(t, body, "Closes FHIDev/Munin#5574")
 	})
 
 	t.Run("no Closes line for non-GitHub ref", func(t *testing.T) {
@@ -390,9 +361,65 @@ func TestBuildPRBody_ExternalRef(t *testing.T) {
 			ExternalRef:   "gh-42",
 			ChangeSummary: "Fixed the bug.\n\nCloses #42",
 		})
-		// Count occurrences — should be exactly 1
-		count := len(ClosesPattern().FindAllString(body, -1))
+		count := strings.Count(body, "Closes #42")
 		assert.Equal(t, 1, count, "should not duplicate Closes #42")
+	})
+
+	// Regression (Forge-jhf1): a stray "Closes #N" in the quoted bead
+	// description or a model-written summary used to suppress the correct
+	// injection entirely — and worse, GitHub would act on the stray one.
+	t.Run("stray Closes to another issue is demoted and correct ref still appended", func(t *testing.T) {
+		body := buildPRBody(CreateParams{
+			BeadID:          "Forge-test",
+			Branch:          "forge/test",
+			ExternalRef:     "https://github.com/FHIDev/Munin/issues/5499",
+			ChangeSummary:   "Ported the widget.\n\nCloses FHIDev/Munin#5508",
+			BeadDescription: "Bug reported upstream. Closes #5411 was mentioned in triage.",
+		})
+		assert.Contains(t, body, "Closes FHIDev/Munin#5499")
+		assert.NotContains(t, body, "Closes FHIDev/Munin#5508")
+		assert.NotContains(t, body, "Closes #5411")
+		assert.Contains(t, body, "Refs FHIDev/Munin#5508")
+		assert.Contains(t, body, "Refs #5411")
+	})
+
+	// Regression (Forge-jhf1): every generated body for a bead with a GitHub
+	// external_ref must reference that issue — no body shape may suppress it.
+	t.Run("body always references the external_ref issue", func(t *testing.T) {
+		ref := "https://github.com/FHIDev/Munin/issues/5525"
+		shapes := []CreateParams{
+			{BeadID: "b1", Branch: "x", ExternalRef: ref},
+			{BeadID: "b2", Branch: "x", ExternalRef: ref, ChangeSummary: "Closes #999"},
+			{BeadID: "b3", Branch: "x", ExternalRef: ref, BeadDescription: "closes #123 and fixes #456"},
+			{BeadID: "b4", Branch: "x", ExternalRef: ref, ChangeSummary: "s", ReviewerNotes: "n", BeadDescription: "d", BeadTitle: "t", BeadType: "bug"},
+		}
+		for _, p := range shapes {
+			body := buildPRBody(p)
+			assert.Contains(t, body, "FHIDev/Munin#5525",
+				"bead %s: generated body must reference the external_ref issue", p.BeadID)
+		}
+	})
+
+	t.Run("no-close external_ref gets Refs, never Closes", func(t *testing.T) {
+		body := buildPRBody(CreateParams{
+			BeadID:             "Forge-test",
+			Branch:             "forge/test",
+			ExternalRef:        "https://github.com/FHIDev/Munin/issues/5525",
+			ExternalRefNoClose: true,
+		})
+		assert.Contains(t, body, "Refs FHIDev/Munin#5525")
+		assert.NotContains(t, body, "Closes")
+	})
+
+	t.Run("wicket Source issue gets a Refs line alongside Closes", func(t *testing.T) {
+		body := buildPRBody(CreateParams{
+			BeadID:          "Forge-test",
+			Branch:          "forge/test",
+			ExternalRef:     "https://github.com/FHIDev/Munin/issues/5525",
+			BeadDescription: "User-reported bug.\n\nSource: https://github.com/FHIDev/Munin/issues/5524",
+		})
+		assert.Contains(t, body, "Closes FHIDev/Munin#5525")
+		assert.Contains(t, body, "Refs FHIDev/Munin#5524")
 	})
 }
 

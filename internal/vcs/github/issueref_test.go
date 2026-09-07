@@ -1,0 +1,125 @@
+package github
+
+import (
+	"context"
+	"errors"
+	"strings"
+	"testing"
+
+	"github.com/Robin831/Forge/internal/vcs"
+	"github.com/stretchr/testify/assert"
+)
+
+// Regression (Forge-jhf1): every generated PR body for a bead with a GitHub
+// external_ref must carry a reference derived from that ref — no body shape
+// (stray model-written Closes lines, quoted descriptions, empty sections) may
+// suppress it. Six of ten merged-work PRs in one sweep carried no reference.
+func TestBuildDefaultBodyAlwaysReferencesExternalRef(t *testing.T) {
+	ref := "https://github.com/FHIDev/Munin/issues/5525"
+	shapes := []vcs.CreateParams{
+		{BeadID: "b1", Branch: "x", ExternalRef: ref},
+		{BeadID: "b2", Branch: "x", ExternalRef: ref, ChangeSummary: "Fixed.\n\nCloses #5411"},
+		{BeadID: "b3", Branch: "x", ExternalRef: ref, BeadDescription: "Triage said closes #999.", BeadTitle: "t", BeadType: "bug"},
+		{BeadID: "b4", Branch: "x", ExternalRef: ref, ChangeSummary: "s", ReviewerNotes: "n", BeadDescription: "d"},
+	}
+	for _, p := range shapes {
+		body := buildDefaultBody(p)
+		assert.Contains(t, body, "Closes FHIDev/Munin#5525",
+			"bead %s: generated body must close the external_ref issue", p.BeadID)
+	}
+}
+
+func TestBuildDefaultBodyCrossRepoQualifiedForm(t *testing.T) {
+	// A PR in Fhi.Munin.Explorer closing an issue in FHIDev/Munin must use
+	// the qualified form — a bare "#N" resolves against Explorer and closes
+	// nothing, silently. The qualified form is emitted unconditionally: it is
+	// equally valid for a PR in the issue's own repository.
+	body := buildDefaultBody(vcs.CreateParams{
+		BeadID:      "Fhi.Metadata-8e2ev",
+		Branch:      "forge/Fhi.Metadata-8e2ev",
+		ExternalRef: "https://github.com/FHIDev/Munin/issues/5499",
+	})
+	assert.Contains(t, body, "Closes FHIDev/Munin#5499")
+	assert.NotContains(t, body, "Closes #5499")
+}
+
+func TestBuildDefaultBodyDemotesWrongIssueCloses(t *testing.T) {
+	body := buildDefaultBody(vcs.CreateParams{
+		BeadID:        "b",
+		Branch:        "x",
+		ExternalRef:   "https://github.com/FHIDev/Munin/issues/5499",
+		ChangeSummary: "Ported.\n\nCloses FHIDev/Munin#5508",
+	})
+	assert.NotContains(t, body, "Closes FHIDev/Munin#5508",
+		"a closing reference to a sibling's issue must not survive")
+	assert.Contains(t, body, "Refs FHIDev/Munin#5508")
+	assert.Contains(t, body, "Closes FHIDev/Munin#5499")
+}
+
+func TestBuildDefaultBodyNoCloseAndSourceRefs(t *testing.T) {
+	// The innmeldt rule: a no-close external_ref gets Refs, and a wicket
+	// "Source:" issue always gets Refs — Fhi.Metadata-6d4hd should have been
+	// "Closes #5525" + "Refs #5524" and had neither.
+	body := buildDefaultBody(vcs.CreateParams{
+		BeadID:          "Fhi.Metadata-6d4hd",
+		Branch:          "x",
+		ExternalRef:     "https://github.com/FHIDev/Munin/issues/5525",
+		BeadDescription: "User report.\n\nSource: https://github.com/FHIDev/Munin/issues/5524",
+	})
+	assert.Contains(t, body, "Closes FHIDev/Munin#5525")
+	assert.Contains(t, body, "Refs FHIDev/Munin#5524")
+}
+
+func TestIssueHasNoCloseLabel(t *testing.T) {
+	orig := issueLabelFetcher
+	t.Cleanup(func() { issueLabelFetcher = orig })
+
+	munin := vcs.IssueRef{Owner: "FHIDev", Repo: "Munin", Number: "5525"}
+
+	t.Run("labelled issue is no-close", func(t *testing.T) {
+		issueLabelFetcher = func(ctx context.Context, ref vcs.IssueRef) ([]string, error) {
+			return []string{"bug", "Innmeldt"}, nil
+		}
+		assert.True(t, issueHasNoCloseLabel(context.Background(), munin),
+			"label match is case-insensitive")
+	})
+
+	t.Run("unlabelled issue is closable", func(t *testing.T) {
+		issueLabelFetcher = func(ctx context.Context, ref vcs.IssueRef) ([]string, error) {
+			return []string{"bug"}, nil
+		}
+		assert.False(t, issueHasNoCloseLabel(context.Background(), munin))
+	})
+
+	t.Run("lookup failure fails open to closable", func(t *testing.T) {
+		issueLabelFetcher = func(ctx context.Context, ref vcs.IssueRef) ([]string, error) {
+			return nil, errors.New("gh: connect timeout")
+		}
+		assert.False(t, issueHasNoCloseLabel(context.Background(), munin))
+	})
+
+	t.Run("unqualified or zero refs are never looked up", func(t *testing.T) {
+		called := false
+		issueLabelFetcher = func(ctx context.Context, ref vcs.IssueRef) ([]string, error) {
+			called = true
+			return []string{"innmeldt"}, nil
+		}
+		assert.False(t, issueHasNoCloseLabel(context.Background(), vcs.IssueRef{Number: "42"}))
+		assert.False(t, issueHasNoCloseLabel(context.Background(), vcs.IssueRef{}))
+		assert.False(t, called, "gh must not be invoked without owner/repo")
+	})
+}
+
+func TestBuildDefaultBodyFooterIntact(t *testing.T) {
+	body := buildDefaultBody(vcs.CreateParams{
+		BeadID:      "b",
+		Branch:      "x",
+		ExternalRef: "gh-42",
+	})
+	// The reference block must sit above the footer, and the footer must
+	// still close the body.
+	refIdx := strings.Index(body, "Closes #42")
+	footIdx := strings.Index(body, "---\nBead: b | Branch: x")
+	assert.Greater(t, footIdx, refIdx, "references render before the footer")
+	assert.True(t, strings.Contains(body, "Generated by [The Forge]"))
+}
