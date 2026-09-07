@@ -6,9 +6,11 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/Robin831/Forge/internal/changelog"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"gopkg.in/yaml.v3"
@@ -2009,4 +2011,68 @@ func TestValidate_AssayRunCostEstimateUSD(t *testing.T) {
 	cfg = Defaults()
 	cfg.Anvils["test"] = AnvilConfig{Path: "/repos/test", Assay: &AssayConfig{RunCostEstimateUSD: &bad}}
 	assert.Contains(t, cfg.Validate(), `anvil "test": `+msg)
+}
+
+// TestChangelogFragmentRuleResolution pins the two ends of the per-anvil
+// changelog convention: an anvil that configured nothing resolves to the
+// built-in rule (never to an empty one, which would match nothing and report
+// every stranded branch as unfinished work), and one that configured something
+// resolves to exactly that.
+func TestChangelogFragmentRuleResolution(t *testing.T) {
+	cfg := &Config{Anvils: map[string]AnvilConfig{
+		"plain": {Path: "/tmp/plain"},
+		"munin": {Path: "/tmp/munin", Changelog: &ChangelogConfig{
+			Dir:           "docs/changes",
+			FragmentGlobs: []string{"{bead}.md", "{bead}_*.md"},
+		}},
+	}}
+
+	plain := cfg.ChangelogFragmentRule("plain")
+	if plain.ResolvedDir() != changelog.DefaultFragmentDir || len(plain.Globs) != 0 {
+		t.Errorf("unconfigured anvil should resolve to the built-in rule, got %+v", plain)
+	}
+	if got := cfg.ChangelogFragmentRule("no-such-anvil"); got.ResolvedDir() != changelog.DefaultFragmentDir {
+		t.Errorf("unknown anvil should resolve to the built-in rule, got %+v", got)
+	}
+	if got := (*Config)(nil).ChangelogFragmentRule("anything"); got.ResolvedDir() != changelog.DefaultFragmentDir {
+		t.Errorf("nil config should resolve to the built-in rule, got %+v", got)
+	}
+
+	munin := cfg.ChangelogFragmentRule("munin")
+	if munin.ResolvedDir() != "docs/changes" {
+		t.Errorf("configured dir not resolved: %+v", munin)
+	}
+	if !munin.MatchesPath("docs/changes/Fhi.Metadata-hwbwz_technical.md", "Fhi.Metadata-hwbwz") {
+		t.Error("configured globs must decide for a configured anvil")
+	}
+}
+
+// TestValidateRejectsUnusableChangelogGlobs: both failures are silent at
+// runtime and opposite in direction, so they have to be caught at load.
+func TestValidateRejectsUnusableChangelogGlobs(t *testing.T) {
+	cfg := &Config{Anvils: map[string]AnvilConfig{
+		"munin": {Path: "/tmp/munin", Changelog: &ChangelogConfig{
+			FragmentGlobs: []string{"*.md"},
+			Dir:           "/etc",
+		}},
+	}}
+	errs := cfg.Validate()
+	joined := strings.Join(errs, "\n")
+	if !strings.Contains(joined, "fragment_globs") {
+		t.Errorf("expected a fragment_globs error, got: %v", errs)
+	}
+	if !strings.Contains(joined, "changelog.dir") {
+		t.Errorf("expected a changelog.dir error, got: %v", errs)
+	}
+
+	ok := &Config{Anvils: map[string]AnvilConfig{
+		"munin": {Path: "/tmp/munin", Changelog: &ChangelogConfig{
+			FragmentGlobs: []string{"{bead}.md", "{bead}-*.md"},
+		}},
+	}}
+	for _, e := range ok.Validate() {
+		if strings.Contains(e, "changelog") {
+			t.Errorf("valid changelog config reported an error: %s", e)
+		}
+	}
 }

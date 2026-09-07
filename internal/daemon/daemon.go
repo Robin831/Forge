@@ -5664,7 +5664,8 @@ func (d *Daemon) preDispatchRemoteBranchCheck(ctx context.Context, bead poller.B
 		// recovery in applyNoChangesNeededOutcome. The Stranded classification
 		// already guarantees the branch is ahead of base by >=1 commit, so no
 		// separate ahead-count check is required.
-		hasFragment, fragErr := d.branchHasChangelogFragment(ctx, anvilPath, info.SHA, bead.ID)
+		fragRule := d.changelogFragmentRule(bead.Anvil)
+		hasFragment, nearMisses, fragErr := d.branchHasChangelogFragment(ctx, anvilPath, info.SHA, bead.ID, fragRule)
 		if fragErr != nil {
 			// Inconclusive probe — never auto-open a PR on a git error. Log and
 			// fall through to the needs_human escalation below.
@@ -5696,6 +5697,16 @@ func (d *Daemon) preDispatchRemoteBranchCheck(ctx context.Context, bead poller.B
 				"reset the remote branch, or merge with new work). SHA: %s",
 			branch, shortSHA,
 		)
+		// A rejected-but-plausible fragment goes into the escalation itself and
+		// not only into the log: this reason is the whole of what an operator
+		// reads, and the failure being reported here — the anvil's convention
+		// having moved past the one Forge holds — is indistinguishable from
+		// genuinely unfinished work unless the near miss is named beside it.
+		if note := changelogFragmentDriftNote(fragRule, bead.ID, nearMisses); note != "" {
+			d.logger.Warn("pre-dispatch: changelog fragment convention drift — branch carries names that resemble this bead's fragment but the configured rule rejects them",
+				"bead", bead.ID, "anvil", bead.Anvil, "branch", branch, "files", diff.SafePathList(nearMisses))
+			reason += " " + note
+		}
 		d.logger.Warn("pre-dispatch: stranded forge branch on origin — escalating to needs_human",
 			"bead", bead.ID, "branch", branch, "sha", info.SHA, "base", info.BaseRef)
 		_ = d.db.LogEvent(state.EventDispatchBlockedStrandedBranch, reason, bead.ID, bead.Anvil)
@@ -5730,9 +5741,20 @@ func (d *Daemon) preDispatchRemoteBranchCheck(ctx context.Context, bead poller.B
 	return true
 }
 
+// changelogFragmentRule resolves the fragment convention for one anvil. The
+// convention belongs to the repository — which states it a second time in its
+// own CI gate — so it is read from that anvil's config and never hardcoded
+// here; an anvil that configured nothing gets the built-in rule, which is what
+// every anvil had before the setting existed. Read live off the atomic config
+// pointer, so an operator adding a fragment shape takes effect on the next
+// probe rather than on the next restart.
+func (d *Daemon) changelogFragmentRule(anvil string) changelog.FragmentRule {
+	return d.config().ChangelogFragmentRule(anvil)
+}
+
 // branchHasChangelogFragment reports whether a changelog fragment for beadID
-// (any name changelog.FragmentMatchesBead accepts under changelog.d/) is
-// reachable from the given commit SHA. Forge
+// (any name the anvil's changelog.FragmentRule accepts, under that rule's
+// directory) is reachable from the given commit SHA. Forge
 // requires a fragment per PR, so its presence on a stranded forge branch is a
 // completion signal: the prior worker finished its work and merely failed to
 // open a PR. The SHA's tree is already local because CheckRemoteBranchState
@@ -5742,37 +5764,47 @@ func (d *Daemon) preDispatchRemoteBranchCheck(ctx context.Context, bead poller.B
 // git command itself fails, so callers can distinguish "no fragment" (a clean
 // negative) from "git error" (inconclusive) and avoid auto-opening a PR on an
 // indeterminate probe.
-func (d *Daemon) branchHasChangelogFragment(ctx context.Context, anvilPath, sha, beadID string) (bool, error) {
-	cmd := executil.HideWindow(exec.CommandContext(ctx, "git", "ls-tree", "-r", "--name-only", sha, "--", "changelog.d/"))
+//
+// The second return is the drift signal and is the whole reason a clean
+// negative is not simply reported as "no fragment": the names the rule REJECTED
+// while plainly belonging to this bead. Forge and the anvil hold the convention
+// separately, so they can disagree again the next time a repository adds a
+// fragment kind, and the disagreement is a false negative whose only symptom
+// until now was an escalation an operator had to read and disbelieve. Callers
+// put the list in front of that operator instead. It is populated only on the
+// negative path — a run that found the fragment has nothing to report.
+func (d *Daemon) branchHasChangelogFragment(ctx context.Context, anvilPath, sha, beadID string, rule changelog.FragmentRule) (bool, []string, error) {
+	cmd := executil.HideWindow(exec.CommandContext(ctx, "git", "ls-tree", "-r", "--name-only", sha, "--", rule.ResolvedDir()+"/"))
 	cmd.Dir = anvilPath
 	cmd.Env = executil.CleanGitEnv()
 	out, err := cmd.Output()
 	if err != nil {
-		return false, err
+		return false, nil, err
 	}
-	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
-		if changelogFragmentMatches(line, beadID) {
-			return true, nil
+	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+	for _, line := range lines {
+		if rule.MatchesPath(line, beadID) {
+			return true, nil, nil
 		}
 	}
-	return false, nil
+	return false, rule.NearMisses(lines, beadID), nil
 }
 
-// changelogFragmentMatches reports whether a changelog.d/ path is a changelog
-// fragment for beadID. It is the path-shaped wrapper over
-// changelog.FragmentMatchesBead, which owns the accepted grammar and states it
-// once — the two live escalations that widened it, and the reason a bd child
-// bead's <parent>.<n>.md is not a fragment for <parent>, are documented there.
-// Sharing that function is the point: `forge changelog validate` asks the same
-// question of the same names, and a second list here is how the two came to
-// disagree in the first place.
-func changelogFragmentMatches(path, beadID string) bool {
-	const dir = "changelog.d/"
-	path = strings.TrimSpace(path)
-	if !strings.HasPrefix(path, dir) {
-		return false
+// changelogFragmentDriftNote renders the near-miss list for an operator-facing
+// message, or "" when there is nothing to report. The names come out of a tree
+// Forge did not author and land in a persisted needs_human reason and a
+// rendered activity-feed row, so they go through diff.SafePathList — sanitized
+// and capped in one call, on the same argument every other path Forge quotes
+// back is.
+func changelogFragmentDriftNote(rule changelog.FragmentRule, beadID string, nearMisses []string) string {
+	if len(nearMisses) == 0 {
+		return ""
 	}
-	return changelog.FragmentMatchesBead(strings.TrimPrefix(path, dir), beadID)
+	return fmt.Sprintf(
+		"Note: %s in that tree name this bead but do not match the fragment convention Forge holds for this anvil (%s), "+
+			"so they were not read as a completion signal. If the repository's own changelog gate accepts them, "+
+			"set anvils.<name>.changelog.fragment_globs to say so.",
+		diff.SafePathList(nearMisses), rule.Describe(beadID))
 }
 
 // recoverStrandedBranchPR auto-opens a PR for a stranded forge branch that
@@ -5986,12 +6018,23 @@ func (d *Daemon) openPRForExistingBranch(ctx context.Context, beadID, anvilName 
 	}
 
 	// Precondition: branch tip carries the bead's changelog fragment.
-	hasFragment, fragErr := d.branchHasChangelogFragment(ctx, anvilPath, info.SHA, beadID)
+	fragRule := d.changelogFragmentRule(anvilName)
+	hasFragment, nearMisses, fragErr := d.branchHasChangelogFragment(ctx, anvilPath, info.SHA, beadID, fragRule)
 	if fragErr != nil {
 		return 0, "", fmt.Errorf("checking changelog fragment on %s: %w", branch, fragErr)
 	}
 	if !hasFragment {
-		return 0, "", fmt.Errorf("origin/%s does not carry a changelog fragment (changelog.d/%s.md, or that id followed by a \".\" or \"-\" and an alphabetic kind or language — e.g. %s.en.md, %s-technical.nb.md); refusing to open a PR for incomplete work", branch, beadID, beadID, beadID)
+		// The accepted shapes are rendered by the rule rather than restated
+		// here, so this refusal can never describe a convention the matcher
+		// stopped using — the drift this whole path exists to survive.
+		msg := fmt.Sprintf("origin/%s does not carry a changelog fragment (%s); refusing to open a PR for incomplete work",
+			branch, fragRule.Describe(beadID))
+		if note := changelogFragmentDriftNote(fragRule, beadID, nearMisses); note != "" {
+			d.logger.Warn("create-pr: changelog fragment convention drift — branch carries names that resemble this bead's fragment but the configured rule rejects them",
+				"bead", beadID, "anvil", anvilName, "branch", branch, "files", diff.SafePathList(nearMisses))
+			msg += " " + note
+		}
+		return 0, "", errors.New(msg)
 	}
 
 	// Guarantee an external_ref before the PR exists (bd github push fallback

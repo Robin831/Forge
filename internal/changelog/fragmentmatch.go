@@ -33,11 +33,13 @@ import "strings"
 // ordinal is not. A bare-character extension (<bead>1.md, <bead>1-technical.md)
 // is excluded by the delimiter itself.
 //
-// This encodes the convention rather than reading it from the anvil's own
-// changelog tooling, which is why Munin's "Check changelog updates" CI gate and
-// Forge could disagree at all, and will again the next time a repository adds a
-// fragment shape — Forge-3jyi5 weighs deriving the accepted shapes from the
-// repository instead.
+// This is the DEFAULT convention and no longer the only one Forge can hold: an
+// anvil whose own CI gate accepts a shape this grammar does not states it in
+// changelog.fragment_globs, and FragmentRule — not this function — is what
+// every caller asks. The escape hatch does not make drift impossible, only
+// correctable, so FragmentRule.NearMisses reports a rejected name that plainly
+// belongs to the bead rather than letting it count as absent, which is the form
+// the Munin disagreement took: silence, then an escalation.
 func FragmentMatchesBead(name, beadID string) bool {
 	name = strings.TrimSpace(name)
 	if beadID == "" || strings.ContainsAny(name, `/\`) {
