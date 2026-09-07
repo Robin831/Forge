@@ -805,6 +805,17 @@ const (
 	// SettingDispatchPausedAt stores the RFC3339 timestamp of when dispatch
 	// was manually paused.
 	SettingDispatchPausedAt = "dispatch_paused_at"
+	// SettingSelfDeploySkewAttempt stores the branch tip the periodic
+	// version-skew check last dispatched a deploy for, and when, as
+	// "<sha> <RFC3339>". An empty value means no attempt is on record.
+	//
+	// Persisted rather than kept in memory because the thing the record guards
+	// against is a deploy that does not put the merged code live — and the most
+	// likely such deploy is one that restarts the daemon into a binary that is
+	// still behind (a binary_path that is not the one the unit runs). An
+	// in-memory record is cleared by exactly that restart, which would turn a
+	// misconfigured host into a restart every few minutes.
+	SettingSelfDeploySkewAttempt = "self_deploy_skew_attempt"
 	// SettingDispatchPauseReason stores why dispatch is paused ("manual").
 	// Only operator pauses are persisted, so this is always "manual" today; it
 	// is written and read back anyway so the restored pause carries a reason

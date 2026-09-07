@@ -106,6 +106,40 @@ func TestApplyChanges_PerAnvilAssayConfig(t *testing.T) {
 	}
 }
 
+// TestApplyChanges_SelfDeployConfig verifies a self_deploy edit is detected.
+// Every consumer of the block reads it live, but reload() only stores the new
+// config when applyChanges reports a change — so an undetected edit was both
+// reported as needing a restart and, having not been stored, actually needing
+// one. Enabling the version-skew check is the case that matters most: the check
+// exists to deploy a daemon nobody restarted.
+func TestApplyChanges_SelfDeployConfig(t *testing.T) {
+	mk := func(fn func(*config.SelfDeployConfig)) *config.Config {
+		sd := config.SelfDeployConfig{Enabled: true, Anvil: "forge"}
+		fn(&sd)
+		return &config.Config{SelfDeploy: sd}
+	}
+	noop := func(*config.SelfDeployConfig) {}
+
+	if ch := applyChanges(mk(noop), mk(func(sd *config.SelfDeployConfig) {
+		sd.SkewCheckInterval = 30 * time.Minute
+	})); len(ch) == 0 {
+		t.Error("skew_check_interval change must be detected so reload() stores the new config")
+	}
+	if ch := applyChanges(mk(noop), mk(func(sd *config.SelfDeployConfig) {
+		sd.Enabled = false
+	})); len(ch) == 0 {
+		t.Error("self_deploy.enabled change must be detected")
+	}
+	if ch := applyChanges(mk(noop), mk(func(sd *config.SelfDeployConfig) {
+		sd.RestartArgs = []string{"systemctl"}
+	})); len(ch) == 0 {
+		t.Error("restart_args change must be detected")
+	}
+	if ch := applyChanges(mk(noop), mk(noop)); len(ch) != 0 {
+		t.Errorf("identical self_deploy config must not register a change, got %v", ch)
+	}
+}
+
 // previewAnvilConfig builds a config whose single anvil carries the three
 // per-anvil preview keys, with previews enabled globally.
 func previewAnvilConfig(enabled *bool, auto string, quests bool) *config.Config {
