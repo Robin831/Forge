@@ -4418,6 +4418,16 @@ func (d *Daemon) costGateAllows(cfg *config.Config, today string) (allowed bool,
 // actual on completion or failure (Forge-s3w7).
 func (d *Daemon) dispatchBead(ctx context.Context, bead poller.Bead, anvilCfg config.AnvilConfig, claimWorkerID string, ctrl *controlHandle, resume *pipeline.ResumeSession, costReservation uint64) {
 	defer d.wg.Done()
+	// Backstop: whichever of this function's many exits is taken — an early
+	// abort, a pipeline error, a return nobody wrote a status update for, or a
+	// panic unwinding the stack — the claim worker row must not be left
+	// claiming a Smith that is gone. Registered here, before the first return
+	// and before the gotos below, so no exit can precede it; idempotent with
+	// every explicit termination, including preDispatchRemoteBranchCheck's.
+	// The worker ID is the immutable one captured at claim time rather than a
+	// field read back later, so the row this finalises is the row this dispatch
+	// inserted (see terminateAbandonedWorker).
+	defer d.terminateAbandonedWorker(claimWorkerID, bead.ID, bead.Anvil)
 	defer func() {
 		// Release the in-flight cost reservation and fold the bead's actual
 		// recorded cost into the rolling average so future estimates track real
