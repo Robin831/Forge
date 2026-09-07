@@ -21,6 +21,7 @@ import (
 
 	"github.com/Robin831/Forge/internal/cost"
 	"github.com/Robin831/Forge/internal/executil"
+	"github.com/Robin831/Forge/internal/gitguard"
 	"github.com/Robin831/Forge/internal/provider"
 	"github.com/Robin831/Forge/internal/worktree"
 )
@@ -404,6 +405,19 @@ func SpawnWithOptions(ctx context.Context, worktreePath, promptText, logDir stri
 	cmd.Stdin = strings.NewReader(promptText)
 
 	cmd.Env = buildChildEnv(os.Environ(), pv.Env, worktree.GitEnv(worktreePath))
+	// A remote written from inside a worker lands on the anvil's SHARED config,
+	// not on the worktree it was typed in, and stays there after that worktree
+	// is deleted. The GitEnv above cannot prevent it — the write is a property
+	// of `git worktree`, not of GIT_DIR — so the agent is given a git that
+	// refuses that one command. A guard that fails to install leaves the agent
+	// with plain git rather than refusing to run it: this closes a fault, it is
+	// not one to gate the run on.
+	if guardDir, err := gitguard.Install(); err != nil {
+		slog.Warn("smith: git guard not installed — a worker can repoint the anvil's origin",
+			"worktree", worktreePath, "error", err)
+	} else {
+		cmd.Env = gitguard.Env(cmd.Env, guardDir, gitguard.AnvilGitDir(ctx, worktreePath))
+	}
 	executil.HideWindow(cmd)
 	executil.SetProcessGroup(cmd)
 

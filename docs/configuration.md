@@ -2347,6 +2347,21 @@ Duration values from environment variables are parsed as Go duration strings (e.
 
 Per-anvil configuration is best managed in the YAML file, as the flat environment variable namespace doesn't map cleanly to the nested `anvils` map.
 
+### The worker git guard (`FORGE_DISABLE_GIT_GUARD`)
+
+Git keeps remotes in the config file of the repository a worktree belongs to, never in the worktree. A Forge worker is a linked worktree under the anvil's `.workers/`, so `git remote set-url origin <path>` typed inside one writes `<anvil>/.git/config` — for the daemon and for every other worker — and the value outlives the worktree, which is deleted at teardown. An anvil found pointing at a departed worker's directory spent a day with every fetch, dependency scan and PR reconcile failing against a path that no longer existed.
+
+Nothing inside git prevents that, so Forge puts a small `git` wrapper (`~/.forge/gitguard/git`) at the front of the agent's `PATH`. It refuses writes to the remote named `origin` — `git remote add|remove|rename|set-url|set-branches origin …` and `git config remote.origin.url …` — when they would land on a config file the current checkout does not own, and hands everything else to the real git untouched: all reads, every other remote name (a fork remote added by `gh pr checkout` is unaffected), and every git command that is neither `remote` nor `config`. A worker that genuinely needs an upstream of its own takes a clone that owns its config. The `GIT_DIR`/`GIT_WORK_TREE` Forge exports into a worker have to go first, or git keeps answering from the worktree wherever the shell cds to and the clone is never reached:
+
+```bash
+unset GIT_DIR GIT_WORK_TREE
+git clone . /tmp/scratch && cd /tmp/scratch
+```
+
+The wrapper is on the agent's `PATH` and nothing else's — the daemon's own git calls, the deployment's bootstrap and an operator's `git -C <anvil> remote set-url origin <url>` repair never reach it. It is a guardrail rather than a sandbox: an absolute path to git walks past it.
+
+Set `FORGE_DISABLE_GIT_GUARD=1` in the **daemon's** environment to switch it off; a worker cannot set it for itself. A guard that fails to install is logged and the agent runs with plain git, so this is never a reason a bead does not start.
+
 ## Validation Rules
 
 The config is validated at load time. Errors are reported as a list:
