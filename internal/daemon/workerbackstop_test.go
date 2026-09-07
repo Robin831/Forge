@@ -353,11 +353,29 @@ func TestCrucibleBlockFinalisesItsWorkerRowOnEveryExit(t *testing.T) {
 // crucibleRunBlock returns the statement list directly containing
 // `result := crucible.Run(...)` inside dispatchBead, and that statement's index
 // in it.
+//
+// The walk is anchored on the dispatchBead declaration rather than run over the
+// whole file, for the same reason the sibling guard above anchors on the
+// function signature: this is a structural guard whose value is that it keeps
+// pointing at the right block as the file moves, and a second crucible.Run
+// added anywhere above dispatchBead would otherwise silently retarget every
+// assertion below at that block while continuing to pass.
 func crucibleRunBlock(t *testing.T, file *ast.File) (*ast.BlockStmt, int) {
 	t.Helper()
+
+	var dispatch *ast.FuncDecl
+	for _, decl := range file.Decls {
+		fn, ok := decl.(*ast.FuncDecl)
+		if ok && fn.Name.Name == "dispatchBead" && fn.Recv != nil {
+			dispatch = fn
+			break
+		}
+	}
+	require.NotNil(t, dispatch, "dispatchBead not found — has it been renamed?")
+
 	var found *ast.BlockStmt
 	var at int
-	ast.Inspect(file, func(n ast.Node) bool {
+	ast.Inspect(dispatch.Body, func(n ast.Node) bool {
 		block, ok := n.(*ast.BlockStmt)
 		if !ok {
 			return true

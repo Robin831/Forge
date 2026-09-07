@@ -78,14 +78,28 @@ var backstopExemptStatuses = func() []WorkerStatus {
 // other is a row the check declines to touch and the write clobbers anyway.
 var backstopExemptSQL = statusSQLList(backstopExemptStatuses)
 
-// statusSQLList renders worker statuses as a parenthesised SQL literal list.
-// Its inputs are this package's own constants — never a value read back from
-// the database or supplied by a caller — so the values are quoted rather than
-// bound.
+// backstopStalledSQL is the 'stalled' literal for that same UPDATE's second
+// clause. It is built here, from the constant and through the same renderer as
+// the list beside it, rather than concatenated inline at the statement: two
+// spellings of "a status as a SQL literal" in one statement is exactly the
+// drift backstopExemptSQL exists to prevent, and the hand-written one is the
+// one a stray quote breaks silently.
+var backstopStalledSQL = statusSQLLiteral(WorkerStalled)
+
+// statusSQLLiteral renders one worker status as a quoted SQL literal. Its
+// inputs are this package's own constants — never a value read back from the
+// database or supplied by a caller — so the value is quoted rather than bound.
+func statusSQLLiteral(status WorkerStatus) string {
+	return "'" + string(status) + "'"
+}
+
+// statusSQLList renders worker statuses as a parenthesised SQL literal list,
+// each element through statusSQLLiteral so a list and a single status are
+// quoted by one piece of code.
 func statusSQLList(statuses []WorkerStatus) string {
 	quoted := make([]string, len(statuses))
 	for i, s := range statuses {
-		quoted[i] = "'" + string(s) + "'"
+		quoted[i] = statusSQLLiteral(s)
 	}
 	return "(" + strings.Join(quoted, ", ") + ")"
 }
@@ -113,11 +127,20 @@ func IsTerminalWorkerStatus(status string) bool {
 	return WorkerStatus(status).IsTerminal()
 }
 
-// NeedsTerminalBackstop reports whether a row carrying this status, observed at
-// the moment its dispatch goroutine exits, must be forced to a terminal status.
+// NeedsTerminalBackstop reports whether this status ALONE is one the backstop
+// may force to a terminal status — it is the status half of that decision and
+// not the decision itself.
 //
 // It is deliberately narrower than !IsTerminal: see backstopExemptStatuses for
 // the two live statuses a goroutine hands off rather than abandons.
+//
+// A row read at a dispatch exit must go through
+// WorkerBackstopState.NeedsTerminalBackstop instead, because this method cannot
+// answer for 'stalled': it reports true for every stalled row, including one
+// the watchdog stalled over a monitoring handoff that must be spared. Only the
+// pair with prev_status decides that, which is why the backstop's WHERE clause
+// (FailWorkerIfUnfinished) has a second clause this predicate has no way to
+// express.
 func (s WorkerStatus) NeedsTerminalBackstop() bool {
 	for _, exempt := range backstopExemptStatuses {
 		if s == exempt {
@@ -216,7 +239,7 @@ func (db *DB) FailWorkerIfUnfinished(id string) (bool, error) {
 		`UPDATE workers SET status = ?, completed_at = ?
 		 WHERE id = ?
 		   AND status NOT IN `+backstopExemptSQL+`
-		   AND NOT (status = '`+string(WorkerStalled)+`' AND prev_status IN `+backstopExemptSQL+`)`,
+		   AND NOT (status = `+backstopStalledSQL+` AND prev_status IN `+backstopExemptSQL+`)`,
 		string(WorkerFailed), time.Now().Format(dbTimeLayout), id,
 	)
 	if err != nil {
