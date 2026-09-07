@@ -279,10 +279,11 @@ func TotalActiveCount(db *state.DB) (int, error) {
 // anvils — the rows DispatchTotalActiveCount counts, and therefore the rows
 // that occupy max_total_smiths.
 //
-// It exists so a caller that must both compare against the cap and name the
-// workers holding it does so from ONE query: asking for the count and then
-// asking again for the identities would let a worker finish in between, and the
-// caller would report a limit held by a set that no longer fills it.
+// It adds nothing to state.DB.ActiveDispatchWorkers and exists only so the
+// dispatch-cap vocabulary stays in one package: DispatchTotalActiveCount is
+// derived from this function rather than from a second call of its own, so the
+// count a caller compares against the cap and the identities it names as
+// holding it are provably the same set of rows.
 func DispatchActiveWorkers(db *state.DB) ([]state.Worker, error) {
 	return db.ActiveDispatchWorkers()
 }

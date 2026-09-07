@@ -2,7 +2,10 @@
 
 package daemon
 
-import "syscall"
+import (
+	"errors"
+	"syscall"
+)
 
 // processGroup returns the process group ID for the given PID.
 // Returns (pgid, true) on success; falls back to (pid, false) if the PGID
@@ -60,5 +63,10 @@ func processAlive(pid int) bool {
 		return false
 	}
 	err := syscall.Kill(pid, 0)
-	return err == nil || err == syscall.EPERM
+	// errors.Is rather than ==: syscall.Kill returns a bare syscall.Errno
+	// today, for which the two are identical, but a wrapped error would make
+	// the direct comparison read EPERM as "not EPERM" — i.e. a live process we
+	// may not signal as a dead one — silently and in the one direction that
+	// costs a running worker its row.
+	return err == nil || errors.Is(err, syscall.EPERM)
 }

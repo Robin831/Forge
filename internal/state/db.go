@@ -1724,6 +1724,50 @@ func (db *DB) RecoveredStalledWorkers(staleThreshold time.Duration) ([]Worker, e
 	return recovered, nil
 }
 
+// SilentStalledWorkers is RecoveredStalledWorkers' complement: the workers
+// already carrying the 'stalled' mask whose logs are STILL silent, i.e. the
+// rows that pass has just declined to recover.
+//
+// StalledWorkers deliberately never returns them — re-stalling a stalled row
+// costs a stat call and changes nothing — so without this query a row that has
+// been marked stalled is never looked at again by anything except the recovery
+// pass, which only ever acts on fresh log writes. That is exactly right for a
+// session that has stopped writing and wrong for one that has stopped
+// existing: the daemon's liveness check needs a second look at the same row to
+// confirm what it saw on the first, and a row stalled by an earlier daemon
+// lifetime needs a first one.
+//
+// Scope is the global-threshold pass only (non-background phases): the
+// lifecycle phases carry a Smith pid that outlives its session by design, so
+// nothing downstream reads their liveness and the per-worker-timeout half
+// would only add rows no caller may act on.
+//
+// A row whose log path is empty or unreadable counts as still silent — it is
+// the same reading RecoveredStalledWorkers gives it by refusing to recover it.
+func (db *DB) SilentStalledWorkers(staleThreshold time.Duration) ([]Worker, error) {
+	if staleThreshold <= 0 {
+		return nil, nil
+	}
+	workers, err := db.queryWorkers(`SELECT id, bead_id, anvil, branch, pid, status, phase, title, pr_number, started_at, completed_at, log_path, session_id, model
+		FROM workers WHERE status = 'stalled'
+		  AND phase NOT IN (` + backgroundPhases + `)
+		ORDER BY started_at`)
+	if err != nil {
+		return nil, err
+	}
+	cutoff := time.Now().Add(-staleThreshold)
+	var silent []Worker
+	for _, w := range workers {
+		if w.LogPath != "" {
+			if info, statErr := os.Stat(w.LogPath); statErr == nil && info.ModTime().After(cutoff) {
+				continue
+			}
+		}
+		silent = append(silent, w)
+	}
+	return silent, nil
+}
+
 // UnstallWorker transitions a worker out of the 'stalled' status back to the
 // active phase it held before it stalled (prev_status), defaulting to 'running'
 // when no prior status was recorded. The WHERE status = 'stalled' guard ensures
