@@ -2645,8 +2645,14 @@ const (
 	// EventSchematicParseFailed fires when the AI verdict could not be parsed
 	// and the schematic skipped rather than acting on unstructured output.
 	EventSchematicParseFailed EventType = "schematic_parse_failed"
-	EventDispatchFailed       EventType = "dispatch_failed"
-	EventDispatchCircuitBreak EventType = "dispatch_circuit_break"
+	// EventSchematicIssueSyncFailed fires when decomposition created sub-beads
+	// but pushing them to GitHub (bd github push) failed or left children
+	// without an external_ref. Such children produce PRs whose merge closes no
+	// issue, so the failure must be visible rather than silent; the PR step's
+	// own external_ref guard is the backstop.
+	EventSchematicIssueSyncFailed EventType = "schematic_issue_sync_failed"
+	EventDispatchFailed           EventType = "dispatch_failed"
+	EventDispatchCircuitBreak     EventType = "dispatch_circuit_break"
 	// EventDispatchBlockedStrandedBranch fires when the pre-dispatch remote
 	// check finds origin/forge/<bead-id> with commits not reachable from the
 	// base ref and no PR — a prior worker pushed but never opened a PR.

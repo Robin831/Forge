@@ -953,6 +953,13 @@ type SettingsConfig struct {
 	// stable (e.g. ephemeral pods that may share a hostname).
 	ForgeID string `mapstructure:"forge_id" yaml:"forge_id,omitempty"`
 
+	// GitHubNoCloseLabels are issue labels that mark a GitHub issue as
+	// must-not-auto-close: a PR that fixes such an issue references it with
+	// "Refs" instead of "Closes", so the issue stays open until its reporter
+	// verifies the fix. Defaults to ["innmeldt"] when unset; set explicitly
+	// to override the label set.
+	GitHubNoCloseLabels []string `mapstructure:"github_no_close_labels" yaml:"github_no_close_labels,omitempty"`
+
 	// BusEnabled toggles the in-process event Bus. When true, the daemon
 	// constructs a state.Bus (buffered to BusBufferSize) and wires it into the
 	// state DB so every logged event is fanned out to real-time subscribers
@@ -1445,6 +1452,7 @@ func (s SettingsConfig) MarshalYAML() (interface{}, error) {
 		BdReadyLimit              int                     `yaml:"bd_ready_limit,omitempty"`
 		CruciblePollInterval      string                  `yaml:"crucible_poll_interval,omitempty"`
 		ForgeID                   string                  `yaml:"forge_id,omitempty"`
+		GitHubNoCloseLabels       []string                `yaml:"github_no_close_labels,omitempty"`
 		Warden                    WardenSettings          `yaml:"warden,omitempty"`
 		ForgeChat                 forgeChatShadow         `yaml:"forgechat,omitempty"`
 		Pricing                   map[string]ModelPricing `yaml:"pricing,omitempty"`
@@ -1524,6 +1532,7 @@ func (s SettingsConfig) MarshalYAML() (interface{}, error) {
 		WicketStaleDays:           s.WicketStaleDays,
 		BdReadyLimit:              s.BdReadyLimit,
 		ForgeID:                   s.ForgeID,
+		GitHubNoCloseLabels:       s.GitHubNoCloseLabels,
 		Warden:                    s.Warden,
 		Pricing:                   s.Pricing,
 		CopilotPremiumMultipliers: s.CopilotPremiumMultipliers,

@@ -48,12 +48,22 @@ func (p *Provider) CreatePR(ctx context.Context, params vcs.CreateParams) (*vcs.
 
 	params.Title = selectTitle(ctx, params)
 
+	// Honour the no-close convention: an external_ref issue carrying a
+	// no-close label (default `innmeldt` — a user report that stays open
+	// until the reporter verifies) is referenced with Refs, never Closes.
+	if !params.ExternalRefNoClose {
+		params.ExternalRefNoClose = issueHasNoCloseLabel(ctx, vcs.ParseIssueRef(params.ExternalRef))
+	}
+
 	if params.Body == "" {
 		params.Body = buildDefaultBody(params)
 	} else {
-		// When a body is already set (e.g. from Smith), inject Closes #N
-		// if external_ref identifies a GitHub issue and it's not already present.
-		params.Body = vcs.InjectClosesLine(params.Body, params.ExternalRef)
+		// When a body is already set (e.g. from Smith), enforce the same
+		// reference discipline as the default body builder: demote stray
+		// closing references and append the ones derived from the bead.
+		params.Body = vcs.EnsureIssueReferences(params.Body,
+			vcs.ParseIssueRef(params.ExternalRef), params.ExternalRefNoClose,
+			vcs.ParseSourceRefs(params.BeadDescription))
 	}
 	// Always include the forge-managed marker for THIS forge instance so
 	// reconcileOpenPRs can distinguish PRs we created from external PRs that
@@ -1004,11 +1014,16 @@ func buildDefaultBody(p vcs.CreateParams) string {
 		b.WriteString("\n\n")
 	}
 
-	// Inject Closes #N for GitHub issue references before the footer,
-	// but only if the body doesn't already contain one.
-	if num := vcs.GitHubIssueNumber(p.ExternalRef); num != "" && !vcs.ClosesPattern().MatchString(b.String()) {
-		fmt.Fprintf(&b, "Closes #%s\n\n", num)
-	}
+	// Issue references, derived exclusively from the worked bead's own
+	// external_ref (Closes — or Refs for a no-close issue) plus any wicket
+	// "Source:" issues (always Refs). Stray closing references in the
+	// assembled sections (the quoted bead description, a model-written
+	// summary) are demoted rather than trusted — they used to suppress the
+	// correct injection, or close a sibling's issue outright.
+	body := vcs.AppendIssueReferences(b.String(),
+		vcs.ParseIssueRef(p.ExternalRef), p.ExternalRefNoClose, vcs.ParseSourceRefs(p.BeadDescription))
+	b.Reset()
+	b.WriteString(body)
 
 	b.WriteString("---\n")
 	fmt.Fprintf(&b, "Bead: %s | Branch: %s\n", p.BeadID, p.Branch)

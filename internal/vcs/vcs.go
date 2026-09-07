@@ -11,7 +11,6 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
-	"regexp"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -118,10 +117,6 @@ func IsLegacyForgeManaged(body string) bool {
 	return strings.Contains(body, legacyForgeManagedMarker)
 }
 
-// ghIssuePathPattern matches the path portion of a GitHub issue URL like
-// /org/repo/issues/42
-var ghIssuePathPattern = regexp.MustCompile(`^/.+/.+/issues/(\d+)$`)
-
 // GitHubIssueNumber extracts a GitHub issue number from an external_ref value.
 // Recognised formats:
 //   - "gh-42"                                     → "42"
@@ -129,50 +124,9 @@ var ghIssuePathPattern = regexp.MustCompile(`^/.+/.+/issues/(\d+)$`)
 //
 // Returns "" for non-GitHub references (e.g. "jira-123", GitLab URLs, or any
 // URL whose host is not github.com), empty strings, or malformed values.
+// Callers that need the owner/repo half should use ParseIssueRef directly.
 func GitHubIssueNumber(externalRef string) string {
-	if externalRef == "" {
-		return ""
-	}
-	// Shorthand: gh-<number>
-	if num, ok := strings.CutPrefix(externalRef, "gh-"); ok && num != "" {
-		// Validate it's all digits.
-		for _, c := range num {
-			if c < '0' || c > '9' {
-				return ""
-			}
-		}
-		return num
-	}
-	// Full URL: must be a github.com URL with path /org/repo/issues/<number>.
-	u, err := url.Parse(externalRef)
-	if err != nil || u.Hostname() != "github.com" {
-		return ""
-	}
-	if m := ghIssuePathPattern.FindStringSubmatch(u.Path); len(m) == 2 {
-		return m[1]
-	}
-	return ""
-}
-
-// closesRe matches existing "Closes #N" lines (case-insensitive) to
-// avoid injecting duplicates.
-var closesRe = regexp.MustCompile(`(?i)\bCloses\s+#\d+`)
-
-// ClosesPattern returns the compiled regexp for matching "Closes #N" lines.
-func ClosesPattern() *regexp.Regexp { return closesRe }
-
-// InjectClosesLine appends a "Closes #N" line to body if the externalRef
-// identifies a GitHub issue and the body does not already contain one.
-// Returns the (possibly modified) body.
-func InjectClosesLine(body, externalRef string) string {
-	num := GitHubIssueNumber(externalRef)
-	if num == "" {
-		return body
-	}
-	if closesRe.MatchString(body) {
-		return body
-	}
-	return body + "\n\nCloses #" + num
+	return ParseIssueRef(externalRef).Number
 }
 
 // buildPRBody creates a structured PR/MR description from bead metadata.
@@ -212,12 +166,16 @@ func buildPRBody(p CreateParams) string {
 		b.WriteString("\n\n")
 	}
 
-	// Inject Closes #N for GitHub issue references before the footer,
-	// but only if the body doesn't already contain one (e.g. from Smith's
-	// change summary).
-	if num := GitHubIssueNumber(p.ExternalRef); num != "" && !closesRe.MatchString(b.String()) {
-		fmt.Fprintf(&b, "Closes #%s\n\n", num)
-	}
+	// Issue references, derived exclusively from the worked bead's own
+	// external_ref (Closes — or Refs for a no-close issue) plus any wicket
+	// "Source:" issues (always Refs). Stray closing references in the
+	// assembled sections are demoted rather than trusted: a model- or
+	// human-authored "Closes #N" must never decide which issue this PR
+	// closes, nor suppress the correct reference.
+	body := AppendIssueReferences(b.String(),
+		ParseIssueRef(p.ExternalRef), p.ExternalRefNoClose, ParseSourceRefs(p.BeadDescription))
+	b.Reset()
+	b.WriteString(body)
 
 	// Footer
 	b.WriteString("---\n")
@@ -355,9 +313,18 @@ type CreateParams struct {
 	// leak into the '## Changes' section when a changelog fragment is missing.
 	ReviewerNotes string
 	// ExternalRef is an optional external tracker reference (e.g. "gh-42" or a
-	// GitHub issue URL). When it identifies a GitHub issue, buildPRBody injects
-	// a "Closes #N" line so the PR auto-closes the issue on merge.
+	// GitHub issue URL). When it identifies a GitHub issue, the body builders
+	// append a closing reference derived from it — "Closes owner/repo#N" for a
+	// full issue URL (the qualified form works from any repository, which a
+	// bare "#N" does not), "Closes #N" for a shorthand ref — so the PR
+	// auto-closes the issue on merge.
 	ExternalRef string
+	// ExternalRefNoClose marks the ExternalRef issue as must-not-auto-close
+	// (it carries a no-close label such as `innmeldt` — a user report that
+	// stays open until the reporter verifies). The body builders then emit
+	// "Refs" instead of "Closes". The GitHub provider populates this from the
+	// issue's live labels; other callers may set it directly.
+	ExternalRefNoClose bool
 }
 
 // PRStatus represents the platform-agnostic state of a pull/merge request.
