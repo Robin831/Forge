@@ -13,6 +13,7 @@ import { actions, type WorkerInfo } from '../api'
 import { useAction } from '../hooks/useAction'
 import { useUIState } from '../hooks/useUIState'
 import { relativeTime } from '../lib/format'
+import { isSlotStatus, workerStatusClass } from '../lib/workerStatus'
 import { isBellowsMonitor } from './PipelineBar'
 import ConfirmModal from './ConfirmModal'
 import Pane, { EmptyState } from './Pane'
@@ -30,22 +31,6 @@ interface WorkersPaneProps {
   maxTotalSmiths?: number
   onSelectWorker?: (worker: WorkerInfo) => void
   onActionSuccess?: () => void
-}
-
-const STATUS_CLASSES: Record<string, string> = {
-  pending: 'bg-slate-700/60 text-slate-200 border-slate-600/60',
-  running: 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40',
-  paused: 'bg-amber-500/20 text-amber-300 border-amber-500/40',
-  done: 'bg-sky-500/20 text-sky-300 border-sky-500/40',
-  // partial is its own chip, never the done or failed one: an Assay run whose
-  // passes only half covered the head produced real findings but not a full
-  // review, and either of the other two chips would say otherwise.
-  partial: 'bg-amber-500/20 text-amber-200 border-amber-500/40',
-  failed: 'bg-red-500/20 text-red-300 border-red-500/40',
-}
-
-function statusClass(status: string): string {
-  return STATUS_CLASSES[status] ?? 'bg-slate-800 text-slate-300 border-slate-700'
 }
 
 // phaseBadgeClass styles the per-worker phase chip. Most phases share the
@@ -152,19 +137,14 @@ export default function WorkersPane({
 
   const groups = useMemo(() => groupWorkersByAnvil(sorted), [sorted])
 
-  // Idle slot count = (configured cap) - (active Smith-like workers). We count
-  // workers that occupy a Smith slot (pending/running/reviewing/paused) and that
-  // are not bellows monitors (already filtered above). "reviewing" covers Warden
-  // phase workers (state.WorkerReviewing) which also hold a slot; a "paused"
-  // worker retains its worktree while parked, so it still occupies its slot.
+  // Idle slot count = (configured cap) - (active Smith-like workers). The slot
+  // status set is shared with WorkerPanelGrid (lib/workerStatus) so the two
+  // surfaces cannot report different idle capacity; bellows monitors are
+  // already filtered out above. It mirrors the daemon's own accounting in
+  // state.ActiveDispatchWorkers — including 'stalled', whose process is still
+  // running and whose slot the daemon will not dispatch into.
   // When the daemon reports a cap of 0 we omit the placeholders entirely.
-  const activeSlotWorkers = sorted.filter(
-    (w) =>
-      w.status === 'pending' ||
-      w.status === 'running' ||
-      w.status === 'reviewing' ||
-      w.status === 'paused',
-  )
+  const activeSlotWorkers = sorted.filter((w) => isSlotStatus(w.status))
   const idleCount = Math.max(0, maxTotalSmiths - activeSlotWorkers.length)
 
   // Restore scroll position before the browser paints so users see no jump
@@ -308,7 +288,7 @@ export default function WorkersPane({
                                 >
                                   <div className="flex flex-wrap items-start gap-2">
                                     <span
-                                      className={`shrink-0 rounded-md border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${statusClass(w.status)}`}
+                                      className={`shrink-0 rounded-md border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${workerStatusClass(w.status)}`}
                                     >
                                       {w.status}
                                     </span>

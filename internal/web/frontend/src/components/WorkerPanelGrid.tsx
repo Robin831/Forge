@@ -1,6 +1,7 @@
 import { useMemo } from 'react'
 import { MonitorOff, Users } from 'lucide-react'
 import { isFinishedWorker, type WorkerInfo } from '../api'
+import { SLOT_STATUSES } from '../lib/workerStatus'
 import { isBellowsMonitor } from './PipelineBar'
 import WorkerPanel from './WorkerPanel'
 
@@ -16,11 +17,10 @@ interface WorkerPanelGridProps {
 }
 
 // A worker holds a Smith slot — and streams output worth a full panel — while
-// pending, running, reviewing (Warden), or paused. This matches WorkersPane's
-// slot accounting so the idle-slot math agrees across the two surfaces. Bellows
-// PR-monitor pseudo-workers are excluded: they produce no claude log.
-const SLOT_STATUSES = new Set(['pending', 'running', 'reviewing', 'paused'])
-
+// pending, running, reviewing (Warden), paused, or stalled. The status set
+// lives in lib/workerStatus so this grid, WorkersPane and WorkerPanel cannot
+// disagree about it (they used to, and all three omitted 'stalled'). Bellows
+// PR-monitor pseudo-workers are excluded here: they produce no claude log.
 export function isSlotWorker(w: WorkerInfo): boolean {
   return SLOT_STATUSES.has(w.status) && !isBellowsMonitor(w)
 }

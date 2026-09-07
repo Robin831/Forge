@@ -1,0 +1,2 @@
+category: Fixed
+- **Stalled workers stay visible on the web dashboard** - A worker the watchdog marks stalled keeps its live panel (and its open log stream) instead of vanishing mid-run, and now carries its own orange `stalled` chip. It also counts against the Smith cap again, so the Workers pane and the panel grid stop offering one idle slot more than the daemon will dispatch into. The slot-status set and chip colours moved to `src/lib/workerStatus.ts` so the three surfaces that read them cannot drift apart again. (Forge-wl5s)

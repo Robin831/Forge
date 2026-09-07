@@ -28,6 +28,7 @@ import { useEventSource } from '../hooks/useEventSource'
 import { useUIState } from '../hooks/useUIState'
 import { relativeTime } from '../lib/format'
 import { parseTranscript, type TranscriptEntry } from '../lib/logParse'
+import { SLOT_STATUSES, workerStatusClass } from '../lib/workerStatus'
 import ConfirmModal from './ConfirmModal'
 import LogViewer from './LogViewer'
 import PreviewButton from './PreviewButton'
@@ -49,29 +50,6 @@ interface WorkerPanelProps {
 }
 
 const PREVIEW_ENTRIES = 3
-
-// A worker occupies a Smith slot — and therefore streams live output worth
-// showing — while pending, running, reviewing (Warden), or paused. Terminal
-// workers linger for a few minutes as frozen panels (isFinishedWorker) — the
-// SSE closed, the final transcript shown from the live snapshot or a one-shot
-// tail fetch — until they age out of the ?recent= window and unmount.
-const ACTIVE_STATUSES = new Set(['pending', 'running', 'reviewing', 'paused'])
-
-// STATUS_CLASSES mirrors WorkersPane so the status chip reads identically
-// across the two surfaces.
-const STATUS_CLASSES: Record<string, string> = {
-  pending: 'bg-slate-700/60 text-slate-200 border-slate-600/60',
-  running: 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40',
-  reviewing: 'bg-cyan-500/20 text-cyan-300 border-cyan-500/40',
-  paused: 'bg-amber-500/20 text-amber-300 border-amber-500/40',
-  done: 'bg-sky-500/20 text-sky-300 border-sky-500/40',
-  failed: 'bg-red-500/20 text-red-300 border-red-500/40',
-  partial: 'bg-amber-500/20 text-amber-200 border-amber-500/40',
-}
-
-function statusClass(status: string): string {
-  return STATUS_CLASSES[status] ?? 'bg-slate-800 text-slate-300 border-slate-700'
-}
 
 // finishedStatusClass colours the caption under a lingering frozen panel. It is
 // deliberately three-way rather than done-or-red: a partial Assay run covered
@@ -160,7 +138,16 @@ export default function WorkerPanel({
     { storage: 'local' },
   )
 
-  const isActive = ACTIVE_STATUSES.has(worker.status)
+  // A worker occupies a Smith slot — and therefore streams live output worth
+  // showing — for every status in SLOT_STATUSES (lib/workerStatus, shared with
+  // WorkersPane and WorkerPanelGrid so the three cannot disagree). 'stalled' is
+  // in that set: the watchdog flags a worker whose log went quiet, but its
+  // process is alive and it flips back to running on worker_recovered, so the
+  // panel must stay live rather than vanish mid-run. Terminal workers linger
+  // for a few minutes as frozen panels (isFinishedWorker) — the SSE closed, the
+  // final transcript shown from the live snapshot or a one-shot tail fetch —
+  // until they age out of the ?recent= window and unmount.
+  const isActive = SLOT_STATUSES.has(worker.status)
   const isFinished = isFinishedWorker(worker)
   const bodyId = `worker-panel-body-${worker.id}`
 
@@ -316,7 +303,7 @@ export default function WorkerPanel({
         <div className="flex min-w-0 flex-1 flex-col">
           <div className="flex flex-wrap items-center gap-2">
             <span
-              className={`shrink-0 rounded-md border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${statusClass(worker.status)}`}
+              className={`shrink-0 rounded-md border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${workerStatusClass(worker.status)}`}
             >
               {worker.status}
             </span>

@@ -127,6 +127,42 @@ describe('WorkerPanelGrid slot math', () => {
     expect(screen.getAllByTestId('worker-panel-idle-slot')).toHaveLength(1)
   })
 
+  it("keeps a stalled worker's panel and counts its slot as taken", () => {
+    // The watchdog marks a worker stalled while its process is still running,
+    // and the daemon keeps counting it against max_total_smiths. Dropping the
+    // panel hid the worker at the moment an operator most wants to watch it,
+    // and reported one idle slot the daemon would never dispatch into.
+    render(
+      <WorkerPanelGrid
+        workers={[
+          worker({ id: 'w-1', status: 'running' }),
+          worker({ id: 'w-2', status: 'stalled' }),
+        ]}
+        maxTotalSmiths={3}
+      />,
+    )
+
+    expect(screen.getByTestId('panel-w-2')).toBeInTheDocument()
+    // 3 cap − 2 slot holders = 1 idle placeholder, not 2.
+    expect(screen.getAllByTestId('worker-panel-idle-slot')).toHaveLength(1)
+  })
+
+  it('keeps the same panel when a stalled worker recovers to running', () => {
+    // worker_recovered flips the status back; panels are keyed by worker id so
+    // the component instance (and its open stream) survives the transition.
+    const { rerender } = render(
+      <WorkerPanelGrid workers={[worker({ id: 'w-1', status: 'stalled' })]} maxTotalSmiths={2} />,
+    )
+    const stalledPanel = screen.getByTestId('panel-w-1')
+
+    rerender(
+      <WorkerPanelGrid workers={[worker({ id: 'w-1', status: 'running' })]} maxTotalSmiths={2} />,
+    )
+
+    expect(screen.getByTestId('panel-w-1')).toBe(stalledPanel)
+    expect(screen.getAllByTestId('worker-panel-idle-slot')).toHaveLength(1)
+  })
+
   it('shows the empty state when there are no active workers and no slots', () => {
     render(<WorkerPanelGrid workers={[]} maxTotalSmiths={0} />)
     expect(screen.getByTestId('worker-panel-grid-empty')).toBeInTheDocument()
@@ -141,8 +177,8 @@ describe('WorkerPanelGrid slot math', () => {
 })
 
 describe('isSlotWorker', () => {
-  it('treats pending/running/reviewing/paused non-bellows workers as slot holders', () => {
-    for (const status of ['pending', 'running', 'reviewing', 'paused']) {
+  it('treats pending/running/reviewing/paused/stalled non-bellows workers as slot holders', () => {
+    for (const status of ['pending', 'running', 'reviewing', 'paused', 'stalled']) {
       expect(isSlotWorker(worker({ status }))).toBe(true)
     }
   })
