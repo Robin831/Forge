@@ -101,20 +101,20 @@ func TestClassifyFailure(t *testing.T) {
 	deadlineCtx, cancel := context.WithTimeout(ctx, time.Nanosecond)
 	defer cancel()
 	<-deadlineCtx.Done()
-	assert.Equal(t, ClassificationTimeout, classifyFailure(deadlineCtx, nil, ""))
+	assert.Equal(t, ClassificationTimeout, classifyFailure(deadlineCtx, nil, nil, ""))
 
 	// Infra markers (Go OOM / signal death) classify as infra.
-	assert.Equal(t, ClassificationInfra, classifyFailure(ctx, nil, "fatal error: runtime: out of memory"))
-	assert.Equal(t, ClassificationInfra, classifyFailure(ctx, nil, "signal: killed"))
-	assert.Equal(t, ClassificationInfra, classifyFailure(ctx, nil, "SIGSEGV: segmentation violation\nsignal: segmentation fault"))
-	assert.Equal(t, ClassificationInfra, classifyFailure(ctx, nil, "Test host process crashed : Out of memory"))
+	assert.Equal(t, ClassificationInfra, classifyFailure(ctx, nil, nil, "fatal error: runtime: out of memory"))
+	assert.Equal(t, ClassificationInfra, classifyFailure(ctx, nil, nil, "signal: killed"))
+	assert.Equal(t, ClassificationInfra, classifyFailure(ctx, nil, nil, "SIGSEGV: segmentation violation\nsignal: segmentation fault"))
+	assert.Equal(t, ClassificationInfra, classifyFailure(ctx, nil, nil, "Test host process crashed : Out of memory"))
 
 	// A genuine test failure wins even when a host-crash marker is also present.
-	assert.Equal(t, ClassificationTestFailure, classifyFailure(ctx, nil,
+	assert.Equal(t, ClassificationTestFailure, classifyFailure(ctx, nil, nil,
 		"Failed!  - Failed:     2, Passed: 3\nTest host process crashed : Out of memory"))
 
 	// A plain non-zero exit with ordinary test output is a test failure.
-	assert.Equal(t, ClassificationTestFailure, classifyFailure(ctx, nil, "--- FAIL: TestFoo (0.01s)"))
+	assert.Equal(t, ClassificationTestFailure, classifyFailure(ctx, nil, nil, "--- FAIL: TestFoo (0.01s)"))
 }
 
 func TestRun_Timeout_ClassifiesAsTimeout(t *testing.T) {
