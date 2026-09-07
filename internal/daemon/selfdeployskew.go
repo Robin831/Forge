@@ -270,6 +270,20 @@ func (d *Daemon) escalateSelfDeploySkew(sd config.SelfDeployConfig, skew selfdep
 	if !selfDeploySkewIsStalled(sd, skew, now) {
 		return
 	}
+	if d.selfDeployInFlight.Load() {
+		// The deploy dispatched for this tip has not finished. Its drain alone
+		// can run for max_drain_wait (30m by default), which is longer than the
+		// check interval, so the very next tick after a dispatch finds the same
+		// skew for the same tip and takes this branch while the deploy is
+		// working exactly as intended. What the entry asserts — that a deploy
+		// was dispatched and the daemon is STILL the old build — is not decided
+		// until that deploy returns, so nothing is raised and nothing is
+		// withdrawn: an entry a previous, finished attempt left standing is
+		// still true, and the in-flight deploy is what will clear it.
+		d.logger.Debug("self-deploy skew check: a deploy for this tip is still running; not escalating",
+			"anvil", sd.Anvil, "head", skew.HeadSHA, "commits", skew.Commits)
+		return
+	}
 	if d.db == nil {
 		return
 	}

@@ -1490,10 +1490,17 @@ answers the question whatever moved the branch and whoever moved it:
   that is not the one the unit runs — and a restart is exactly what would clear
   an in-memory one, leaving such a host redeploying itself every few minutes.
 - Past `skew_attention_commits` **or** `skew_attention_age`, a skew that a
-  deploy has already been attempted for becomes a `version_skew` Needs Attention
-  entry (below). Two thresholds because they catch different shapes of the same
-  failure: a burst of merges is many commits and minutes old, one merge nothing
-  ever deployed is a single commit and a week old.
+  deploy has already been attempted *and finished* for becomes a `version_skew`
+  Needs Attention entry (below). Two thresholds because they catch different
+  shapes of the same failure: a burst of merges is many commits and minutes old,
+  one merge nothing ever deployed is a single commit and a week old.
+- Nothing is escalated **while that deploy is still running**. Its drain alone
+  can take `max_drain_wait` (30m by default) against a 15m check interval, so the
+  tick right after a dispatch reliably sees the same skew for the same tip with
+  the deploy working exactly as intended — and what the entry claims (a deploy
+  was dispatched and the daemon is *still* the old build) is not decided until it
+  returns. An entry an earlier, finished attempt left standing is not withdrawn
+  either: it is still true, and the running deploy is what clears it.
 - The entry is withdrawn the moment the running build is current again — by a
   deploy that goes live, or by an operator who rebuilt by hand.
 
@@ -1517,7 +1524,7 @@ non-restart outcome is therefore persisted (in the `deploy_failures` table of
 | `swap_failed` | Self-deploy failed / rolled back: binary swap failed | The new binary could not be moved into place. The previous binary is restored when one existed. | The next deploy reaches its restart. |
 | `restart_failed` | Self-deploy rolled back: restart failed | The new binary was installed but the restart never started; the previous binary was put back. | The next deploy reaches its restart. |
 | `rollback_failed` | Self-deploy failed: restart AND rollback failed | The worst case: the on-disk binary is the new, never-started build while the running process is still the old one. A stop/start or a crash-restart will bring up the untested build. | The next deploy reaches its restart. |
-| `version_skew` | Self-deploy stalled: the running build is behind the deploy branch | The merged code is not the code running. A deploy for that commit was dispatched and the daemon is still the old build — the other entries (or `daemon.log`) say why, and there may be none, which is the point. | The running build is current again — a deploy that goes live, or a manual rebuild. |
+| `version_skew` | Self-deploy stalled: the running build is behind the deploy branch | The merged code is not the code running. A deploy for that commit was dispatched, has finished, and the daemon is still the old build — the other entries (or `daemon.log`) say why, and there may be none, which is the point. | The running build is current again — a deploy that goes live, or a manual rebuild. |
 
 The title carries the targeted unit (`… (unit forge)`), and the detail line
 answers "is the merged fix live?" without a shell:
@@ -2501,6 +2508,7 @@ The daemon watches `forge.yaml` via fsnotify. When the file changes, **only a su
 - `anvils.<name>.preview_enabled` is re-read per preview start, so the next `forge preview start` (or Preview button) obeys the new value
 - `anvils.<name>.preview_auto` is re-read on the next ready-to-merge transition
 - `anvils.<name>.preview_quests` is re-read per quest run
+- `self_deploy.*` (the whole block) is re-read live: the version-skew check re-reads it every tick, and a deploy is handed the config as it stands at the moment it is triggered — so enabling self-deploy, or changing any of its knobs, needs no restart
 - Other per-anvil keys the daemon applies live: `auto_merge` (next ready-to-merge transition), `max_smiths`, `path`, `stage_providers`, `assay.*`, plus adding or removing an anvil entry
 - In-flight workers are **not** interrupted
 

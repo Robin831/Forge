@@ -25,6 +25,8 @@
 //   - anvils.<name>.preview_enabled (read per preview_start, so the next start obeys it)
 //   - anvils.<name>.preview_auto (read on the next ready-to-merge transition)
 //   - anvils.<name>.preview_quests (read per quest run)
+//   - self_deploy.* (the whole block: the skew loop re-reads it each tick and a
+//     deploy reads it at the moment it is triggered)
 //   - anvils.* adding or removing anvil entries (updates bellows and depcheck)
 //
 // Everything else is read once, at startup. A reload that touches such a
@@ -465,6 +467,24 @@ func applyChanges(old, new *config.Config) []string {
 	// covers the tri-state *bool / []string (skip_paths) fields cleanly.
 	if !reflect.DeepEqual(old.Assay, new.Assay) {
 		changes = append(changes, "assay config changed")
+	}
+
+	// self_deploy (whole block). Every consumer reads it live: the skew loop
+	// re-reads d.config().SelfDeploy each tick, and triggerSelfDeploy hands
+	// runSelfDeploy the config as it stands at the moment of the trigger — so
+	// swapping the config in is the whole of what a reload has to do here.
+	// But reload() only swaps anything in when applyChanges reports a change,
+	// so without this entry the block was reloadable in shape and inert in
+	// fact: an edit touching only self_deploy fell through to the generic
+	// "a daemon restart is required" WARN and was then not applied. That is
+	// the wrong claim twice over, and worst for the one setting that turns the
+	// version-skew check on — the check whose job is to deploy the daemon that
+	// would otherwise have to be restarted to pick the setting up.
+	// DeepEqual rather than a field list because the block carries a slice
+	// (restart_args) and grows knobs, and a comparison that forgets one is
+	// exactly the silence being fixed.
+	if !reflect.DeepEqual(old.SelfDeploy, new.SelfDeploy) {
+		changes = append(changes, "self_deploy config changed")
 	}
 
 	// Detect anvil changes (add, remove, path change, max_smiths)

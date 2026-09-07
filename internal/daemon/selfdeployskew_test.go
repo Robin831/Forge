@@ -51,6 +51,22 @@ func waitDispatched(t *testing.T, ch chan config.SelfDeployConfig) {
 	}
 }
 
+// waitDeployIdle blocks until the dispatched deploy's goroutine has released the
+// single-flight guard. The stub body returns as soon as its send lands, but the
+// flag is cleared by a deferred store afterwards — and escalation is now
+// suppressed while a deploy is in flight, so a test that asserts on the entry
+// has to know the deploy is over rather than merely dispatched.
+func waitDeployIdle(t *testing.T, d *Daemon) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for d.selfDeployInFlight.Load() {
+		if time.Now().After(deadline) {
+			t.Fatal("the dispatched deploy never released the single-flight guard")
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
 func deployFailureFor(t *testing.T, db *state.DB, reason string) *state.DeployFailure {
 	t.Helper()
 	rows, err := db.DeployFailures()
@@ -177,6 +193,7 @@ func TestApplySelfDeploySkew_StalledSkewEscalates(t *testing.T) {
 
 	d.applySelfDeploySkew(sd, skewOf(7, since), now)
 	waitDispatched(t, dispatched)
+	waitDeployIdle(t, d)
 	assert.Nil(t, deployFailureFor(t, db, state.DeployReasonVersionSkew),
 		"the first detection deploys; it does not also escalate")
 
@@ -190,6 +207,38 @@ func TestApplySelfDeploySkew_StalledSkewEscalates(t *testing.T) {
 		"the entry is stamped with the dispatch, so a refresh does not report an old skew as new")
 }
 
+// TestApplySelfDeploySkew_InFlightDeployIsNotEscalated: the entry claims a
+// deploy was dispatched and the daemon is STILL the old build, and that is not
+// decided while the deploy is running. Its drain alone can take max_drain_wait
+// (30m by default) against a 15m check interval, so the tick right after a
+// dispatch reliably finds the same skew for the same tip with the deploy working
+// exactly as intended — escalating there reports a stall that is not one.
+func TestApplySelfDeploySkew_InFlightDeployIsNotEscalated(t *testing.T) {
+	sd := enabledSkewConfig()
+	d, db, dispatched := skewDaemon(t, sd)
+	release := make(chan struct{})
+	d.selfDeployRun = func(cfg config.SelfDeployConfig) {
+		dispatched <- cfg
+		<-release
+	}
+	now := time.Now()
+	since := now.Add(-5 * 24 * time.Hour)
+
+	d.applySelfDeploySkew(sd, skewOf(7, since), now)
+	waitDispatched(t, dispatched)
+
+	// Still draining: same tip, same skew, well past both thresholds.
+	d.applySelfDeploySkew(sd, skewOf(7, since), now.Add(15*time.Minute))
+	assert.Nil(t, deployFailureFor(t, db, state.DeployReasonVersionSkew),
+		"a deploy that is still running has not failed to close the skew")
+
+	// Once it is over and the build is still behind, the claim holds.
+	close(release)
+	waitDeployIdle(t, d)
+	d.applySelfDeploySkew(sd, skewOf(7, since), now.Add(30*time.Minute))
+	assert.NotNil(t, deployFailureFor(t, db, state.DeployReasonVersionSkew))
+}
+
 // TestApplySelfDeploySkew_BelowThresholdIsNotEscalated: between a merge and the
 // tick that deploys it, being a commit behind is ordinary.
 func TestApplySelfDeploySkew_BelowThresholdIsNotEscalated(t *testing.T) {
@@ -199,6 +248,7 @@ func TestApplySelfDeploySkew_BelowThresholdIsNotEscalated(t *testing.T) {
 
 	d.applySelfDeploySkew(sd, skewOf(1, now), now)
 	waitDispatched(t, dispatched)
+	waitDeployIdle(t, d)
 	d.applySelfDeploySkew(sd, skewOf(1, now), now.Add(15*time.Minute))
 
 	assert.Nil(t, deployFailureFor(t, db, state.DeployReasonVersionSkew))
@@ -214,6 +264,7 @@ func TestApplySelfDeploySkew_AgeAloneEscalates(t *testing.T) {
 
 	d.applySelfDeploySkew(sd, skewOf(1, since), now)
 	waitDispatched(t, dispatched)
+	waitDeployIdle(t, d)
 	d.applySelfDeploySkew(sd, skewOf(1, since), now.Add(15*time.Minute))
 
 	require.NotNil(t, deployFailureFor(t, db, state.DeployReasonVersionSkew))
@@ -230,6 +281,7 @@ func TestApplySelfDeploySkew_CurrentBuildWithdrawsTheEntry(t *testing.T) {
 
 	d.applySelfDeploySkew(sd, skewOf(7, since), now)
 	waitDispatched(t, dispatched)
+	waitDeployIdle(t, d)
 	d.applySelfDeploySkew(sd, skewOf(7, since), now.Add(15*time.Minute))
 	require.NotNil(t, deployFailureFor(t, db, state.DeployReasonVersionSkew))
 
