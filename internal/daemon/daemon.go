@@ -184,10 +184,18 @@ type Daemon struct {
 	// (PR #4257 / Fhi.Metadata-hyc4g). Guarded by pendingMu for the read-modify-write.
 	pendingActions sync.Map
 	pendingMu      sync.Mutex
-	wg             sync.WaitGroup // tracks running pipeline goroutines
-	pollRunning    atomic.Bool    // true while pollAndDispatch is executing; prevents concurrent overlapping polls
-	worktreeMgr    *worktree.Manager
-	promptBuilder  *prompt.Builder
+	// liveWorkers is the set of worker row ids a goroutine in THIS process is
+	// currently running work for, and workerGeneration names this daemon
+	// lifetime on every row it inserts. Together they are what lets the reaper
+	// tell a row whose owner is gone from one that is merely quiet, without
+	// reading the pid — see reaper.go, and Fhi.Metadata-2p3ck for what reading
+	// the pid costs.
+	liveWorkers      liveWorkerRegistry
+	workerGeneration string
+	wg               sync.WaitGroup // tracks running pipeline goroutines
+	pollRunning      atomic.Bool    // true while pollAndDispatch is executing; prevents concurrent overlapping polls
+	worktreeMgr      *worktree.Manager
+	promptBuilder    *prompt.Builder
 
 	// lifecycleActive counts the lifecycle/bellows fix workers
 	// (quench/burnish/rebase/assay) currently running a Claude session. Gated by
@@ -692,6 +700,14 @@ func New(cfg *config.Config, configPath string) (*Daemon, error) {
 		anvilHealth:           anvilhealth.New(),
 	}
 	d.lifecycleCond = sync.NewCond(&sync.Mutex{})
+	// Mint this daemon lifetime's generation and publish it to the DB before
+	// anything can insert a worker row. Every row written from here on carries
+	// it, which is what makes a row carrying anything else provably one no
+	// goroutine in this process owns (see reaper.go). Done in the constructor
+	// rather than in Run because Run's own startup — the orphan sweep, the
+	// paused-worker recovery — already touches worker rows.
+	d.workerGeneration = newDaemonGeneration()
+	d.db.SetDaemonGeneration(d.workerGeneration)
 	d.pausedSince.Store(time.Time{})
 	d.notifier.Store(notifier)
 	d.dispatcher.Store(dispatcher)
@@ -1261,6 +1277,19 @@ func (d *Daemon) Run(ctx context.Context) error {
 		d.logger.Info("startup bead recovery done", "recovered", recovered)
 	}
 
+	// End the worker rows a previous daemon lifetime left behind. This runs
+	// AFTER the orphan sweep above, not before: the sweep decides which
+	// worktrees to remove from the set of rows that are still active, so
+	// reaping first would offer it the worktrees of everything reaped —
+	// including a burnish fix commit that was deliberately preserved. Leaving
+	// them costs a directory until the next start; removing one costs the work.
+	//
+	// It runs before the first poll so those rows stop counting against
+	// max_total_smiths immediately, rather than one reap interval into the run.
+	if err := d.reapLeakedWorkers(ctx); err != nil {
+		d.logger.Warn("startup leaked-worker reap failed", "error", err)
+	}
+
 	// Surface beads that were paused before this restart. Their worker rows and
 	// worktrees survived, but the parked pipeline goroutines did not, so they
 	// cannot be resumed via the live control handle. Log them and record a
@@ -1490,6 +1519,14 @@ func (d *Daemon) Run(ctx context.Context) error {
 
 	// Start stale worker detection loop (always running; respects current config)
 	go d.runStaleDetection(ctx)
+
+	// Keep the ownership evidence the leaked-worker reaper reads current, and
+	// re-run the reap on a slow ticker. The heartbeat must be running before
+	// any worker is dispatched: a registered row whose heartbeat never moved
+	// would age past the grace window and be judged by the fallback the window
+	// exists to avoid needing.
+	go d.runWorkerHeartbeat(ctx)
+	go d.runLeakedWorkerReaper(ctx)
 
 	// Start dependency update checker (if enabled)
 	if d.config().Settings.DepcheckInterval > 0 {
@@ -2530,6 +2567,17 @@ func (d *Daemon) handleLifecycleAction(ctx context.Context, req lifecycle.Action
 			}
 			return
 		}
+		workerID := fmt.Sprintf("%s-%s-%d", req.Anvil, req.BeadID, time.Now().UnixNano())
+		// One registration for all four lifecycle actions: quench, burnish,
+		// rebase and Assay each write this same id, and every one of them can
+		// outrun the reaper's heartbeat grace on a long session.
+		//
+		// Registered ABOVE the teardown defer below so, defers unwinding LIFO,
+		// the release runs after it: the teardown still writes to this row
+		// (RepointWorkerLogPaths), and a row released before its last writer is
+		// one a reap pass may end while its owner is still finishing.
+		defer d.trackWorker(workerID)()
+
 		// Preserve this worker's claude logs before the worktree goes away,
 		// mirroring the pipeline's teardown. Without this the lifecycle
 		// stages (quench/burnish/rebase/assay) left their worker rows
@@ -2550,8 +2598,6 @@ func (d *Daemon) handleLifecycleAction(ctx context.Context, req lifecycle.Action
 			}
 			d.removeLifecycleWorktree(ctx, req, anvilCfg.Path, wt)
 		}()
-
-		workerID := fmt.Sprintf("%s-%s-%d", req.Anvil, req.BeadID, time.Now().UnixNano())
 
 		// Derive a timeout context for the lifecycle worker so it cannot hang
 		// indefinitely. Use SmithTimeout as the budget since these workers (quench,
@@ -4503,6 +4549,16 @@ func (d *Daemon) costGateAllows(cfg *config.Config, today string) (allowed bool,
 // actual on completion or failure (Forge-s3w7).
 func (d *Daemon) dispatchBead(ctx context.Context, bead poller.Bead, anvilCfg config.AnvilConfig, claimWorkerID string, ctrl *controlHandle, resume *pipeline.ResumeSession, costReservation uint64) {
 	defer d.wg.Done()
+	// Claim the row as owned by a live goroutine for as long as this dispatch
+	// can still write to it, above every return and every goto below so no exit
+	// can precede it.
+	//
+	// Registered ABOVE the exit backstop so, defers unwinding LIFO, the release
+	// runs after it: the backstop is this dispatch's LAST write to the row, and
+	// a row released before its last writer is one a reap pass may end while
+	// its owner is still finishing (see reaper.go).
+	defer d.trackWorker(claimWorkerID)()
+
 	// Backstop: whichever of this function's many exits is taken — an early
 	// abort, a pipeline error, a return nobody wrote a status update for, or a
 	// panic unwinding the stack — the claim worker row must not be left
@@ -10376,6 +10432,10 @@ func (d *Daemon) handleWardenRerun(beadID, anvil, branch string, anvilCfg config
 	defer d.worktreeMgr.Remove(context.Background(), anvilCfg.Path, wt)
 
 	workerID := fmt.Sprintf("%s-%s-%d", anvil, beadID, time.Now().UnixNano())
+	// Owned by this goroutine until it returns: the reaper reads the registry
+	// before anything else, so a session that outruns the heartbeat grace is
+	// still never mistaken for a row nobody is running (see reaper.go).
+	defer d.trackWorker(workerID)()
 	_ = d.db.InsertWorker(&state.Worker{
 		ID:        workerID,
 		BeadID:    beadID,
@@ -10473,6 +10533,10 @@ func (d *Daemon) handleApproveAsIs(beadID, anvil, branch string, anvilCfg config
 	defer cancel()
 
 	workerID := fmt.Sprintf("%s-%s-%d", anvil, beadID, time.Now().UnixNano())
+	// Owned by this goroutine until it returns: the reaper reads the registry
+	// before anything else, so a session that outruns the heartbeat grace is
+	// still never mistaken for a row nobody is running (see reaper.go).
+	defer d.trackWorker(workerID)()
 	_ = d.db.InsertWorker(&state.Worker{
 		ID:        workerID,
 		BeadID:    beadID,
@@ -10573,6 +10637,10 @@ func (d *Daemon) handleForceSmith(beadID, anvil, branch, userNote string, anvilC
 	}()
 
 	workerID := fmt.Sprintf("%s-%s-%d", anvil, beadID, time.Now().UnixNano())
+	// Owned by this goroutine until it returns: the reaper reads the registry
+	// before anything else, so a session that outruns the heartbeat grace is
+	// still never mistaken for a row nobody is running (see reaper.go).
+	defer d.trackWorker(workerID)()
 	_ = d.db.InsertWorker(&state.Worker{
 		ID:        workerID,
 		BeadID:    beadID,
