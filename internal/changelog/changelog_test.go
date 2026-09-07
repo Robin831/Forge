@@ -170,6 +170,34 @@ func TestValidateFragmentExists(t *testing.T) {
 	if ValidateFragmentExists(dir, "Forge-nope") {
 		t.Error("should not find Forge-nope")
 	}
+
+	// The decorations the daemon's completion probe accepts must satisfy this
+	// gate too: the two answer the same question and used to disagree, so a
+	// technical-only bead read as complete to one and missing to the other.
+	os.WriteFile(filepath.Join(dir, "Forge-tech-technical.en.md"), []byte("x"), 0644)
+	os.WriteFile(filepath.Join(dir, "Forge-tech-technical.nb.md"), []byte("x"), 0644)
+	if !ValidateFragmentExists(dir, "Forge-tech") {
+		t.Error("should find the -technical language pair")
+	}
+
+	os.WriteFile(filepath.Join(dir, "Forge-lang.nb.md"), []byte("x"), 0644)
+	if !ValidateFragmentExists(dir, "Forge-lang") {
+		t.Error("should find a non-en language split")
+	}
+
+	// A bd child bead's fragment (<parent>.<n>.md) is not the parent's.
+	os.WriteFile(filepath.Join(dir, "Forge-parent.3.md"), []byte("x"), 0644)
+	if ValidateFragmentExists(dir, "Forge-parent") {
+		t.Error("a child bead's fragment must not satisfy the parent")
+	}
+	if !ValidateFragmentExists(dir, "Forge-parent.3") {
+		t.Error("the child bead's own fragment must satisfy the child")
+	}
+
+	// A missing directory is a clean negative, not a panic.
+	if ValidateFragmentExists(filepath.Join(dir, "absent"), "Forge-abc") {
+		t.Error("a missing changelog.d must report no fragment")
+	}
 }
 
 func TestValidateAllFragments(t *testing.T) {

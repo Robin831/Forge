@@ -3031,11 +3031,7 @@ func TestApplyNoChangesNeededOutcome(t *testing.T) {
 		branchName := worktree.BranchName(beadID)
 		gitLocal := func(args ...string) {
 			t.Helper()
-			cmd := exec.Command("git", args...)
-			cmd.Dir = orphanAnvilPath
-			cmd.Env = cleanGitTestEnv()
-			out, runErr := cmd.CombinedOutput()
-			require.NoError(t, runErr, "git %v: %s", args, out)
+			gitInTestRepo(t, orphanAnvilPath, args...)
 		}
 		gitLocal("checkout", "-b", branchName)
 		require.NoError(t, os.WriteFile(filepath.Join(orphanAnvilPath, "orphan.txt"), []byte("work\n"), 0o644))
@@ -3094,11 +3090,7 @@ func TestApplyNoChangesNeededOutcome(t *testing.T) {
 		branchName := worktree.BranchName(beadID)
 		gitLocal := func(args ...string) {
 			t.Helper()
-			cmd := exec.Command("git", args...)
-			cmd.Dir = orphanAnvilPath
-			cmd.Env = cleanGitTestEnv()
-			out, runErr := cmd.CombinedOutput()
-			require.NoError(t, runErr, "git %v: %s", args, out)
+			gitInTestRepo(t, orphanAnvilPath, args...)
 		}
 		gitLocal("checkout", "-b", branchName)
 		require.NoError(t, os.WriteFile(filepath.Join(orphanAnvilPath, "orphan-fail.txt"), []byte("work\n"), 0o644))
@@ -3145,11 +3137,7 @@ func TestApplyNoChangesNeededOutcome(t *testing.T) {
 		branchName := worktree.BranchName(beadID)
 		gitLocal := func(args ...string) {
 			t.Helper()
-			cmd := exec.Command("git", args...)
-			cmd.Dir = orphanAnvilPath
-			cmd.Env = cleanGitTestEnv()
-			out, runErr := cmd.CombinedOutput()
-			require.NoError(t, runErr, "git %v: %s", args, out)
+			gitInTestRepo(t, orphanAnvilPath, args...)
 		}
 		gitLocal("checkout", "-b", branchName)
 		require.NoError(t, os.WriteFile(filepath.Join(orphanAnvilPath, "orphan-dup.txt"), []byte("work\n"), 0o644))
@@ -4138,6 +4126,21 @@ func cleanGitTestEnv() []string {
 	return executil.CleanGitEnv()
 }
 
+// gitInTestRepo runs one git command in dir with those vars stripped, failing
+// the test with git's own output on a non-zero exit. Every git-driving test in
+// this package goes through it: the same four lines had been re-inlined as a
+// local closure in each of them, which is a copy per file of a rule (strip the
+// outer worker's GIT_* vars) that is wrong everywhere the moment it is missed
+// once.
+func gitInTestRepo(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	cmd.Env = cleanGitTestEnv()
+	out, err := cmd.CombinedOutput()
+	require.NoError(t, err, "git %v: %s", args, out)
+}
+
 // initTestGitRepo sets up a bare "remote" repo and a local clone that serves
 // as the anvilPath for forgeBranchAheadOfMain tests. It returns the local path.
 func initTestGitRepo(t *testing.T) (anvilPath string) {
@@ -4149,15 +4152,11 @@ func initTestGitRepo(t *testing.T) (anvilPath string) {
 	remotePath := filepath.Join(base, "remote")
 	anvilPath = filepath.Join(base, "local")
 
+	// Strip git worktree env vars so setup commands run against the test repo
+	// rather than inheriting the outer Forge worker process's context.
 	gitSetup := func(dir string, args ...string) {
 		t.Helper()
-		cmd := exec.Command("git", args...)
-		cmd.Dir = dir
-		// Strip git worktree env vars so setup commands run against the test
-		// repo rather than inheriting the outer Forge worker process's context.
-		cmd.Env = cleanGitTestEnv()
-		out, err := cmd.CombinedOutput()
-		require.NoError(t, err, "git %v: %s", args, out)
+		gitInTestRepo(t, dir, args...)
 	}
 
 	// Bare remote.
@@ -4205,11 +4204,7 @@ func TestForgeBranchAheadOfMain(t *testing.T) {
 
 	gitLocal := func(args ...string) {
 		t.Helper()
-		cmd := exec.Command("git", args...)
-		cmd.Dir = anvilPath
-		cmd.Env = cleanGitTestEnv()
-		out, err := cmd.CombinedOutput()
-		require.NoError(t, err, "git %v: %s", args, out)
+		gitInTestRepo(t, anvilPath, args...)
 	}
 
 	t.Run("branch absent on origin", func(t *testing.T) {
@@ -4258,14 +4253,7 @@ func TestForgeBranchAheadOfMain(t *testing.T) {
 func TestPreDispatchRemoteBranchCheck(t *testing.T) {
 	const anvilName = "test-anvil"
 
-	gitLocal := func(t *testing.T, anvilPath string, args ...string) {
-		t.Helper()
-		cmd := exec.Command("git", args...)
-		cmd.Dir = anvilPath
-		cmd.Env = cleanGitTestEnv()
-		out, err := cmd.CombinedOutput()
-		require.NoError(t, err, "git %v: %s", args, out)
-	}
+	gitLocal := gitInTestRepo
 
 	t.Run("absent branch: dispatch proceeds", func(t *testing.T) {
 		anvilPath := initTestGitRepo(t)

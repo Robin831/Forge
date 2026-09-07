@@ -1,8 +1,10 @@
 // Package changelog handles changelog fragment parsing and assembly.
 //
-// Fragments live in changelog.d/<bead-id>.md (or <bead-id>.en.md for
-// backwards compatibility). Each fragment has a "category: <Category>"
-// header line followed by markdown bullet points describing changes.
+// Fragments live in changelog.d/<bead-id>.md, or one of the decorated names
+// FragmentMatchesBead accepts (a language split, a hyphen-delimited fragment
+// kind) — that function is the one definition of which names belong to which
+// bead. Each fragment has a "category: <Category>" header line followed by
+// markdown bullet points describing changes.
 package changelog
 
 import (
@@ -253,14 +255,22 @@ func ValidateAllFragments(dir string) (valid int, errs []FragmentError) {
 	return valid, errs
 }
 
-// ValidateFragmentExists checks if a changelog fragment exists for the given bead ID.
+// ValidateFragmentExists checks if a changelog fragment exists for the given
+// bead ID. Which names count is FragmentMatchesBead's decision and not a second
+// list here: this is the matcher behind `forge changelog validate <bead-ids>`
+// and the daemon's stranded-branch completion probe is the other caller, so a
+// bead whose fragment set is <bead>-technical.en.md + <bead>-technical.nb.md
+// must not read as complete to one and missing to the other.
 func ValidateFragmentExists(dir, beadID string) bool {
-	patterns := []string{
-		filepath.Join(dir, beadID+".md"),
-		filepath.Join(dir, beadID+".en.md"),
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return false
 	}
-	for _, p := range patterns {
-		if _, err := os.Stat(p); err == nil {
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		if FragmentMatchesBead(e.Name(), beadID) {
 			return true
 		}
 	}
