@@ -247,6 +247,22 @@ func (e *testEnv) generation() string { return e.d.workerGeneration }
 // not wrap.
 func (e *testEnv) conn() *sql.DB { return e.db.Conn() }
 
+// reconfigure applies a mutation to the daemon's live configuration, in place
+// of a widening set of construction options.
+//
+// It exists because the settings a test needs are not all knowable before the
+// env has a temp directory: an anvil's Path is e.dir, and an anvil is what a
+// test driving the poll loop must configure. The current config is copied and
+// the copy stored, which is how the daemon's own hot reload swaps one in — so a
+// goroutine holding the pointer it loaded keeps reading a consistent view
+// rather than one mutated underneath it.
+func (e *testEnv) reconfigure(mutate func(*config.Config)) {
+	e.t.Helper()
+	next := *e.d.config()
+	mutate(&next)
+	e.d.cfg.Store(&next)
+}
+
 // start launches the daemon's worker-ownership loops — the heartbeat and the
 // periodic leaked-worker reaper — under the env's context and waitgroup, in the
 // order and with the wiring Daemon.Run uses.
