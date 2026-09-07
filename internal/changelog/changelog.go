@@ -256,11 +256,16 @@ func ValidateAllFragments(dir string) (valid int, errs []FragmentError) {
 }
 
 // ValidateFragmentExists checks if a changelog fragment exists for the given
-// bead ID. Which names count is FragmentMatchesBead's decision and not a second
-// list here: this is the matcher behind `forge changelog validate <bead-ids>`
-// and the daemon's stranded-branch completion probe is the other caller, so a
-// bead whose fragment set is <bead>-technical.en.md + <bead>-technical.nb.md
-// must not read as complete to one and missing to the other.
+// bead ID under the BUILT-IN convention. Which names count is
+// FragmentMatchesBead's decision and not a second list here, so a bead whose
+// fragment set is <bead>-technical.en.md + <bead>-technical.nb.md does not read
+// as complete to one caller and missing to another.
+//
+// This is `forge changelog validate <bead-ids>`, which runs inside a checkout
+// with no anvil to resolve — so it answers for the built-in rule and not for a
+// per-anvil FragmentRule. That is the right answer for it: a repository that
+// configured its own shapes did so because it has a changelog gate of its own,
+// which is what runs in its CI rather than this command.
 func ValidateFragmentExists(dir, beadID string) bool {
 	entries, err := os.ReadDir(dir)
 	if err != nil {

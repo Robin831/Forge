@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Robin831/Forge/internal/changelog"
 	"github.com/Robin831/Forge/internal/config"
 	"github.com/Robin831/Forge/internal/poller"
 	"github.com/Robin831/Forge/internal/state"
@@ -47,13 +48,13 @@ func TestBranchHasChangelogFragment_TechnicalOnlyPair(t *testing.T) {
 	d := &Daemon{logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
 	sha := branchHeadSHA(t, anvilPath, branch)
 
-	found, err := d.branchHasChangelogFragment(context.Background(), anvilPath, sha, beadID)
+	found, _, err := d.branchHasChangelogFragment(context.Background(), anvilPath, sha, beadID, changelog.FragmentRule{})
 	require.NoError(t, err)
 	assert.True(t, found, "a -technical language pair is a complete fragment set and must read as a completion signal")
 
 	// A different bead sharing this one's id as a prefix must not be satisfied
 	// by these files.
-	found, err = d.branchHasChangelogFragment(context.Background(), anvilPath, sha, beadID+"1")
+	found, _, err = d.branchHasChangelogFragment(context.Background(), anvilPath, sha, beadID+"1", changelog.FragmentRule{})
 	require.NoError(t, err)
 	assert.False(t, found, "a bead whose id merely extends another's must not match its fragments")
 }
@@ -77,11 +78,11 @@ func TestBranchHasChangelogFragment_ChildBeadFragment(t *testing.T) {
 	d := &Daemon{logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
 	sha := branchHeadSHA(t, anvilPath, branch)
 
-	found, err := d.branchHasChangelogFragment(context.Background(), anvilPath, sha, parentID)
+	found, _, err := d.branchHasChangelogFragment(context.Background(), anvilPath, sha, parentID, changelog.FragmentRule{})
 	require.NoError(t, err)
 	assert.False(t, found, "a child bead's fragment is not the parent's completion signal")
 
-	found, err = d.branchHasChangelogFragment(context.Background(), anvilPath, sha, childID)
+	found, _, err = d.branchHasChangelogFragment(context.Background(), anvilPath, sha, childID, changelog.FragmentRule{})
 	require.NoError(t, err)
 	assert.True(t, found, "the child's own fragments must still read as its completion signal")
 }

@@ -191,6 +191,87 @@ Each key under `anvils` is the anvil name. The name is used in CLI output, logs,
 | `hooks` | object\|null | null | Shell commands to run before/after each pipeline stage. See [Pipeline Hooks](#pipeline-hooks) below. |
 | `stage_providers` | map[string][]string | `{}` (use global) | Per-anvil override for `settings.stage_providers`. When set, takes precedence over the global stage providers for beads in this anvil. Same keys/format. See [Settings](#settings) and the Wicket [Per-Anvil Settings](#per-anvil-settings) table. |
 | `assay` | object\|null | null (use global) | Per-anvil overlay for the top-level `assay` (AI PR review) config. Non-empty fields override the corresponding global values. See [Assay — AI Pull-Request Review](#assay--ai-pull-request-review) below. |
+| `changelog` | object\|null | null (built-in convention) | This repository's changelog-fragment convention, for the one question Forge asks about it: does a pushed branch carry the bead's fragment, i.e. did the prior worker finish. See [Changelog Fragment Convention](#changelog-fragment-convention) below. |
+
+### Changelog Fragment Convention
+
+Forge asks one question about changelog fragments: **does a branch pushed by a prior
+worker carry this bead's fragment?** A fragment is required per PR, so its presence on a
+stranded branch is a completion signal — the worker finished and merely failed to open
+the PR, which Forge recovers by opening it. Its absence is an escalation to needs_human.
+
+That makes the naming convention load-bearing, and the convention belongs to the
+repository, not to Forge. The anvil already encodes it a second time in its own CI gate
+(Munin: "Check changelog updates"), and two independent encodings of one convention
+drift: Munin added a `-technical` fragment kind, its own gate passed a `-technical`-only
+pair, Forge's matcher did not, and completed, pushed work was escalated with its PR
+opened by hand.
+
+**The default needs no configuration** and is what every anvil has always had:
+`changelog.d/<bead-id>.md`, or that id followed by a `.` or `-` delimiter and further
+segments of which the first is alphabetic — the language split (`<bead>.en.md`,
+`<bead>.nb.md`) and the hyphen-delimited fragment kind (`<bead>-technical.nb.md`), in
+either order. A `bd` child bead's `<parent>.<n>.md` is deliberately **not** a fragment
+for `<parent>`: bd's hierarchical ids are literally `<parent>.<n>`, and a child's
+fragment merged weeks earlier still sits in `changelog.d/` on the parent's stranded
+branch, where reading it as the parent's own completion signal would open a PR for work
+that never happened.
+
+Configure the block only when your repository's own gate accepts something else:
+
+```yaml
+anvils:
+  munin:
+    path: /home/robin/source/Munin
+    changelog:
+      dir: changelog.d               # optional; default changelog.d
+      fragment_globs:                # optional; default = the grammar described above
+        - '{bead}.md'
+        - '{bead}-*.md'
+        - '{bead}_*.md'
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `changelog.dir` | string | `changelog.d` | Repository-relative fragment directory. Must be a relative path inside the repository. |
+| `changelog.fragment_globs` | []string | `[]` (built-in grammar) | Accepted file **name** patterns (`path.Match` syntax) with `{bead}` where the bead id goes. |
+
+Two properties are worth stating plainly:
+
+- **A configured list replaces the built-in grammar, it does not extend it.** A rule
+  stated in one place and half-overridden in another is the arrangement this setting
+  exists to remove, so a list must name every shape the repository uses — `'{bead}.md'`
+  included.
+- **Every pattern must contain `{bead}`.** Config validation refuses one that does not,
+  because `'*.md'` would match a *sibling* bead's fragment and report every stranded
+  branch as finished work. A pattern `path.Match` cannot parse is refused for the mirror
+  reason: it matches nothing, so every stranded branch would read as unfinished. Both
+  failures are silent at runtime, which is why they are decided at load.
+
+Both fields are hot-reloaded — the rule is resolved per probe, so an edit takes effect on
+the next one. That matters here more than elsewhere: the edit is usually made in response
+to an escalation that is still standing.
+
+#### Drift is reported rather than assumed away
+
+Configuration makes drift *correctable*, not impossible — a repository can still add a
+shape neither its Forge config nor the default names. So when the probe finds no
+fragment, it also reports the **near misses**: files under the fragment directory that
+plainly name the bead but that the rule rejected. Those go into the daemon log as a WARN
+*and* into the needs_human escalation itself, since that reason is the whole of what an
+operator reads:
+
+```
+Note: `changelog.d/Fhi.Metadata-hwbwz_technical.md` in that tree name this bead but do not
+match the fragment convention Forge holds for this anvil (changelog.d/Fhi.Metadata-hwbwz.md,
+or that id followed by a "." or "-" and an alphabetic kind or language — …), so they were
+not read as a completion signal. If the repository's own changelog gate accepts them, set
+anvils.<name>.changelog.fragment_globs to say so.
+```
+
+A `bd` child bead's `<parent>.<n>.md` is **not** reported as drift: that rejection is
+correct, and naming it would put a permanent false alarm on every parent escalation —
+the noise that buries the report this exists to make.
 
 ### Smith Deny Patterns
 
@@ -2489,6 +2570,8 @@ The config is validated at load time. Errors are reported as a list:
 - `auto_dispatch` must be one of: `all`, `tagged`, `priority`, `off`
 - If `auto_dispatch: tagged`, then `auto_dispatch_tag` must be non-empty
 - If `auto_dispatch: priority`, then `auto_dispatch_min_priority` must be 0-4
+- Each anvil `changelog.fragment_globs` entry must be a non-empty file-name pattern (no `/`), must contain `{bead}`, and must parse as a `path.Match` pattern
+- Each anvil `changelog.dir` must be a relative path inside the repository (no leading `/`, no `..`)
 - If an anvil sets `temper.lint_required: true`, then `temper.lint` (or `temper.steps`) must be set
 - Within `temper.steps`: each step `name` must be non-empty and unique; each `command` must be non-empty unless `verify_no_conflict_markers` is set (scan-only step); each step `timeout` must be non-negative
 - If `self_deploy.enabled` is true, `self_deploy.anvil` must be non-empty and match a configured anvil
@@ -2515,6 +2598,7 @@ The daemon watches `forge.yaml` via fsnotify. When the file changes, **only a su
 - `anvils.<name>.preview_enabled` is re-read per preview start, so the next `forge preview start` (or Preview button) obeys the new value
 - `anvils.<name>.preview_auto` is re-read on the next ready-to-merge transition
 - `anvils.<name>.preview_quests` is re-read per quest run
+- `anvils.<name>.changelog.*` is re-read per stranded-branch completion probe, so a new fragment convention applies to the next one — which matters here, since the edit is usually made in response to an escalation that is still standing
 - `self_deploy.*` (the whole block) is re-read live: the version-skew check re-reads it every tick, and a deploy is handed the config as it stands at the moment it is triggered — so enabling self-deploy, or changing any of its knobs, needs no restart
 - Other per-anvil keys the daemon applies live: `auto_merge` (next ready-to-merge transition), `max_smiths`, `path`, `stage_providers`, `assay.*`, plus adding or removing an anvil entry
 - In-flight workers are **not** interrupted

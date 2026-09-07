@@ -22,6 +22,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Robin831/Forge/internal/changelog"
 	"github.com/Robin831/Forge/internal/executil"
 	"github.com/Robin831/Forge/internal/state"
 	"github.com/Robin831/Forge/internal/vcs"
@@ -417,6 +418,58 @@ type AnvilConfig struct {
 	// When set, its non-zero fields override the corresponding global values
 	// via Config.ResolvedAssay. When nil (default), the global Assay applies.
 	Assay *AssayConfig `mapstructure:"assay" yaml:"assay,omitempty"`
+
+	// Changelog states this repository's own changelog-fragment convention,
+	// for the one question Forge asks about it: does a pushed branch carry the
+	// bead's fragment, i.e. did the prior worker finish. Nil (default) means
+	// the built-in convention, which is what every anvil has always had.
+	//
+	// It exists because the convention is the repository's and Forge was
+	// holding a second copy of it: the anvil encodes it again in its own CI
+	// gate, and the two drifted — Munin added a `-technical` fragment kind, its
+	// gate passed the pair, Forge's matcher did not, and finished work was
+	// escalated to needs_human with its PR opened by hand (Forge-fj09).
+	Changelog *ChangelogConfig `mapstructure:"changelog" yaml:"changelog,omitempty"`
+}
+
+// ChangelogConfig is one anvil's changelog-fragment convention. Both fields are
+// optional and each falls back to the built-in answer on its own, so an anvil
+// that only moved its fragments to another directory need not restate the
+// naming grammar to keep it.
+type ChangelogConfig struct {
+	// Dir is the repository-relative fragment directory. Empty means
+	// changelog.d.
+	Dir string `mapstructure:"dir" yaml:"dir,omitempty"`
+
+	// FragmentGlobs are the accepted file-NAME patterns, with `{bead}` where
+	// the bead id goes (e.g. "{bead}.md", "{bead}-*.md", "{bead}_*.md"). Empty
+	// means the built-in grammar: <bead>.md plus a "." or "-" delimited
+	// alphabetic kind and/or language segment.
+	//
+	// A configured list REPLACES that grammar rather than extending it — a rule
+	// stated in one place and half-overridden in another is the arrangement
+	// this setting exists to remove — so a list must name every shape the
+	// repository uses, `{bead}.md` included. Validation refuses a pattern with
+	// no `{bead}` in it, since it would match a sibling bead's fragment and
+	// report every stranded branch as finished work.
+	FragmentGlobs []string `mapstructure:"fragment_globs" yaml:"fragment_globs,omitempty"`
+}
+
+// ChangelogFragmentRule resolves one anvil's fragment convention. It is the one
+// derivation both readers go through — the daemon's stranded-branch completion
+// probe and its create-pr precondition — so neither can answer "does this
+// branch carry the bead's fragment" in a way the other disagrees with. An
+// unknown anvil, or one that configured nothing, resolves to the built-in rule
+// rather than to an empty one that matches nothing.
+func (c *Config) ChangelogFragmentRule(anvil string) changelog.FragmentRule {
+	if c == nil {
+		return changelog.FragmentRule{}
+	}
+	a, ok := c.Anvils[anvil]
+	if !ok || a.Changelog == nil {
+		return changelog.FragmentRule{}
+	}
+	return changelog.FragmentRule{Dir: a.Changelog.Dir, Globs: a.Changelog.FragmentGlobs}
 }
 
 // AnvilSettings is the serializable projection of an anvil's per-anvil
@@ -3321,6 +3374,20 @@ func (c *Config) Validate() []string {
 		}
 		if anvil.AutoDispatch == "priority" && (anvil.AutoDispatchMinPriority < 0 || anvil.AutoDispatchMinPriority > 4) {
 			errs = append(errs, fmt.Sprintf("anvil %q: auto_dispatch_min_priority must be 0-4 (0 = critical-only) when auto_dispatch is \"priority\"", name))
+		}
+
+		// Both changelog-glob failures are silent at runtime and opposite in
+		// direction — an unparseable pattern matches nothing, so every stranded
+		// branch reads as unfinished; one without {bead} matches a sibling's
+		// fragment, so every stranded branch reads as finished — which is why
+		// they are refused here rather than discovered from an escalation.
+		if anvil.Changelog != nil {
+			for _, err := range changelog.ValidateFragmentGlobs(anvil.Changelog.FragmentGlobs) {
+				errs = append(errs, fmt.Sprintf("anvil %q: changelog.%s", name, err))
+			}
+			if strings.HasPrefix(strings.TrimSpace(anvil.Changelog.Dir), "/") || strings.Contains(anvil.Changelog.Dir, "..") {
+				errs = append(errs, fmt.Sprintf("anvil %q: changelog.dir %q must be a relative path inside the repository", name, anvil.Changelog.Dir))
+			}
 		}
 
 		if anvil.Temper != nil && anvil.Temper.LintRequired && anvil.Temper.Lint == "" && len(anvil.Temper.Steps) == 0 {

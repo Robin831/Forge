@@ -25,6 +25,7 @@
 //   - anvils.<name>.preview_enabled (read per preview_start, so the next start obeys it)
 //   - anvils.<name>.preview_auto (read on the next ready-to-merge transition)
 //   - anvils.<name>.preview_quests (read per quest run)
+//   - anvils.<name>.changelog.* (the fragment convention, resolved per probe)
 //   - self_deploy.* (the whole block: the skew loop re-reads it each tick and a
 //     deploy reads it at the moment it is triggered)
 //   - anvils.* adding or removing anvil entries (updates bellows and depcheck)
@@ -533,6 +534,18 @@ func applyChanges(old, new *config.Config) []string {
 			if oldAnvil.PreviewQuests != newAnvil.PreviewQuests {
 				changes = append(changes, fmt.Sprintf("anvil %s preview_quests: %v → %v",
 					name, oldAnvil.PreviewQuests, newAnvil.PreviewQuests))
+			}
+			// The fragment convention is resolved per probe
+			// (Config.ChangelogFragmentRule), so swapping the config in is all
+			// it takes. It has to be detected here for that to be true at all:
+			// reload swaps nothing in unless applyChanges reports a change, so
+			// an edit this function never compares would fall through to the
+			// generic "a daemon restart is required" WARN — and the edit is
+			// most often made in response to an escalation that is still
+			// standing, where a restart is the last thing an operator wants to
+			// be told to do.
+			if !reflect.DeepEqual(oldAnvil.Changelog, newAnvil.Changelog) {
+				changes = append(changes, fmt.Sprintf("anvil %s changelog config changed", name))
 			}
 		} else {
 			changes = append(changes, fmt.Sprintf("anvil %s added", name))

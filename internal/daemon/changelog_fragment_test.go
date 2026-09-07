@@ -1,8 +1,15 @@
 package daemon
 
-import "testing"
+import (
+	"testing"
 
-// TestChangelogFragmentMatches pins the completion-signal matcher. It must
+	"github.com/Robin831/Forge/internal/changelog"
+)
+
+// TestChangelogFragmentMatches pins the completion-signal matcher under the
+// BUILT-IN convention — the zero-valued changelog.FragmentRule, which is what
+// an anvil that has configured no changelog.fragment_globs of its own gets, and
+// so the behaviour every anvil had before that setting existed. It must
 // recognize the single-file form plus the two decorations repositories put on
 // it: a language split (Munin's changelog.d/<bead>.en.md + <bead>.nb.md, which
 // stranded completed work in needs_human as Fhi.Metadata-15ed9) and a
@@ -20,6 +27,7 @@ import "testing"
 // read as the parent's own completion signal.
 func TestChangelogFragmentMatches(t *testing.T) {
 	const bead = "Fhi.Metadata-15ed9"
+	var rule changelog.FragmentRule
 	cases := []struct {
 		path string
 		want bool
@@ -48,8 +56,8 @@ func TestChangelogFragmentMatches(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.path, func(t *testing.T) {
-			if got := changelogFragmentMatches(tc.path, bead); got != tc.want {
-				t.Errorf("changelogFragmentMatches(%q) = %v, want %v", tc.path, got, tc.want)
+			if got := rule.MatchesPath(tc.path, bead); got != tc.want {
+				t.Errorf("MatchesPath(%q) = %v, want %v", tc.path, got, tc.want)
 			}
 		})
 	}
@@ -63,8 +71,8 @@ func TestChangelogFragmentMatches(t *testing.T) {
 		"changelog.d/Fhi.Metadata-15ed9.7-technical.nb.md",
 	} {
 		t.Run("child/"+path, func(t *testing.T) {
-			if !changelogFragmentMatches(path, child) {
-				t.Errorf("changelogFragmentMatches(%q, %q) = false, want true", path, child)
+			if !rule.MatchesPath(path, child) {
+				t.Errorf("MatchesPath(%q, %q) = false, want true", path, child)
 			}
 		})
 	}
