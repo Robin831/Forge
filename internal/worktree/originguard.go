@@ -27,12 +27,14 @@ import (
 // Why HERE. The remote is checked when a worker's worktree is torn down, next
 // to CleanStaleCoreWorktree, which exists for the same class of damage: a
 // config key on the anvil's SHARED .git/config pointing at a worker path that
-// is about to stop existing. A worker runs with GIT_DIR set into that shared
-// repository, and git writes `remote.*` to the common config from inside a
-// linked worktree — GIT_DIR confines refs, objects and the index, never config
-// — so a `git remote set-url` run in a worktree lands on the anvil. Checking at
-// teardown is what turns "the remote was wrong by the time anyone looked" into
-// a log line naming the bead whose worker was the last to hold that worktree.
+// is about to stop existing. Git keeps remotes in the config of the repository
+// a worktree belongs to rather than in the worktree, so a `git remote set-url`
+// run inside a worker lands on the anvil — measured with no GIT_DIR set at all,
+// so it is a property of `git worktree` and not of the environment Forge
+// exports; internal/gitguard is the guard built on that measurement. Checking
+// at teardown is what turns "the remote was wrong by the time anyone looked"
+// into a log line naming the bead whose worker was the last to hold that
+// worktree.
 //
 // It is deliberately not fatal to the caller: the worktree removal that just
 // happened was correct, and refusing to finish it would leave the worktree on

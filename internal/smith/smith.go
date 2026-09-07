@@ -21,6 +21,7 @@ import (
 
 	"github.com/Robin831/Forge/internal/cost"
 	"github.com/Robin831/Forge/internal/executil"
+	"github.com/Robin831/Forge/internal/gitguard"
 	"github.com/Robin831/Forge/internal/provider"
 	"github.com/Robin831/Forge/internal/worktree"
 )
@@ -403,7 +404,7 @@ func SpawnWithOptions(ctx context.Context, worktreePath, promptText, logDir stri
 	// is omitted (detects piped input and runs non-interactively).
 	cmd.Stdin = strings.NewReader(promptText)
 
-	cmd.Env = buildChildEnv(os.Environ(), pv.Env, worktree.GitEnv(worktreePath))
+	cmd.Env = withGitGuard(ctx, buildChildEnv(os.Environ(), pv.Env, worktree.GitEnv(worktreePath)), worktreePath)
 	executil.HideWindow(cmd)
 	executil.SetProcessGroup(cmd)
 
@@ -980,6 +981,34 @@ func buildChildEnv(parentEnv []string, providerEnv map[string]string, gitEnv []s
 	}
 	out = append(out, gitEnv...)
 	return out
+}
+
+// withGitGuard arms the worker git guard on an already-assembled child
+// environment.
+//
+// A remote written from inside a worker lands on the anvil's SHARED config, not
+// on the worktree it was typed in, and stays there after that worktree is
+// deleted. worktree.GitEnv cannot prevent it — the write is a property of
+// `git worktree`, not of GIT_DIR — so the agent is handed a git that refuses
+// that one command.
+//
+// A guard that fails to install leaves the agent with plain git rather than
+// refusing to run it: this closes a fault, it is not one to gate a bead on. A
+// guard the operator switched off costs nothing either, which is why the anvil
+// is resolved only once there is a guard to tell it to — that resolution is a
+// `git rev-parse` subprocess, and running it for a disabled guard would spend
+// exactly what the switch exists to avoid.
+func withGitGuard(ctx context.Context, env []string, worktreePath string) []string {
+	guardDir, err := gitguard.Install()
+	if err != nil {
+		slog.Warn("smith: git guard not installed — a worker can repoint the anvil's origin",
+			"worktree", worktreePath, "error", err)
+		return env
+	}
+	if guardDir == "" {
+		return env
+	}
+	return gitguard.Env(env, guardDir, gitguard.AnvilGitDir(ctx, worktreePath))
 }
 
 // truncate shortens a string to maxLen, adding "..." if truncated.
