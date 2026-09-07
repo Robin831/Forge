@@ -786,6 +786,22 @@ type SettingsConfig struct {
 	// modified before the worker is marked as stalled. A value of 0 disables
 	// stale detection. Defaults to 5 minutes.
 	StaleInterval time.Duration `mapstructure:"stale_interval" yaml:"stale_interval"`
+	// WedgedLimitPolls is how many CONSECUTIVE poll cycles one worker may hold
+	// the global max_total_smiths limit before the daemon says so at WARN
+	// instead of only recording the ordinary "limit reached" INFO line.
+	//
+	// Saturation is the normal state of a busy Forge, so the INFO line alone
+	// cannot distinguish it from one worker that stopped making progress and
+	// took the last slot with it — on a max_total_smiths of 1 that is every
+	// slot, and dispatch stops entirely with nothing in the log but the same
+	// sentence every five minutes. Counting the HOLDER rather than the
+	// condition is what separates the two: a saturated forge cycles through
+	// worker IDs, a wedged one repeats one.
+	//
+	// Default: 3. A value of 0 (the field's zero value, i.e. unset) takes the
+	// default; a NEGATIVE value disables the WARN, on the same rule
+	// warden.dedup_threshold reads its own disable by.
+	WedgedLimitPolls int `mapstructure:"wedged_limit_polls" yaml:"wedged_limit_polls,omitempty"`
 	// DepcheckInterval is how often the dependency checker runs 'go list -m -u all'
 	// on Go anvils. A value of 0 disables depcheck. Defaults to 168h (weekly).
 	DepcheckInterval time.Duration `mapstructure:"depcheck_interval" yaml:"depcheck_interval,omitempty"`
@@ -1164,6 +1180,34 @@ func (s SettingsConfig) ResolvedBusBufferSize() int {
 	return s.BusBufferSize
 }
 
+// DefaultWedgedLimitPolls is the fallback for settings.wedged_limit_polls: how
+// many consecutive poll cycles one worker may hold the global max_total_smiths
+// limit before the daemon reports it at WARN. Three is deliberately small — at
+// the default 5m poll interval it is a quarter of an hour of one worker taking
+// the same slot — because the WARN says only "look at this worker", and a
+// worker that is genuinely working keeps its slot without ever being the SOLE
+// holder for long on a forge with more than one.
+const DefaultWedgedLimitPolls = 3
+
+// ResolvedWedgedLimitPolls returns the effective consecutive-poll threshold and
+// whether the check is enabled at all.
+//
+// Zero is the field's zero value and therefore indistinguishable from an unset
+// setting, so it takes the default; a negative value is the explicit off
+// switch. Callers must use this rather than reading WedgedLimitPolls directly,
+// or a deployment that never configured the key would get a threshold of 0 and
+// a WARN on the first saturated poll — the noise the check exists to avoid.
+func (s SettingsConfig) ResolvedWedgedLimitPolls() (int, bool) {
+	switch {
+	case s.WedgedLimitPolls < 0:
+		return 0, false
+	case s.WedgedLimitPolls == 0:
+		return DefaultWedgedLimitPolls, true
+	default:
+		return s.WedgedLimitPolls, true
+	}
+}
+
 // DefaultTemperOutputCap is the fallback per-step combined-output byte cap
 // (256 KiB) used when settings.temper_output_cap is unset or <= 0. It mirrors
 // temper.DefaultOutputCap; kept here to avoid a config→temper import cycle.
@@ -1494,6 +1538,7 @@ func (s SettingsConfig) MarshalYAML() (interface{}, error) {
 		MergeStrategy             string              `yaml:"merge_strategy,omitempty"`
 		EmptyDiffAction           string              `yaml:"empty_diff_action,omitempty"`
 		StaleInterval             string              `yaml:"stale_interval"`
+		WedgedLimitPolls          int                 `yaml:"wedged_limit_polls,omitempty"`
 		DepcheckInterval          string              `yaml:"depcheck_interval,omitempty"`
 		DepcheckTimeout           string              `yaml:"depcheck_timeout,omitempty"`
 		VulncheckInterval         string              `yaml:"vulncheck_interval,omitempty"`
@@ -1589,6 +1634,7 @@ func (s SettingsConfig) MarshalYAML() (interface{}, error) {
 		MergeStrategy:             s.MergeStrategy,
 		EmptyDiffAction:           s.EmptyDiffAction,
 		StaleInterval:             durationString(s.StaleInterval),
+		WedgedLimitPolls:          s.WedgedLimitPolls,
 		VulncheckEnabled:          s.VulncheckEnabled,
 		AnvilHealthCheck:          s.AnvilHealthCheck,
 		StalenessCheck:            s.StalenessCheck,
@@ -2597,6 +2643,7 @@ func Defaults() Config {
 			BurnishVerifyTimeout:   5 * time.Minute,
 			BurnishVerifyRetries:   1,
 			StaleInterval:          5 * time.Minute,
+			WedgedLimitPolls:       DefaultWedgedLimitPolls,
 			TemperStepTimeout:      5 * time.Minute,
 			TemperGitTimeout:       30 * time.Second,
 			WorktreeGitTimeout:     5 * time.Minute,
@@ -2707,6 +2754,7 @@ func Load(configFile string) (*Config, error) {
 	v.SetDefault("settings.max_lifecycle_workers", DefaultMaxLifecycleWorkers)
 	v.SetDefault("settings.burnish_verify_timeout", "5m")
 	v.SetDefault("settings.stale_interval", "5m")
+	v.SetDefault("settings.wedged_limit_polls", DefaultWedgedLimitPolls)
 	v.SetDefault("settings.temper_step_timeout", "5m")
 	v.SetDefault("settings.temper_git_timeout", "30s")
 	v.SetDefault("settings.worktree_git_timeout", "5m")

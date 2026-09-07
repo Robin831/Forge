@@ -351,6 +351,12 @@ type Daemon struct {
 	// Last successful poll timestamp
 	lastPollTime atomic.Value // stores time.Time
 
+	// limitHolders tracks which workers have been occupying the global
+	// max_total_smiths limit across consecutive polls, so one that has stopped
+	// making progress while holding a slot can be named at WARN instead of
+	// hiding behind the ordinary saturation INFO line. Zero value is usable.
+	limitHolders limitHolderTracker
+
 	// Per-anvil last-poll snapshot. Updated on every poll completion (success
 	// or error) by the OnAnvilDone callback. Replaces the historic
 	// EventPoll-row-per-success approach that drowned the events table —
@@ -3701,6 +3707,17 @@ func (d *Daemon) checkStaleWorkers(interval time.Duration) {
 		if w.Status == state.WorkerPaused {
 			continue
 		}
+		// A worker whose process is GONE is not stalled, it is finished badly:
+		// 'stalled' is a mask that says "this may resume", and the recovery
+		// pass that would clear it is driven by fresh writes from the very
+		// session that has just been established as dead. Left stalled the row
+		// holds a dispatch slot forever (ActiveDispatchWorkers counts
+		// 'stalled'), which on a max_total_smiths of 1 stops the forge until an
+		// operator clears it by hand. Marking it failed instead recovers that
+		// slot within one detector interval.
+		if d.terminateDeadStaleWorker(w) {
+			continue
+		}
 		d.logger.Warn("marking worker as stalled — no log activity",
 			"worker", w.ID, "bead", w.BeadID, "anvil", w.Anvil,
 			"phase", w.Phase, "stale_interval", interval)
@@ -4033,15 +4050,24 @@ func (d *Daemon) pollAndDispatch(ctx context.Context, fullPoll bool) {
 	// had already called InsertWorker: the DB count included them AND the
 	// thisCycle counter reduced the max for them, causing only one dispatch per
 	// cycle after the initial batch completed.
-	globalActive, err := worker.DispatchTotalActiveCount(d.db)
+	//
+	// The ROWS are read rather than only their count, because when they fill
+	// the cap the next question is which workers are holding it: one query
+	// answers both, where a count followed by a second lookup could report a
+	// limit held by a set that had already changed.
+	globalHolders, err := worker.DispatchActiveWorkers(d.db)
 	if err != nil {
 		d.logger.Error("checking global capacity", "error", err)
 		return
 	}
+	globalActive := len(globalHolders)
 	if globalActive >= maxTotal {
-		d.logger.Info("global smith limit reached, skipping dispatch", "max", maxTotal)
+		d.reportGlobalLimitReached(globalHolders, maxTotal)
 		return
 	}
+	// Dispatch is not limit-blocked this cycle, so no worker is holding it
+	// shut: every consecutive-poll count and every announcement is dropped.
+	d.limitHolders.release()
 
 	// Pause switch: skip all new dispatch while paused. Running workers are
 	// untouched and finish normally; only new claims/dispatch are skipped.

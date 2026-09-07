@@ -2726,6 +2726,15 @@ const (
 	EventSchematicSubBead EventType = "schematic_sub_bead"
 	EventWorkerStalled    EventType = "worker_stalled"
 	EventWorkerRecovered  EventType = "worker_recovered"
+	// EventWorkerProcessGone fires when the stale detector finds that the
+	// process a silent worker row records is no longer running, and marks the
+	// row failed rather than stalled. It is its own type because it names an
+	// outcome neither of its neighbours can: 'stalled' claims the work may
+	// resume, and worker_abandoned names a Forge exit path that wrote no
+	// status, while this one says the SESSION died — crashed, OOM-killed, or
+	// killed with the daemon not running to see it — which is why no exit path
+	// ran at all.
+	EventWorkerProcessGone EventType = "worker_process_gone"
 	// EventWorkerAbandoned fires when a dispatch goroutine exited leaving its
 	// worker row still claiming live work and the exit backstop forced it to
 	// failed. It is its own type because it names a gap in the finalisation —
