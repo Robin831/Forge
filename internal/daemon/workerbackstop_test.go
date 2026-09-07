@@ -1,6 +1,10 @@
 package daemon
 
 import (
+	"errors"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"io"
 	"log/slog"
 	"os"
@@ -12,6 +16,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/Robin831/Forge/internal/crucible"
 	"github.com/Robin831/Forge/internal/poller"
 	"github.com/Robin831/Forge/internal/state"
 )
@@ -83,6 +88,54 @@ func TestTerminateAbandonedWorker(t *testing.T) {
 				want = state.WorkerFailed
 			}
 			assert.Equal(t, want, backstopStatus(t, d, "w-1"))
+		})
+	}
+}
+
+// 'stalled' is a mask the watchdog writes over whatever the row held, so the
+// backstop decides it on prev_status. A pipeline sits on 'monitoring' through
+// the push and the PR creation that follow warden approval, neither of which
+// writes a log line, so the watchdog can stall a row Bellows already owns —
+// failing that row would assert an ending over a live handoff and destroy the
+// recovery UnstallWorker performs. Stalled over a dispatch status is the
+// opposite: nothing will move that row again, and left alone it holds a
+// dispatch slot forever.
+func TestTerminateAbandonedWorkerReadsTheStatusUnderAStall(t *testing.T) {
+	for _, tc := range []struct {
+		prev       state.WorkerStatus
+		wantFailed bool
+	}{
+		{state.WorkerMonitoring, false},
+		{state.WorkerRunning, true},
+		{state.WorkerReviewing, true},
+		{state.WorkerPending, true},
+	} {
+		t.Run(string(tc.prev), func(t *testing.T) {
+			d := backstopDaemon(t)
+			insertBackstopWorker(t, d, "w-1", tc.prev)
+			require.NoError(t, d.db.MarkWorkerStalled("w-1"))
+
+			d.terminateAbandonedWorker("w-1", "Forge-52bp", "repo")
+
+			want := state.WorkerStalled
+			if tc.wantFailed {
+				want = state.WorkerFailed
+			}
+			assert.Equal(t, want, backstopStatus(t, d, "w-1"))
+
+			if !tc.wantFailed {
+				// The row must still be recoverable, and the run must not have
+				// been announced as an abandoned one.
+				require.NoError(t, d.db.UnstallWorker("w-1"))
+				assert.Equal(t, tc.prev, backstopStatus(t, d, "w-1"))
+
+				events, err := d.db.RecentEvents(20)
+				require.NoError(t, err)
+				for _, e := range events {
+					assert.NotEqual(t, state.EventWorkerAbandoned, e.Type,
+						"the backstop announced a row the watchdog had merely masked")
+				}
+			}
 		})
 	}
 }
@@ -244,22 +297,127 @@ func TestFinalizeCrucibleWorker(t *testing.T) {
 	})
 }
 
-// Both exits of dispatchBead's crucible block must reach that finaliser. The
+// Every exit of dispatchBead's crucible block must reach that finaliser. The
 // block cannot be driven from a test (crucible.Run spawns pipelines against a
 // real anvil), but which exits terminate the row is a source-level property and
 // the one that decides whether a normal epic emits worker_abandoned.
-func TestCrucibleBlockFinalisesItsWorkerRowOnBothExits(t *testing.T) {
-	src, err := os.ReadFile("daemon.go")
+//
+// It is asserted structurally rather than by looking for the calls: the block
+// had a finalisation on each of two branches and a third, unbranched exit that
+// reached neither — a Result carrying no error and not claiming success — so a
+// guard that asks whether the calls are PRESENT is exactly the shape that
+// cannot see the exit which has none. What is pinned instead is that the block
+// finalises the row ONCE, unconditionally, above every exit it has: any return
+// added below it is covered by construction, and any attempt to move the call
+// back under a branch fails here.
+func TestCrucibleBlockFinalisesItsWorkerRowOnEveryExit(t *testing.T) {
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "daemon.go", nil, parser.SkipObjectResolution)
 	require.NoError(t, err)
 
-	start := strings.Index(string(src), "result := crucible.Run(")
-	require.GreaterOrEqual(t, start, 0, "the crucible dispatch call was not found — has it moved?")
-	end := strings.Index(string(src), "\nnormalPipeline:")
-	require.Greater(t, end, start, "the crucible block no longer ends at the normalPipeline label")
-	block := string(src)[start:end]
+	block, runAt := crucibleRunBlock(t, file)
+	require.NotNil(t, block, "the crucible dispatch call was not found — has it moved?")
 
-	assert.Contains(t, block, "d.finalizeCrucibleWorker(claimWorkerID, bead, state.WorkerDone)",
-		"the crucible success path must finalise the parent claim row; left running, the backstop marks a completed epic failed")
-	assert.Contains(t, block, "d.finalizeCrucibleWorker(claimWorkerID, bead, state.WorkerFailed)",
-		"the crucible failure path must finalise the parent claim row rather than leave it to the backstop")
+	// The finalisation must be a statement of the block itself, not of a branch
+	// inside it: a call nested under an `if` finalises only the exits that if
+	// governs, which is the bug.
+	finalizeAt := -1
+	for i := runAt + 1; i < len(block.List); i++ {
+		if callsFinalizeCrucibleWorker(block.List[i]) {
+			finalizeAt = i
+			break
+		}
+	}
+	require.GreaterOrEqual(t, finalizeAt, 0,
+		"the crucible block does not finalise its parent claim row unconditionally after crucible.Run; "+
+			"left running, the dispatch backstop reports an ordinary epic as abandoned")
+
+	// Everything the block does after crucible.Run — every return, every branch
+	// that ends in one — must sit below that call.
+	finalizePos := block.List[finalizeAt].Pos()
+	for i := runAt; i < len(block.List); i++ {
+		stmt := block.List[i]
+		ast.Inspect(stmt, func(n ast.Node) bool {
+			ret, ok := n.(*ast.ReturnStmt)
+			if !ok {
+				return true
+			}
+			assert.Greater(t, ret.Pos(), finalizePos,
+				"an exit of the crucible block at %s is reached without finalising the parent claim row",
+				fset.Position(ret.Pos()))
+			return true
+		})
+	}
+}
+
+// crucibleRunBlock returns the statement list directly containing
+// `result := crucible.Run(...)` inside dispatchBead, and that statement's index
+// in it.
+func crucibleRunBlock(t *testing.T, file *ast.File) (*ast.BlockStmt, int) {
+	t.Helper()
+	var found *ast.BlockStmt
+	var at int
+	ast.Inspect(file, func(n ast.Node) bool {
+		block, ok := n.(*ast.BlockStmt)
+		if !ok {
+			return true
+		}
+		for i, stmt := range block.List {
+			assign, ok := stmt.(*ast.AssignStmt)
+			if !ok || len(assign.Rhs) != 1 {
+				continue
+			}
+			call, ok := assign.Rhs[0].(*ast.CallExpr)
+			if !ok {
+				continue
+			}
+			if sel, ok := call.Fun.(*ast.SelectorExpr); ok {
+				if pkg, ok := sel.X.(*ast.Ident); ok && pkg.Name == "crucible" && sel.Sel.Name == "Run" {
+					found, at = block, i
+					return false
+				}
+			}
+		}
+		return true
+	})
+	return found, at
+}
+
+func callsFinalizeCrucibleWorker(stmt ast.Stmt) bool {
+	expr, ok := stmt.(*ast.ExprStmt)
+	if !ok {
+		return false
+	}
+	call, ok := expr.X.(*ast.CallExpr)
+	if !ok {
+		return false
+	}
+	sel, ok := call.Fun.(*ast.SelectorExpr)
+	return ok && sel.Sel.Name == "finalizeCrucibleWorker"
+}
+
+// The status that unconditional call passes is the only part of the decision
+// that ever depended on which branch the block took, so it is derived from the
+// result — including for the shape neither branch describes.
+func TestCrucibleWorkerStatus(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		result *crucible.Result
+		want   state.WorkerStatus
+	}{
+		{"success", &crucible.Result{Success: true}, state.WorkerDone},
+		{"error", &crucible.Result{Error: errors.New("boom")}, state.WorkerFailed},
+		{"paused on a child", &crucible.Result{Error: errors.New("boom"), PausedChildID: "Forge-child"}, state.WorkerFailed},
+		// Neither an error nor a success: no epic reached its final PR, so the
+		// row did not succeed. Nothing returns this today, which is precisely
+		// why the branches below the call must not be what decides it.
+		{"neither", &crucible.Result{}, state.WorkerFailed},
+		// A success flag that arrives with an error is not a success.
+		{"success with an error", &crucible.Result{Success: true, Error: errors.New("boom")}, state.WorkerFailed},
+		{"no result at all", nil, state.WorkerFailed},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, crucibleWorkerStatus(tc.result))
+		})
+	}
 }

@@ -44,18 +44,39 @@ var terminalWorkerStatuses = []WorkerStatus{
 // Everything else — pending, running, reviewing, stalled, and any value this
 // package does not model — means a goroutine exited while its row still claimed
 // live work.
-func backstopExemptStatuses() []WorkerStatus {
+//
+// 'stalled' is on the second list rather than the first, but it is the one
+// status that does not describe itself: the watchdog sets it over whatever the
+// row held (MarkWorkerStalled captures that into prev_status) and UnstallWorker
+// puts the old status back when the log goes live again, so a stalled row may
+// be masking a monitoring one — a pipeline flips to monitoring at warden
+// approval and the push and PR creation that follow write no log, which is a
+// window long enough for the watchdog to stall a row Bellows already owns.
+// WorkerBackstopState.NeedsTerminalBackstop is therefore the predicate the
+// backstop asks, and it reads the pair. What is NOT exempted is a row stalled
+// over a live dispatch status: at the moment its goroutine exits, the session
+// that row describes is over — pipeline.Run returns only once Smith has — and
+// the recovery pass that would clear the stall is driven by fresh writes from
+// that same session, so nothing would ever move the row again. Left alone it
+// holds a dispatch slot forever (ActiveDispatchWorkers counts 'stalled'), which
+// is the leak this backstop exists to close, in its likeliest shape: a dispatch
+// going wrong usually goes quiet first.
+//
+// It is a package-level set built once rather than a function that rebuilds it
+// per call, so the SQL IN-list below and the predicate above are literally the
+// same values and not two renderings of one intent.
+var backstopExemptStatuses = func() []WorkerStatus {
 	exempt := make([]WorkerStatus, 0, len(terminalWorkerStatuses)+3)
 	exempt = append(exempt, terminalWorkerStatuses...)
 	return append(exempt, WorkerMonitoring, WorkerDetached, WorkerPaused)
-}
+}()
 
 // backstopExemptSQL is the SQL IN-list for backstopExemptStatuses, built from
 // those constants rather than hand-written beside them: the Go predicate
 // (NeedsTerminalBackstop) and the conditional UPDATE that enforces it must
 // agree by construction, since a status present in one list and absent from the
 // other is a row the check declines to touch and the write clobbers anyway.
-var backstopExemptSQL = statusSQLList(backstopExemptStatuses())
+var backstopExemptSQL = statusSQLList(backstopExemptStatuses)
 
 // statusSQLList renders worker statuses as a parenthesised SQL literal list.
 // Its inputs are this package's own constants — never a value read back from
@@ -98,10 +119,42 @@ func IsTerminalWorkerStatus(status string) bool {
 // It is deliberately narrower than !IsTerminal: see backstopExemptStatuses for
 // the two live statuses a goroutine hands off rather than abandons.
 func (s WorkerStatus) NeedsTerminalBackstop() bool {
-	for _, exempt := range backstopExemptStatuses() {
+	for _, exempt := range backstopExemptStatuses {
 		if s == exempt {
 			return false
 		}
+	}
+	return true
+}
+
+// WorkerBackstopState is one row's status together with the status the watchdog
+// masked when it stalled it. It is a pair rather than a status because 'stalled'
+// is a mask and not an ending: only prev_status says whether the row underneath
+// was claiming live work or had already been handed off (see
+// backstopExemptStatuses).
+type WorkerBackstopState struct {
+	Status     WorkerStatus
+	PrevStatus WorkerStatus
+}
+
+// NeedsTerminalBackstop reports whether this row, observed at the moment its
+// dispatch goroutine exits, must be forced to a terminal status. It is the
+// predicate the backstop asks, and it is what FailWorkerIfUnfinished's WHERE
+// clause enforces.
+//
+// A stalled row is decided by the status it was stalled FROM: stalled over
+// monitoring is a handoff the watchdog happened to mask and must be left for
+// UnstallWorker to restore, while stalled over a dispatch status is an
+// abandoned row. An unrecorded prev_status — the column's empty default, or a
+// row stalled by a build that predates it — is not exempt, on the same rule
+// every unmodelled value follows here: a row nobody can prove was handed off is
+// one that would otherwise hold a dispatch slot forever.
+func (r WorkerBackstopState) NeedsTerminalBackstop() bool {
+	if !r.Status.NeedsTerminalBackstop() {
+		return false
+	}
+	if r.Status == WorkerStalled {
+		return r.PrevStatus.NeedsTerminalBackstop()
 	}
 	return true
 }
@@ -126,6 +179,22 @@ func (db *DB) GetWorkerStatus(id string) (WorkerStatus, error) {
 	return WorkerStatus(status), nil
 }
 
+// GetWorkerBackstopState returns the status pair the dispatch-exit backstop
+// decides on. It is GetWorkerStatus plus prev_status, read in the same
+// statement so the two columns cannot describe two different moments, and it
+// raises the same ErrWorkerNotFound for a row that is gone.
+func (db *DB) GetWorkerBackstopState(id string) (WorkerBackstopState, error) {
+	var status, prev string
+	err := db.conn.QueryRow(`SELECT status, prev_status FROM workers WHERE id = ?`, id).Scan(&status, &prev)
+	if errors.Is(err, sql.ErrNoRows) {
+		return WorkerBackstopState{}, ErrWorkerNotFound
+	}
+	if err != nil {
+		return WorkerBackstopState{}, err
+	}
+	return WorkerBackstopState{Status: WorkerStatus(status), PrevStatus: WorkerStatus(prev)}, nil
+}
+
 // FailWorkerIfUnfinished marks a worker failed only if its row is still
 // claiming live work, and reports whether it did.
 //
@@ -135,10 +204,19 @@ func (db *DB) GetWorkerStatus(id string) (WorkerStatus, error) {
 // a write that acted on it, finalizePipeline can land 'done', and a
 // read-then-write would then report a successful dispatch as a failure. A row
 // that does not exist, and one already exempt, are both no-ops.
+//
+// The second clause is the stalled mask: the watchdog can flip an exempt row
+// (monitoring, most of all) to 'stalled' while its status column says nothing
+// about the handoff underneath, so the exemption is tested against prev_status
+// there. It is WorkerBackstopState.NeedsTerminalBackstop as a WHERE clause, and
+// it is the write's own test rather than the caller's for the same reason the
+// first clause is.
 func (db *DB) FailWorkerIfUnfinished(id string) (bool, error) {
 	res, err := db.conn.Exec(
 		`UPDATE workers SET status = ?, completed_at = ?
-		 WHERE id = ? AND status NOT IN `+backstopExemptSQL,
+		 WHERE id = ?
+		   AND status NOT IN `+backstopExemptSQL+`
+		   AND NOT (status = '`+string(WorkerStalled)+`' AND prev_status IN `+backstopExemptSQL+`)`,
 		string(WorkerFailed), time.Now().Format(dbTimeLayout), id,
 	)
 	if err != nil {

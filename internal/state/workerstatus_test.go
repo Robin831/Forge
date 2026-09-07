@@ -67,6 +67,133 @@ func TestNeedsTerminalBackstopExemptsHandedOffRows(t *testing.T) {
 	}
 }
 
+// 'stalled' is the one status that does not describe itself: the watchdog sets
+// it over whatever the row held, so the backstop decides it on the status
+// underneath. Stalled over a handoff (monitoring, most of all — a pipeline sits
+// there through a push and a PR creation that write no log) must be left for
+// UnstallWorker to restore; stalled over a dispatch status is an abandoned row.
+func TestWorkerBackstopStateDecidesAStallOnThePreviousStatus(t *testing.T) {
+	cases := []struct {
+		status, prev WorkerStatus
+		want         bool
+	}{
+		{WorkerStalled, WorkerMonitoring, false},
+		{WorkerStalled, WorkerDetached, false},
+		{WorkerStalled, WorkerPaused, false},
+		{WorkerStalled, WorkerDone, false},
+		{WorkerStalled, WorkerRunning, true},
+		{WorkerStalled, WorkerPending, true},
+		{WorkerStalled, WorkerReviewing, true},
+		// An unrecorded or unmodelled prev_status proves no handoff.
+		{WorkerStalled, "", true},
+		{WorkerStalled, "wat", true},
+		// prev_status is read for a stalled row and for nothing else: every
+		// other status means what it says, and a stale prev_status left over
+		// from an earlier stall must not exempt a running row.
+		{WorkerRunning, WorkerMonitoring, true},
+		{WorkerPending, WorkerPaused, true},
+		{WorkerMonitoring, WorkerRunning, false},
+		{WorkerDone, WorkerRunning, false},
+	}
+
+	for _, tc := range cases {
+		row := WorkerBackstopState{Status: tc.status, PrevStatus: tc.prev}
+		if got := row.NeedsTerminalBackstop(); got != tc.want {
+			t.Errorf("{status:%q prev:%q}: NeedsTerminalBackstop() = %v, want %v",
+				tc.status, tc.prev, got, tc.want)
+		}
+	}
+}
+
+func TestGetWorkerBackstopState(t *testing.T) {
+	db := openTestDB(t)
+	insertWorkerWithStatus(t, db, "w-1", WorkerMonitoring)
+
+	row, err := db.GetWorkerBackstopState("w-1")
+	if err != nil {
+		t.Fatalf("GetWorkerBackstopState: %v", err)
+	}
+	if row.Status != WorkerMonitoring || row.PrevStatus != "" {
+		t.Errorf("GetWorkerBackstopState = %+v, want {monitoring, \"\"}", row)
+	}
+
+	// The watchdog's own write is what the pair exists to read back.
+	if err := db.MarkWorkerStalled("w-1"); err != nil {
+		t.Fatalf("MarkWorkerStalled: %v", err)
+	}
+	row, err = db.GetWorkerBackstopState("w-1")
+	if err != nil {
+		t.Fatalf("GetWorkerBackstopState: %v", err)
+	}
+	if row.Status != WorkerStalled || row.PrevStatus != WorkerMonitoring {
+		t.Errorf("GetWorkerBackstopState = %+v, want {stalled, monitoring}", row)
+	}
+
+	if _, err := db.GetWorkerBackstopState("no-such-worker"); !errors.Is(err, ErrWorkerNotFound) {
+		t.Errorf("GetWorkerBackstopState(missing) error = %v, want ErrWorkerNotFound", err)
+	}
+}
+
+// The WHERE clause enforces the same rule the predicate states, over rows the
+// watchdog stalled itself rather than over hand-written prev_status values.
+func TestFailWorkerIfUnfinishedRespectsTheStalledMask(t *testing.T) {
+	for _, tc := range []struct {
+		prev       WorkerStatus
+		wantFailed bool
+	}{
+		{WorkerMonitoring, false},
+		{WorkerRunning, true},
+		{WorkerReviewing, true},
+		{WorkerPending, true},
+		// 'detached' is absent by construction, not by omission: MarkWorkerStalled
+		// only ever stalls pending/running/reviewing/monitoring, so no row can
+		// reach the mask from it. The predicate covers it above regardless.
+	} {
+		t.Run(string(tc.prev), func(t *testing.T) {
+			db := openTestDB(t)
+			insertWorkerWithStatus(t, db, "w-1", tc.prev)
+			if err := db.MarkWorkerStalled("w-1"); err != nil {
+				t.Fatalf("MarkWorkerStalled: %v", err)
+			}
+
+			failed, err := db.FailWorkerIfUnfinished("w-1")
+			if err != nil {
+				t.Fatalf("FailWorkerIfUnfinished: %v", err)
+			}
+			if failed != tc.wantFailed {
+				t.Fatalf("FailWorkerIfUnfinished = %v, want %v", failed, tc.wantFailed)
+			}
+
+			want := WorkerStalled
+			if tc.wantFailed {
+				want = WorkerFailed
+			}
+			got, err := db.GetWorkerStatus("w-1")
+			if err != nil {
+				t.Fatalf("GetWorkerStatus: %v", err)
+			}
+			if got != want {
+				t.Errorf("status after backstop = %q, want %q", got, want)
+			}
+
+			// A row left alone is one UnstallWorker can still restore, which is
+			// the whole reason it was left: a terminal row never comes back.
+			if !tc.wantFailed {
+				if err := db.UnstallWorker("w-1"); err != nil {
+					t.Fatalf("UnstallWorker: %v", err)
+				}
+				restored, err := db.GetWorkerStatus("w-1")
+				if err != nil {
+					t.Fatalf("GetWorkerStatus: %v", err)
+				}
+				if restored != tc.prev {
+					t.Errorf("status after recovery = %q, want %q", restored, tc.prev)
+				}
+			}
+		})
+	}
+}
+
 func insertWorkerWithStatus(t *testing.T, db *DB, id string, status WorkerStatus) {
 	t.Helper()
 	if err := db.InsertWorker(&Worker{
