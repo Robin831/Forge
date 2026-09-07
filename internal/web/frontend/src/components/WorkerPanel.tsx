@@ -26,6 +26,7 @@ import { useUIState } from '../hooks/useUIState'
 import { relativeTime } from '../lib/format'
 import { parseTranscript, type TranscriptEntry } from '../lib/logParse'
 import {
+  canKillWorker,
   isFinishedWorker,
   isSlotStatus,
   steerDisabledReason,
@@ -238,7 +239,7 @@ export default function WorkerPanel({
       onSuccess: onKilled,
     })
 
-  const canKill = worker.status === 'pending' || worker.status === 'running'
+  const canKill = canKillWorker(worker)
   // Pause/resume gate on the daemon's paused-status transition table: only a
   // running worker may be paused, only a paused worker resumed.
   const isPaused = worker.status === 'paused'

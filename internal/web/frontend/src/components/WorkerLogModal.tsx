@@ -5,7 +5,11 @@ import { actions, ApiError, apiGet } from '../api'
 import { useAuth } from '../auth'
 import { useAction } from '../hooks/useAction'
 import { useEventSource } from '../hooks/useEventSource'
-import { steerDisabledReason, steerIsResumeDelivery } from '../lib/workerStatus'
+import {
+  isSteerTargetStatus,
+  steerDisabledReason,
+  steerIsResumeDelivery,
+} from '../lib/workerStatus'
 import LogViewer from './LogViewer'
 import SteerComposer from './SteerComposer'
 
@@ -28,16 +32,13 @@ export default function WorkerLogModal({ worker, onClose }: WorkerLogModalProps)
   // running worker may be paused, and only a paused worker may be resumed.
   const canPause = worker?.status === 'running'
   const canResume = worker?.status === 'paused'
-  // Steering is offered across the whole daemon acceptance matrix — the live
-  // stream (pending/running) plus the reviewing Warden (mode-B queue) and a
-  // paused worker (resume-with-message). The composer itself stays disabled for
-  // a non-Claude session via steerDisabledReason.
-  const canSteer =
-    !!worker &&
-    (worker.status === 'pending' ||
-      worker.status === 'running' ||
-      worker.status === 'reviewing' ||
-      worker.status === 'paused')
+  // Steering is offered across the whole daemon acceptance matrix, read from
+  // the one shared set rather than re-listed here: this expanded log view had
+  // its own copy of the statuses, so a worker the panel behind it offered a
+  // composer for ('stalled') got none at all once the log was opened. The
+  // composer itself stays disabled for a non-Claude session via
+  // steerDisabledReason.
+  const canSteer = !!worker && isSteerTargetStatus(worker.status)
 
   const [tailLines, setTailLines] = useState<string[] | null>(null)
   const [tailError, setTailError] = useState<string | null>(null)
@@ -216,12 +217,14 @@ export default function WorkerLogModal({ worker, onClose }: WorkerLogModalProps)
           </div>
         )}
 
-        {/* Steer composer mirrors the daemon steer acceptance matrix, not the
-            live-stream gate: besides live (pending/running) workers it also
-            covers a reviewing Warden (mode-B queue) and a paused worker (whose
-            message is delivered as a resume-with-message). A non-Claude worker in
-            one of these statuses still renders the composer, disabled, so its
-            explanatory tooltip is visible. */}
+        {/* Steer composer mirrors the daemon steer acceptance matrix
+            (isSteerTargetStatus), not the live-stream gate: besides live
+            (pending/running) workers it also covers a reviewing Warden (mode-B
+            queue), a paused worker (whose message is delivered as a
+            resume-with-message) and one the watchdog has masked 'stalled' while
+            its pipeline goroutine runs on. A non-Claude worker in one of these
+            statuses still renders the composer, disabled, so its explanatory
+            tooltip is visible. */}
         {canSteer && (
           <SteerComposer
             beadID={worker.bead_id}

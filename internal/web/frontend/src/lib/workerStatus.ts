@@ -138,6 +138,38 @@ export function holdsDispatchSlot(w: DispatchWorker): boolean {
   return DISPATCH_STATUSES.has(w.status) && !isBackgroundPhase(w.phase)
 }
 
+// Killable is the minimal worker shape the kill gate inspects — a subset of
+// WorkerInfo / BeadDetailWorker so either can be passed directly.
+export interface Killable {
+  status: string
+}
+
+// KILLABLE_STATUSES is the set of worker statuses for which the dashboard
+// offers a kill control. The daemon applies NO status gate of its own —
+// killWorkerProcess reads the PID off the worker row and signals it whatever
+// the row says — so this set is a judgement about which statuses it is useful
+// to offer the button on, not a mirror of a server-side check.
+//
+// 'stalled' is on it because that is the status an operator most often wants
+// to kill: the watchdog sets it when a worker's log goes quiet while its
+// PROCESS is still running, which is exactly the condition an operator watches
+// a panel to end. It was omitted while a stalled worker had no panel at all;
+// once the panel stayed visible (Forge-wl5s), a live row was left with its kill
+// button hidden and the daemon perfectly willing to accept the kill.
+//
+// A terminal row has nothing to signal, and 'paused' has resume as its verb, so
+// neither is offered here.
+const KILLABLE_STATUSES = new Set(['pending', 'running', 'stalled'])
+
+// canKillWorker reports whether the kill control should be offered for a
+// worker. It is one function rather than an expression per surface because it
+// was two: WorkerPanel and WorkersPane each inlined
+// `status === 'pending' || status === 'running'`, so 'stalled' had to be missed
+// twice and would have to be added twice.
+export function canKillWorker(worker: Killable | null | undefined): boolean {
+  return !!worker && KILLABLE_STATUSES.has(worker.status)
+}
+
 // Steerable is the minimal worker shape the steer gates inspect — a subset of
 // WorkerInfo / BeadDetailWorker so either can be passed directly.
 export interface Steerable {
@@ -158,7 +190,38 @@ export interface Steerable {
 //     spawn only consumes the message on resume, so the UI delivers a paused
 //     steer as a resume-with-message via the resume endpoint (see
 //     steerIsResumeDelivery / SteerComposer), not the steer endpoint.
-const STEERABLE_STATUSES = new Set(['running', 'pending', 'reviewing', 'paused'])
+//   - stalled — the watchdog's status is a MASK the daemon's steer path never
+//     reads: MarkWorkerStalled writes it over whatever the row held while the
+//     pipeline goroutine runs on untouched, still selecting on its steer
+//     mailbox. Delivery does not depend on the spawn being responsive either —
+//     smith.Process.Interrupt signals the process group (SIGINT, then SIGKILL
+//     past the grace period) and the captured session_id is resumed with the
+//     steer message — so a spawn that has gone quiet is interrupted exactly as
+//     a chatty one is. Excluding it disabled the composer with a reason
+//     ('No active pipeline') that the daemon does not act on and that a stalled
+//     worker, whose process is still running, contradicts.
+//
+// None of these promise acceptance: the daemon's gate is a live control handle,
+// which no status can prove (a 'running' lifecycle fix worker holds none
+// either). A status the daemon would never accept must not be enabled, and one
+// it may accept is enabled and left to answer for itself.
+const STEERABLE_STATUSES = new Set([
+  'running',
+  'pending',
+  'reviewing',
+  'paused',
+  'stalled',
+])
+
+// isSteerTargetStatus reports whether a worker in this status is the one a
+// bead's steer composer should be aimed at. It is the same set the reason above
+// reads, exported because BeadDetailPage asks the question one step earlier —
+// it picks the bead's steerable worker out of a list before any reason can be
+// derived — and it had the set written out again inline. Two copies is how
+// 'stalled' came to be missing from the steer matrix in three places at once.
+export function isSteerTargetStatus(status: string): boolean {
+  return STEERABLE_STATUSES.has(status)
+}
 
 // steerIsResumeDelivery reports whether a steerable worker's message must be
 // delivered as a resume-with-message (via the resume endpoint) rather than a
@@ -174,7 +237,8 @@ export function steerIsResumeDelivery(worker: Steerable | null | undefined): boo
 // steered, or null when steering is allowed. It mirrors the daemon's steer
 // validation (internal/daemon workerSessionNonClaude + the active-handle check):
 // steering needs an active pipeline (a running/pending Smith, a reviewing Warden,
-// or a paused-but-parked pipeline) and a Claude session — only Claude reports a
+// a paused-but-parked pipeline, or one of those masked 'stalled' by the
+// watchdog) and a Claude session — only Claude reports a
 // resumable session_id. A positively non-Claude session (a recorded non-claude
 // model with no captured session_id) is rejected; an as-yet-unrecorded session
 // (both fields empty, spawn still starting) is optimistically treated as

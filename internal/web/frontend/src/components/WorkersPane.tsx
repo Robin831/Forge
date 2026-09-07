@@ -13,7 +13,7 @@ import { actions, type WorkerInfo } from '../api'
 import { useAction } from '../hooks/useAction'
 import { useUIState } from '../hooks/useUIState'
 import { relativeTime } from '../lib/format'
-import { holdsDispatchSlot, workerStatusClass } from '../lib/workerStatus'
+import { canKillWorker, holdsDispatchSlot, workerStatusClass } from '../lib/workerStatus'
 import { isBellowsMonitor } from './PipelineBar'
 import ConfirmModal from './ConfirmModal'
 import Pane, { EmptyState } from './Pane'
@@ -257,7 +257,7 @@ export default function WorkersPane({
                         const isBellows = w.kind === 'bellows' || w.phase === 'bellows'
                         const hasLog = !!w.log_path && !isBellows
                         const clickable = hasLog && !!onSelectWorker
-                        const canKill = w.status === 'pending' || w.status === 'running'
+                        const canKill = canKillWorker(w)
                         // Pause/resume mirror the daemon's paused-status
                         // transition table: only a running worker may be paused,
                         // and only a paused worker may be resumed. Bellows
