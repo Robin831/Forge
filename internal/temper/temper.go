@@ -10,6 +10,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -100,6 +101,16 @@ type StepResult struct {
 	// Classification categorises a failure (test_failure/build_error/timeout/
 	// infra). Empty for passed or skipped steps.
 	Classification Classification
+	// Terminated is true when Forge KILLED the step — its deadline expired,
+	// the parent context was cancelled, or the wait-delay grace period ran
+	// out — rather than the command exiting on its own. It is the one field
+	// that separates "this command reported a verdict" from "we never let it
+	// report one", which ExitCode cannot: a signalled process is recorded as
+	// exit -1, the same shape a command that failed for its own reasons can
+	// produce, and the retained Output is then whatever the command had
+	// managed to print — for a killed `npm run lint` that was a complete,
+	// clean lint report sitting underneath a FAIL verdict.
+	Terminated bool
 }
 
 // SkipReason identifies why a step did not run. It is a named type with
@@ -277,6 +288,18 @@ const (
 	DefaultGitTimeout = 30 * time.Second
 	// DefaultOutputCap is the default per-step combined-output byte cap (256 KiB).
 	DefaultOutputCap = 256 * 1024
+	// StepKillGrace bounds how far past its deadline a step may run. When the
+	// step context expires the process GROUP is signalled (see runStep's
+	// cmd.Cancel); this is the grace period cmd.WaitDelay then gives the
+	// survivors before os/exec closes the stdout/stderr pipes and returns
+	// regardless. It exists because a descendant that outlives the direct
+	// child inherits the write end of those pipes, so cmd.Wait blocks on the
+	// ORPHAN rather than on the process the deadline was about: a `npm run
+	// lint` killed at its deadline left `eslint` running and the step returned
+	// 168.7s late, with the exit status of a kill and the output of a lint
+	// that had finished cleanly. A step's wall clock is therefore bounded by
+	// its effective timeout plus this, and never by what a grandchild wants.
+	StepKillGrace = 5 * time.Second
 )
 
 // DetectOptions controls optional steps during auto-detection.
@@ -680,6 +703,12 @@ func stepStatus(s StepResult) string {
 		return "PASS"
 	case s.Optional:
 		return "WARN"
+	case s.Terminated:
+		// A step Forge killed reads as TIMEOUT rather than FAIL: FAIL is a
+		// claim the command made about the code, and this one never got to
+		// make it. The label is what an operator scanning the temper log sees
+		// before reading any output.
+		return "TIMEOUT"
 	default:
 		return "FAIL"
 	}
@@ -735,6 +764,9 @@ func writeTemperLog(worktreePath string, result *Result) {
 		if s.Skipped {
 			fmt.Fprint(w, "Skipped:  true\n")
 		}
+		if s.Terminated {
+			fmt.Fprint(w, "Killed:   true (deadline/cancellation — the exit status above is the kill, not the command's verdict)\n")
+		}
 		fmt.Fprint(w, "Output:\n")
 		fmt.Fprint(w, s.Output)
 		if !strings.HasSuffix(s.Output, "\n") {
@@ -776,6 +808,21 @@ func runStep(ctx context.Context, worktreePath string, step Step, defaultTimeout
 	executil.SetProcessGroup(cmd)
 	cmd.Dir = dir
 
+	// Cancel the whole GROUP, not just the direct child. exec.CommandContext's
+	// default cancellation is cmd.Process.Kill(), which reaches the process the
+	// deadline named and nothing it spawned — so `npm run lint` died while the
+	// `cross-env` -> `eslint` it had spawned ran on. The group already exists
+	// (SetProcessGroup above), and the post-Run KillProcessTree below could
+	// never bound the step because it only runs once Run has returned.
+	cmd.Cancel = func() error { return executil.KillProcessTree(cmd) }
+	// Stop waiting on pipes an orphan is holding open. Stdout/Stderr are
+	// io.Writers, so os/exec wires them through an os.Pipe whose write end
+	// every descendant inherits: cmd.Wait blocks until the last one closes it,
+	// which is the other half of a step outliving its deadline. Past the grace
+	// period os/exec closes the pipes and returns, so a descendant that ignores
+	// SIGKILL (or escaped the group via setsid) can no longer hold the step.
+	cmd.WaitDelay = StepKillGrace
+
 	// Bound the retained output with a head+tail buffer so a verbose test suite
 	// cannot balloon memory or the warden/fix prompt that embeds StepResult.Output.
 	output := newHeadTailBuffer(outputCap)
@@ -790,6 +837,12 @@ func runStep(ctx context.Context, worktreePath string, step Step, defaultTimeout
 	duration := time.Since(start)
 	ps := cmd.ProcessState
 
+	// cancelled is true when the step context ended the run — its own deadline
+	// or the parent's cancellation. Read from the context and from
+	// exec.ErrWaitDelay rather than from the exit code: a signalled process is
+	// exit -1, and so is a command that never started.
+	cancelled := stepCtx.Err() != nil || errors.Is(err, exec.ErrWaitDelay)
+
 	exitCode := 0
 	passed := true
 	if err != nil {
@@ -801,14 +854,37 @@ func runStep(ctx context.Context, worktreePath string, step Step, defaultTimeout
 		}
 	}
 
+	// Terminated is the recorded claim, and it is gated on the step having
+	// FAILED: a command that ran to a successful exit reported a verdict, even
+	// where the deadline expired in the moment after it did, and calling that
+	// killed would be the same misattribution in reverse.
+	terminated := !passed && cancelled
+
 	outStr := output.String()
+
+	// The invariant the cancellation above exists to hold: a step's wall clock
+	// never exceeds its own deadline by more than the grace period. Reported
+	// rather than asserted, because the remaining ways to break it are all
+	// outside this function's reach (a descendant that escaped the group via
+	// setsid, a host so loaded the kill itself is delayed) — and because 206.3s
+	// recorded against a 37.6s remaining budget read as a misconfigured timeout
+	// for an hour when it was this bug.
+	if cancelled && duration > timeout+StepKillGrace {
+		log.Printf("[temper] WARN step %q ran %.1fs against a %.1fs deadline with a %.1fs kill grace — cancellation did not bound it",
+			step.Name, duration.Seconds(), timeout.Seconds(), StepKillGrace.Seconds())
+	}
 
 	// Tolerate a .NET test-host teardown crash: when opted in, a non-zero exit
 	// whose output shows all tests passed AND an explicit host-crash marker is
 	// treated as a pass. This is the "testhost OOM'd at teardown after every
 	// test passed" case — a real test failure (Failed: N>0) or a build error
 	// (no crash marker) is NOT tolerated.
-	if !passed && step.TolerateHostCrash && dotnetTestHostCrashTolerable(outStr) {
+	// A step WE killed is never tolerated here, whatever its output shows: the
+	// carve-out reads a completed all-passed summary as evidence the run
+	// finished, and a run we ended part-way through has not finished — the
+	// same "output printed before the kill is not a verdict" rule the
+	// terminated annotation below states in the other direction.
+	if !passed && !terminated && step.TolerateHostCrash && dotnetTestHostCrashTolerable(outStr) {
 		log.Printf("[temper] step %q: exit %d tolerated — all tests passed but the .NET test host crashed at teardown", step.Name, exitCode)
 		outStr += fmt.Sprintf(
 			"\n\n[temper] NOTE: step exited %d, but every test passed and the .NET test host crashed/aborted at teardown (tolerate_host_crash). Treated as PASS — this is a host-level failure, not a test failure.\n",
@@ -818,12 +894,28 @@ func runStep(ctx context.Context, worktreePath string, step Step, defaultTimeout
 
 	var classification Classification
 	if !passed {
-		classification = classifyFailure(stepCtx, ps, outStr)
+		classification = classifyFailure(stepCtx, err, ps, outStr)
 		if classification == ClassificationTimeout {
-			log.Printf("[temper] step %q: killed after exceeding timeout %s — classified as timeout", step.Name, timeout)
+			log.Printf("[temper] step %q: killed after exceeding timeout %s (ran %.1fs) — classified as timeout", step.Name, timeout, duration.Seconds())
 		} else if classification == ClassificationInfra {
-			log.Printf("[temper] step %q: exit %d classified as infra (signal death or host-crash marker)", step.Name, exitCode)
+			log.Printf("[temper] step %q: exit %d classified as infra (signal death, cancellation or host-crash marker)", step.Name, exitCode)
 		}
+	}
+
+	// Say so in the retained output. Everything downstream that renders a step
+	// — the temper log an operator reads, the summary embedded in the next
+	// Smith/warden prompt — shows the exit code next to whatever the command
+	// printed, and for a killed step those two disagree: `client-lint` was
+	// recorded exit -1 under a complete eslint report ending "3 problems (0
+	// errors, 3 warnings)", which is a run that would have exited 0. Without
+	// this line the pairing reads as a real lint failure, which is what trains
+	// people to distrust Temper.
+	if !passed && terminated {
+		outStr += fmt.Sprintf(
+			"\n\n[temper] NOTE: step %q was TERMINATED by Forge after %.1fs (deadline %s, %s kill grace) — it did not exit on its own.\n"+
+				"The recorded exit status (%d) is that kill, not the command's verdict, and any output above is only what the\n"+
+				"command had printed by the time it was killed. Do not read it as evidence that the command failed.\n",
+			step.Name, duration.Seconds(), timeout, StepKillGrace, exitCode)
 	}
 
 	return StepResult{
@@ -835,16 +927,30 @@ func runStep(ctx context.Context, worktreePath string, step Step, defaultTimeout
 		Passed:         passed,
 		Optional:       step.Optional,
 		Classification: classification,
+		Terminated:     terminated,
 	}
 }
 
-// classifyFailure categorises why a step failed. Order matters: a timeout kill
-// also manifests as a signal death, so the context deadline is checked first.
-// A summary showing genuine test failures is authoritative — a real test
-// failure that also crashed the host is a test_failure, not infra.
-func classifyFailure(stepCtx context.Context, ps *os.ProcessState, output string) Classification {
-	if stepCtx.Err() == context.DeadlineExceeded {
+// classifyFailure categorises why a step failed. Order matters: a kill also
+// manifests as a signal death and can leave arbitrary half-written output
+// behind, so the ways WE ended the step are checked before anything read out
+// of what it printed. A summary showing genuine test failures is authoritative
+// among the remainder — a real test failure that also crashed the host is a
+// test_failure, not infra.
+//
+// runErr is the error cmd.Run returned: exec.ErrWaitDelay is the one shape of
+// "we ended it" that the context cannot report, since the deadline fired,
+// every process in the group was signalled, and an orphan held the stdout pipe
+// open past the grace period anyway.
+func classifyFailure(stepCtx context.Context, runErr error, ps *os.ProcessState, output string) Classification {
+	if stepCtx.Err() == context.DeadlineExceeded || errors.Is(runErr, exec.ErrWaitDelay) {
 		return ClassificationTimeout
+	}
+	// A cancelled parent (daemon shutdown, an abandoned pipeline) is not a
+	// verdict on the code either — it is infra, so the pipeline re-runs Temper
+	// rather than looping Smith over a failure that never happened.
+	if stepCtx.Err() != nil {
+		return ClassificationInfra
 	}
 	if dotnetTestFailureRE.MatchString(output) {
 		return ClassificationTestFailure
@@ -1122,17 +1228,13 @@ func buildSummary(r *Result) string {
 	var b strings.Builder
 	optionalWarnings := 0
 	for _, s := range r.Steps {
-		var status string
-		switch {
-		case s.Skipped:
-			status = "SKIP"
-		case s.Passed:
-			status = "PASS"
-		case s.Optional:
-			status = "WARN"
+		// One status vocabulary, shared with the temper log's stepStatus: the
+		// two rendered the same step from two copies of the same switch, so a
+		// label added to one (TIMEOUT) would have been FAIL in the other — and
+		// this is the copy that reaches the next Smith prompt.
+		status := stepStatus(s)
+		if !s.Skipped && !s.Passed && s.Optional {
 			optionalWarnings++
-		default:
-			status = "FAIL"
 		}
 		fmt.Fprintf(&b, "[%s] %s (%.1fs)\n", status, s.Name, s.Duration.Seconds())
 
