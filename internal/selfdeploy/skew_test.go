@@ -241,3 +241,56 @@ func TestVersionSkewIsClearedByASuccessfulDeploy(t *testing.T) {
 	assert.False(t, ReasonVersionSkew.IsSticky(),
 		"a deploy that reaches the tip proves the skew gone, unlike a stash it says nothing about")
 }
+
+// TestSkewCheck_CancellationSurvivesTheSentinels: the caller's first branch is
+// errors.Is(err, context.Canceled), so a shutdown is not reported as a failure.
+// The build-placement paths wrap the sentinel AND the cause for that reason — a
+// cancelled rev-parse or merge-base classified by the sentinel alone would be
+// logged as a claim about how the binary was built.
+func TestSkewCheck_CancellationSurvivesTheSentinels(t *testing.T) {
+	t.Run("rev-parse of the build", func(t *testing.T) {
+		replies := map[string]skewReply{
+			fetchCmd: {},
+			"git rev-parse --verify --quiet refs/remotes/origin/main^{commit}": {out: headFull},
+			"git rev-parse --verify --quiet 1111111^{commit}":                  {err: context.Canceled},
+		}
+		checker, _ := newChecker(t, replies, "1111111")
+		_, err := checker.Check(context.Background())
+		require.ErrorIs(t, err, ErrBuildNotInCheckout)
+		assert.ErrorIs(t, err, context.Canceled, "the cause must survive the sentinel")
+	})
+
+	t.Run("merge-base", func(t *testing.T) {
+		replies := baseReplies()
+		replies[fmt.Sprintf("git merge-base --is-ancestor %s %s", buildFull, headFull)] =
+			skewReply{err: context.DeadlineExceeded}
+		checker, _ := newChecker(t, replies, "1111111")
+		_, err := checker.Check(context.Background())
+		require.ErrorIs(t, err, ErrBuildNotAncestor)
+		assert.ErrorIs(t, err, context.DeadlineExceeded)
+	})
+}
+
+// TestSkewCheck_GitOutputIsSanitized: `git fetch` relays the remote's own
+// `remote:` lines verbatim, so the bytes are chosen by whatever is on the other
+// end of origin and land in daemon.log, which the dashboard tails. They go
+// through the same bound-and-strip every other git quote in this package takes.
+func TestSkewCheck_GitOutputIsSanitized(t *testing.T) {
+	hostile := "remote: \x1b[31mfoo\x1b]0;bar\x07 " + strings.Repeat("x", 4096)
+	replies := map[string]skewReply{fetchCmd: {out: hostile, err: errors.New("exit 128")}}
+	checker, _ := newChecker(t, replies, "1111111")
+	_, err := checker.Check(context.Background())
+	require.Error(t, err)
+	assert.NotContains(t, err.Error(), "\x1b")
+	assert.NotContains(t, err.Error(), "\x07")
+	assert.Less(t, len(err.Error()), 4096, "git's words are bounded, not quoted whole")
+}
+
+// TestNewSkewChecker_DefaultsTheCommander: every command here is
+// `git -C <RepoPath>`, which an ambient GIT_DIR would answer for another
+// repository — reporting a skew of zero forever. The default is what makes that
+// contract hold without the call site remembering it.
+func TestNewSkewChecker_DefaultsTheCommander(t *testing.T) {
+	checker := NewSkewChecker(SkewConfig{RepoPath: "/repo"}, nil)
+	assert.Equal(t, ExecCommander{}, checker.cmd)
+}

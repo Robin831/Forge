@@ -195,7 +195,7 @@ func (d *Deployer) conflictedState(ctx context.Context) (string, error) {
 func (d *Deployer) refuseUnmergedTree(ctx context.Context, state string) error {
 	what := fmt.Sprintf("the checkout is %s, which a deploy may not set aside to pull over", state)
 
-	out, err := d.git(ctx, "pull", "--ff-only", "origin", d.cfg.Branch)
+	out, err := d.git(ctx, "pull", "--ff-only", originRemote, d.cfg.Branch)
 	if err == nil {
 		// git accepted a fast-forward over a checkout it has refused one for
 		// since long before any version Forge supports. Nothing concluded that
@@ -364,7 +364,7 @@ func (d *Deployer) recoverFailedPop(ctx context.Context, stash, popOut string, p
 // or rebased: that is an operator's decision about Forge's own checkout, not a
 // deploy's.
 func (d *Deployer) fastForward(ctx context.Context) error {
-	out, err := d.git(ctx, "pull", "--ff-only", "origin", d.cfg.Branch)
+	out, err := d.git(ctx, "pull", "--ff-only", originRemote, d.cfg.Branch)
 	if err != nil {
 		return d.failPull(ctx, "git pull failed", err, out)
 	}

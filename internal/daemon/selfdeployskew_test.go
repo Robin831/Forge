@@ -1,6 +1,8 @@
 package daemon
 
 import (
+	"context"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -23,7 +25,7 @@ func skewDaemon(t *testing.T, sd config.SelfDeployConfig) (*Daemon, *state.DB, c
 	t.Helper()
 	d, db := newSelfDeployDaemon(t, sd, nil)
 	dispatched := make(chan config.SelfDeployConfig, 8)
-	d.selfDeployRun = func(cfg config.SelfDeployConfig) { dispatched <- cfg }
+	d.setSelfDeployRun(func(cfg config.SelfDeployConfig) { dispatched <- cfg })
 	return d, db, dispatched
 }
 
@@ -110,7 +112,7 @@ func TestApplySelfDeploySkew_AttemptSurvivesARestart(t *testing.T) {
 	restarted := &Daemon{db: db, logger: d.logger}
 	restarted.cfg.Store(d.config())
 	restartedDispatch := make(chan config.SelfDeployConfig, 4)
-	restarted.selfDeployRun = func(cfg config.SelfDeployConfig) { restartedDispatch <- cfg }
+	restarted.setSelfDeployRun(func(cfg config.SelfDeployConfig) { restartedDispatch <- cfg })
 
 	restarted.applySelfDeploySkew(sd, skewOf(7, now.Add(-5*24*time.Hour)), now.Add(2*time.Minute))
 
@@ -217,10 +219,10 @@ func TestApplySelfDeploySkew_InFlightDeployIsNotEscalated(t *testing.T) {
 	sd := enabledSkewConfig()
 	d, db, dispatched := skewDaemon(t, sd)
 	release := make(chan struct{})
-	d.selfDeployRun = func(cfg config.SelfDeployConfig) {
+	d.setSelfDeployRun(func(cfg config.SelfDeployConfig) {
 		dispatched <- cfg
 		<-release
-	}
+	})
 	now := time.Now()
 	since := now.Add(-5 * 24 * time.Hour)
 
@@ -327,14 +329,14 @@ func TestTriggerSelfDeploy_SingleFlightAcrossBothPaths(t *testing.T) {
 	sd := enabledSkewConfig()
 	d, _, dispatched := skewDaemon(t, sd)
 	release := make(chan struct{})
-	d.selfDeployRun = func(cfg config.SelfDeployConfig) {
+	d.setSelfDeployRun(func(cfg config.SelfDeployConfig) {
 		dispatched <- cfg
 		<-release
-	}
+	})
 
-	assert.True(t, d.triggerSelfDeploy(sd, selfDeployReasonPRMerged))
+	assert.True(t, d.triggerSelfDeploy(sd, selfDeployReasonPRMerged, nil))
 	waitDispatched(t, dispatched)
-	assert.False(t, d.triggerSelfDeploy(sd, selfDeployReasonSkew), "a second trigger is a no-op while one runs")
+	assert.False(t, d.triggerSelfDeploy(sd, selfDeployReasonSkew, nil), "a second trigger is a no-op while one runs")
 	close(release)
 }
 
@@ -354,4 +356,159 @@ func TestSelfDeploySkewConfigDefaults(t *testing.T) {
 	custom := config.SelfDeployConfig{SkewCheckInterval: time.Hour, SkewAttentionCommits: 10}
 	assert.Equal(t, time.Hour, custom.ResolvedSkewCheckInterval())
 	assert.Equal(t, 10, custom.ResolvedSkewAttentionCommits())
+}
+
+// TestApplySelfDeploySkew_AttemptIsRecordedBeforeTheDeployRuns: the record is
+// written under the CAS that claims the single-flight guard, before the deploy
+// goroutine exists. Written after triggerSelfDeploy returned it would race the
+// deploy it dispatched — a deploy that fails fast (a build error, a blocked
+// pull) is exactly the case the backoff exists for, and one that restarts the
+// daemon can take the process down before the store lands.
+func TestApplySelfDeploySkew_AttemptIsRecordedBeforeTheDeployRuns(t *testing.T) {
+	sd := enabledSkewConfig()
+	d, _, _ := skewDaemon(t, sd)
+	seen := make(chan *selfDeploySkewAttempt, 1)
+	d.setSelfDeployRun(func(config.SelfDeployConfig) { seen <- d.selfDeploySkewAttempt.Load() })
+
+	now := time.Now()
+	d.applySelfDeploySkew(sd, skewOf(3, now.Add(-time.Hour)), now)
+
+	select {
+	case att := <-seen:
+		require.NotNil(t, att, "the deploy body must already see the attempt on record")
+		assert.Equal(t, skewHead, att.head)
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected a deploy to be dispatched")
+	}
+}
+
+// skewLoopProbe runs the loop with sub-second seams and a counting check, and
+// returns the counter plus a channel closed when the loop returns.
+func skewLoopProbe(t *testing.T, d *Daemon, ctx context.Context) (*atomic.Int32, chan struct{}, chan struct{}) {
+	t.Helper()
+	var checks atomic.Int32
+	fired := make(chan struct{}, 8)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		d.runSelfDeploySkewCheckWith(ctx, selfDeploySkewLoop{
+			startupDelay: time.Millisecond,
+			disabledPoll: time.Millisecond,
+			check: func(context.Context, time.Time) {
+				checks.Add(1)
+				select {
+				case fired <- struct{}{}:
+				default:
+				}
+			},
+		})
+	}()
+	return &checks, fired, done
+}
+
+// TestRunSelfDeploySkewCheck_EnableGate covers the three-way conjunction that
+// decides whether the check ever runs. A regression in it is silent by
+// construction — the feature simply never fires, which is the failure (a daemon
+// quietly behind main with nothing said anywhere) the check exists to report.
+func TestRunSelfDeploySkewCheck_EnableGate(t *testing.T) {
+	tests := []struct {
+		name  string
+		sd    config.SelfDeployConfig
+		check bool
+	}{
+		{
+			name:  "an unset interval runs the check",
+			sd:    enabledSkewConfig(),
+			check: true,
+		},
+		{
+			name: "a negative interval disables it",
+			sd: func() config.SelfDeployConfig {
+				sd := enabledSkewConfig()
+				sd.SkewCheckInterval = -time.Second
+				return sd
+			}(),
+		},
+		{
+			name: "self-deploy disabled",
+			sd: func() config.SelfDeployConfig {
+				sd := enabledSkewConfig()
+				sd.Enabled = false
+				return sd
+			}(),
+		},
+		{
+			name: "no anvil configured",
+			sd: func() config.SelfDeployConfig {
+				sd := enabledSkewConfig()
+				sd.Anvil = ""
+				return sd
+			}(),
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			d, _, _ := skewDaemon(t, tc.sd)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			checks, fired, done := skewLoopProbe(t, d, ctx)
+
+			if tc.check {
+				select {
+				case <-fired:
+				case <-time.After(2 * time.Second):
+					t.Fatal("expected the skew check to run")
+				}
+			} else {
+				time.Sleep(50 * time.Millisecond)
+				assert.Zero(t, checks.Load(), "the gate must keep the check from running")
+			}
+
+			// Whatever the gate decided, the loop idles rather than exiting: an
+			// exited goroutine could only be brought back by the restart this
+			// feature exists to perform.
+			select {
+			case <-done:
+				t.Fatal("the loop must not exit while its context is live")
+			default:
+			}
+			cancel()
+			select {
+			case <-done:
+			case <-time.After(2 * time.Second):
+				t.Fatal("the loop must return once its context is done")
+			}
+		})
+	}
+}
+
+// TestRunSelfDeploySkewCheck_EnabledByHotReload: the loop re-reads the config
+// every iteration, which is what makes enabling self-deploy without a restart
+// possible — and the thing this loop deploys is the daemon that would otherwise
+// need restarting to pick the setting up.
+func TestRunSelfDeploySkewCheck_EnabledByHotReload(t *testing.T) {
+	off := enabledSkewConfig()
+	off.Enabled = false
+	// A short interval so the loop re-reads the config promptly; production
+	// picks a reload up on the ordinary 15m cadence.
+	off.SkewCheckInterval = time.Millisecond
+	d, _, _ := skewDaemon(t, off)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	checks, fired, _ := skewLoopProbe(t, d, ctx)
+
+	time.Sleep(50 * time.Millisecond)
+	require.Zero(t, checks.Load())
+
+	on := enabledSkewConfig()
+	on.SkewCheckInterval = time.Millisecond
+	d.cfg.Store(&config.Config{SelfDeploy: on})
+
+	select {
+	case <-fired:
+	case <-time.After(2 * time.Second):
+		t.Fatal("a hot-reloaded enable must start the check without a restart")
+	}
 }

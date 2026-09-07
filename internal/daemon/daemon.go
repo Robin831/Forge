@@ -421,10 +421,17 @@ type Daemon struct {
 	// pull/build/restart cycles. Set true while a deploy is draining or running.
 	selfDeployInFlight atomic.Bool
 
-	// selfDeployRun is the deploy body triggerSelfDeploy launches. nil selects
-	// runSelfDeploy; tests substitute a stub so the trigger and skew-backoff
-	// decisions can be driven without a checkout, a compiler or systemd.
-	selfDeployRun func(config.SelfDeployConfig)
+	// selfDeployRun is the deploy body triggerSelfDeploy launches. Unset selects
+	// runSelfDeploy; tests substitute a stub (setSelfDeployRun) so the trigger
+	// and skew-backoff decisions can be driven without a checkout, a compiler or
+	// systemd.
+	//
+	// It is an atomic pointer rather than a plain field because it is read from
+	// whichever goroutine triggers a deploy — the skew loop and the bellows
+	// event handler both do — while a test may substitute the stub after Run
+	// has started. Every other field here that crosses goroutines is guarded;
+	// this one crossed unguarded.
+	selfDeployRun atomic.Pointer[func(config.SelfDeployConfig)]
 
 	// selfDeploySkewAttempt records the branch tip the periodic skew check last
 	// dispatched a deploy for, and when. It is what keeps a tip whose deploy
@@ -3009,7 +3016,7 @@ func (d *Daemon) handleSelfDeploy(_ context.Context, event bellows.PREvent) {
 	if !d.selfDeployAccepts(event) {
 		return
 	}
-	d.triggerSelfDeploy(d.config().SelfDeploy, selfDeployReasonPRMerged)
+	d.triggerSelfDeploy(d.config().SelfDeploy, selfDeployReasonPRMerged, nil)
 }
 
 // Reasons a deploy was triggered, logged on the trigger so the two paths are
@@ -3034,22 +3041,41 @@ const (
 // no-op rather than a queued deploy — the in-flight one pulls the branch tip as
 // it stands when it gets there, which is at least as new as whatever prompted
 // the second trigger.
-func (d *Daemon) triggerSelfDeploy(sd config.SelfDeployConfig, reason string) bool {
+func (d *Daemon) triggerSelfDeploy(sd config.SelfDeployConfig, reason string, onClaimed func()) bool {
 	if !d.selfDeployInFlight.CompareAndSwap(false, true) {
 		d.logger.Info("self-deploy already in flight; ignoring trigger",
 			"anvil", sd.Anvil, "reason", reason)
 		return false
 	}
 	d.logger.Info("self-deploy triggered", "anvil", sd.Anvil, "reason", reason)
-	run := d.selfDeployRun
-	if run == nil {
-		run = d.runSelfDeploy
+	// onClaimed runs while the CAS above still guarantees exclusive ownership
+	// and BEFORE the deploy goroutine exists, so a caller recording that it
+	// dispatched cannot be raced by the deploy it dispatched — most obviously by
+	// one that fails fast (a build error, a blocked pull), which is exactly the
+	// case a backoff record exists for.
+	if onClaimed != nil {
+		onClaimed()
+	}
+	run := d.runSelfDeploy
+	if fn := d.selfDeployRun.Load(); fn != nil {
+		run = *fn
 	}
 	go func() {
 		defer d.selfDeployInFlight.Store(false)
 		run(sd)
 	}()
 	return true
+}
+
+// setSelfDeployRun substitutes the deploy body. It exists so the substitution
+// goes through the atomic rather than through a bare field assignment that
+// would race the goroutines reading it.
+func (d *Daemon) setSelfDeployRun(fn func(config.SelfDeployConfig)) {
+	if fn == nil {
+		d.selfDeployRun.Store(nil)
+		return
+	}
+	d.selfDeployRun.Store(&fn)
 }
 
 // selfDeployAccepts reports whether a bellows event qualifies to trigger a

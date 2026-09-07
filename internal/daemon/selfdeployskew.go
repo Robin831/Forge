@@ -44,6 +44,16 @@ const (
 	// first page belongs to the poll and the first Bellows cycle.
 	selfDeploySkewStartupDelay = 2 * time.Minute
 
+	// selfDeploySkewDisabledPoll is how long the loop idles between config reads
+	// while the check is disabled (a negative skew_check_interval). The loop
+	// does not exit on a disabled check — an exited goroutine could only be
+	// brought back by the restart this feature exists to perform — but a
+	// disabled check is the one case with no configured cadence of its own, so
+	// waking on the 15m default would be an operator's `-1` having no
+	// observable effect on the loop at all. The price is that re-enabling by hot
+	// reload takes effect within the hour rather than within the quarter.
+	selfDeploySkewDisabledPoll = time.Hour
+
 	// selfDeploySkewGitTimeout bounds one check's git work (a fetch plus a few
 	// reads). It is its own deadline rather than the daemon's run context alone
 	// because a fetch against an unreachable remote otherwise holds the loop
@@ -60,36 +70,79 @@ type selfDeploySkewAttempt struct {
 	at   time.Time
 }
 
+// selfDeploySkewLoop carries the loop's seams so its enable gate is reachable
+// from a test: the loop is the only thing that ever calls checkSelfDeploySkew,
+// and a regression in that gate is silent by construction — the feature simply
+// never fires, which is the very failure (a daemon quietly behind main with
+// nothing said anywhere) the check exists to report. A zero field takes the
+// production value.
+type selfDeploySkewLoop struct {
+	// startupDelay keeps the first check out of the startup burst.
+	startupDelay time.Duration
+	// disabledPoll is the idle cadence while the check is disabled.
+	disabledPoll time.Duration
+	// check measures and acts on the skew once.
+	check func(context.Context, time.Time)
+}
+
 // runSelfDeploySkewCheck is the blocking loop behind the periodic check. Launch
 // it as a goroutine; it returns only when ctx is done.
+func (d *Daemon) runSelfDeploySkewCheck(ctx context.Context) {
+	d.runSelfDeploySkewCheckWith(ctx, selfDeploySkewLoop{})
+}
+
+// runSelfDeploySkewCheckWith is runSelfDeploySkewCheck with its seams supplied.
 //
 // The interval is read from the live config on every iteration rather than
 // captured once, so a hot-reloaded interval — or self-deploy being enabled at
 // all — takes effect without a restart. While the check is disabled the loop
-// idles at the default interval instead of exiting, since an exited goroutine
-// could only be brought back by the restart this feature exists to perform.
-func (d *Daemon) runSelfDeploySkewCheck(ctx context.Context) {
-	select {
-	case <-ctx.Done():
+// idles at selfDeploySkewDisabledPoll instead of exiting, since an exited
+// goroutine could only be brought back by the restart this feature exists to
+// perform.
+func (d *Daemon) runSelfDeploySkewCheckWith(ctx context.Context, loop selfDeploySkewLoop) {
+	if loop.startupDelay <= 0 {
+		loop.startupDelay = selfDeploySkewStartupDelay
+	}
+	if loop.disabledPoll <= 0 {
+		loop.disabledPoll = selfDeploySkewDisabledPoll
+	}
+	if loop.check == nil {
+		loop.check = d.checkSelfDeploySkew
+	}
+
+	if !waitOrDone(ctx, loop.startupDelay) {
 		return
-	case <-time.After(selfDeploySkewStartupDelay):
 	}
 
 	for {
 		sd := d.config().SelfDeploy
+		// One read, two readings of the same value: ResolvedSkewCheckInterval
+		// returns 0 only for an explicitly negative setting (the off switch,
+		// since 0 is the field's zero value and has to mean "unset"), so it
+		// gates the check AND supplies the cadence when it is positive.
 		interval := sd.ResolvedSkewCheckInterval()
 		if interval > 0 && sd.Enabled && sd.Anvil != "" {
-			d.checkSelfDeploySkew(ctx, time.Now())
+			loop.check(ctx, time.Now())
 		}
-		wait := d.config().SelfDeploy.ResolvedSkewCheckInterval()
+		wait := interval
 		if wait <= 0 {
-			wait = config.DefaultSelfDeploySkewCheckInterval
+			wait = loop.disabledPoll
 		}
-		select {
-		case <-ctx.Done():
+		if !waitOrDone(ctx, wait) {
 			return
-		case <-time.After(wait):
 		}
+	}
+}
+
+// waitOrDone sleeps for d, reporting false when ctx ended first.
+func waitOrDone(ctx context.Context, d time.Duration) bool {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
 	}
 }
 
@@ -182,14 +235,21 @@ func (d *Daemon) applySelfDeploySkew(sd config.SelfDeployConfig, skew selfdeploy
 		return
 	}
 
-	if !d.triggerSelfDeploy(sd, selfDeployReasonSkew) {
+	// The record is written from inside the trigger, under the CAS that claims
+	// the single-flight guard and before the deploy goroutine exists. Written
+	// after the trigger returned it would race the deploy it dispatched: one
+	// that fails fast — a build error, a blocked pull, an unresolvable repo path,
+	// which is exactly the case the backoff exists for — can finish, and one
+	// that restarts the daemon can take the process down, before the store
+	// lands.
+	attempt := &selfDeploySkewAttempt{head: skew.HeadSHA, at: now}
+	if !d.triggerSelfDeploy(sd, selfDeployReasonSkew, func() { d.storeSelfDeploySkewAttempt(attempt) }) {
 		// A deploy is already in flight; it pulls this tip or a newer one. The
 		// attempt is deliberately NOT recorded — this path dispatched nothing,
 		// and recording it would start the backoff for a deploy somebody else's
 		// trigger owns.
 		return
 	}
-	d.storeSelfDeploySkewAttempt(&selfDeploySkewAttempt{head: skew.HeadSHA, at: now})
 }
 
 // loadSelfDeploySkewAttempt returns the attempt on record, reading it back from
@@ -288,7 +348,7 @@ func (d *Daemon) escalateSelfDeploySkew(sd config.SelfDeployConfig, skew selfdep
 		return
 	}
 	detail := fmt.Sprintf("%s; a deploy for that commit was dispatched and the daemon is still running %s — see the other self-deploy entries and daemon.log for why it did not go live",
-		skew.Summary(now), shortBuildSHA(skew.BuildSHA))
+		skew.Summary(now), shortSHA(skew.BuildSHA))
 	sink := selfDeployAttentionSink{db: d.db, anvil: sd.Anvil, unit: sd.ResolvedUnitName()}
 	if err := sink.EmitNeedsAttention(selfdeploy.DeployEvent{
 		Reason: selfdeploy.ReasonVersionSkew,
@@ -345,14 +405,4 @@ func (d *Daemon) clearSelfDeploySkewAttention(sd config.SelfDeployConfig) {
 		d.logger.Info("self-deploy: the running build is current again; version-skew entry withdrawn",
 			"anvil", sd.Anvil, "build", forge.Build)
 	}
-}
-
-// shortBuildSHA abbreviates an object name for a message, leaving a short or
-// non-SHA build identifier untouched.
-func shortBuildSHA(sha string) string {
-	const n = 12
-	if len(sha) > n {
-		return sha[:n]
-	}
-	return sha
 }

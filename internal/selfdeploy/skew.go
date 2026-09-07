@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/Robin831/Forge/internal/gitfail"
 )
 
 // Version skew: how far the RUNNING binary is behind the branch it deploys from.
@@ -30,10 +32,10 @@ import (
 // deploy a merge event triggers, with the same drain, the same stash discipline
 // and the same rollback.
 
-// originRemote is the remote both the deploy's fast-forward pull and the skew
-// check name. One constant because the two must always mean the same remote: a
-// check reading a tip the pull does not fetch from would report a skew every
-// deploy closes and a deploy the check never notices.
+// originRemote is the remote both the deploy's fast-forward pull (pull.go) and
+// this check name. One constant that both use because the two must always mean
+// the same remote: a check reading a tip the pull does not fetch from would
+// report a skew every deploy closes and a deploy the check never notices.
 const originRemote = "origin"
 
 // skewAgeMaxCommits bounds the range the "how long has it been behind" figure is
@@ -142,10 +144,24 @@ type SkewChecker struct {
 	cmd Commander
 }
 
-// NewSkewChecker builds a checker, defaulting Branch the way Config does.
+// NewSkewChecker builds a checker, defaulting Branch the way Config does and
+// defaulting the Commander to ExecCommander.
+//
+// The default is what makes the environment contract this check rests on hold by
+// construction rather than by the call site remembering it. Every command here
+// is `git -C <RepoPath>`, and an ambient GIT_DIR or GIT_WORK_TREE answers for
+// the repository it names instead of that path: `rev-parse` would then resolve
+// the running build against some other checkout and the check would report a
+// skew of zero forever — the exact silence it exists to break, arriving through
+// the environment. ExecCommander strips those variables (executil.CleanGitEnv)
+// and pins LC_ALL=C besides. A Commander supplied here must do the same; nil
+// gets one that does.
 func NewSkewChecker(cfg SkewConfig, cmd Commander) *SkewChecker {
 	if cfg.Branch == "" {
 		cfg.Branch = "main"
+	}
+	if cmd == nil {
+		cmd = ExecCommander{}
 	}
 	return &SkewChecker{cfg: cfg, cmd: cmd}
 }
@@ -179,7 +195,13 @@ func (c *SkewChecker) Check(ctx context.Context) (Skew, error) {
 	trackingRef := fmt.Sprintf("refs/remotes/%s/%s", originRemote, branch)
 	refspec := fmt.Sprintf("+%s:%s", branch, trackingRef)
 	if out, err := c.git(ctx, "fetch", originRemote, refspec); err != nil {
-		return Skew{}, fmt.Errorf("selfdeploy: fetching %s/%s: %w: %s", originRemote, branch, err, out)
+		// git's own words are quoted through the same treatment every other
+		// caller in this package gives them: `git fetch` relays the remote's
+		// `remote:` lines verbatim, so these bytes are chosen by whatever is on
+		// the other end of origin, and they land in daemon.log, which the web
+		// dashboard tails and Hearth renders.
+		return Skew{}, fmt.Errorf("selfdeploy: fetching %s/%s: %w: %s", originRemote, branch, err,
+			gitfail.Sanitize(firstNonEmpty(out, err.Error()), maxEvidenceBytes))
 	}
 
 	head, err := c.revParse(ctx, trackingRef)
@@ -193,7 +215,12 @@ func (c *SkewChecker) Check(ctx context.Context) (Skew, error) {
 	// a name.
 	buildFull, err := c.revParse(ctx, build)
 	if err != nil {
-		return Skew{}, fmt.Errorf("%w: %s", ErrBuildNotInCheckout, build)
+		// The cause is wrapped alongside the sentinel, not dropped for it: the
+		// caller branches on context.Canceled first so a shutdown is not
+		// reported as a failure, and a cancelled rev-parse that arrived here
+		// carrying only ErrBuildNotInCheckout would be logged as a claim about
+		// how the binary was built.
+		return Skew{}, fmt.Errorf("%w: %s: %w", ErrBuildNotInCheckout, build, err)
 	}
 
 	skew := Skew{BuildSHA: buildFull, HeadSHA: head, Branch: branch}
@@ -201,14 +228,19 @@ func (c *SkewChecker) Check(ctx context.Context) (Skew, error) {
 		return skew, nil
 	}
 
-	if _, err := c.git(ctx, "merge-base", "--is-ancestor", buildFull, head); err != nil {
-		return skew, fmt.Errorf("%w: build %s, %s/%s at %s",
-			ErrBuildNotAncestor, shortSkewSHA(buildFull), originRemote, branch, shortSkewSHA(head))
+	if out, err := c.git(ctx, "merge-base", "--is-ancestor", buildFull, head); err != nil {
+		// Same reasoning as the rev-parse above: the sentinel classifies, the
+		// wrapped cause is what lets a cancellation or a timeout be recognised
+		// as one.
+		return skew, fmt.Errorf("%w: build %s, %s/%s at %s: %w: %s",
+			ErrBuildNotAncestor, shortSkewSHA(buildFull), originRemote, branch, shortSkewSHA(head), err,
+			gitfail.Sanitize(firstNonEmpty(out, err.Error()), maxEvidenceBytes))
 	}
 
 	countOut, err := c.git(ctx, "rev-list", "--count", buildFull+".."+head)
 	if err != nil {
-		return skew, fmt.Errorf("selfdeploy: counting commits since %s: %w: %s", shortSkewSHA(buildFull), err, countOut)
+		return skew, fmt.Errorf("selfdeploy: counting commits since %s: %w: %s", shortSkewSHA(buildFull), err,
+			gitfail.Sanitize(firstNonEmpty(countOut, err.Error()), maxEvidenceBytes))
 	}
 	n, err := strconv.Atoi(strings.TrimSpace(countOut))
 	if err != nil {
@@ -248,7 +280,8 @@ func (c *SkewChecker) oldestCommitTime(ctx context.Context, build, head string, 
 func (c *SkewChecker) revParse(ctx context.Context, rev string) (string, error) {
 	out, err := c.git(ctx, "rev-parse", "--verify", "--quiet", rev+"^{commit}")
 	if err != nil {
-		return "", fmt.Errorf("git rev-parse %s: %w: %s", rev, err, out)
+		return "", fmt.Errorf("git rev-parse %s: %w: %s", rev, err,
+			gitfail.Sanitize(firstNonEmpty(out, err.Error()), maxEvidenceBytes))
 	}
 	sha := strings.TrimSpace(out)
 	if sha == "" {

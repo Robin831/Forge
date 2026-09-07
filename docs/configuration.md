@@ -1506,7 +1506,10 @@ answers the question whatever moved the branch and whoever moved it:
 
 Set `skew_check_interval` to a negative duration to turn the check off. `0`
 means *unset* and selects the 15m default: a deployment that has never heard of
-this setting is exactly the one that silently falls behind.
+this setting is exactly the one that silently falls behind. With the check
+disabled the loop idles hourly rather than exiting — so re-enabling it by hot
+reload takes effect without a daemon restart, which matters here more than
+elsewhere, since restarting the daemon is the very thing this loop performs.
 
 ### Needs Attention on a failed or rolled-back deploy
 
