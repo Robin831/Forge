@@ -2360,6 +2360,8 @@ git clone . /tmp/scratch && cd /tmp/scratch
 
 The wrapper is on the agent's `PATH` and nothing else's — the daemon's own git calls, the deployment's bootstrap and an operator's `git -C <anvil> remote set-url origin <url>` repair never reach it. It is a guardrail rather than a sandbox: an absolute path to git walks past it.
 
+It is installed under one extensionless name, `git`, which is what a POSIX shell resolves — the shell every provider runs a tool command through, and on Windows that is Git Bash's. A caller that resolves `git` through the Win32 API instead needs a `PATHEXT` extension and finds `git.exe` further along the path, so on Windows the guard covers the agent's shell and not a native child of it. The anvils it exists for run in a Linux pod, where that distinction does not arise.
+
 Set `FORGE_DISABLE_GIT_GUARD=1` in the **daemon's** environment to switch it off; a worker cannot set it for itself. A guard that fails to install is logged and the agent runs with plain git, so this is never a reason a bead does not start.
 
 ## Validation Rules

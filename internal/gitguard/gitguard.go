@@ -42,6 +42,18 @@
 // worker's git traffic. And the guard is a guardrail, not a sandbox: an
 // absolute path to git walks past it, which is the correct depth for something
 // standing between an agent and a tool it uses hundreds of times a session.
+//
+// # Where it does not reach
+//
+// The script is installed under one extensionless name, `git`, which is what a
+// POSIX shell resolves — the shell every provider runs a tool_use command
+// through, and on Windows that is Git Bash's. A caller that resolves `git`
+// through the Win32 API instead (Go's own exec.LookPath among them) needs a
+// PATHEXT extension and finds `git.exe` further along the path, so on Windows
+// the guard covers the agent's shell and not a native child of it. The anvils
+// this exists for are in a Linux pod, where the distinction does not arise; a
+// batch companion is not written because it would be a second implementation of
+// the rules in a language that cannot pass an argument list through intact.
 package gitguard
 
 import (

@@ -3,11 +3,13 @@ package smith
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/Robin831/Forge/internal/cost"
+	"github.com/Robin831/Forge/internal/gitguard"
 	"github.com/Robin831/Forge/internal/provider"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -709,4 +711,73 @@ func TestResultUsage_RateLimitedIsZero(t *testing.T) {
 	r := &Result{TokensIn: 100, CacheReadTokens: 5000, CostUSD: 0.1, RateLimited: true}
 	u := r.Usage()
 	assert.True(t, u.IsZero())
+}
+
+// The guard only reaches a worker if it is on the child's PATH, which is the
+// one thing the gitguard package's own tests cannot assert.
+func TestWithGitGuard_PutsTheGuardOnTheChildsPath(t *testing.T) {
+	home := t.TempDir()
+	setTestHome(t, home)
+
+	got := withGitGuard(t.Context(), []string{"PATH=" + os.Getenv("PATH")}, t.TempDir())
+
+	guardDir := filepath.Join(testHome(t), ".forge", "gitguard")
+	if len(got) == 0 || !strings.HasPrefix(got[0], "PATH="+guardDir+string(os.PathListSeparator)) {
+		t.Errorf("got %q, want the guard directory first on PATH", got)
+	}
+	if _, err := os.Stat(filepath.Join(guardDir, "git")); err != nil {
+		t.Errorf("the guard script was not installed: %v", err)
+	}
+}
+
+// A working directory that is not a linked worktree names no anvil, and the
+// guard falls back to its own rule rather than being handed an empty one to
+// compare against.
+func TestWithGitGuard_OmitsAnAnvilItCannotResolve(t *testing.T) {
+	setTestHome(t, t.TempDir())
+
+	for _, e := range withGitGuard(t.Context(), []string{"PATH=/usr/bin"}, t.TempDir()) {
+		if strings.HasPrefix(e, gitguard.GuardedGitDirEnv+"=") {
+			t.Errorf("%s was set with no anvil to name", gitguard.GuardedGitDirEnv)
+		}
+	}
+}
+
+// A disabled guard must cost nothing at all — not the PATH entry, and not the
+// `git rev-parse` that resolves the anvil for it.
+func TestWithGitGuard_DisabledLeavesTheEnvironmentAlone(t *testing.T) {
+	home := t.TempDir()
+	setTestHome(t, home)
+	t.Setenv(gitguard.DisableEnv, "1")
+
+	in := []string{"PATH=/usr/bin", "HOME=/home/forge"}
+	got := withGitGuard(t.Context(), in, t.TempDir())
+
+	if len(got) != len(in) || got[0] != in[0] || got[1] != in[1] {
+		t.Errorf("got %q, want the environment untouched", got)
+	}
+	if _, err := os.Stat(filepath.Join(home, ".forge", "gitguard")); !os.IsNotExist(err) {
+		t.Error("a disabled guard still wrote its directory")
+	}
+}
+
+// setTestHome points os.UserHomeDir at dir. The variable it reads differs per
+// platform, and setting only one of them leaves the test writing into the
+// developer's real ~/.forge.
+func setTestHome(t *testing.T, dir string) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Setenv("USERPROFILE", dir)
+		return
+	}
+	t.Setenv("HOME", dir)
+}
+
+func testHome(t *testing.T) string {
+	t.Helper()
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatalf("UserHomeDir: %v", err)
+	}
+	return home
 }

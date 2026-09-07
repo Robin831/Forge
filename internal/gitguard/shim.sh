@@ -71,8 +71,11 @@ EOF
 	[ "$gitdir" != "$common" ]
 }
 
-# writes_origin <n-globals> <argv...> — true when the command writes one of
-# `origin`'s keys into the repository's own config.
+# writes_origin <n-globals> <argv...> — true when the command writes
+# `remote.origin.url` or `remote.origin.pushurl` into the repository's own
+# config. Those two and no others: `remote.origin.fetch` is the refspec the
+# deployment's bootstrap widens, and nothing under `origin` but the two URLs
+# decides where a fetch goes.
 #
 # Only `origin` is guarded. It is the remote every Forge fetch, PR reconcile and
 # dependency scan resolves, so it is the one whose loss blinds the daemon. A
@@ -167,8 +170,32 @@ writes_origin() {
 			;;
 		esac
 		[ "$written" -eq 1 ] || return 1
-		case "$key" in
-		remote.origin.url | remote.origin.pushurl) return 0 ;;
+
+		# Split `<section>.<subsection>.<variable>`, where the subsection may
+		# itself contain dots (a remote may be named `a.b`), so the section is
+		# up to the FIRST dot and the variable after the LAST.
+		section=${key%%.*}
+		rest=${key#*.}
+		variable=${rest##*.}
+		subsection=${rest%.*}
+
+		# Git folds the section and the variable to lower case and leaves the
+		# subsection alone, so `Remote.origin.URL` and `remote.origin.url` are
+		# one key and `remote.ORIGIN.url` is a different remote (verified
+		# against git 2.43: writing the first changed the second's value, the
+		# third added a `[remote "ORIGIN"]` section of its own). Compared
+		# literally, `git config remote.origin.URL <path>` walked straight
+		# through this guard. The bracket spellings are how a POSIX `case`
+		# folds case without `tr`, which the guard must not depend on: it runs
+		# in front of every git command a worker makes, in containers that do
+		# not all carry one.
+		case "$section" in
+		[Rr][Ee][Mm][Oo][Tt][Ee]) ;;
+		*) return 1 ;;
+		esac
+		[ "$subsection" = origin ] || return 1
+		case "$variable" in
+		[Uu][Rr][Ll] | [Pp][Uu][Ss][Hh][Uu][Rr][Ll]) return 0 ;;
 		*) return 1 ;;
 		esac
 		;;

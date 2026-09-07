@@ -53,6 +53,13 @@ func TestGuard_RefusesOriginWritesFromAWorker(t *testing.T) {
 		{"config --unset", []string{"config", "--unset", "remote.origin.url"}},
 		{"config --replace-all", []string{"config", "--replace-all", "remote.origin.url", "/tmp/bad"}},
 		{"config pushurl", []string{"config", "remote.origin.pushurl", "/tmp/bad"}},
+		// Git folds a config key's section and variable to lower case and
+		// leaves the subsection alone, so these are the same key it resolves
+		// for `remote.origin.url` — a literal comparison let them through.
+		{"config mixed-case variable", []string{"config", "remote.origin.URL", "/tmp/bad"}},
+		{"config mixed-case section", []string{"config", "Remote.origin.url", "/tmp/bad"}},
+		{"config shouting", []string{"config", "REMOTE.origin.PUSHURL", "/tmp/bad"}},
+		{"config set mixed-case", []string{"config", "set", "remote.origin.Url", "/tmp/bad"}},
 		// git 2.46's subcommand spelling reaches the same file as the old one.
 		{"config set", []string{"config", "set", "remote.origin.url", "/tmp/bad"}},
 		{"config unset", []string{"config", "unset", "remote.origin.url"}},
@@ -96,6 +103,13 @@ func TestGuard_AllowsEverythingElseFromAWorker(t *testing.T) {
 		// no other remote's URL is one Forge resolves.
 		{"remote add upstream", []string{"remote", "add", "upstream", "https://example.com/fork.git"}},
 		{"config unrelated key", []string{"config", "user.email", "worker@example.com"}},
+		// The remote NAME is a config subsection, which git compares
+		// case-sensitively — `ORIGIN` is a different remote, and not one
+		// Forge resolves.
+		{"config other-cased remote name", []string{"config", "remote.ORIGIN.url", "/tmp/whatever"}},
+		// The refspec under `origin` is the bootstrap's to widen, and does not
+		// decide where a fetch goes.
+		{"config origin fetch refspec", []string{"config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*"}},
 		{"config --global origin", []string{"config", "--global", "remote.origin.url", "/tmp/whatever"}},
 		{"status", []string{"status", "--porcelain"}},
 		{"rev-parse", []string{"rev-parse", "--abbrev-ref", "HEAD"}},
