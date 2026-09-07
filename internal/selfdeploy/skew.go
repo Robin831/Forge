@@ -67,6 +67,53 @@ var (
 	ErrBuildNotAncestor = errors.New("selfdeploy: the running build is not an ancestor of the deploy branch")
 )
 
+// classifiedSkewError attaches one of the sentinels above to the cause that
+// produced it while keeping the SINGLE-cause chain every other error in this
+// package returns.
+//
+// `fmt.Errorf("%w: ...: %w", sentinel, cause)` says both things in one line, but
+// what it builds is a multi-error: errors.Is traverses both branches, and so the
+// classification works — but errors.Unwrap returns nil for it, and a caller that
+// walks the chain by hand, or an errors.As into a type both branches could
+// satisfy, resolves differently here than for every other error this package
+// returns. Two shapes of error out of one package is a distinction nobody asked
+// for and nothing documents.
+//
+// Here the sentinel is matched by Is and the cause is the one Unwrap link, so
+// errors.Is finds both, errors.Unwrap still names the cause, and errors.As sees
+// only the cause chain.
+type classifiedSkewError struct {
+	// sentinel classifies the failure. It is deliberately NOT the unwrap link:
+	// the cause is what a caller walking the chain wants — the daemon's own
+	// handler tests errors.Is(err, context.Canceled) first, so a check cancelled
+	// by a shutdown is not logged as a claim about how the binary was built.
+	sentinel error
+	cause    error
+	detail   string
+}
+
+func (e *classifiedSkewError) Error() string {
+	if e.detail == "" {
+		return e.sentinel.Error()
+	}
+	return e.sentinel.Error() + ": " + e.detail
+}
+
+func (e *classifiedSkewError) Unwrap() error { return e.cause }
+
+func (e *classifiedSkewError) Is(target error) bool { return target == e.sentinel }
+
+// classifySkewErr builds one. The detail carries the cause's own text (the
+// sentinel says which failure this is; the cause says what git reported), and
+// the cause itself rides structurally so errors.Is keeps finding it.
+func classifySkewErr(sentinel, cause error, detailFormat string, args ...any) error {
+	return &classifiedSkewError{
+		sentinel: sentinel,
+		cause:    cause,
+		detail:   fmt.Sprintf(detailFormat, args...),
+	}
+}
+
 // buildSHAPattern is what a build id must look like before it is handed to git
 // as a revision. The test is deliberately narrow — an abbreviated or full hex
 // object name and nothing else — because git resolves far more than SHAs: a
@@ -215,12 +262,12 @@ func (c *SkewChecker) Check(ctx context.Context) (Skew, error) {
 	// a name.
 	buildFull, err := c.revParse(ctx, build)
 	if err != nil {
-		// The cause is wrapped alongside the sentinel, not dropped for it: the
+		// The cause is carried alongside the sentinel, not dropped for it: the
 		// caller branches on context.Canceled first so a shutdown is not
 		// reported as a failure, and a cancelled rev-parse that arrived here
 		// carrying only ErrBuildNotInCheckout would be logged as a claim about
 		// how the binary was built.
-		return Skew{}, fmt.Errorf("%w: %s: %w", ErrBuildNotInCheckout, build, err)
+		return Skew{}, classifySkewErr(ErrBuildNotInCheckout, err, "%s: %v", build, err)
 	}
 
 	skew := Skew{BuildSHA: buildFull, HeadSHA: head, Branch: branch}
@@ -230,10 +277,10 @@ func (c *SkewChecker) Check(ctx context.Context) (Skew, error) {
 
 	if out, err := c.git(ctx, "merge-base", "--is-ancestor", buildFull, head); err != nil {
 		// Same reasoning as the rev-parse above: the sentinel classifies, the
-		// wrapped cause is what lets a cancellation or a timeout be recognised
+		// carried cause is what lets a cancellation or a timeout be recognised
 		// as one.
-		return skew, fmt.Errorf("%w: build %s, %s/%s at %s: %w: %s",
-			ErrBuildNotAncestor, shortSkewSHA(buildFull), originRemote, branch, shortSkewSHA(head), err,
+		return skew, classifySkewErr(ErrBuildNotAncestor, err, "build %s, %s/%s at %s: %v: %s",
+			shortSkewSHA(buildFull), originRemote, branch, shortSkewSHA(head), err,
 			gitfail.Sanitize(firstNonEmpty(out, err.Error()), maxEvidenceBytes))
 	}
 

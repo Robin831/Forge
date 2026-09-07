@@ -241,7 +241,10 @@ func (d *Daemon) applySelfDeploySkew(sd config.SelfDeployConfig, skew selfdeploy
 	// that fails fast — a build error, a blocked pull, an unresolvable repo path,
 	// which is exactly the case the backoff exists for — can finish, and one
 	// that restarts the daemon can take the process down, before the store
-	// lands.
+	// lands. The trigger calls this back only on the path that launches a
+	// deploy: every refusal of its own, before and after the CAS, leaves the
+	// record unwritten, so the backoff below can never start for a deploy that
+	// was never dispatched.
 	attempt := &selfDeploySkewAttempt{head: skew.HeadSHA, at: now}
 	if !d.triggerSelfDeploy(sd, selfDeployReasonSkew, func() { d.storeSelfDeploySkewAttempt(attempt) }) {
 		// A deploy is already in flight; it pulls this tip or a newer one. The

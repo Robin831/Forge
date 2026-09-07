@@ -340,6 +340,39 @@ func TestTriggerSelfDeploy_SingleFlightAcrossBothPaths(t *testing.T) {
 	close(release)
 }
 
+// TestTriggerSelfDeploy_NoRecordWhenNothingIsDispatched: onClaimed is the
+// caller's "I dispatched" record — the skew check's retry backoff is keyed on it
+// — so the trigger must fire it only on the path that actually launches a
+// deploy. A refusal reached after the single-flight CAS releases the guard and
+// leaves the record unwritten, exactly as an already-in-flight refusal does;
+// firing it there would start a whole retry interval of silence for a deploy
+// nobody ran.
+func TestTriggerSelfDeploy_NoRecordWhenNothingIsDispatched(t *testing.T) {
+	sd := enabledSkewConfig()
+	d, _, _ := skewDaemon(t, sd)
+
+	// A substituted body that is nil is the refusal available past the CAS: the
+	// deploy goroutine would panic on it, so the trigger declines instead.
+	var nilRun func(config.SelfDeployConfig)
+	d.selfDeployRun.Store(&nilRun)
+
+	claimed := 0
+	assert.False(t, d.triggerSelfDeploy(sd, selfDeployReasonSkew, func() { claimed++ }))
+	assert.Zero(t, claimed, "a trigger that dispatched nothing must not record an attempt")
+	assert.False(t, d.selfDeployInFlight.Load(), "a refusal past the CAS must release the guard")
+
+	// And the guard it released is genuinely free: the next trigger runs.
+	dispatched := make(chan struct{}, 1)
+	d.setSelfDeployRun(func(config.SelfDeployConfig) { dispatched <- struct{}{} })
+	assert.True(t, d.triggerSelfDeploy(sd, selfDeployReasonSkew, func() { claimed++ }))
+	select {
+	case <-dispatched:
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected the next trigger to dispatch")
+	}
+	assert.Equal(t, 1, claimed, "the dispatching trigger records exactly once")
+}
+
 // TestSelfDeploySkewConfigDefaults pins the unset/negative reading: zero is the
 // field's zero value, and a deployment that never configured the check is
 // exactly the one that silently falls behind.

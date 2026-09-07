@@ -271,6 +271,44 @@ func TestSkewCheck_CancellationSurvivesTheSentinels(t *testing.T) {
 	})
 }
 
+// TestSkewCheck_ClassifiedErrorsAreASingleCauseChain: the sentinel classifies
+// and the cause stays reachable, but as ONE chain rather than as the multi-error
+// two %w verbs build. errors.Is finds both either way; what a multi-error costs
+// is errors.Unwrap, which returns nil for it, so a caller walking the chain by
+// hand — or an errors.As into a type both branches could satisfy — would resolve
+// differently for these two errors than for every other one this package
+// returns.
+func TestSkewCheck_ClassifiedErrorsAreASingleCauseChain(t *testing.T) {
+	cause := errors.New("exit 1")
+
+	t.Run("rev-parse of the build", func(t *testing.T) {
+		replies := map[string]skewReply{
+			fetchCmd: {},
+			"git rev-parse --verify --quiet refs/remotes/origin/main^{commit}": {out: headFull},
+			"git rev-parse --verify --quiet 1111111^{commit}":                  {err: cause},
+		}
+		checker, _ := newChecker(t, replies, "1111111")
+		_, err := checker.Check(context.Background())
+		require.ErrorIs(t, err, ErrBuildNotInCheckout)
+		inner := errors.Unwrap(err)
+		require.NotNil(t, inner, "errors.Unwrap must still name a cause")
+		assert.ErrorIs(t, inner, cause, "the one unwrap link leads to the cause")
+		assert.Contains(t, err.Error(), ErrBuildNotInCheckout.Error())
+		assert.Contains(t, err.Error(), cause.Error(), "the cause's own words still render")
+	})
+
+	t.Run("merge-base", func(t *testing.T) {
+		replies := baseReplies()
+		replies[fmt.Sprintf("git merge-base --is-ancestor %s %s", buildFull, headFull)] = skewReply{err: cause}
+		checker, _ := newChecker(t, replies, "1111111")
+		_, err := checker.Check(context.Background())
+		require.ErrorIs(t, err, ErrBuildNotAncestor)
+		inner := errors.Unwrap(err)
+		require.NotNil(t, inner)
+		assert.ErrorIs(t, inner, cause)
+	})
+}
+
 // TestSkewCheck_GitOutputIsSanitized: `git fetch` relays the remote's own
 // `remote:` lines verbatim, so the bytes are chosen by whatever is on the other
 // end of origin and land in daemon.log, which the dashboard tails. They go

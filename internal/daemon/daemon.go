@@ -3047,18 +3047,37 @@ func (d *Daemon) triggerSelfDeploy(sd config.SelfDeployConfig, reason string, on
 			"anvil", sd.Anvil, "reason", reason)
 		return false
 	}
-	d.logger.Info("self-deploy triggered", "anvil", sd.Anvil, "reason", reason)
-	// onClaimed runs while the CAS above still guarantees exclusive ownership
-	// and BEFORE the deploy goroutine exists, so a caller recording that it
-	// dispatched cannot be raced by the deploy it dispatched — most obviously by
-	// one that fails fast (a build error, a blocked pull), which is exactly the
-	// case a backoff record exists for.
-	if onClaimed != nil {
-		onClaimed()
-	}
+	// Everything that can still refuse the deploy is settled BEFORE onClaimed
+	// runs, and a refusal past the CAS releases the guard on its way out. The
+	// callback is what a caller records its dispatch with — the skew check's
+	// retry backoff is keyed on it — so firing it on a path that then returns
+	// false would start that backoff for a deploy nobody launched, which is a
+	// retry interval of silence about a branch this check exists to notice has
+	// moved.
 	run := d.runSelfDeploy
 	if fn := d.selfDeployRun.Load(); fn != nil {
 		run = *fn
+	}
+	if run == nil {
+		// A substituted deploy body that is nil dispatches nothing, and the
+		// goroutine below would panic on it. Release the guard and report the
+		// refusal the way an already-in-flight deploy is reported: nothing
+		// claimed, nothing recorded.
+		d.selfDeployInFlight.Store(false)
+		d.logger.Error("self-deploy: no deploy body is configured; ignoring trigger",
+			"anvil", sd.Anvil, "reason", reason)
+		return false
+	}
+	d.logger.Info("self-deploy triggered", "anvil", sd.Anvil, "reason", reason)
+	// Nothing may be inserted between these two statements. onClaimed runs while
+	// the CAS above still guarantees exclusive ownership and BEFORE the deploy
+	// goroutine exists, so a caller recording that it dispatched cannot be raced
+	// by the deploy it dispatched — most obviously by one that fails fast (a
+	// build error, a blocked pull), which is exactly the case a backoff record
+	// exists for. A check placed here instead of above would be reached with the
+	// record already written.
+	if onClaimed != nil {
+		onClaimed()
 	}
 	go func() {
 		defer d.selfDeployInFlight.Store(false)
