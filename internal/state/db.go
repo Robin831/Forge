@@ -962,6 +962,33 @@ const backgroundPhases = "'bellows', 'quench', 'cifix', 'burnish', 'reviewfix', 
 // would never dispatch into.
 const dispatchStatuses = "'pending', 'running', 'reviewing', 'monitoring', 'stalled', 'paused'"
 
+// PhaseBellows is the phase a PR-monitor row carries — and, for the window
+// between Warden approval and finalize, a pipeline row too.
+const PhaseBellows = "bellows"
+
+// PhaseReadyToMerge is the phase the workers IPC handler reports in place of
+// PhaseBellows for a monitor row whose PR meets every merge condition. No
+// worker row ever holds it, so it appears in none of the queries above — but
+// every consumer of the workers payload sees it, and the dashboard's copy of
+// this vocabulary reads the payload rather than the column.
+const PhaseReadyToMerge = "ready_to_merge"
+
+// phaseDisplayRewrites maps a stored worker phase to the phase the workers IPC
+// payload reports in its place. The daemon applies each rewrite under its own
+// condition (for this one: the monitor's PR is ready to merge); what lives here
+// is the mapping itself, so that the phase vocabulary a payload can carry is
+// derivable — backgroundPhases plus these targets — rather than something the
+// frontend guard has to know by hand.
+var phaseDisplayRewrites = map[string]string{PhaseBellows: PhaseReadyToMerge}
+
+// PhaseDisplayRewrite returns the phase the workers payload substitutes for the
+// given stored phase, and whether there is one. The caller owns the condition
+// under which it applies; this owns the fact that it exists.
+func PhaseDisplayRewrite(phase string) (string, bool) {
+	rewritten, ok := phaseDisplayRewrites[phase]
+	return rewritten, ok
+}
+
 // Worker represents a Smith worker entry.
 type Worker struct {
 	ID          string

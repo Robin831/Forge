@@ -17,9 +17,15 @@
 // reading of the daemon's own worker vocabulary that no request or response
 // shape depends on. Everything that answers a question ABOUT a worker status
 // belongs in this file: a reader adding a status has one place to look, which
-// is the whole point of extracting it. The types below are structural
-// subsets of api.ts's WorkerInfo rather than imports of it, so the direction
-// of that dependency stays one-way.
+// is the whole point of extracting it.
+//
+// Convention for the worker shapes below: each predicate group declares the
+// minimal structural subset of api.ts's WorkerInfo it inspects, immediately
+// above the predicates that take it. Structural subsets rather than imports of
+// WorkerInfo, so the direction of the dependency stays one-way (api.ts may
+// grow a field without this module noticing); declared beside their users
+// rather than collected at the top, so a reader adding a predicate has one
+// precedent to copy instead of three.
 
 // DispatchWorker is the minimal shape the slot predicates inspect, so any of
 // api.ts's worker DTOs can be passed directly.
@@ -28,37 +34,45 @@ export interface DispatchWorker {
   phase?: string
 }
 
-// Steerable is the minimal worker shape steerDisabledReason inspects — a subset
-// of WorkerInfo / BeadDetailWorker so either can be passed directly.
-export interface Steerable {
-  status: string
-  session_id?: string
-  model?: string
-}
-
-// SLOT_STATUSES are the worker statuses that occupy a dispatch slot and stream
-// output worth a live panel. It mirrors state.ActiveDispatchWorkers' status
-// list (minus 'monitoring', which is the bellows PR-monitor pseudo-worker and
-// is filtered out separately — it produces no claude log):
-//   - pending / running — a just-started or live Smith spawn,
-//   - reviewing         — the Warden pass, which holds the slot too,
-//   - paused            — a parked pipeline still holding its worktree,
-//   - stalled           — the watchdog's "no output for a while" flag. The
-//     process is alive and the slot is held; it flips back to running on
-//     worker_recovered.
+// DISPATCH_STATUSES mirrors state.dispatchStatuses exactly — the status axis of
+// ActiveDispatchWorkers, the query that decides whether the daemon has a free
+// Smith slot. Exactly, including 'monitoring': the daemon counts a monitoring
+// row whose phase is not a background one, and a UI set that quietly left the
+// status out could not be checked against the daemon's list at all — the one
+// status where the two are documented to be able to disagree would have been
+// the one the guard structurally could not see.
 //
-// Kept in step with the Go side by TestFrontendSlotStatusesMatchDispatchQuery
+// Kept in step with the Go side by TestFrontendDispatchStatusesMatchDispatchQuery
 // (internal/state/workerstatus_frontend_test.go), which reads this file and
 // compares it against the query's own status list — a TS-only assertion could
 // never catch the Go list moving, which is the drift that produced the omitted
 // 'stalled' in the first place.
-export const SLOT_STATUSES = new Set([
+export const DISPATCH_STATUSES = new Set([
   'pending',
   'running',
   'reviewing',
-  'paused',
+  'monitoring',
   'stalled',
+  'paused',
 ])
+
+// MONITORING_STATUS is the one member of DISPATCH_STATUSES that gets no live
+// panel. A row reaches it from two directions and neither streams a claude
+// transcript worth a panel: bellows upserts a pseudo-worker per open PR that
+// holds no PID and no log at all, and a pipeline flips its own row here the
+// moment Warden approves — before the push, before the PR is created, before
+// the worktree goes (state.WorkerStatus.IsMonitorOnly documents that second
+// case, which is why "monitoring" is not on its own a licence to call a row
+// idle). Slot accounting reads DISPATCH_STATUSES and so keeps both.
+const MONITORING_STATUS = 'monitoring'
+
+// SLOT_STATUSES is the panelling axis: the dispatch statuses whose workers also
+// stream output worth a live panel. It is DERIVED from DISPATCH_STATUSES rather
+// than written out again, so the two can only ever differ by the one status
+// named above.
+export const SLOT_STATUSES = new Set(
+  [...DISPATCH_STATUSES].filter((s) => s !== MONITORING_STATUS),
+)
 
 // BACKGROUND_PHASES is the second axis of the same query: state's
 // backgroundPhases, the phases excluded from dispatch capacity because they
@@ -68,10 +82,16 @@ export const SLOT_STATUSES = new Set([
 // fix worker against max_total_smiths and under-reported the idle slots the
 // daemon would happily dispatch into.
 //
-// Guarded against the Go constant by the same cross-language test as
-// SLOT_STATUSES.
+// 'ready_to_merge' is in the set but in no SQL list, because it is in no
+// database row either: the workers IPC handler substitutes it for a monitor's
+// stored 'bellows' once its PR meets every merge condition
+// (state.PhaseDisplayRewrite), so it exists only in the payload — which is the
+// vocabulary this file reads. Guarded against the Go side by the same
+// cross-language test as DISPATCH_STATUSES, which compares this set against the
+// SQL list plus those rewrite targets.
 export const BACKGROUND_PHASES = new Set([
   'bellows',
+  'ready_to_merge',
   'quench',
   'cifix',
   'burnish',
@@ -86,8 +106,9 @@ export const BACKGROUND_PHASES = new Set([
   'depupdate',
 ])
 
-// isSlotStatus reports whether a status is one the daemon counts. It is the
-// status axis alone — use holdsDispatchSlot to ask the whole question.
+// isSlotStatus reports whether a status gets a live panel. It is the panelling
+// axis, deliberately wider than the capacity one — use holdsDispatchSlot to ask
+// whether a worker occupies a Smith slot.
 export function isSlotStatus(status: string): boolean {
   return SLOT_STATUSES.has(status)
 }
@@ -96,6 +117,15 @@ export function isSlotStatus(status: string): boolean {
 // capacity. A worker with no phase recorded is not background: an unstamped
 // row is a Smith row, and treating "unknown" as background would hide a real
 // worker from the slot count.
+//
+// That agrees with the daemon rather than merely resembling it. Its SQL is
+// `phase NOT IN (...)`, which in SQLite yields NULL — and so excludes the row —
+// for a NULL phase, the opposite of what is written here. It never fires:
+// workers.phase is `TEXT NOT NULL DEFAULT ''` in both the CREATE TABLE and the
+// add-column migration (pinned by TestWorkersPhaseColumnIsNotNull), so the
+// column holds '' where a row was never stamped, '' compares normally and the
+// daemon counts it exactly as this does. An absent `phase` in the payload is
+// that empty string arriving over JSON.
 export function isBackgroundPhase(phase: string | undefined): boolean {
   return !!phase && BACKGROUND_PHASES.has(phase)
 }
@@ -105,7 +135,15 @@ export function isBackgroundPhase(phase: string | undefined): boolean {
 // filters on. It is what every idle-slot count is derived from, so the
 // dashboard's "N idle" and the daemon's next dispatch decision agree.
 export function holdsDispatchSlot(w: DispatchWorker): boolean {
-  return isSlotStatus(w.status) && !isBackgroundPhase(w.phase)
+  return DISPATCH_STATUSES.has(w.status) && !isBackgroundPhase(w.phase)
+}
+
+// Steerable is the minimal worker shape the steer gates inspect — a subset of
+// WorkerInfo / BeadDetailWorker so either can be passed directly.
+export interface Steerable {
+  status: string
+  session_id?: string
+  model?: string
 }
 
 // STEERABLE_STATUSES is the set of worker statuses for which the daemon accepts
@@ -185,6 +223,13 @@ export function resumeDisabledReason(worker: Pausable | null | undefined): strin
   return null
 }
 
+// Finishable is the minimal worker shape the terminal-panel gate inspects — a
+// subset of WorkerInfo / BeadDetailWorker so either can be passed directly.
+export interface Finishable {
+  status: string
+  completed_at?: string
+}
+
 // FINISHED_WORKER_STATUSES are the terminal worker states whose panels linger
 // as frozen transcripts for a few minutes (the /api/workers?recent= window)
 // before aging out of the payload. 'partial' belongs here for the same reason
@@ -202,7 +247,7 @@ export const FINISHED_WORKER_STATUSES = new Set([
 // isFinishedWorker reports whether a worker reached a terminal status and
 // carries the completion timestamp the lingering panel's "Xm ago" caption and
 // frozen elapsed time are derived from.
-export function isFinishedWorker(w: { status: string; completed_at?: string }): boolean {
+export function isFinishedWorker(w: Finishable): boolean {
   return FINISHED_WORKER_STATUSES.has(w.status) && !!w.completed_at
 }
 
@@ -212,6 +257,16 @@ export function isFinishedWorker(w: { status: string; completed_at?: string }): 
 // apart in both directions ('reviewing' existed in one only; 'done' was
 // emerald on History and sky on the live surfaces, so one status was two
 // colours depending on the page an operator was looking at).
+//
+// Every terminal status has a key here — 'killed' included, which none of the
+// three copies ever styled even though `kill_worker` / `forge queue stop` is a
+// routine operator action, so a killed worker read as an unrecognised status on
+// every surface. Folding three maps into one is only a consolidation if the
+// result covers each of their vocabularies, and 'timeout' was added to this one
+// for exactly that reason; the vitest suite beside this file now pins
+// FINISHED_WORKER_STATUSES against the keys so the next terminal status cannot
+// be missed the same way. 'monitoring' is deliberately absent: it is not
+// terminal, and the neutral fallback is what all three copies drew it with.
 //
 // 'stalled' is orange rather than amber to reuse the colour History and Ingots
 // already give it, and because amber is 'paused' here: a worker the operator
@@ -234,6 +289,7 @@ export const WORKER_STATUS_CLASSES: Record<string, string> = {
   // review, and either of the other two chips would say otherwise.
   partial: 'bg-amber-500/20 text-amber-200 border-amber-500/40',
   timeout: 'bg-amber-500/20 text-amber-300 border-amber-500/40',
+  killed: 'bg-red-500/20 text-red-300 border-red-500/40',
   failed: 'bg-red-500/20 text-red-300 border-red-500/40',
 }
 
