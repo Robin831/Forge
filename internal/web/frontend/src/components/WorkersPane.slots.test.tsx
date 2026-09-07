@@ -73,6 +73,42 @@ describe('WorkersPane idle-slot math', () => {
     expect(screen.getAllByTestId('workers-idle-slot')).toHaveLength(2)
   })
 
+  it('does not count a lifecycle fix worker against capacity', () => {
+    // ActiveDispatchWorkers excludes the background phases, so a running
+    // quench worker holds no Smith slot. It has a real id and a real log path,
+    // so isBellowsMonitor does not catch it — only the phase does. Its row
+    // still renders; it is the capacity math it stays out of.
+    renderPane(
+      [
+        worker({ id: 'w-1', status: 'running' }),
+        worker({
+          id: 'w-2',
+          bead_id: 'bd-2',
+          status: 'running',
+          phase: 'quench',
+          log_path: '/logs/bd-2/quench.log',
+        }),
+      ],
+      3,
+    )
+
+    // 3 cap − 1 dispatch worker = 2 idle, not 1.
+    expect(screen.getAllByTestId('workers-idle-slot')).toHaveLength(2)
+    expect(screen.getAllByText('bd-2').length).toBeGreaterThan(0)
+  })
+
+  it('counts a schematic-phase worker, which the daemon also counts', () => {
+    renderPane(
+      [
+        worker({ id: 'w-1', status: 'running', phase: 'schematic' }),
+        worker({ id: 'w-2', bead_id: 'bd-2', status: 'running', phase: 'smith' }),
+      ],
+      3,
+    )
+
+    expect(screen.getAllByTestId('workers-idle-slot')).toHaveLength(1)
+  })
+
   it('renders a stalled row with its own status chip', () => {
     renderPane([worker({ id: 'w-1', status: 'stalled' })], 0)
 

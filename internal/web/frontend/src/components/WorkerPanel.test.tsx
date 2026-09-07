@@ -3,7 +3,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router'
-import { isFinishedWorker, type WorkerInfo } from '../api'
+import type { WorkerInfo } from '../api'
+import { isFinishedWorker } from '../lib/workerStatus'
 import { KEY_PREFIX } from '../hooks/useUIState'
 
 const { useEventSourceMock, killWorkerMock, pauseMock, resumeMock, steerMock } = vi.hoisted(() => ({

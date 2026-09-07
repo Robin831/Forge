@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { steerDisabledReason, steerIsResumeDelivery, type Steerable } from './api'
+import { steerDisabledReason, steerIsResumeDelivery, type Steerable } from './workerStatus'
 
 describe('steerDisabledReason', () => {
   it('rejects a missing worker as having no active pipeline', () => {

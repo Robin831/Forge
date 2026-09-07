@@ -951,6 +951,17 @@ func CanTransitionPause(from, to WorkerStatus) bool {
 // Update this constant when new background or synthetic phases are added.
 const backgroundPhases = "'bellows', 'quench', 'cifix', 'burnish', 'reviewfix', 'rebase', 'assay', 'crucible', 'warden_rerun', 'approve_as_is', 'force_smith', 'smelter', 'depupdate'"
 
+// dispatchStatuses is the SQL IN-list literal for the worker statuses that
+// occupy a dispatch slot — the status axis of the capacity queries, as
+// backgroundPhases is their phase axis. It is a named constant rather than a
+// literal repeated in each query so the two capacity queries cannot disagree,
+// and so the dashboard's own copy of this vocabulary
+// (internal/web/frontend/src/lib/workerStatus.ts) has something to be checked
+// against: the UI reports idle slots from the same two lists, and when its
+// copy silently omitted 'stalled' it offered the operator a slot the daemon
+// would never dispatch into.
+const dispatchStatuses = "'pending', 'running', 'reviewing', 'monitoring', 'stalled', 'paused'"
+
 // Worker represents a Smith worker entry.
 type Worker struct {
 	ID          string
@@ -1704,7 +1715,7 @@ func (db *DB) UnstallWorker(id string) error {
 // over-subscribe max_total_smiths once the paused worker resumes.
 func (db *DB) ActiveDispatchWorkers() ([]Worker, error) {
 	return db.queryWorkers(`SELECT id, bead_id, anvil, branch, pid, status, phase, title, pr_number, started_at, completed_at, log_path, session_id, model
-		FROM workers WHERE status IN ('pending', 'running', 'reviewing', 'monitoring', 'stalled', 'paused')
+		FROM workers WHERE status IN (` + dispatchStatuses + `)
 		  AND phase NOT IN (` + backgroundPhases + `)
 		ORDER BY started_at`)
 }
@@ -1717,7 +1728,7 @@ func (db *DB) ActiveDispatchWorkers() ([]Worker, error) {
 func (db *DB) ActiveDispatchWorkersByAnvil(anvil string) ([]Worker, error) {
 	return db.queryWorkers(`SELECT id, bead_id, anvil, branch, pid, status, phase, title, pr_number, started_at, completed_at, log_path, session_id, model
 		FROM workers WHERE anvil = ?
-		  AND status IN ('pending', 'running', 'reviewing', 'monitoring', 'stalled', 'paused')
+		  AND status IN (`+dispatchStatuses+`)
 		  AND phase NOT IN (`+backgroundPhases+`)
 		ORDER BY started_at`, anvil)
 }

@@ -18,8 +18,6 @@ import { useApiPoll } from '../hooks/useApiPoll'
 import {
   actions,
   ApiError,
-  steerDisabledReason,
-  steerIsResumeDelivery,
   type BeadBrief,
   type BeadDetailComment,
   type BeadDetailResponse,
@@ -27,6 +25,7 @@ import {
   type StatusResponse,
   type WorkerInfo,
 } from '../api'
+import { steerDisabledReason, steerIsResumeDelivery } from '../lib/workerStatus'
 import AppHeader from '../components/AppHeader'
 import BeadDepModal from '../components/BeadDepModal'
 import BeadLogsSection from '../components/BeadLogsSection'

@@ -13,7 +13,7 @@ import { actions, type WorkerInfo } from '../api'
 import { useAction } from '../hooks/useAction'
 import { useUIState } from '../hooks/useUIState'
 import { relativeTime } from '../lib/format'
-import { isSlotStatus, workerStatusClass } from '../lib/workerStatus'
+import { holdsDispatchSlot, workerStatusClass } from '../lib/workerStatus'
 import { isBellowsMonitor } from './PipelineBar'
 import ConfirmModal from './ConfirmModal'
 import Pane, { EmptyState } from './Pane'
@@ -137,14 +137,18 @@ export default function WorkersPane({
 
   const groups = useMemo(() => groupWorkersByAnvil(sorted), [sorted])
 
-  // Idle slot count = (configured cap) - (active Smith-like workers). The slot
-  // status set is shared with WorkerPanelGrid (lib/workerStatus) so the two
-  // surfaces cannot report different idle capacity; bellows monitors are
-  // already filtered out above. It mirrors the daemon's own accounting in
-  // state.ActiveDispatchWorkers — including 'stalled', whose process is still
-  // running and whose slot the daemon will not dispatch into.
-  // When the daemon reports a cap of 0 we omit the placeholders entirely.
-  const activeSlotWorkers = sorted.filter((w) => isSlotStatus(w.status))
+  // Idle slot count = (configured cap) - (workers holding a dispatch slot).
+  // holdsDispatchSlot is shared with WorkerPanelGrid (lib/workerStatus) so the
+  // two surfaces cannot report different idle capacity, and it mirrors BOTH
+  // axes of the daemon's own accounting in state.ActiveDispatchWorkers: the
+  // status list — including 'stalled', whose process is still running and
+  // whose slot the daemon will not dispatch into — and the background-phase
+  // exclusion, which is what keeps a running quench/burnish/rebase/assay
+  // worker (a real row with a real log, so isBellowsMonitor does not catch it)
+  // from eating a Smith slot the daemon would happily dispatch into. Such a
+  // worker still gets its row above; it is only the capacity math it stays out
+  // of. When the daemon reports a cap of 0 we omit the placeholders entirely.
+  const activeSlotWorkers = sorted.filter(holdsDispatchSlot)
   const idleCount = Math.max(0, maxTotalSmiths - activeSlotWorkers.length)
 
   // Restore scroll position before the browser paints so users see no jump

@@ -127,6 +127,34 @@ describe('WorkerPanelGrid slot math', () => {
     expect(screen.getAllByTestId('worker-panel-idle-slot')).toHaveLength(1)
   })
 
+  it('panels a lifecycle fix worker but does not charge it a dispatch slot', () => {
+    // The grid is deliberately wider than the daemon's capacity query: a
+    // quench/burnish/rebase/assay worker runs a real claude session with a
+    // real log, so its transcript belongs on the wall — but its phase is in
+    // backgroundPhases, so the daemon will still dispatch a Smith into that
+    // slot and the idle count must say so.
+    render(
+      <WorkerPanelGrid
+        workers={[
+          worker({ id: 'w-1', status: 'running' }),
+          worker({
+            id: 'w-quench',
+            bead_id: 'bd-2',
+            status: 'running',
+            phase: 'quench',
+            log_path: '/logs/bd-2/quench.log',
+          }),
+        ]}
+        maxTotalSmiths={3}
+      />,
+    )
+
+    expect(screen.getByTestId('panel-w-1')).toBeInTheDocument()
+    expect(screen.getByTestId('panel-w-quench')).toBeInTheDocument()
+    // 3 cap − 1 dispatch worker = 2 idle slots; the quench panel takes none.
+    expect(screen.getAllByTestId('worker-panel-idle-slot')).toHaveLength(2)
+  })
+
   it("keeps a stalled worker's panel and counts its slot as taken", () => {
     // The watchdog marks a worker stalled while its process is still running,
     // and the daemon keeps counting it against max_total_smiths. Dropping the

@@ -16,9 +16,6 @@ import {
 import {
   actions,
   apiGet,
-  isFinishedWorker,
-  steerDisabledReason,
-  steerIsResumeDelivery,
   type LogLine,
   type LogTailResponse,
   type WorkerInfo,
@@ -28,7 +25,13 @@ import { useEventSource } from '../hooks/useEventSource'
 import { useUIState } from '../hooks/useUIState'
 import { relativeTime } from '../lib/format'
 import { parseTranscript, type TranscriptEntry } from '../lib/logParse'
-import { SLOT_STATUSES, workerStatusClass } from '../lib/workerStatus'
+import {
+  isFinishedWorker,
+  isSlotStatus,
+  steerDisabledReason,
+  steerIsResumeDelivery,
+  workerStatusClass,
+} from '../lib/workerStatus'
 import ConfirmModal from './ConfirmModal'
 import LogViewer from './LogViewer'
 import PreviewButton from './PreviewButton'
@@ -138,16 +141,18 @@ export default function WorkerPanel({
     { storage: 'local' },
   )
 
-  // A worker occupies a Smith slot — and therefore streams live output worth
-  // showing — for every status in SLOT_STATUSES (lib/workerStatus, shared with
-  // WorkersPane and WorkerPanelGrid so the three cannot disagree). 'stalled' is
+  // A worker streams live output worth showing for every status in
+  // SLOT_STATUSES (isSlotStatus, lib/workerStatus — shared with WorkersPane
+  // and WorkerPanelGrid so the three cannot disagree). This is the status
+  // question only, deliberately: a lifecycle fix worker's transcript is worth
+  // watching even though its phase takes no dispatch slot. 'stalled' is
   // in that set: the watchdog flags a worker whose log went quiet, but its
   // process is alive and it flips back to running on worker_recovered, so the
   // panel must stay live rather than vanish mid-run. Terminal workers linger
   // for a few minutes as frozen panels (isFinishedWorker) — the SSE closed, the
   // final transcript shown from the live snapshot or a one-shot tail fetch —
   // until they age out of the ?recent= window and unmount.
-  const isActive = SLOT_STATUSES.has(worker.status)
+  const isActive = isSlotStatus(worker.status)
   const isFinished = isFinishedWorker(worker)
   const bodyId = `worker-panel-body-${worker.id}`
 
