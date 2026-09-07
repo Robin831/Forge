@@ -1,0 +1,2 @@
+category: Fixed
+- **Stranded-branch recovery recognises `-technical` changelog fragments** - The completion-signal matcher accepted only `changelog.d/<bead>.md` and the dot-delimited `<bead>.<lang>.md`, so a branch carrying only Munin's `<bead>-technical.en.md` / `.nb.md` pair — the normal shape for a technical-only change — read as incomplete, and completed, pushed work was escalated to needs_human instead of having its PR opened. The bead id may now be followed by a `.` or `-` delimiter, which still keeps `<bead>1.md` from matching bead `<bead>`. (Forge-fj09)

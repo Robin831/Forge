@@ -5557,7 +5557,9 @@ func (d *Daemon) preDispatchRemoteBranchCheck(ctx context.Context, bead poller.B
 }
 
 // branchHasChangelogFragment reports whether a changelog fragment for beadID
-// (changelog.d/<bead-id>.md or the language-split <bead-id>.<lang>.md) is
+// (changelog.d/<bead-id>.md, or one of the decorated forms
+// changelogFragmentMatches accepts — a language split and/or a hyphenated
+// fragment kind, e.g. <bead-id>.en.md and <bead-id>-technical.nb.md) is
 // reachable from the given commit SHA. Forge
 // requires a fragment per PR, so its presence on a stranded forge branch is a
 // completion signal: the prior worker finished its work and merely failed to
@@ -5585,13 +5587,31 @@ func (d *Daemon) branchHasChangelogFragment(ctx context.Context, anvilPath, sha,
 }
 
 // changelogFragmentMatches reports whether a changelog.d/ path is a changelog
-// fragment for beadID. It accepts both the single-file form
-// (changelog.d/<bead>.md) and the language-split form some repos use — e.g.
-// Munin's changelog.d/<bead>.en.md + <bead>.nb.md. Matching only the .md form
-// made recoverStrandedBranchPR/openPRForExistingBranch treat completed
-// language-split work as incomplete, stranding it in needs_human
-// (Fhi.Metadata-15ed9). It does NOT match a different bead whose id shares a
-// prefix (e.g. <bead>1.md), by requiring the extra segment to be dot-delimited.
+// fragment for beadID. Beyond the single-file form (changelog.d/<bead>.md) it
+// accepts the two decorations repositories add to it, in either order:
+//
+//   - a language split — Munin's changelog.d/<bead>.en.md + <bead>.nb.md.
+//     Matching only the .md form made recoverStrandedBranchPR /
+//     openPRForExistingBranch treat completed language-split work as
+//     incomplete, stranding it in needs_human (Fhi.Metadata-15ed9).
+//   - a hyphen-delimited fragment KIND — Munin's
+//     changelog.d/<bead>-technical.en.md, which is the whole fragment set a
+//     bead whose change is technical-only carries (an existing example on
+//     main: Fhi.Metadata-1pl9l). The separator there is a hyphen, so the
+//     dot-only test above failed on the -technical pair and escalated
+//     completed, pushed work to needs_human (Fhi.Metadata-hwbwz,
+//     2026-09-07 — the PR was opened by hand and passed all 12 CI checks on
+//     the first run, so the escalation was a pure false negative).
+//
+// The invariant that keeps a different bead out: the bead id must be followed
+// by a "." or "-" delimiter, so <bead>1.md and <bead>1-technical.en.md are not
+// fragments for <bead>.
+//
+// This encodes the anvil's convention rather than reading it from the anvil's
+// own changelog tooling, which is why Munin's "Check changelog updates" CI gate
+// and this matcher could disagree at all, and will again the next time a
+// repository adds a fragment kind — Forge-3jyi5 weighs deriving the accepted
+// shapes from the repository instead.
 func changelogFragmentMatches(path, beadID string) bool {
 	const dir = "changelog.d/"
 	path = strings.TrimSpace(path)
@@ -5599,7 +5619,14 @@ func changelogFragmentMatches(path, beadID string) bool {
 		return false
 	}
 	stem := strings.TrimSuffix(strings.TrimPrefix(path, dir), ".md")
-	return stem == beadID || strings.HasPrefix(stem, beadID+".")
+	if stem == beadID {
+		return true
+	}
+	if !strings.HasPrefix(stem, beadID) {
+		return false
+	}
+	rest := stem[len(beadID):]
+	return strings.HasPrefix(rest, ".") || strings.HasPrefix(rest, "-")
 }
 
 // recoverStrandedBranchPR auto-opens a PR for a stranded forge branch that
@@ -5818,7 +5845,7 @@ func (d *Daemon) openPRForExistingBranch(ctx context.Context, beadID, anvilName 
 		return 0, "", fmt.Errorf("checking changelog fragment on %s: %w", branch, fragErr)
 	}
 	if !hasFragment {
-		return 0, "", fmt.Errorf("origin/%s does not carry a changelog fragment (changelog.d/%s.md or %s.<lang>.md); refusing to open a PR for incomplete work", branch, beadID, beadID)
+		return 0, "", fmt.Errorf("origin/%s does not carry a changelog fragment (changelog.d/%s.md, or the decorated %s[-<kind>][.<lang>].md forms); refusing to open a PR for incomplete work", branch, beadID, beadID)
 	}
 
 	// Guarantee an external_ref before the PR exists (bd github push fallback
