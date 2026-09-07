@@ -70,7 +70,24 @@ type Params struct {
 	// WorkerID is the state DB worker record ID for this crucible run.
 	// When set, the worker's PID and log_path are updated when the schematic
 	// subprocess starts so that hearth can tail logs in real time.
+	//
+	// It names the PARENT's row — the one the daemon claimed the epic with.
+	// Each child pipeline inserts a row of its own, under an id this package
+	// mints per child (see runChildPipeline), which is what TrackWorker is for.
 	WorkerID string
+
+	// TrackWorker registers a worker row id as owned by a live goroutine and
+	// returns the release. The daemon supplies its live-worker registry here.
+	//
+	// A child pipeline inserts a worker row stamped with the RUNNING daemon
+	// generation, so the reaper cannot fall back on the generation to tell it
+	// from a leak: for such a row the registry is the only evidence that
+	// anything owns it, and a row nothing registers is judged leaked once its
+	// heartbeat falls behind the grace window — a live child marked failed, its
+	// dispatch slot handed back while its Smith session is still running. Nil
+	// disables the registration (tests, and any caller with no registry), which
+	// is what every crucible run did before this field existed.
+	TrackWorker func(workerID string) func()
 
 	// StatusCallback is called when crucible state changes (for TUI tracking).
 	StatusCallback func(Status)
@@ -689,6 +706,16 @@ func (p *Params) runChildPipeline(ctx context.Context, child poller.Bead, baseBr
 	pipelineCtx, cancel := context.WithTimeout(ctx, smithTimeout)
 	defer cancel()
 
+	// Mint the child's worker id here rather than letting pipeline.Run fall
+	// back to its own, so it can be registered BEFORE the row exists. Held
+	// until Run returns — the pipeline writes to that row through its own
+	// teardown, and a row released before its last writer is one a reap pass
+	// may end while its owner is still finishing.
+	childWorkerID := pipeline.NewWorkerID(p.AnvilName, child.ID)
+	if p.TrackWorker != nil {
+		defer p.TrackWorker(childWorkerID)()
+	}
+
 	params := pipeline.Params{
 		DB:                p.DB,
 		WorktreeManager:   p.WorktreeManager,
@@ -706,6 +733,7 @@ func (p *Params) runChildPipeline(ctx context.Context, child poller.Bead, baseBr
 		BaseBranch:        baseBranch,
 		SchematicConfig:   p.SchematicConfig,
 		MaxIterations:     p.MaxPipelineIterations,
+		WorkerID:          childWorkerID,
 
 		WardenModelOverride:         p.WardenModelOverride,
 		SchematicModelOverride:      p.SchematicModelOverride,

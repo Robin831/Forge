@@ -255,6 +255,33 @@ func TestHeartbeatRefreshesRegisteredWorkersAndStopsWithTheirRelease(t *testing.
 	assert.Equal(t, 0, n)
 }
 
+// The heartbeat loop stamps once BEFORE its first tick, so the invariant the
+// reaper rests on — a registered row is heartbeated within the grace window —
+// is established by the loop itself rather than borrowed from the insert that
+// happens to stamp heartbeat_at today. Without it the first 30 seconds of a
+// daemon lifetime rest on a property of a different function.
+func TestHeartbeatStampsBeforeItsFirstTick(t *testing.T) {
+	d := reaperDaemon(t)
+	insertReaperWorker(t, d, "beating", state.WorkerRunning, "smith", 0)
+	backdate(t, d, "beating", d.workerGeneration, time.Now().Add(-time.Hour))
+	defer d.trackWorker("beating")()
+
+	before, err := d.db.WorkerOwnershipOf("beating")
+	require.NoError(t, err)
+
+	// A context already cancelled: the loop returns on its first select, so
+	// anything observed here happened ahead of the ticker.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	d.runWorkerHeartbeat(ctx)
+
+	after, err := d.db.WorkerOwnershipOf("beating")
+	require.NoError(t, err)
+	assert.NotEqual(t, before.Heartbeat, after.Heartbeat,
+		"the heartbeat loop left the row unstamped until its first tick")
+	assert.WithinDuration(t, time.Now(), after.HeartbeatAt(), time.Minute)
+}
+
 // The registry counts holders rather than flagging them: a resume that overlaps
 // its predecessor's teardown owns the same row twice, and the first release must
 // not drop the second owner's registration.

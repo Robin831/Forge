@@ -4794,8 +4794,14 @@ func (d *Daemon) dispatchBead(ctx context.Context, bead poller.Bead, anvilCfg co
 			AutoMergeCrucibleChildren: d.cfg.Load().Settings.IsAutoMergeCrucibleChildren(),
 			MaxPipelineIterations:     d.cfg.Load().Settings.MaxPipelineIterations,
 			WorkerID:                  claimWorkerID,
-			WardenModelOverride:       d.cfg.Load().Settings.WardenModelOverride,
-			SchematicModelOverride:    d.cfg.Load().Settings.SchematicModelOverride,
+			// Each child pipeline inserts a worker row of its own, under an id
+			// this daemon never mints, so without this the row carries the
+			// running generation, is registered by nothing and is reaped as
+			// leaked once its heartbeat ages past the grace window — while the
+			// child's Smith session is still running.
+			TrackWorker:            d.trackWorker,
+			WardenModelOverride:    d.cfg.Load().Settings.WardenModelOverride,
+			SchematicModelOverride: d.cfg.Load().Settings.SchematicModelOverride,
 
 			CopilotSkipWardenSmallDiffs: d.cfg.Load().Settings.CopilotSkipWardenSmallDiffs,
 			WardenFullRereview:          d.cfg.Load().Settings.WardenFullRereview,

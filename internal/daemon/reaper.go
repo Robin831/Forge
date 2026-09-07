@@ -185,6 +185,14 @@ func (d *Daemon) trackWorker(workerID string) func() {
 // signals and is only ever consulted for a row the registry does not know, so a
 // tick lost to a busy database cannot by itself end anything.
 func (d *Daemon) runWorkerHeartbeat(ctx context.Context) {
+	// One stamp before the ticker, so the invariant the reaper rests on — a
+	// registered row is heartbeated within the grace window — is established by
+	// this loop rather than borrowed from whatever wrote the row. Insert stamps
+	// heartbeat_at today, which makes the first tick's 30s gap harmless; that
+	// is a property of a different function, and the one that must hold here
+	// should not depend on it.
+	d.heartbeatRegisteredWorkers()
+
 	ticker := time.NewTicker(workerHeartbeatInterval)
 	defer ticker.Stop()
 	for {
@@ -192,14 +200,20 @@ func (d *Daemon) runWorkerHeartbeat(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			ids := d.liveWorkers.snapshot()
-			if len(ids) == 0 {
-				continue
-			}
-			if _, err := d.db.HeartbeatWorkers(ids); err != nil {
-				d.logger.Warn("failed to refresh worker heartbeats", "workers", len(ids), "error", err)
-			}
+			d.heartbeatRegisteredWorkers()
 		}
+	}
+}
+
+// heartbeatRegisteredWorkers is one pass of the heartbeat: the write for every
+// currently registered worker row, in one UPDATE.
+func (d *Daemon) heartbeatRegisteredWorkers() {
+	ids := d.liveWorkers.snapshot()
+	if len(ids) == 0 {
+		return
+	}
+	if _, err := d.db.HeartbeatWorkers(ids); err != nil {
+		d.logger.Warn("failed to refresh worker heartbeats", "workers", len(ids), "error", err)
 	}
 }
 

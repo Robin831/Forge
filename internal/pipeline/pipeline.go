@@ -908,13 +908,26 @@ func (p *Params) recordStageCost(workerID, stage, provName string, u cost.Usage)
 	}
 }
 
+// NewWorkerID mints the id of the worker row a pipeline run inserts.
+//
+// It is exported because a caller that wants to OWN that row has to know its id
+// before Run creates it: the daemon registers a worker id with its live-worker
+// registry, and the reaper reads that registry to tell a row whose goroutine is
+// gone from one that is merely quiet (see internal/daemon/reaper.go). A caller
+// that leaves Params.WorkerID empty gets a row nothing can register, so the
+// fallback below and every such caller mint the id through this one function
+// rather than each formatting their own.
+func NewWorkerID(anvilName, beadID string) string {
+	return fmt.Sprintf("%s-%s-%d", anvilName, beadID, time.Now().Unix())
+}
+
 // Run executes the full Smith → Temper → Warden pipeline for a bead.
 func Run(ctx context.Context, p Params) *Outcome {
 	start := time.Now()
 	outcome := &Outcome{}
 	workerID := p.WorkerID
 	if workerID == "" {
-		workerID = fmt.Sprintf("%s-%s-%d", p.AnvilName, p.Bead.ID, time.Now().Unix())
+		workerID = NewWorkerID(p.AnvilName, p.Bead.ID)
 	}
 	outcome.WorkerID = workerID
 
