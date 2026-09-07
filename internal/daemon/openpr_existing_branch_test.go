@@ -6,7 +6,6 @@ import (
 	"io"
 	"log/slog"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"testing"
 
@@ -20,28 +19,36 @@ import (
 )
 
 // pushForgeBranch creates a forge/<bead> branch on origin carrying one commit.
-// When withFragment is true the commit includes changelog.d/<bead>.md, the
-// per-PR completion signal openPRForExistingBranch requires.
-func pushForgeBranch(t *testing.T, anvilPath, beadID string, withFragment bool) {
+// When withFragment is true the commit includes a changelog fragment — the
+// per-PR completion signal openPRForExistingBranch requires — named
+// changelog.d/<bead>.md by default. fragmentStems overrides that with the
+// decorated forms real anvils use (e.g. "-technical.en", "-technical.nb" for
+// the pair a technical-only change carries, or ".7" for a bd CHILD bead's
+// fragment), each appended to the bead id: the stranded-branch fixtures all
+// exercise one recovery path and differ only in what is sitting in
+// changelog.d/, so they share one helper rather than drifting apart as copies.
+func pushForgeBranch(t *testing.T, anvilPath, beadID string, withFragment bool, fragmentStems ...string) {
 	t.Helper()
 	branch := worktree.BranchName(beadID)
 	git := func(args ...string) {
 		t.Helper()
-		cmd := exec.Command("git", args...)
-		cmd.Dir = anvilPath
-		cmd.Env = cleanGitTestEnv()
-		out, err := cmd.CombinedOutput()
-		require.NoError(t, err, "git %v: %s", args, out)
+		gitInTestRepo(t, anvilPath, args...)
 	}
 	git("checkout", "-b", branch)
 	require.NoError(t, os.WriteFile(filepath.Join(anvilPath, "work.txt"), []byte("work\n"), 0o644))
 	git("add", "work.txt")
 	if withFragment {
+		if len(fragmentStems) == 0 {
+			fragmentStems = []string{""}
+		}
 		require.NoError(t, os.MkdirAll(filepath.Join(anvilPath, "changelog.d"), 0o755))
-		require.NoError(t, os.WriteFile(
-			filepath.Join(anvilPath, "changelog.d", beadID+".md"),
-			[]byte("category: Added\n- **Thing** - did a thing. ("+beadID+")\n"), 0o644))
-		git("add", filepath.Join("changelog.d", beadID+".md"))
+		for _, stem := range fragmentStems {
+			name := beadID + stem + ".md"
+			require.NoError(t, os.WriteFile(
+				filepath.Join(anvilPath, "changelog.d", name),
+				[]byte("category: Added\n- **Thing** - did a thing. ("+beadID+")\n"), 0o644))
+			git("add", filepath.Join("changelog.d", name))
+		}
 	}
 	git("commit", "-m", "stranded work")
 	git("push", "origin", branch)
@@ -203,11 +210,7 @@ func pushEpicChildBranch(t *testing.T, anvilPath, beadID, featureBranch string) 
 	childBranch := worktree.BranchName(beadID)
 	git := func(args ...string) {
 		t.Helper()
-		cmd := exec.Command("git", args...)
-		cmd.Dir = anvilPath
-		cmd.Env = cleanGitTestEnv()
-		out, err := cmd.CombinedOutput()
-		require.NoError(t, err, "git %v: %s", args, out)
+		gitInTestRepo(t, anvilPath, args...)
 	}
 	// Feature branch off main, pushed to origin so it can serve as the PR base.
 	git("checkout", "-b", featureBranch)

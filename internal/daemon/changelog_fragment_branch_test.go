@@ -4,7 +4,6 @@ import (
 	"context"
 	"io"
 	"log/slog"
-	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -19,35 +18,19 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// gitInFragmentTestRepo runs one git command in the test anvil with the outer
-// worker's GIT_* worktree vars stripped.
-func gitInFragmentTestRepo(t *testing.T, anvilPath string, args ...string) {
+// technicalOnlyStems is the fragment set a bead whose change is technical-only
+// carries — the exact shape Fhi.Metadata-hwbwz had on 2026-09-07.
+var technicalOnlyStems = []string{"-technical.en", "-technical.nb"}
+
+// branchHeadSHA resolves a local branch to its commit SHA.
+func branchHeadSHA(t *testing.T, anvilPath, branch string) string {
 	t.Helper()
-	cmd := exec.Command("git", args...)
+	cmd := exec.Command("git", "rev-parse", branch)
 	cmd.Dir = anvilPath
 	cmd.Env = cleanGitTestEnv()
-	out, err := cmd.CombinedOutput()
-	require.NoError(t, err, "git %v: %s", args, out)
-}
-
-// pushTechnicalOnlyFragmentBranch pushes a stranded forge/<bead> branch whose
-// only changelog fragments are the -technical language pair — the exact shape
-// Fhi.Metadata-hwbwz carried on 2026-09-07, and the normal shape for a bead
-// whose change is technical-only.
-func pushTechnicalOnlyFragmentBranch(t *testing.T, anvilPath, branch, beadID string) {
-	t.Helper()
-	gitInFragmentTestRepo(t, anvilPath, "checkout", "-b", branch)
-	require.NoError(t, os.MkdirAll(filepath.Join(anvilPath, "changelog.d"), 0o755))
-	for _, lang := range []string{"en", "nb"} {
-		require.NoError(t, os.WriteFile(
-			filepath.Join(anvilPath, "changelog.d", beadID+"-technical."+lang+".md"),
-			[]byte("category: Fixed\n- **Test infra** - fixed it. ("+beadID+")\n"), 0o644))
-	}
-	require.NoError(t, os.WriteFile(filepath.Join(anvilPath, "impl.txt"), []byte("prior\n"), 0o644))
-	gitInFragmentTestRepo(t, anvilPath, "add", "changelog.d", "impl.txt")
-	gitInFragmentTestRepo(t, anvilPath, "commit", "-m", "technical-only work")
-	gitInFragmentTestRepo(t, anvilPath, "push", "origin", branch)
-	gitInFragmentTestRepo(t, anvilPath, "checkout", "main")
+	out, err := cmd.Output()
+	require.NoError(t, err)
+	return strings.TrimSpace(string(out))
 }
 
 // TestBranchHasChangelogFragment_TechnicalOnlyPair drives the probe itself
@@ -59,16 +42,10 @@ func TestBranchHasChangelogFragment_TechnicalOnlyPair(t *testing.T) {
 	const beadID = "Fhi.Metadata-hwbwz"
 	anvilPath := initTestGitRepo(t)
 	branch := worktree.BranchName(beadID)
-	pushTechnicalOnlyFragmentBranch(t, anvilPath, branch, beadID)
+	pushForgeBranch(t, anvilPath, beadID, true, technicalOnlyStems...)
 
 	d := &Daemon{logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
-
-	revParse := exec.Command("git", "rev-parse", branch)
-	revParse.Dir = anvilPath
-	revParse.Env = cleanGitTestEnv()
-	out, err := revParse.Output()
-	require.NoError(t, err)
-	sha := strings.TrimSpace(string(out))
+	sha := branchHeadSHA(t, anvilPath, branch)
 
 	found, err := d.branchHasChangelogFragment(context.Background(), anvilPath, sha, beadID)
 	require.NoError(t, err)
@@ -79,6 +56,34 @@ func TestBranchHasChangelogFragment_TechnicalOnlyPair(t *testing.T) {
 	found, err = d.branchHasChangelogFragment(context.Background(), anvilPath, sha, beadID+"1")
 	require.NoError(t, err)
 	assert.False(t, found, "a bead whose id merely extends another's must not match its fragments")
+}
+
+// TestBranchHasChangelogFragment_ChildBeadFragment is the mirror case, and the
+// reason the delimiter alone is not the rule. bd's hierarchical ids are
+// <parent>.<n>, and this probe reads the branch tip's WHOLE tree — so a child's
+// fragment merged to main weeks ago is still in changelog.d/ on the parent's
+// stranded branch. Read as the parent's own completion signal it would have
+// preDispatchRemoteBranchCheck open a PR for a parent whose work never
+// happened, which is exactly what the guard exists to prevent.
+func TestBranchHasChangelogFragment_ChildBeadFragment(t *testing.T) {
+	const parentID = "Fhi.Metadata-n1g"
+	childID := parentID + ".7"
+
+	anvilPath := initTestGitRepo(t)
+	branch := worktree.BranchName(parentID)
+	// The branch carries the CHILD's fragments and nothing for the parent.
+	pushForgeBranch(t, anvilPath, parentID, true, ".7", ".7-technical.en")
+
+	d := &Daemon{logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	sha := branchHeadSHA(t, anvilPath, branch)
+
+	found, err := d.branchHasChangelogFragment(context.Background(), anvilPath, sha, parentID)
+	require.NoError(t, err)
+	assert.False(t, found, "a child bead's fragment is not the parent's completion signal")
+
+	found, err = d.branchHasChangelogFragment(context.Background(), anvilPath, sha, childID)
+	require.NoError(t, err)
+	assert.True(t, found, "the child's own fragments must still read as its completion signal")
 }
 
 // TestPreDispatchRecoversTechnicalOnlyStrandedBranch is the incident end to end
@@ -95,7 +100,6 @@ func TestPreDispatchRecoversTechnicalOnlyStrandedBranch(t *testing.T) {
 	defer db.Close()
 
 	bead := poller.Bead{ID: beadID, Anvil: anvilName, Title: "test-infra fix"}
-	branch := worktree.BranchName(bead.ID)
 	mockVCS := &mockVCSProvider{
 		createPRResult: &vcs.PR{Number: 5635, URL: "https://example.com/pr/5635", Title: bead.Title},
 	}
@@ -107,7 +111,7 @@ func TestPreDispatchRecoversTechnicalOnlyStrandedBranch(t *testing.T) {
 	}
 	d.cfg.Store(&config.Config{})
 
-	pushTechnicalOnlyFragmentBranch(t, anvilPath, branch, bead.ID)
+	pushForgeBranch(t, anvilPath, bead.ID, true, technicalOnlyStems...)
 
 	if d.preDispatchRemoteBranchCheck(context.Background(), bead, anvilPath) {
 		t.Fatal("expected dispatch to be skipped after auto-opening the recovered PR")
