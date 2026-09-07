@@ -4697,6 +4697,13 @@ func (d *Daemon) dispatchBead(ctx context.Context, bead poller.Bead, anvilCfg co
 		}()
 		if result.Error != nil {
 			d.logger.Error("crucible failed", "bead", bead.ID, "error", result.Error)
+			// The claim row has been 'running' since before crucible.Run and
+			// the Crucible never moves it, so this exit owns it. Terminated
+			// here rather than by the dispatch exit backstop: the backstop's
+			// worker_abandoned event names a finalisation nobody wrote, and a
+			// known, expected exit emitting it every time is what would turn
+			// that signal into noise.
+			d.finalizeCrucibleWorker(claimWorkerID, bead, state.WorkerFailed)
 			if result.PausedChildID != "" {
 				d.recordDispatchFailure(bead.ID, bead.Anvil,
 					fmt.Sprintf("crucible paused: child %s failed", result.PausedChildID), true)
@@ -4707,6 +4714,12 @@ func (d *Daemon) dispatchBead(ctx context.Context, bead poller.Bead, anvilCfg co
 			return
 		}
 		if result.Success {
+			// The run is over and the Crucible has already closed the parent
+			// bead behind its final PR, which Bellows picks up through its own
+			// row — so 'done' and not 'monitoring': nothing would ever move a
+			// monitoring row here, and it would hold a live panel open for a
+			// dispatch that finished.
+			d.finalizeCrucibleWorker(claimWorkerID, bead, state.WorkerDone)
 			_ = d.db.ClearRetry(bead.ID, bead.Anvil)
 			finalPRURL := ""
 			if result.FinalPR != nil {

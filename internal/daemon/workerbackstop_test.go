@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/Robin831/Forge/internal/poller"
 	"github.com/Robin831/Forge/internal/state"
 )
 
@@ -200,4 +201,65 @@ func TestDispatchBeadRegistersTheBackstopBeforeItsFirstExit(t *testing.T) {
 				"the backstop defer is registered after an exit (%q) in dispatchBead", strings.TrimSpace(exit))
 		}
 	}
+}
+
+// The Crucible's own exits finalise the parent claim row rather than leaving it
+// to the backstop. dispatchBead sets that row 'running' before crucible.Run and
+// the Crucible never moves it, so on the SUCCESS path the backstop would have
+// recorded a completed epic as 'failed' — and, worse, emitted worker_abandoned
+// for it, which is an event about a missing finalisation and not about work.
+func TestFinalizeCrucibleWorker(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		status state.WorkerStatus
+	}{
+		{"crucible completed", state.WorkerDone},
+		{"crucible failed or paused", state.WorkerFailed},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d := backstopDaemon(t)
+			insertBackstopWorker(t, d, "w-1", state.WorkerRunning)
+
+			bead := poller.Bead{ID: "Forge-52bp", Anvil: "repo"}
+			d.finalizeCrucibleWorker("w-1", bead, tc.status)
+			assert.Equal(t, tc.status, backstopStatus(t, d, "w-1"))
+
+			// The dispatch defer still runs after it: the row is terminal, so
+			// the backstop leaves it alone and raises nothing.
+			d.terminateAbandonedWorker("w-1", bead.ID, bead.Anvil)
+			assert.Equal(t, tc.status, backstopStatus(t, d, "w-1"))
+
+			events, err := d.db.RecentEvents(10)
+			require.NoError(t, err)
+			for _, e := range events {
+				assert.NotEqual(t, state.EventWorkerAbandoned, e.Type,
+					"a Crucible exit that finalises its own row must not also be reported as abandoned")
+			}
+		})
+	}
+
+	t.Run("no claim row", func(t *testing.T) {
+		d := backstopDaemon(t)
+		d.finalizeCrucibleWorker("", poller.Bead{ID: "Forge-52bp", Anvil: "repo"}, state.WorkerDone)
+	})
+}
+
+// Both exits of dispatchBead's crucible block must reach that finaliser. The
+// block cannot be driven from a test (crucible.Run spawns pipelines against a
+// real anvil), but which exits terminate the row is a source-level property and
+// the one that decides whether a normal epic emits worker_abandoned.
+func TestCrucibleBlockFinalisesItsWorkerRowOnBothExits(t *testing.T) {
+	src, err := os.ReadFile("daemon.go")
+	require.NoError(t, err)
+
+	start := strings.Index(string(src), "result := crucible.Run(")
+	require.GreaterOrEqual(t, start, 0, "the crucible dispatch call was not found — has it moved?")
+	end := strings.Index(string(src), "\nnormalPipeline:")
+	require.Greater(t, end, start, "the crucible block no longer ends at the normalPipeline label")
+	block := string(src)[start:end]
+
+	assert.Contains(t, block, "d.finalizeCrucibleWorker(claimWorkerID, bead, state.WorkerDone)",
+		"the crucible success path must finalise the parent claim row; left running, the backstop marks a completed epic failed")
+	assert.Contains(t, block, "d.finalizeCrucibleWorker(claimWorkerID, bead, state.WorkerFailed)",
+		"the crucible failure path must finalise the parent claim row rather than leave it to the backstop")
 }
