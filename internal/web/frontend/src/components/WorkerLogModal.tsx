@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Pause, Play, Terminal, X } from 'lucide-react'
 import type { LogLine, LogTailResponse, WorkerInfo } from '../api'
-import { actions, ApiError, apiGet, steerDisabledReason, steerIsResumeDelivery } from '../api'
+import { actions, ApiError, apiGet } from '../api'
 import { useAuth } from '../auth'
 import { useAction } from '../hooks/useAction'
 import { useEventSource } from '../hooks/useEventSource'
+import { steerDisabledReason, steerIsResumeDelivery } from '../lib/workerStatus'
 import LogViewer from './LogViewer'
 import SteerComposer from './SteerComposer'
 

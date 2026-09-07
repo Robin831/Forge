@@ -1,6 +1,7 @@
 import { useMemo } from 'react'
 import { MonitorOff, Users } from 'lucide-react'
-import { isFinishedWorker, type WorkerInfo } from '../api'
+import type { WorkerInfo } from '../api'
+import { holdsDispatchSlot, isFinishedWorker, isSlotStatus } from '../lib/workerStatus'
 import { isBellowsMonitor } from './PipelineBar'
 import WorkerPanel from './WorkerPanel'
 
@@ -15,14 +16,19 @@ interface WorkerPanelGridProps {
   onKilled?: () => void
 }
 
-// A worker holds a Smith slot — and streams output worth a full panel — while
-// pending, running, reviewing (Warden), or paused. This matches WorkersPane's
-// slot accounting so the idle-slot math agrees across the two surfaces. Bellows
-// PR-monitor pseudo-workers are excluded: they produce no claude log.
-const SLOT_STATUSES = new Set(['pending', 'running', 'reviewing', 'paused'])
-
+// isSlotWorker reports whether a worker streams output worth a full panel: any
+// status in SLOT_STATUSES (lib/workerStatus, shared with WorkersPane and
+// WorkerPanel so the three cannot disagree about the list — they used to, and
+// all three omitted 'stalled'). Bellows PR-monitor pseudo-workers are excluded
+// here: they produce no claude log.
+//
+// This is deliberately WIDER than holdsDispatchSlot: a lifecycle fix worker
+// (quench/burnish/rebase/assay) runs a real claude session with a real log, so
+// its transcript belongs on the wall — but the daemon excludes its phase from
+// dispatch capacity, so it must not consume an idle slot. The two questions
+// are answered separately below.
 export function isSlotWorker(w: WorkerInfo): boolean {
-  return SLOT_STATUSES.has(w.status) && !isBellowsMonitor(w)
+  return isSlotStatus(w.status) && !isBellowsMonitor(w)
 }
 
 // WorkerPanelGrid is the full-width dashboard section that renders one large
@@ -49,7 +55,12 @@ export default function WorkerPanelGrid({
         .sort((a, b) => (b.completed_at ?? '').localeCompare(a.completed_at ?? '')),
     [workers],
   )
-  const idleCount = Math.max(0, maxTotalSmiths - active.length)
+  // Idle placeholders fill the capacity the daemon would actually dispatch
+  // into, so the count is taken over holdsDispatchSlot — both axes of
+  // state.ActiveDispatchWorkers — rather than over the panels on screen. A
+  // running quench worker gets a panel and takes no slot.
+  const slotHolders = useMemo(() => active.filter(holdsDispatchSlot), [active])
+  const idleCount = Math.max(0, maxTotalSmiths - slotHolders.length)
 
   return (
     <section aria-label="Live workers" className="flex flex-col gap-3">

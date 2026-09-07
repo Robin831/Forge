@@ -22,6 +22,11 @@ const STATUS_OPTIONS: { value: string; label: string }[] = [
   { value: 'stalled', label: 'Stalled' },
 ]
 
+// Ingot lifecycle stages, not worker statuses: this map is keyed by where a
+// bead has reached (init → smith → temper → warden → approved → pr_open →
+// pr_merged), and only overlaps lib/workerStatus's worker vocabulary on
+// 'failed' and 'stalled'. It stays its own map for that reason — folding it
+// into the worker chip map would put two vocabularies under one name.
 const STATUS_CLASSES: Record<string, string> = {
   init: 'bg-slate-700/60 text-slate-200 border-slate-600/60',
   smith: 'bg-sky-500/20 text-sky-300 border-sky-500/40',

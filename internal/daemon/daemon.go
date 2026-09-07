@@ -6535,8 +6535,8 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 				completedAt = w.CompletedAt.Format(time.RFC3339)
 			}
 			phase := w.Phase
-			if phase == "bellows" && w.PRNumber > 0 && readyKey[fmt.Sprintf("%s/%d", w.Anvil, w.PRNumber)] {
-				phase = "ready_to_merge"
+			if promoted, ok := state.PhaseDisplayRewrite(phase); ok && w.PRNumber > 0 && readyKey[fmt.Sprintf("%s/%d", w.Anvil, w.PRNumber)] {
+				phase = promoted
 			}
 			out = append(out, ipc.WorkerInfo{
 				ID:          w.ID,

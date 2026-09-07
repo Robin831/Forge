@@ -3,7 +3,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router'
-import { isFinishedWorker, type WorkerInfo } from '../api'
+import type { WorkerInfo } from '../api'
+import { isFinishedWorker } from '../lib/workerStatus'
 import { KEY_PREFIX } from '../hooks/useUIState'
 
 const { useEventSourceMock, killWorkerMock, pauseMock, resumeMock, steerMock } = vi.hoisted(() => ({
@@ -166,6 +167,29 @@ describe('WorkerPanel pause/resume', () => {
     await user.click(screen.getByTestId('worker-panel-resume-w1'))
 
     expect(resumeMock).toHaveBeenCalledWith('Forge-abc1', undefined)
+  })
+
+  it('keeps a stalled worker live, with its own chip and an open stream', () => {
+    // The watchdog flags a worker stalled while its process is still running,
+    // so the panel must stay live — the operator is watching precisely because
+    // it stopped producing output.
+    useEventSourceMock.mockReturnValue({
+      items: [{ line: 'assistant: reading the repository', timestamp: '' }],
+      status: 'open',
+      error: null,
+      clear: () => {},
+    })
+    renderPanel(worker({ id: 'w1', status: 'stalled' }))
+
+    const chip = screen.getByText('stalled')
+    expect(chip).toBeInTheDocument()
+    expect(chip.className).toContain('orange')
+    // Not the paused treatment: nothing parked this worker.
+    expect(screen.getByTestId('worker-panel-w1')).not.toHaveAttribute('data-paused')
+    expect(useEventSourceMock).toHaveBeenCalledWith(
+      '/api/worker/w1/stream',
+      expect.anything(),
+    )
   })
 
   it('renders a distinct paused visual state with a frozen-stream note and visible transcript', () => {

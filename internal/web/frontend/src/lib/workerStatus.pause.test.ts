@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { pauseDisabledReason, resumeDisabledReason, type Pausable } from './api'
+import { pauseDisabledReason, resumeDisabledReason, type Pausable } from './workerStatus'
 
 describe('pauseDisabledReason', () => {
   it('rejects a missing worker as having no active pipeline', () => {

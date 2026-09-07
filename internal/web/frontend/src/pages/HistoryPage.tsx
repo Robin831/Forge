@@ -6,19 +6,13 @@ import type { EventsResponse, HistoryWorkersResponse, StatusResponse } from '../
 import AppHeader from '../components/AppHeader'
 import Pane, { EmptyState } from '../components/Pane'
 import { eventClasses, relativeTime } from '../lib/format'
+// The worker-status chip is the shared one (lib/workerStatus). This page used
+// to keep a fourth copy of the map, and it had already drifted: 'done' was
+// emerald here and sky on the live surfaces, so one worker status was two
+// colours depending on which page an operator was looking at.
+import { workerStatusClass } from '../lib/workerStatus'
 
 const POLL_INTERVAL_MS = 10000
-
-const STATUS_CLASSES: Record<string, string> = {
-  done: 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40',
-  failed: 'bg-red-500/20 text-red-300 border-red-500/40',
-  timeout: 'bg-amber-500/20 text-amber-300 border-amber-500/40',
-  stalled: 'bg-orange-500/20 text-orange-300 border-orange-500/40',
-}
-
-function statusClass(s: string): string {
-  return STATUS_CLASSES[s] ?? 'bg-slate-800 text-slate-300 border-slate-700'
-}
 
 function formatDuration(seconds?: number): string {
   if (!seconds || seconds <= 0) return ''
@@ -68,7 +62,7 @@ export default function HistoryPage() {
                 <li key={w.id} className="px-4 py-3">
                   <div className="flex flex-wrap items-start gap-2">
                     <span
-                      className={`shrink-0 rounded-md border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${statusClass(w.status)}`}
+                      className={`shrink-0 rounded-md border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${workerStatusClass(w.status)}`}
                     >
                       {w.status}
                     </span>
