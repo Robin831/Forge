@@ -10780,7 +10780,18 @@ func (d *Daemon) runPostForceSmithPipeline(ctx context.Context, beadID, anvil st
 	pipelineCtx, cancel := context.WithTimeout(context.Background(), d.cfg.Load().Settings.SmithTimeout)
 	defer cancel()
 
+	// Mint the worker id HERE rather than letting pipeline.Run mint its own.
+	// The row Run inserts carries the running daemon generation, so the
+	// generation cannot tell it from a leak and the live-worker registry is
+	// the only evidence that anything owns it — and a caller can only register
+	// an id it knows before Run creates the row. Left to Run, this pipeline's
+	// row was inserted unregistered and unheartbeated, and the reaper ended it
+	// as leaked while Temper and Warden were still running against it.
+	postWorkerID := pipeline.NewWorkerID(anvil, beadID)
+	defer d.trackWorker(postWorkerID)()
+
 	postPipelineParams := pipeline.Params{
+		WorkerID:          postWorkerID,
 		DB:                d.db,
 		WorktreeManager:   d.worktreeMgr,
 		PromptBuilder:     d.promptBuilder,
