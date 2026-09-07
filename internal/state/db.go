@@ -2726,11 +2726,17 @@ const (
 	EventSchematicSubBead EventType = "schematic_sub_bead"
 	EventWorkerStalled    EventType = "worker_stalled"
 	EventWorkerRecovered  EventType = "worker_recovered"
-	EventBeadTagged       EventType = "bead_tagged"
-	EventBeadClosed       EventType = "bead_closed"
-	EventPRReadyToMerge   EventType = "pr_ready_to_merge"
-	EventPRReviewNeeded   EventType = "pr_review_needed"
-	EventAssaySkipped     EventType = "assay_skipped"
+	// EventWorkerAbandoned fires when a dispatch goroutine exited leaving its
+	// worker row still claiming live work and the exit backstop forced it to
+	// failed. It is its own type because it names a gap in the finalisation —
+	// an exit path nobody wrote a status update for — rather than an outcome of
+	// the work, so a recurrence is a bug report and not a failed bead.
+	EventWorkerAbandoned EventType = "worker_abandoned"
+	EventBeadTagged      EventType = "bead_tagged"
+	EventBeadClosed      EventType = "bead_closed"
+	EventPRReadyToMerge  EventType = "pr_ready_to_merge"
+	EventPRReviewNeeded  EventType = "pr_review_needed"
+	EventAssaySkipped    EventType = "assay_skipped"
 	// EventAssayPartial fires when an Assay run reviewed a head with only some
 	// of its passes. The message is rendered by assay.RunEvent.Message from the
 	// run record, so the missing passes are named in the activity feed and not

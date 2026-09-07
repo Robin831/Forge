@@ -2423,6 +2423,12 @@ func Run(ctx context.Context, p Params) *Outcome {
 			if ctxErr := ctx.Err(); ctxErr != nil {
 				log.Printf("[pipeline:%s] Temper step %q killed by context cancellation (%v) — aborting without escalation",
 					workerID, temperResult.FailedStep, ctxErr)
+				// The worker row is deliberately left as it stands rather than
+				// given a status here: the abort is an ordinary error return,
+				// so the dispatch goroutine's exit backstop
+				// (daemon.terminateAbandonedWorker) is what finalises it, in
+				// the one place that covers every such exit instead of one more
+				// scattered update that the next abort path forgets.
 				outcome.Error = ctxErr
 				outcome.Duration = time.Since(start)
 				return outcome

@@ -4419,6 +4419,16 @@ func (d *Daemon) costGateAllows(cfg *config.Config, today string) (allowed bool,
 // actual on completion or failure (Forge-s3w7).
 func (d *Daemon) dispatchBead(ctx context.Context, bead poller.Bead, anvilCfg config.AnvilConfig, claimWorkerID string, ctrl *controlHandle, resume *pipeline.ResumeSession, costReservation uint64) {
 	defer d.wg.Done()
+	// Backstop: whichever of this function's many exits is taken — an early
+	// abort, a pipeline error, a return nobody wrote a status update for, or a
+	// panic unwinding the stack — the claim worker row must not be left
+	// claiming a Smith that is gone. Registered here, before the first return
+	// and before the gotos below, so no exit can precede it; idempotent with
+	// every explicit termination, including preDispatchRemoteBranchCheck's.
+	// The worker ID is the immutable one captured at claim time rather than a
+	// field read back later, so the row this finalises is the row this dispatch
+	// inserted (see terminateAbandonedWorker).
+	defer d.terminateAbandonedWorker(claimWorkerID, bead.ID, bead.Anvil)
 	defer func() {
 		// Release the in-flight cost reservation and fold the bead's actual
 		// recorded cost into the rolling average so future estimates track real
@@ -4686,6 +4696,23 @@ func (d *Daemon) dispatchBead(ctx context.Context, bead poller.Bead, anvilCfg co
 			}
 			// On error/pause, keep the status visible so the TUI shows it.
 		}()
+
+		// The claim row has been 'running' since before crucible.Run and the
+		// Crucible never moves it, so this block owns it. Terminated here
+		// rather than by the dispatch exit backstop: the backstop's
+		// worker_abandoned event names a finalisation nobody wrote, and a
+		// known, expected exit emitting it every time is what would turn that
+		// signal into noise.
+		//
+		// It is ONE unconditional call above the branching rather than one per
+		// branch, so which exit the block takes cannot decide whether the row
+		// is finalised — including the fall-through neither branch below
+		// describes, a Result that carries no error and does not claim success,
+		// and any exit added later. The status is derived from the result
+		// instead (crucibleWorkerStatus), which is the only part of the
+		// decision that ever depended on the branch.
+		d.finalizeCrucibleWorker(claimWorkerID, bead, crucibleWorkerStatus(result))
+
 		if result.Error != nil {
 			d.logger.Error("crucible failed", "bead", bead.ID, "error", result.Error)
 			if result.PausedChildID != "" {
