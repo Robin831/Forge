@@ -25,8 +25,14 @@ type StaleReason string
 const (
 	// ReasonStalenessDisabled: ArchiveAfterDays <= 0, so the sweep did not run.
 	ReasonStalenessDisabled StaleReason = "staleness-disabled"
-	// ReasonNoAddedDate: the rule carries no readable Added date, so its AGE
-	// cannot be established and the first half of the test cannot be answered.
+	// ReasonNoAddedDate: one half of the test has no date to read. It is
+	// returned from both halves, because both read the same absent value from
+	// opposite ends: either the rule has no readable age anchor at all
+	// (neither MergedAt nor Added), or it has an anchor from MergedAt while
+	// carrying no readable Added and no usage stamps, so its AGE is
+	// establishable and its ACTIVITY is not. One reason for the two because
+	// the fate is one — a question the sweep cannot answer is resolved as not
+	// stale — and the missing Added date is what produces it either way.
 	ReasonNoAddedDate StaleReason = "no-added-date"
 	// ReasonTooYoung: the rule has not aged past ArchiveAfterDays.
 	ReasonTooYoung StaleReason = "too-young"
@@ -131,11 +137,10 @@ func (c StaleConfig) inactiveDays() int {
 // purpose. A rule with no readable anchor date has no age to test, and one
 // with an anchor but no readable Added and no usage stamps has no activity to
 // test (both ReasonNoAddedDate). A rule with no usage stamps — every rule on
-// every file
-// written before the telemetry existed — reads its Added date for both halves
-// exactly as it always did. Retiring rules on a measurement nobody took is
-// the one failure this sweep must not produce; keeping one costs a line in a
-// file the ceiling bounds anyway.
+// every file written before the telemetry existed — reads its Added date for
+// both halves exactly as it always did. Retiring rules on a measurement
+// nobody took is the one failure this sweep must not produce; keeping one
+// costs a line in a file the ceiling bounds anyway.
 //
 // The last guard is supersession. A rule that other, archived rules were
 // merged INTO is the terminus of a chain: archiving it retires the merged

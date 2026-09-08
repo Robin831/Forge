@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -75,7 +76,7 @@ func TestMergeRule_SetsAllFields(t *testing.T) {
 		{ID: "r1", Source: SourceList{"PR-1"}, Added: "2024-01-01", Paths: []string{"**/*.go"}},
 		{ID: "r2", Source: SourceList{"PR-2"}, Added: "2023-06-01", Paths: []string{"**/*.go", "**/*.ts"}},
 	}
-	merged := MergeRule(cluster, "style", "shared pattern", "verify x", "err-check", map[string]struct{}{})
+	merged := MergeRule(cluster, "style", "shared pattern", "verify x", "err-check", map[string]struct{}{}, time.Now())
 	assert.Equal(t, "err-check", merged.ID)
 	assert.Equal(t, "style", merged.Category)
 	assert.Equal(t, "shared pattern", merged.Pattern)
@@ -88,13 +89,13 @@ func TestMergeRule_SetsAllFields(t *testing.T) {
 func TestMergeRule_GeneratesNonCollidingID(t *testing.T) {
 	cluster := []Rule{{ID: "r1"}, {ID: "r2"}}
 	existing := map[string]struct{}{"err-check": {}, "err-check-2": {}}
-	merged := MergeRule(cluster, "style", "p", "c", "err-check", existing)
+	merged := MergeRule(cluster, "style", "p", "c", "err-check", existing, time.Now())
 	assert.Equal(t, "err-check-3", merged.ID)
 }
 
 func TestMergeRule_FallbackIDWhenSuggestionEmpty(t *testing.T) {
 	cluster := []Rule{{ID: "r1"}, {ID: "r2"}}
-	merged := MergeRule(cluster, "style", "p", "c", "", map[string]struct{}{})
+	merged := MergeRule(cluster, "style", "p", "c", "", map[string]struct{}{}, time.Now())
 	assert.Equal(t, "merged-r1", merged.ID)
 }
 

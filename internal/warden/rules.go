@@ -91,10 +91,13 @@ type Rule struct {
 	EmitCount   int    `yaml:"emit_count,omitempty"   json:"emit_count,omitempty"`
 	LastFinding string `yaml:"last_finding,omitempty" json:"last_finding,omitempty"`
 	// MergedAt is when consolidation folded a cluster of rules into this one.
-	// It is set only by an actual merge of two or more rules (MergeRuleAt),
+	// It is set only by an actual merge of two or more rules (MergeRule),
 	// never by a rule arriving from the pending queue, so an empty value
 	// means "this rule is not a merge product" and not "merged at an unknown
-	// time".
+	// time". That invariant is enforced and not assumed: the field is
+	// json-tagged, both learners unmarshal the model's raw answer into a
+	// Rule, and clearModelSuppliedState is what stops a model-invented
+	// merged_at from becoming a rule's age anchor.
 	//
 	// It exists because Added cannot answer the question the staleness sweep
 	// asks. A merged rule's Added is inherited from its members — it dates

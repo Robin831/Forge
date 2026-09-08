@@ -146,14 +146,14 @@ func TestIsStale_AgeAnchorPrefersMergedAt(t *testing.T) {
 	})
 }
 
-func TestMergeRuleAt_StampsTheMergeInstant(t *testing.T) {
+func TestMergeRule_StampsTheMergeInstant(t *testing.T) {
 	now := time.Date(2026, 9, 8, 11, 0, 0, 0, time.UTC)
 	cluster := []Rule{
 		{ID: "a", Added: "2024-01-01", LastEmitted: "2025-03-01", EmitCount: 4},
 		{ID: "b", Added: "2024-06-01", LastEmitted: "2025-05-01", EmitCount: 3},
 	}
 
-	merged := MergeRuleAt(cluster, "style", "p", "c", "merged", map[string]struct{}{}, now)
+	merged := MergeRule(cluster, "style", "p", "c", "merged", map[string]struct{}{}, now)
 	assert.Equal(t, "2026-09-08", merged.MergedAt)
 	assert.Equal(t, "2024-06-01", merged.Added, "Added is the newest member's")
 	assert.Equal(t, "2025-05-01", merged.LastEmitted, "usage carries the newest emission")
@@ -163,9 +163,9 @@ func TestMergeRuleAt_StampsTheMergeInstant(t *testing.T) {
 // A single-member cluster is a rewrite and not a fold, so it earns no fresh
 // age. Stamping it would let any rule that passed through consolidation reset
 // its own staleness clock.
-func TestMergeRuleAt_DoesNotStampASingleMemberCluster(t *testing.T) {
+func TestMergeRule_DoesNotStampASingleMemberCluster(t *testing.T) {
 	now := time.Date(2026, 9, 8, 11, 0, 0, 0, time.UTC)
-	merged := MergeRuleAt([]Rule{{ID: "a", Added: "2024-01-01"}},
+	merged := MergeRule([]Rule{{ID: "a", Added: "2024-01-01"}},
 		"style", "p", "c", "merged", map[string]struct{}{}, now)
 	assert.Empty(t, merged.MergedAt)
 	assert.Equal(t, "2024-01-01", merged.Added)
@@ -199,4 +199,62 @@ func TestMergedAtIsOmittedForUnmergedRules(t *testing.T) {
 	require.Len(t, loaded.Rules, 2)
 	assert.Empty(t, loaded.Rules[0].MergedAt)
 	assert.Equal(t, "2026-09-08", loaded.Rules[1].MergedAt)
+}
+
+// A learner never produces a merge product, whatever the model's JSON claimed.
+// Both learners unmarshal the model's raw answer into a Rule and extractJSON
+// does not restrict it to the keys the output contract asked for, so a
+// merged_at in that answer would become the rule's age anchor — and since
+// IsStale prefers MergedAt over Added unconditionally, a recent or future one
+// makes the rule report too-young forever. Nothing else retires it: the file
+// ceiling deliberately does not read MergedAt, and the terminus guard is only
+// reached after both thresholds are crossed.
+func TestDistillRuleIgnoresModelSuppliedMergeAndUsageStamps(t *testing.T) {
+	stubDistiller(t, `{"id":"x","category":"style","pattern":"p","check":"c",`+
+		`"merged_at":"2099-01-01","last_emitted":"2099-01-01","emit_count":99,"last_finding":"2099-01-02"}`)
+
+	rule, err := DistillRule(context.Background(), []PRComment{
+		{PRNumber: 1, Path: "api/Foo.cs", Body: "check this"},
+	}, t.TempDir())
+	require.NoError(t, err)
+
+	assert.Empty(t, rule.MergedAt, "a freshly learned rule is not a merge product")
+	assert.Empty(t, rule.LastEmitted, "no review has selected this rule yet")
+	assert.Zero(t, rule.EmitCount)
+	assert.Empty(t, rule.LastFinding)
+}
+
+// The CI-fix learner is the same hole by the same route.
+func TestDistillCIFixRuleIgnoresModelSuppliedMergeAndUsageStamps(t *testing.T) {
+	stubDistiller(t, `{"id":"lint-x","category":"style","pattern":"p","check":"c",`+
+		`"merged_at":"2099-01-01","last_emitted":"2099-01-01","emit_count":99,"last_finding":"2099-01-02"}`)
+
+	rule, err := distillCIFixRule(context.Background(), "SA1000", "lint-sa1000",
+		map[string]string{"build": "SA1000: bad spacing"},
+		"diff --git a/api/Foo.cs b/api/Foo.cs\n+fixed\n", "ci:PR#1", t.TempDir())
+	require.NoError(t, err)
+
+	assert.Empty(t, rule.MergedAt)
+	assert.Empty(t, rule.LastEmitted)
+	assert.Zero(t, rule.EmitCount)
+	assert.Empty(t, rule.LastFinding)
+}
+
+// The end the clearing exists for: a rule the model stamped with a future
+// merge date and a full emission history must still be an ordinary, sweepable
+// rule once it has aged and nothing has used it.
+func TestLearnedRuleWithModelSuppliedStampsStaysSweepable(t *testing.T) {
+	stubDistiller(t, `{"id":"x","category":"style","pattern":"p","check":"c",`+
+		`"merged_at":"2099-01-01","last_emitted":"2099-01-01","emit_count":99}`)
+
+	rule, err := DistillRule(context.Background(), []PRComment{
+		{PRNumber: 1, Path: "api/Foo.cs", Body: "check this"},
+	}, t.TempDir())
+	require.NoError(t, err)
+
+	now := time.Now().UTC()
+	rule.Added = oldDate(now, 400)
+	stale, reason := IsStale(*rule, StaleConfig{ArchiveAfterDays: 90}, now)
+	assert.True(t, stale)
+	assert.Equal(t, ReasonAgedAndInactive, reason)
 }

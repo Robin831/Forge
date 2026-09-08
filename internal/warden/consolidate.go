@@ -160,24 +160,20 @@ func MergeMetadata(cluster []Rule) (sources SourceList, newestAdded string) {
 // generated ID does not collide with active rules in the file; when a
 // collision is found, a numeric suffix is appended.
 //
-// It is MergeRuleAt against the wall clock. The two exist so that the merge
-// timestamp is a parameter where a caller has one to give (a test, or a pass
-// stamping a whole flush at one instant) without every call site having to
-// produce a clock reading.
-func MergeRule(cluster []Rule, category, pattern, check, suggestedID string, existingIDs map[string]struct{}) Rule {
-	return MergeRuleAt(cluster, category, pattern, check, suggestedID, existingIDs, time.Now())
-}
-
-// MergeRuleAt is MergeRule with the merge instant supplied.
-//
 // now is what the survivor's MergedAt is stamped with, and MergedAt is the
 // date the staleness sweep measures the merged rule's age from — so this is
 // the value that decides whether a consolidation produces a rule the next
 // sweep can archive. It is stamped only for a real merge of two or more
-// rules: MergeRuleAt over a single-member cluster rewrites one rule rather
-// than folding several, and stamping it there would hand any rule that passed
+// rules: MergeRule over a single-member cluster rewrites one rule rather than
+// folding several, and stamping it there would hand any rule that passed
 // through consolidation a fresh age it did not earn.
-func MergeRuleAt(cluster []Rule, category, pattern, check, suggestedID string, existingIDs map[string]struct{}, now time.Time) Rule {
+//
+// now is a parameter rather than a time.Now() call inside for the reason
+// every other time-dependent function in this package takes one (IsStale,
+// ArchiveStale, EvictOverCap, MarkEmitted): the sole production caller reads
+// the clock once, so every cluster one pass folds carries the same merge
+// date, and a test can assert on the value rather than on the clock.
+func MergeRule(cluster []Rule, category, pattern, check, suggestedID string, existingIDs map[string]struct{}, now time.Time) Rule {
 	sources, newestAdded := MergeMetadata(cluster)
 	if newestAdded == "" {
 		newestAdded = formatUsageDate(now)
@@ -684,6 +680,12 @@ func applyClusters(ctx context.Context, repoDir string, rf *RulesFile, clusters 
 		}
 	}
 
+	// One clock reading for the whole pass, so every cluster it folds carries
+	// the same MergedAt: distilling a cluster is a model round-trip, so a pass
+	// started before midnight would otherwise stamp its later clusters a day
+	// on and date two halves of one consolidation differently.
+	now := time.Now()
+
 	for _, cc := range clusters {
 		if len(cc.Positions) != len(cc.Rules) {
 			// A cluster whose members cannot be located in rf.Rules is not
@@ -699,7 +701,7 @@ func applyClusters(ctx context.Context, repoDir string, rf *RulesFile, clusters 
 			continue
 		}
 
-		mergedRule := MergeRule(cc.Rules, cc.Category, pattern, check, suggestedID, usedIDs)
+		mergedRule := MergeRule(cc.Rules, cc.Category, pattern, check, suggestedID, usedIDs, now)
 		usedIDs[mergedRule.ID] = struct{}{}
 
 		ids := make([]string, 0, len(cc.Rules))

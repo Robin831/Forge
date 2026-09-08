@@ -951,15 +951,22 @@ func TestRunStaleness_DoesNotRetireAChainThisRunJustCreated(t *testing.T) {
 	s := New(db, time.Hour, map[string]string{},
 		WithArchiveAfterDays(func() int { return 180 }),
 	)
-	// Pass 1 merged two never-emitted rules into "merged" and its own merge
-	// stamp has since aged past the threshold; the archive on disk still knows
-	// nothing about the supersession.
+	// Pass 1 merged two never-emitted rules into "merged" on an earlier run
+	// and its own merge stamp has since aged past the threshold; the archive
+	// on disk still knows nothing about the supersession.
 	pending := []warden.MergeResult{{
 		Merged:      warden.Rule{ID: "merged"},
 		ReplacedIDs: []string{"member-a", "member-b"},
 	}}
+	// The shape applyClusters actually emits: Added inherited from the newest
+	// member, MergedAt stamped at the fold. Both are past the threshold, so
+	// the rule is aged whichever anchor IsStale reads — without MergedAt the
+	// fixture would model a rule production can no longer produce, and the
+	// second half below would be asserting on the Added fallback rather than
+	// on the anchor a merged rule really carries.
 	merged := warden.Rule{ID: "merged", Category: "style", Pattern: "p", Check: "c",
-		Added: time.Now().UTC().AddDate(0, 0, -400).Format("2006-01-02")}
+		Added:    time.Now().UTC().AddDate(0, 0, -500).Format("2006-01-02"),
+		MergedAt: time.Now().UTC().AddDate(0, 0, -400).Format("2006-01-02")}
 
 	rf := &warden.RulesFile{Rules: []warden.Rule{merged}}
 	archived, protected := s.runStaleness(wt, "anvil-a", rf, pending)
@@ -967,8 +974,11 @@ func TestRunStaleness_DoesNotRetireAChainThisRunJustCreated(t *testing.T) {
 	assert.Equal(t, []string{"merged"}, ruleIDs(protected))
 	assert.Equal(t, []string{"merged"}, ruleIDs(rf.Rules))
 
-	// Without the pending supersessions it is swept on the day it was made,
-	// which is the defect the seeding closes.
+	// Without the pending supersessions it is swept even though every rule it
+	// stands in for is already archived, which is the defect the seeding
+	// closes. Its own merge stamp is what makes it eligible at all: MergedAt
+	// no longer shields a chain whose fold has aged, so the guard is the only
+	// thing holding it.
 	rf = &warden.RulesFile{Rules: []warden.Rule{merged}}
 	archived, protected = s.runStaleness(wt, "anvil-b", rf, nil)
 	assert.Equal(t, []string{"merged"}, archivedRuleIDs(archived))

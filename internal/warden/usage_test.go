@@ -310,7 +310,7 @@ func TestMergeRuleInheritsUsage(t *testing.T) {
 		{ID: "b", Added: "2026-02-01", LastEmitted: "2026-04-01", LastFinding: "2026-04-02", EmitCount: 3},
 		{ID: "c", Added: "2026-02-01", LastEmitted: "not a date", EmitCount: 0},
 	}
-	merged := MergeRule(cluster, "style", "p", "c", "merged", map[string]struct{}{})
+	merged := MergeRule(cluster, "style", "p", "c", "merged", map[string]struct{}{}, time.Now())
 	if merged.EmitCount != 7 {
 		t.Errorf("EmitCount = %d, want 7", merged.EmitCount)
 	}
