@@ -138,3 +138,37 @@ func archivedIDs(rules []ArchivedRule) []string {
 	}
 	return out
 }
+
+// TestIsStale_RecentEmissionKeepsAnOldRule is the point of the usage
+// telemetry: a rule learned long ago but put in front of a reviewer last week
+// is in use, and retiring it for the age of its distillation session is what
+// the sweep did while Added was a rule's only timestamp.
+func TestIsStale_RecentEmissionKeepsAnOldRule(t *testing.T) {
+	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
+	r := Rule{
+		ID:          "old-but-used",
+		Added:       now.AddDate(0, 0, -400).Format(staleAddedLayout),
+		LastEmitted: now.AddDate(0, 0, -3).Format(staleAddedLayout),
+	}
+
+	assert.False(t, IsStale(r, 180, now), "a rule emitted three days ago is not inactive")
+
+	// A finding counts the same way, and a rule whose only activity is old is
+	// still stale — the telemetry keeps rules alive, it does not exempt them.
+	r.LastEmitted = ""
+	r.LastFinding = now.AddDate(0, 0, -3).Format(staleAddedLayout)
+	assert.False(t, IsStale(r, 180, now), "a rule that produced a finding three days ago is not inactive")
+
+	r.LastFinding = now.AddDate(0, 0, -300).Format(staleAddedLayout)
+	assert.True(t, IsStale(r, 180, now), "a rule with no activity inside the window is stale")
+}
+
+// TestIsStale_UnstampedRuleReadsItsAddedDate is the backward-compatibility
+// floor: every rules file written before the telemetry existed carries no
+// stamps, and those rules must age exactly as they always did.
+func TestIsStale_UnstampedRuleReadsItsAddedDate(t *testing.T) {
+	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
+
+	assert.True(t, IsStale(Rule{Added: now.AddDate(0, 0, -200).Format(staleAddedLayout)}, 180, now))
+	assert.False(t, IsStale(Rule{Added: now.AddDate(0, 0, -10).Format(staleAddedLayout)}, 180, now))
+}

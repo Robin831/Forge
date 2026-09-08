@@ -9,43 +9,42 @@ const staleAddedLayout = "2006-01-02"
 
 // IsStale reports whether a rule should be archived due to inactivity.
 //
-// A rule is considered stale when BOTH of the following hold:
-//  1. rule.Added is older than archiveAfterDays.
-//  2. No source entry has been recorded in the last archiveAfterDays/2 days.
+// A rule is stale when its last ACTIVITY — the most recent of the last review
+// it was emitted into, the last finding it contributed to, and the date it was
+// added (Rule.LastActivityIn) — is older than archiveAfterDays. Reading the
+// activity rather than Added alone is the whole point of the usage telemetry:
+// before it, "learned in March" and "learned in March and emitted yesterday"
+// were one value, so a rule the selection puts in front of a reviewer every
+// week was retired for the age of its distillation session.
 //
-// Rule source entries currently carry no per-entry timestamp, so the rule's
-// Added date is the only timestamp tracking when this rule was last touched.
-// Until per-source timestamps are introduced, Added is treated as the most
-// recent source activity for purposes of the half-window check — the second
-// condition therefore reduces to "Added is older than archiveAfterDays/2".
+// The reading is zero-tolerant in one direction on purpose. A rule with no
+// usage stamps — every rule on every file written before the telemetry existed
+// — reads its Added date exactly as it always did, and a rule with no readable
+// date at all is conservatively NOT stale: inactivity cannot be proven from a
+// measurement nobody took. archiveAfterDays <= 0 also disables staleness
+// (callers may use it to mean "never archive").
 //
-// Rules with no parseable Added date are conservatively treated as not
-// stale: we cannot prove inactivity without a timestamp. archiveAfterDays
-// <= 0 also disables staleness (callers may use it to mean "never archive").
+// The file ceiling (EvictOverCap) deliberately does not read this. Its recency
+// component stays the learn date, because a ceiling that ranked on emissions
+// would be self-reinforcing: a rule keeps its slot because it was emitted, and
+// it was emitted because it had a slot.
 func IsStale(rule Rule, archiveAfterDays int, now time.Time) bool {
 	if archiveAfterDays <= 0 {
 		return false
 	}
-	if rule.Added == "" {
-		return false
-	}
-	// Parse in now's location so both sides of the subtraction share the same
+	// Parsed in now's location so both sides of the subtraction share the same
 	// timezone; mismatched locations (e.g. UTC vs local) would inject a fixed
 	// offset and corrupt the "whole days" boundary.
-	added, err := time.ParseInLocation(staleAddedLayout, rule.Added, now.Location())
-	if err != nil {
+	last := rule.LastActivityIn(now.Location())
+	if last.IsZero() {
 		return false
 	}
-	// Compare in whole days: Added is a date-only value parsed at midnight,
-	// so truncate now to midnight as well to keep the boundary at exact day
-	// counts (e.g. threshold=30 and added 30 days ago is not stale).
+	// Compare in whole days: the dates are date-only values parsed at
+	// midnight, so truncate now to midnight as well to keep the boundary at
+	// exact day counts (e.g. threshold=30 and last active 30 days ago is not
+	// stale).
 	nowDay := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
-	elapsed := nowDay.Sub(added)
-	fullWindow := time.Duration(archiveAfterDays) * 24 * time.Hour
-	if elapsed <= fullWindow {
-		return false
-	}
-	return true
+	return nowDay.Sub(last) > time.Duration(archiveAfterDays)*24*time.Hour
 }
 
 // ArchiveStale partitions rules into the active set (rules to keep) and a

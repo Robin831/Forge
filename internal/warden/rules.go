@@ -83,9 +83,9 @@ type Rule struct {
 	// (staleAddedLayout) rather than time.Time: they sit beside Added in a
 	// file people read and edit by hand, the staleness sweep that consumes
 	// them already compares Added in whole days, and one representation for
-	// the three dates on a rule is what lets LastActivity read all of them
+	// the three dates on a rule is what lets LastActivityIn read all of them
 	// through one parser. An empty string means "never observed", which is
-	// not the same claim as "observed a long time ago" — see LastActivity.
+	// not the same claim as "observed a long time ago" — see LastActivityIn.
 	LastEmitted string `yaml:"last_emitted,omitempty" json:"last_emitted,omitempty"`
 	EmitCount   int    `yaml:"emit_count,omitempty"   json:"emit_count,omitempty"`
 	LastFinding string `yaml:"last_finding,omitempty" json:"last_finding,omitempty"`
@@ -178,17 +178,18 @@ func LoadRules(anvilPath string) (*RulesFile, error) {
 
 // SaveRules writes the rules file to the anvil path, creating the
 // .forge directory if it does not exist.
+//
+// The write is atomic (writeFileAtomic: temp file plus rename), because every
+// reader of this file parses whatever it is handed: a truncate-then-write cut
+// at a rule boundary is still valid YAML, so LoadRules and the smelter's
+// copyIntoWorktree would read a short file as a smaller rule set and persist
+// it with nothing to distinguish the loss from an archive sweep.
 func SaveRules(anvilPath string, rf *RulesFile) error {
-	path := RulesPath(anvilPath)
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return fmt.Errorf("creating .forge directory: %w", err)
-	}
-
 	data, err := yaml.Marshal(rf)
 	if err != nil {
 		return fmt.Errorf("marshaling warden rules: %w", err)
 	}
-	return os.WriteFile(path, data, 0o644)
+	return writeFileAtomic(RulesPath(anvilPath), data, 0o644)
 }
 
 // AddRule appends a rule to the file, skipping duplicates by ID.

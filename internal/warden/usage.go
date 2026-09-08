@@ -8,10 +8,10 @@ import (
 // This file is the rule-usage telemetry: when a rule was last put in front of
 // a reviewer, how often it has been, and when it last contributed to a
 // finding. It is the evidence a rule is alive, and it exists because nothing
-// recorded any: Rule.Added is the only timestamp a rule has ever carried, so
-// "learned in March" and "learned in March and emitted yesterday" are one
-// value to every consumer — which is why IsStale reduces to an age test on
-// Added and says so in its own doc comment.
+// recorded any: Rule.Added was the only timestamp a rule carried, so "learned
+// in March" and "learned in March and emitted yesterday" were one value to
+// every consumer — which is why IsStale was an age test on Added, and why it
+// now reads LastActivityIn instead.
 //
 // Every field is optional and every reader is zero-tolerant, in one direction
 // on purpose: an absent timestamp means the rule has never been OBSERVED, not
@@ -21,7 +21,7 @@ import (
 
 // usageDateLayout is the layout the usage timestamps are written in. It is
 // staleAddedLayout — the same one Rule.Added uses — so the three dates on a
-// rule read and parse alike, and so LastActivity can compare them without
+// rule read and parse alike, and so LastActivityIn can compare them without
 // converting between two representations.
 const usageDateLayout = staleAddedLayout
 
@@ -56,28 +56,21 @@ func formatUsageDate(t time.Time) string {
 	return t.UTC().Format(usageDateLayout)
 }
 
-// LastActivity reports the most recent evidence that the rule is alive: the
+// LastActivityIn reports the most recent evidence that the rule is alive: the
 // last time it was emitted into a review, the last time it contributed to a
-// finding, or — failing both — when it was added. The dates are read in UTC.
+// finding, or — failing both — when it was added.
 //
 // The zero time is returned when none of the three is readable, and it means
 // "unknown", never "ancient": a rule whose Added date does not parse has no
 // timestamp at all, and a consumer that reads the zero time as a date in 1970
 // would retire it for having no record rather than for having no use.
 //
-// A caller that is going to SUBTRACT this from a clock reading — the staleness
-// sweep is the one this was written for — must use LastActivityIn(now.Location())
-// instead. UTC is right for a caller that only orders two rules against each
-// other, and wrong for one comparing against a local now: these are date-only
-// values parsed at midnight, so the mismatch is a fixed offset on the whole-day
-// boundary that IsStale documents and takes now's location to avoid.
-func (r *Rule) LastActivity() time.Time {
-	return r.LastActivityIn(time.UTC)
-}
-
-// LastActivityIn is LastActivity with the location the dates are read in made
-// explicit, so that a consumer comparing the result against now can parse them
-// in now's zone exactly as IsStale parses Added. A nil location reads as UTC.
+// The location is the caller's because these are date-only values parsed at
+// midnight and the one consumer SUBTRACTS the result from a clock reading:
+// IsStale passes now.Location() so both sides of that subtraction share a
+// zone, which is the fixed offset that would otherwise move the whole-day
+// boundary the staleness count is about. A nil location reads as UTC, which is
+// what a caller merely ordering two rules against each other wants.
 func (r *Rule) LastActivityIn(loc *time.Location) time.Time {
 	if r == nil {
 		return time.Time{}
@@ -104,20 +97,14 @@ func (r *Rule) MarkEmitted(now time.Time) {
 	r.EmitCount++
 }
 
-// MarkFinding records that the rule contributed to an accepted finding at now.
-//
-// Nothing calls this yet, and that is a property of the review result rather
-// than an omission here: warden.Issue carries a file, a line, a severity and a
-// message, so a review that flags something a rule warned about produces no
-// record of WHICH rule it was. The field is carried, persisted and read by
-// LastActivity so that the attribution can be added without a second migration
-// of every anvil's rules file.
-func (r *Rule) MarkFinding(now time.Time) {
-	if r == nil {
-		return
-	}
-	r.LastFinding = formatUsageDate(now)
-}
+// LastFinding has no writer yet, and that is a property of the review result
+// rather than an omission here: warden.Issue carries a file, a line, a
+// severity and a message, so a review that flags something a rule warned about
+// produces no record of WHICH rule it was. The field is carried, persisted,
+// merged by mergeUsage and read by LastActivityIn so that the attribution can
+// be added without a second migration of every anvil's rules file — and the
+// setter lands with the consumer that can call it, rather than sitting here as
+// exported surface nothing exercises.
 
 // MarkEmittedAt stamps the rules at the given positions in the file as having
 // been emitted at now, and reports how many it stamped.

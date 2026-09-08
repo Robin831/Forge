@@ -378,12 +378,13 @@ func FilterRulesIndexed(rules []Rule, diff string, changedFiles []string, cfg Re
 	}
 	stats.Matched = len(candidates)
 
-	scored := selectRules(scoreCandidates(candidates, changedFiles, hits, words), cfg.MaxRules)
+	scored := selectRules(scoreCandidates(candidates, positions, changedFiles, hits, words), cfg.MaxRules)
 	selected := make([]SelectedRule, len(scored))
 	for i, s := range scored {
-		// s.index is the candidate's position among the candidates; positions
-		// maps that back onto the caller's slice.
-		selected[i] = SelectedRule{Rule: s.rule, Index: positions[s.index]}
+		// s.index is already the rule's position in the caller's slice: the
+		// positions the filters kept were handed to the ranking, so there is
+		// one coordinate space here and nothing to map back through.
+		selected[i] = SelectedRule{Rule: s.rule, Index: s.index}
 	}
 	stats.Emitted = len(selected)
 	return selected, stats

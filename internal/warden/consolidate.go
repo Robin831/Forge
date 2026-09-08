@@ -121,14 +121,14 @@ func MergeMetadata(cluster []Rule) (sources SourceList, oldestAdded string) {
 	sort.Strings(dedup)
 	sources = SourceList(dedup)
 
-	const layout = "2006-01-02"
+	// parseUsageDate/formatUsageDate and not a layout literal of its own: a
+	// rule's three dates are one format, read and written by one pair of
+	// functions, so a merged rule's Added cannot come to be spelled
+	// differently from the ones it was merged from.
 	var oldest time.Time
 	for _, r := range cluster {
-		if r.Added == "" {
-			continue
-		}
-		t, err := time.Parse(layout, r.Added)
-		if err != nil {
+		t, ok := parseUsageDate(r.Added, time.UTC)
+		if !ok {
 			continue
 		}
 		if oldest.IsZero() || t.Before(oldest) {
@@ -136,7 +136,7 @@ func MergeMetadata(cluster []Rule) (sources SourceList, oldestAdded string) {
 		}
 	}
 	if !oldest.IsZero() {
-		oldestAdded = oldest.Format(layout)
+		oldestAdded = formatUsageDate(oldest)
 	}
 	return sources, oldestAdded
 }
@@ -148,7 +148,7 @@ func MergeMetadata(cluster []Rule) (sources SourceList, oldestAdded string) {
 func MergeRule(cluster []Rule, category, pattern, check, suggestedID string, existingIDs map[string]struct{}) Rule {
 	sources, oldestAdded := MergeMetadata(cluster)
 	if oldestAdded == "" {
-		oldestAdded = time.Now().UTC().Format("2006-01-02")
+		oldestAdded = formatUsageDate(time.Now())
 	}
 
 	id := pickMergedID(suggestedID, cluster, existingIDs)
@@ -202,7 +202,7 @@ func MergeRule(cluster []Rule, category, pattern, check, suggestedID string, exi
 // them in — because this only ever orders them against each other and then
 // re-renders the winner, so the round trip is byte-stable whatever zone the
 // host keeps. A location only matters where a date is subtracted from a clock
-// reading, which is LastActivityIn's caller and not this one.
+// reading, which is LastActivityIn's caller (IsStale) and not this one.
 func mergeUsage(cluster []Rule) (lastEmitted, lastFinding string, emitCount int) {
 	var newestEmit, newestFinding time.Time
 	for _, r := range cluster {
