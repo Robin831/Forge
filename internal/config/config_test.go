@@ -1467,6 +1467,11 @@ func TestLoad_WardenSettings_Default(t *testing.T) {
 	assert.True(t, cfg.Settings.Warden.IsFilterPatternGrepEnabled())
 	assert.Equal(t, 90, cfg.Settings.Warden.ResolvedArchiveAfterDays())
 	assert.Equal(t, DefaultWardenArchiveAfterDays, cfg.Settings.Warden.ResolvedArchiveAfterDays())
+	// Unset, the inactivity half resolves to the age threshold, which is the
+	// behaviour a deployment that configures neither already had — and the
+	// terminus guard is on, since it is off that costs coverage silently.
+	assert.Equal(t, 90, cfg.Settings.Warden.ResolvedInactiveAfterDays())
+	assert.False(t, cfg.Settings.Warden.AllowArchiveTerminus)
 	assert.InDelta(t, 0.6, cfg.Settings.Warden.ResolvedDedupThreshold(), 1e-9)
 	assert.InDelta(t, 0.55, cfg.Settings.Warden.ResolvedOverlapThreshold(), 1e-9)
 	// Both defaults are pinned as literals beside the constant: they bound
@@ -1474,6 +1479,22 @@ func TestLoad_WardenSettings_Default(t *testing.T) {
 	// change to that bound rather than a constant being renamed.
 	assert.Equal(t, 300, cfg.Settings.Warden.ResolvedMaxRulesInFile())
 	assert.Equal(t, DefaultWardenMaxRulesInFile, cfg.Settings.Warden.ResolvedMaxRulesInFile())
+}
+
+// TestWardenInactiveAfterDays_HasNoOffSwitch pins the one resolution that
+// differs from every other knob here: a negative value does not disable the
+// inactivity half, because disabling it puts the sweep back on age alone —
+// which is the defect the split closes, not a mode.
+func TestWardenInactiveAfterDays_HasNoOffSwitch(t *testing.T) {
+	w := WardenSettings{ArchiveAfterDays: 120}
+	for _, v := range []int{0, -1, -365} {
+		w.InactiveAfterDays = v
+		assert.Equal(t, 120, w.ResolvedInactiveAfterDays(),
+			"inactive_after_days: %d must fall back to the age threshold", v)
+	}
+	w.InactiveAfterDays = 1
+	assert.Equal(t, 1, w.ResolvedInactiveAfterDays(),
+		"1 is how a deployment asks for retirement on age alone")
 }
 
 func TestLoad_WardenSettings_Custom(t *testing.T) {
@@ -1488,6 +1509,8 @@ settings:
     filter_category: false
     filter_pattern_grep: false
     archive_after_days: 45
+    inactive_after_days: 20
+    allow_archive_terminus: true
     dedup_threshold: 0.8
     overlap_threshold: 0.7
     max_rules_in_file: 250
@@ -1503,6 +1526,9 @@ settings:
 	assert.False(t, cfg.Settings.Warden.IsFilterPatternGrepEnabled())
 	assert.Equal(t, 45, cfg.Settings.Warden.ResolvedArchiveAfterDays(),
 		"a configured threshold must survive Load — and it is deliberately not the shipped default, which an override test cannot distinguish from the default winning")
+	assert.Equal(t, 20, cfg.Settings.Warden.ResolvedInactiveAfterDays(),
+		"a configured inactivity threshold must survive Load, and must not be read as the age one")
+	assert.True(t, cfg.Settings.Warden.AllowArchiveTerminus)
 	assert.InDelta(t, 0.8, cfg.Settings.Warden.ResolvedDedupThreshold(), 1e-9)
 	assert.InDelta(t, 0.7, cfg.Settings.Warden.ResolvedOverlapThreshold(), 1e-9)
 	assert.Equal(t, 250, cfg.Settings.Warden.ResolvedMaxRulesInFile())

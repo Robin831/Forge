@@ -66,6 +66,20 @@ type PassResults struct {
 	// HasChanges: a batch whose only finding is a contradiction has an
 	// unchanged rules file and nothing to commit.
 	Contradictions []warden.Contradiction
+
+	// ProtectedTermini lists the IDs of rules the staleness sweep found aged
+	// AND inactive and kept anyway, because archived rules were merged into
+	// them and archiving one retires the whole chain behind it (see
+	// warden.IsSupersessionTerminus). Like Contradictions it is reported and
+	// never acted on, so it is NOT part of HasChanges: a sweep whose only
+	// outcome is a protected rule left the file exactly as it found it.
+	//
+	// Its own field rather than an absence from Archived, because the archive
+	// count cannot state it: "0 archived" reads identically for a file with
+	// nothing stale in it and a file whose every stale rule is holding a
+	// supersession chain, and only the second has something for an operator
+	// to decide.
+	ProtectedTermini []string
 }
 
 // HasChanges reports whether at least one pass produced an outcome. When
@@ -146,8 +160,11 @@ func buildCommitBody(passes PassResults) string {
 	if s := formatNarrowedSection(passes.Narrowed); s != "" {
 		sections = append(sections, s)
 	}
-	// Last, and phrased as unfinished work: a contradiction is the one thing
-	// in this message the smelter did not act on.
+	// Last, and phrased as unfinished work: a contradiction and a protected
+	// terminus are the two things in this message the smelter did not act on.
+	if s := formatProtectedTerminiSection(passes.ProtectedTermini); s != "" {
+		sections = append(sections, s)
+	}
 	if s := formatContradictionsSection(passes.Contradictions); s != "" {
 		sections = append(sections, s)
 	}
@@ -164,6 +181,47 @@ func formatAddedSection(ids []string) string {
 		fmt.Fprintf(&sb, "- %s\n", displayID(id))
 	}
 	return strings.TrimRight(sb.String(), "\n")
+}
+
+// formatProtectedTerminiSection names the rules the terminus guard held back.
+// It says what to do about them, because the entry is otherwise a list of IDs
+// whose only distinguishing property — that other rules were merged into them
+// — is recorded in a file the reader is not looking at.
+func formatProtectedTerminiSection(ids []string) string {
+	if len(ids) == 0 {
+		return ""
+	}
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "Protected (aged and inactive, kept as supersession termini): %d rule(s)\n", len(ids))
+	for _, id := range ids {
+		fmt.Fprintf(&sb, "- %s\n", displayID(id))
+	}
+	sb.WriteString("Archived rules were merged into each of these, so retiring one retires the chain behind it. Re-run with warden.allow_archive_terminus (or `forge warden consolidate --force`) to take them anyway.\n")
+	return strings.TrimRight(sb.String(), "\n")
+}
+
+// protectedTerminiLine is the one-line form the flush logs and the activity
+// feed share, so a reader of either is told the same count for the same
+// anvil.
+func protectedTerminiLine(anvilName string, protected []warden.Rule) string {
+	return fmt.Sprintf("Kept %s for %s: aged and inactive, but %s",
+		textfmt.Count(len(protected), "supersession terminus rule"), anvilName,
+		"archived rules point at them (re-run with --force to archive anyway)")
+}
+
+// ruleIDs projects rules onto their IDs for the reporting fields, which carry
+// identifiers rather than whole rules: the rules themselves are still on the
+// active file, and a PassResults holding a second copy of them would be a
+// second answer to what the file contains.
+func ruleIDs(rules []warden.Rule) []string {
+	if len(rules) == 0 {
+		return nil
+	}
+	ids := make([]string, 0, len(rules))
+	for _, r := range rules {
+		ids = append(ids, r.ID)
+	}
+	return ids
 }
 
 func formatConsolidatedSection(summary []warden.MergeResult) string {
@@ -314,6 +372,18 @@ func displayID(id string) string {
 	return safe
 }
 
+// DisplayRuleID is displayID across the package boundary: the sanitized,
+// bounded rendering of a rule identifier, with the "(no id)" placeholder for
+// an empty one.
+//
+// It is exported for the same reason OccupancyPhrase is. `forge warden
+// consolidate` prints the IDs the terminus guard held back, and those IDs are
+// whatever the distillation JSON returned — nothing validates a character of
+// one — so the CLI needs the treatment the commit body and the PR body
+// already give them. A second sanitizer written at the call site is two
+// alphabets for one value, free to drift the next time either is touched.
+func DisplayRuleID(id string) string { return displayID(id) }
+
 // maxRuleIDBytes bounds a rendered ID. A learned ID is a short kebab-case
 // slug; anything longer is a model that ignored the contract, and an
 // unbounded one is a single bullet that pushes the rest of the body out of
@@ -388,6 +458,12 @@ func buildPRBody(passes PassResults) string {
 		// from one a single rule under it.
 		lines = append(lines, fmt.Sprintf("- %s once every pass had run (the `warden.max_rules_in_file` ceiling).", s))
 	}
+	if n := len(passes.ProtectedTermini); n > 0 {
+		lines = append(lines, "", fmt.Sprintf("**%d rule(s) were aged and inactive but not archived.** Archived rules were merged into each of them, so retiring one would retire the merged content of the whole chain behind it with nothing left on the active file to say what went. Re-run with `warden.allow_archive_terminus` (or `forge warden consolidate --force`) to archive them anyway:", n))
+		for _, id := range passes.ProtectedTermini {
+			lines = append(lines, fmt.Sprintf("- `%s`", displayID(id)))
+		}
+	}
 	if n := len(passes.Contradictions); n > 0 {
 		lines = append(lines, "", fmt.Sprintf("**%d contradictory rule pair(s) need a human decision.** Each pair was learned from one source PR and prescribes opposite orderings, so the Warden flags an implementation whichever convention it follows. Nothing was merged or dropped for them:", n))
 		for _, c := range passes.Contradictions {
@@ -426,6 +502,9 @@ func passResultsSummary(passes PassResults) string {
 	}
 	if n := len(passes.Narrowed); n > 0 {
 		parts = append(parts, fmt.Sprintf("%d narrowed", n))
+	}
+	if n := len(passes.ProtectedTermini); n > 0 {
+		parts = append(parts, fmt.Sprintf("%d kept as supersession termini", n))
 	}
 	if n := len(passes.Contradictions); n > 0 {
 		parts = append(parts, fmt.Sprintf("%d contradiction(s) flagged", n))

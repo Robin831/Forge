@@ -448,8 +448,9 @@ func TestRunStaleness_DisabledByDefault(t *testing.T) {
 		{ID: "r1", Category: "style", Pattern: "p", Check: "c", Added: "2020-01-01"},
 	}}
 
-	archived := s.runStaleness("anvil-a", rf)
+	archived, protected := s.runStaleness(t.TempDir(), "anvil-a", rf)
 	assert.Empty(t, archived)
+	assert.Empty(t, protected)
 	assert.Len(t, rf.Rules, 1, "rf.Rules must be untouched when the staleness pass is disabled")
 }
 
@@ -466,8 +467,9 @@ func TestRunStaleness_ZeroThresholdSkipsPass(t *testing.T) {
 		{ID: "r1", Added: "2020-01-01"},
 	}}
 
-	archived := s.runStaleness("anvil-a", rf)
+	archived, protected := s.runStaleness(t.TempDir(), "anvil-a", rf)
 	assert.Empty(t, archived)
+	assert.Empty(t, protected)
 	assert.Len(t, rf.Rules, 1)
 }
 
@@ -486,7 +488,8 @@ func TestRunStaleness_MovesOldRulesAndUpdatesRulesFile(t *testing.T) {
 		Added: "2020-01-01"}
 	rf := &warden.RulesFile{Rules: []warden.Rule{fresh, stale}}
 
-	archived := s.runStaleness("anvil-a", rf)
+	archived, protected := s.runStaleness(t.TempDir(), "anvil-a", rf)
+	assert.Empty(t, protected, "nothing in the archive points at either rule")
 	require.Len(t, archived, 1)
 	assert.Equal(t, "stale", archived[0].ID)
 	assert.Equal(t, warden.ArchiveReasonStale, archived[0].ArchiveReason)
@@ -701,4 +704,110 @@ func TestCommitAndPush_FreshWorktreeWithExistingRemoteBranch(t *testing.T) {
 	// so --force-with-lease can verify the lease and allow the push.
 	err = s.commitAndPush(ctx, localDir, branch, PassResults{Added: []string{"r1"}})
 	require.NoError(t, err, "commitAndPush should succeed after fetching remote-tracking ref")
+}
+
+// TestRunStaleness_ProtectsASupersessionTerminusFromTheAnvilsArchive is the
+// guard end to end through the flush path: the index comes from the archive
+// file on disk beside the rules file, not from anything the caller passes, so
+// this is the one case that exercises the read.
+func TestRunStaleness_ProtectsASupersessionTerminusFromTheAnvilsArchive(t *testing.T) {
+	db := openTestDB(t)
+	wt := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(wt, ".forge"), 0o755))
+
+	// Two rules were merged into "terminus" and archived; "plain" was archived
+	// for staleness and so names no successor.
+	archive := &warden.Archive{Rules: []warden.ArchivedRule{
+		{Rule: warden.Rule{ID: "member-a"}, SupersededBy: "terminus", ArchiveReason: warden.ArchiveReasonDuplicate},
+		{Rule: warden.Rule{ID: "member-b"}, SupersededBy: "terminus", ArchiveReason: warden.ArchiveReasonDuplicate},
+		{Rule: warden.Rule{ID: "long-gone"}, ArchiveReason: warden.ArchiveReasonStale},
+	}}
+	require.NoError(t, archive.Save(warden.ArchivePath(wt)))
+
+	old := func(id string) warden.Rule {
+		return warden.Rule{ID: id, Category: "style", Pattern: "p", Check: "c", Added: "2020-01-01"}
+	}
+	newRules := func() *warden.RulesFile {
+		return &warden.RulesFile{Rules: []warden.Rule{old("terminus"), old("plain")}}
+	}
+
+	s := New(db, time.Hour, map[string]string{},
+		WithArchiveAfterDays(func() int { return 180 }),
+	)
+	rf := newRules()
+	archived, protected := s.runStaleness(wt, "anvil-a", rf)
+
+	require.Len(t, archived, 1)
+	assert.Equal(t, "plain", archived[0].ID)
+	require.Len(t, protected, 1)
+	assert.Equal(t, "terminus", protected[0].ID)
+	assert.Equal(t, []string{"terminus"}, ruleIDs(rf.Rules),
+		"a protected terminus stays on the active file")
+
+	// The override archives it, and the protected list is then empty — which
+	// is what makes the summary line disappear rather than repeat every flush.
+	forced := New(db, time.Hour, map[string]string{},
+		WithArchiveAfterDays(func() int { return 180 }),
+		WithAllowArchiveTerminus(func() bool { return true }),
+	)
+	rf = newRules()
+	archived, protected = forced.runStaleness(wt, "anvil-a", rf)
+	assert.Equal(t, []string{"terminus", "plain"}, archivedRuleIDs(archived))
+	assert.Empty(t, protected)
+	assert.Empty(t, rf.Rules)
+}
+
+// TestRunStaleness_MissingArchiveStillSweeps is the compatibility floor: an
+// anvil that has never archived anything has no archive file, and the sweep
+// must behave exactly as it did before the guard existed rather than declining
+// to run without evidence.
+func TestRunStaleness_MissingArchiveStillSweeps(t *testing.T) {
+	db := openTestDB(t)
+	s := New(db, time.Hour, map[string]string{},
+		WithArchiveAfterDays(func() int { return 180 }),
+	)
+
+	rf := &warden.RulesFile{Rules: []warden.Rule{
+		{ID: "old", Category: "style", Pattern: "p", Check: "c", Added: "2020-01-01"},
+	}}
+	archived, protected := s.runStaleness(t.TempDir(), "anvil-a", rf)
+
+	require.Len(t, archived, 1)
+	assert.Equal(t, "old", archived[0].ID)
+	assert.Empty(t, protected)
+}
+
+// TestRunStaleness_InactivityHalfKeepsAnEmittedRule is the two-signal
+// predicate reaching the flush path: the thresholds resolve from the option
+// closures, and a rule the review selection stamped last week survives a
+// sweep its Added date alone would have taken.
+func TestRunStaleness_InactivityHalfKeepsAnEmittedRule(t *testing.T) {
+	db := openTestDB(t)
+	s := New(db, time.Hour, map[string]string{},
+		WithArchiveAfterDays(func() int { return 90 }),
+		WithInactiveAfterDays(func() int { return 30 }),
+	)
+
+	now := time.Now().UTC()
+	rf := &warden.RulesFile{Rules: []warden.Rule{
+		{ID: "used", Category: "style", Pattern: "p", Check: "c",
+			Added:       now.AddDate(0, 0, -400).Format("2006-01-02"),
+			LastEmitted: now.AddDate(0, 0, -7).Format("2006-01-02")},
+		{ID: "silent", Category: "style", Pattern: "p", Check: "c",
+			Added:       now.AddDate(0, 0, -400).Format("2006-01-02"),
+			LastEmitted: now.AddDate(0, 0, -200).Format("2006-01-02")},
+	}}
+	archived, protected := s.runStaleness(t.TempDir(), "anvil-a", rf)
+
+	assert.Equal(t, []string{"silent"}, archivedRuleIDs(archived))
+	assert.Empty(t, protected)
+	assert.Equal(t, []string{"used"}, ruleIDs(rf.Rules))
+}
+
+func archivedRuleIDs(rules []warden.ArchivedRule) []string {
+	out := make([]string, 0, len(rules))
+	for _, r := range rules {
+		out = append(out, r.ID)
+	}
+	return out
 }

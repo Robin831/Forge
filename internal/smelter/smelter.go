@@ -66,6 +66,15 @@ type Smelter struct {
 	// archiveAfterDays returns the staleness threshold in days for Pass 2.
 	// When nil or it returns <= 0, the staleness pass is skipped.
 	archiveAfterDays func() int
+	// inactiveAfterDays returns the inactivity threshold in days for Pass 2 —
+	// the second half of the staleness test, alongside archiveAfterDays. A nil
+	// function or one returning <= 0 falls back to the age threshold, which is
+	// what every deployment that configures nothing gets.
+	inactiveAfterDays func() int
+	// allowArchiveTerminus reports whether the staleness sweep may archive a
+	// rule other, archived rules were merged into. Nil is the safe default
+	// (false): the guard holds.
+	allowArchiveTerminus func() bool
 	// maxRulesInFile returns the hard ceiling on the active rules file. When
 	// nil or it returns <= 0, the eviction pass is skipped.
 	maxRulesInFile func() int
@@ -111,6 +120,29 @@ func WithOverlapThreshold(fn func() float64) Option {
 // function or one returning <= 0 disables the staleness pass.
 func WithArchiveAfterDays(fn func() int) Option {
 	return func(s *Smelter) { s.archiveAfterDays = fn }
+}
+
+// WithInactiveAfterDays supplies a function the Smelter calls at flush time
+// to resolve the INACTIVITY threshold (in days) Pass 2 tests alongside the
+// age threshold: a rule is archived only when it has crossed both. A function
+// is used so config hot-reload can take effect without restarting. A nil
+// function or one returning <= 0 falls back to the age threshold — there is
+// no value here that switches the inactivity half off, because that half is
+// what keeps a rule the reviewer sees every week from being retired for the
+// age of its distillation session (see warden.StaleConfig).
+func WithInactiveAfterDays(fn func() int) Option {
+	return func(s *Smelter) { s.inactiveAfterDays = fn }
+}
+
+// WithAllowArchiveTerminus supplies a function the Smelter calls at flush time
+// to resolve whether the staleness sweep may archive a supersession terminus —
+// a rule other, archived rules were merged into. A function is used so config
+// hot-reload can take effect without restarting. A nil function leaves the
+// guard in place, which is the safe default: the rules it holds are named in
+// the flush log, the commit body and the PR body, so an operator turns this on
+// having read which ones.
+func WithAllowArchiveTerminus(fn func() bool) Option {
+	return func(s *Smelter) { s.allowArchiveTerminus = fn }
 }
 
 // WithMaxRulesInFile supplies a function the Smelter calls at flush time to
@@ -512,7 +544,7 @@ func (s *Smelter) buildFlushRules(ctx context.Context, wtPath, anvilName string,
 	// with reason="stale". Runs after Pass 1 so the newly-merged rules in
 	// rf.Rules are still candidates for staleness in future flushes. Pass 3
 	// only operates on whatever remains in rf.Rules after this step.
-	staleArchived := s.runStaleness(anvilName, rf)
+	staleArchived, protectedTermini := s.runStaleness(wtPath, anvilName, rf)
 
 	// Ceiling: evict the lowest-value rules once the file is over its size
 	// limit. It runs after staleness so an over-cap eviction never takes a
@@ -549,12 +581,13 @@ func (s *Smelter) buildFlushRules(ctx context.Context, wtPath, anvilName string,
 	return flushBuild{
 		rules: rf,
 		passes: PassResults{
-			Added:          addedIDs,
-			Consolidated:   consolidationSummary,
-			Archived:       staleArchived,
-			Backfilled:     backfill.Filled,
-			Narrowed:       backfill.Narrowed,
-			Contradictions: contradictions,
+			Added:            addedIDs,
+			Consolidated:     consolidationSummary,
+			Archived:         staleArchived,
+			Backfilled:       backfill.Filled,
+			Narrowed:         backfill.Narrowed,
+			Contradictions:   contradictions,
+			ProtectedTermini: ruleIDs(protectedTermini),
 			// Measured here, after every pass, because that is the number the
 			// next flush starts from — and against the same ceiling the
 			// eviction pass was handed, read through the one accessor, so the
@@ -847,30 +880,78 @@ func (s *Smelter) runConsolidation(ctx context.Context, wtPath, anvilName string
 	return summary, replaced, combined
 }
 
+// staleConfig resolves the staleness sweep's inputs from the hot-reloadable
+// config closures plus the archive read from wtPath. It is one function
+// because the two thresholds and the supersession index are one decision:
+// resolved separately, a caller could hand the sweep an age threshold from
+// this flush and an index from none.
+//
+// The archive read is best-effort. Its only consumer is the terminus guard,
+// which sits on top of the age test rather than gating it, so an unreadable
+// archive costs the protection and never the sweep — the alternative is a
+// flush that stops archiving anything because a file it does not write could
+// not be parsed. It is logged, since a guard that quietly stops guarding is
+// the failure the guard exists to prevent.
+//
+// What the index cannot see is a supersession THIS flush is about to write:
+// the archive is loaded as it stands, and Pass 1's own entries are persisted
+// after buildFlushRules returns. That costs nothing, because a rule Pass 1
+// merged into existence carries today's Added date and is too young for the
+// sweep to reach for a whole archive_after_days.
+func (s *Smelter) staleConfig(wtPath, anvilName string) warden.StaleConfig {
+	cfg := warden.StaleConfig{}
+	if s.archiveAfterDays != nil {
+		cfg.ArchiveAfterDays = s.archiveAfterDays()
+	}
+	if cfg.ArchiveAfterDays <= 0 {
+		return cfg
+	}
+	if s.inactiveAfterDays != nil {
+		cfg.InactiveAfterDays = s.inactiveAfterDays()
+	}
+	if s.allowArchiveTerminus != nil {
+		cfg.AllowArchiveTerminus = s.allowArchiveTerminus()
+	}
+	archive, err := warden.LoadArchive(warden.ArchivePath(wtPath))
+	if err != nil {
+		log.Printf("[smelter] reading archive for %s to protect supersession termini: %v", anvilName, err)
+		return cfg
+	}
+	cfg.SupersededBy = warden.BuildSupersededByIndex(archive.Rules)
+	return cfg
+}
+
 // runStaleness invokes warden.ArchiveStale on the active rules slice when an
 // archive-after threshold is configured. Stale rules are removed from rf in
 // place and returned as ArchivedRule entries so the caller can persist them
-// to the archive store and surface the count in the commit message.
+// to the archive store and surface the count in the commit message; the rules
+// the terminus guard held back are returned beside them, since a rule the
+// sweep declined to take is the one outcome the archived count cannot state.
 //
-// When archiveAfterDays is nil or returns <= 0, the pass is a no-op and the
-// returned slice is empty — rf.Rules is left untouched.
-func (s *Smelter) runStaleness(anvilName string, rf *warden.RulesFile) []warden.ArchivedRule {
-	if s.archiveAfterDays == nil {
-		return nil
+// When archiveAfterDays is nil or returns <= 0, the pass is a no-op and both
+// returned slices are empty — rf.Rules is left untouched.
+func (s *Smelter) runStaleness(wtPath, anvilName string, rf *warden.RulesFile) ([]warden.ArchivedRule, []warden.Rule) {
+	cfg := s.staleConfig(wtPath, anvilName)
+	if cfg.ArchiveAfterDays <= 0 {
+		return nil, nil
 	}
-	threshold := s.archiveAfterDays()
-	if threshold <= 0 {
-		return nil
+	sweep := warden.ArchiveStale(rf.Rules, cfg, time.Now().UTC())
+	if len(sweep.Archived) == 0 && len(sweep.Protected) == 0 {
+		return nil, nil
 	}
-	active, stale := warden.ArchiveStale(rf.Rules, threshold, time.Now().UTC())
-	if len(stale) == 0 {
-		return nil
+	rf.Rules = sweep.Active
+	if len(sweep.Archived) > 0 {
+		log.Printf("[smelter] archived %d stale rule(s) for %s (age=%dd, inactive=%dd)",
+			len(sweep.Archived), anvilName, cfg.ArchiveAfterDays, cfg.InactiveAfterDays)
+		_ = s.db.LogEvent(state.EventSmelterFlushed,
+			fmt.Sprintf("Archived %d stale rule(s) for %s", len(sweep.Archived), anvilName), "", anvilName)
 	}
-	rf.Rules = active
-	log.Printf("[smelter] archived %d stale rule(s) for %s (threshold=%dd)", len(stale), anvilName, threshold)
-	_ = s.db.LogEvent(state.EventSmelterFlushed,
-		fmt.Sprintf("Archived %d stale rule(s) for %s", len(stale), anvilName), "", anvilName)
-	return stale
+	if len(sweep.Protected) > 0 {
+		log.Printf("[smelter] %s", protectedTerminiLine(anvilName, sweep.Protected))
+		_ = s.db.LogEvent(state.EventSmelterFlushed,
+			protectedTerminiLine(anvilName, sweep.Protected), "", anvilName)
+	}
+	return sweep.Archived, sweep.Protected
 }
 
 // runFileCap runs the shared eviction pass (applyFileCap) over rf against the
