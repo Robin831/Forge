@@ -72,6 +72,23 @@ type Rule struct {
 	// through to the next filter — backward compatible with rules written
 	// before this field existed.
 	Paths []string `yaml:"paths,omitempty" json:"paths,omitempty"`
+	// LastEmitted, EmitCount and LastFinding are usage telemetry: when the
+	// rule was last rendered into a review checklist, how many times it has
+	// been, and when it last contributed to an accepted finding. All three are
+	// optional and zero-tolerant — a rules file written before they existed
+	// loads unchanged, and `omitempty` keeps a rule that has never been
+	// observed byte-identical on the way back out.
+	//
+	// The two timestamps are date strings in the same layout as Added
+	// (staleAddedLayout) rather than time.Time: they sit beside Added in a
+	// file people read and edit by hand, the staleness sweep that consumes
+	// them already compares Added in whole days, and one representation for
+	// the three dates on a rule is what lets LastActivity read all of them
+	// through one parser. An empty string means "never observed", which is
+	// not the same claim as "observed a long time ago" — see LastActivity.
+	LastEmitted string `yaml:"last_emitted,omitempty" json:"last_emitted,omitempty"`
+	EmitCount   int    `yaml:"emit_count,omitempty"   json:"emit_count,omitempty"`
+	LastFinding string `yaml:"last_finding,omitempty" json:"last_finding,omitempty"`
 }
 
 // needsQuoting returns true if a YAML scalar value needs explicit quoting
@@ -293,16 +310,31 @@ func (rf *RulesFile) FormatChecklistForDiff(diff string, changedFiles []string, 
 // matched or a thirtieth of it, which is how a cap that could only ever emit
 // the file's oldest rules went unnoticed for months.
 func (rf *RulesFile) FormatChecklistForDiffWithStats(diff string, changedFiles []string, cfg ReviewFilterConfig) (string, FilterStats) {
+	out, stats, _ := rf.FormatChecklistForDiffWithSelection(diff, changedFiles, cfg)
+	return out, stats
+}
+
+// FormatChecklistForDiffWithSelection is FormatChecklistForDiffWithStats plus
+// the positions in rf.Rules of the rules that reached the checklist, so a
+// caller can record the emission against them (see RulesFile.MarkEmittedAt).
+//
+// The positions are the third return value rather than something the caller
+// re-derives from the checklist text or from the rules' IDs, because neither
+// identifies a rule: the text is prose the rule contributed two fields to, and
+// an ID may name two rules on one file.
+func (rf *RulesFile) FormatChecklistForDiffWithSelection(diff string, changedFiles []string, cfg ReviewFilterConfig) (string, FilterStats, []int) {
 	if len(rf.Rules) == 0 {
-		return "", FilterStats{Cap: cfg.MaxRules}
+		return "", FilterStats{Cap: cfg.MaxRules}, nil
 	}
-	filtered, stats := FilterRulesWithStats(rf.Rules, diff, changedFiles, cfg)
+	filtered, stats := FilterRulesIndexed(rf.Rules, diff, changedFiles, cfg)
 	if len(filtered) == 0 {
-		return "", stats
+		return "", stats, nil
 	}
 	var sb strings.Builder
-	for i, r := range filtered {
-		fmt.Fprintf(&sb, "%d. [ ] Check: %s (pattern: %s)\n", i+1, r.Check, r.Pattern)
+	positions := make([]int, len(filtered))
+	for i, sel := range filtered {
+		fmt.Fprintf(&sb, "%d. [ ] Check: %s (pattern: %s)\n", i+1, sel.Rule.Check, sel.Rule.Pattern)
+		positions[i] = sel.Index
 	}
-	return sb.String(), stats
+	return sb.String(), stats, positions
 }

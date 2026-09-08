@@ -304,16 +304,45 @@ func FilterRules(rules []Rule, diff string, changedFiles []string, cfg ReviewFil
 // every PR ever opened, and nothing learned in the preceding four months could
 // reach a review at all.
 func FilterRulesWithStats(rules []Rule, diff string, changedFiles []string, cfg ReviewFilterConfig) ([]Rule, FilterStats) {
+	selected, stats := FilterRulesIndexed(rules, diff, changedFiles, cfg)
+	out := make([]Rule, len(selected))
+	for i, sel := range selected {
+		out[i] = sel.Rule
+	}
+	return out, stats
+}
+
+// SelectedRule is one rule that reached the checklist, paired with its
+// position in the slice it was selected from.
+//
+// The position is what makes an emission recordable: a caller that wants to
+// stamp the rules it just put in front of a reviewer has to address them in
+// the file, and a rule's ID cannot do that — an ID is written by whichever
+// distillation session produced the rule, so one file routinely holds two
+// rules under one ID (see RulesFile.AddRuleDistinct), and stamping by ID
+// credits an emission to a rule that was never selected.
+type SelectedRule struct {
+	// Rule is the selected rule, a copy as every other consumer receives it.
+	Rule Rule
+	// Index is Rule's position in the slice passed to FilterRulesIndexed.
+	Index int
+}
+
+// FilterRulesIndexed is FilterRulesWithStats returning each selected rule
+// alongside its position in the input slice, in ranked order.
+func FilterRulesIndexed(rules []Rule, diff string, changedFiles []string, cfg ReviewFilterConfig) ([]SelectedRule, FilterStats) {
 	stats := FilterStats{Total: len(rules), Cap: cfg.MaxRules, Bypassed: cfg.UseAllRules}
 	diffLower := strings.ToLower(diff)
 
 	var (
 		candidates []Rule
+		positions  []int
 		hits       []int
 		words      []int
 	)
-	keep := func(r Rule, h, w int) {
+	keep := func(pos int, r Rule, h, w int) {
 		candidates = append(candidates, r)
+		positions = append(positions, pos)
 		hits = append(hits, h)
 		words = append(words, w)
 	}
@@ -321,13 +350,13 @@ func FilterRulesWithStats(rules []Rule, diff string, changedFiles []string, cfg 
 	if cfg.UseAllRules {
 		stats.PathMatched = len(rules)
 		stats.CategoryMatched = len(rules)
-		for _, r := range rules {
+		for i, r := range rules {
 			h, w := patternWordHits(r.Pattern, diffLower)
-			keep(r, h, w)
+			keep(i, r, h, w)
 		}
 	} else {
 		categorySet := aggregateCategories(changedFiles)
-		for _, r := range rules {
+		for i, r := range rules {
 			if cfg.FilterPathGlob && len(r.Paths) > 0 {
 				if len(changedFiles) == 0 || !matchPathGlob(r.Paths, changedFiles) {
 					continue
@@ -344,12 +373,18 @@ func FilterRulesWithStats(rules []Rule, diff string, changedFiles []string, cfg 
 			if cfg.FilterPatternGrep && !patternGrepPasses(h, w) {
 				continue
 			}
-			keep(r, h, w)
+			keep(i, r, h, w)
 		}
 	}
 	stats.Matched = len(candidates)
 
-	selected := selectRules(scoreCandidates(candidates, changedFiles, hits, words), cfg.MaxRules)
+	scored := selectRules(scoreCandidates(candidates, changedFiles, hits, words), cfg.MaxRules)
+	selected := make([]SelectedRule, len(scored))
+	for i, s := range scored {
+		// s.index is the candidate's position among the candidates; positions
+		// maps that back onto the caller's slice.
+		selected[i] = SelectedRule{Rule: s.rule, Index: positions[s.index]}
+	}
 	stats.Emitted = len(selected)
 	return selected, stats
 }

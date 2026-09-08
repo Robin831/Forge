@@ -37,6 +37,11 @@ type ruleScore struct {
 	recency     float64
 	total       float64
 	added       time.Time
+	// index is the candidate's position in the slice it was scored from, kept
+	// so a selection can name the rules it chose without going back through
+	// their IDs — which are not identity (two rules on one file may share one)
+	// and cannot address a rule to be stamped or removed.
+	index int
 }
 
 // isGlobMeta reports whether r is a doublestar metacharacter, i.e. whether its
@@ -231,6 +236,7 @@ func scoreCandidates(rules []Rule, changedFiles []string, hits, words []int) []r
 			specificity: ruleSpecificity(r, changedFiles),
 			pattern:     patternRelevance(hits[i], words[i]),
 			added:       added,
+			index:       i,
 		}
 	}
 	recencyScores(scores)
@@ -269,21 +275,21 @@ func higherRanked(a, b ruleScore) bool {
 	return ruleTieKey(a.rule) < ruleTieKey(b.rule)
 }
 
-// selectRules ranks the candidates and returns the best max of them. The order
-// is total and deterministic — score, then recency, then a content key — so the
-// emitted set does not depend on the order the candidates arrived in, which is
-// the order they were learned in.
+// selectRules ranks the candidates and returns the best max of them, in ranked
+// order. The order is total and deterministic — score, then recency, then a
+// content key — so the emitted set does not depend on the order the candidates
+// arrived in, which is the order they were learned in.
 //
 // max <= 0 means no cap; the candidates are still returned in ranked order, so
 // the highest-value rules head the checklist either way.
-func selectRules(scores []ruleScore, max int) []Rule {
+//
+// It returns the scored candidates rather than bare Rules so a caller can read
+// each selected rule's index alongside it: the checklist wants the rules, and
+// the usage stamp wants to know which POSITIONS in the file they came from.
+func selectRules(scores []ruleScore, max int) []ruleScore {
 	sort.SliceStable(scores, func(i, j int) bool { return higherRanked(scores[i], scores[j]) })
 	if max > 0 && len(scores) > max {
 		scores = scores[:max]
 	}
-	out := make([]Rule, len(scores))
-	for i, s := range scores {
-		out[i] = s.rule
-	}
-	return out
+	return scores
 }

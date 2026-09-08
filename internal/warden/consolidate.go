@@ -167,15 +167,54 @@ func MergeRule(cluster []Rule, category, pattern, check, suggestedID string, exi
 		}
 	}
 
+	emitted, findings, emits := mergeUsage(cluster)
+
 	return Rule{
-		ID:       id,
-		Category: category,
-		Pattern:  pattern,
-		Check:    check,
-		Source:   sources,
-		Added:    oldestAdded,
-		Paths:    paths,
+		ID:          id,
+		Category:    category,
+		Pattern:     pattern,
+		Check:       check,
+		Source:      sources,
+		Added:       oldestAdded,
+		Paths:       paths,
+		LastEmitted: emitted,
+		LastFinding: findings,
+		EmitCount:   emits,
 	}
+}
+
+// mergeUsage folds the cluster's usage telemetry into the merged rule's: the
+// most recent emission and finding across its members, and the sum of their
+// emit counts.
+//
+// The merged rule inherits its members' history for the same reason it
+// inherits their Paths — it stands in for all of them, so it must still be
+// selected wherever they were and must still look as alive as they were. Left
+// out, a merge of two rules the reviewer sees weekly produces one rule with no
+// observations at all, dated to the OLDEST member's Added, which is exactly
+// the shape the staleness sweep retires.
+//
+// A rule whose dates do not parse contributes nothing rather than resetting
+// the merged value, on the same rule the rest of this telemetry follows:
+// absence of a measurement is not a measurement of zero.
+func mergeUsage(cluster []Rule) (lastEmitted, lastFinding string, emitCount int) {
+	var newestEmit, newestFinding time.Time
+	for _, r := range cluster {
+		emitCount += r.EmitCount
+		if t, ok := parseUsageDate(r.LastEmitted); ok && t.After(newestEmit) {
+			newestEmit = t
+		}
+		if t, ok := parseUsageDate(r.LastFinding); ok && t.After(newestFinding) {
+			newestFinding = t
+		}
+	}
+	if !newestEmit.IsZero() {
+		lastEmitted = formatUsageDate(newestEmit)
+	}
+	if !newestFinding.IsZero() {
+		lastFinding = formatUsageDate(newestFinding)
+	}
+	return lastEmitted, lastFinding, emitCount
 }
 
 // pickMergedID chooses an ID for the merged rule. It prefers a non-empty
