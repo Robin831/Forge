@@ -37,6 +37,15 @@ type ruleScore struct {
 	recency     float64
 	total       float64
 	added       time.Time
+	// index is the rule's position in the FILE it came from — the position
+	// scoreCandidates' caller supplied, not the offset of this entry in the
+	// candidate slice — kept so a selection can name the rules it chose
+	// without going back through their IDs, which are not identity (two rules
+	// on one file may share one) and cannot address a rule to be stamped or
+	// removed. One coordinate space and one mechanism: a caller that filtered
+	// before scoring passes the positions it kept, so neither the ranking nor
+	// its callers need a parallel slice to translate between the two.
+	index int
 }
 
 // isGlobMeta reports whether r is a doublestar metacharacter, i.e. whether its
@@ -165,15 +174,15 @@ func patternRelevance(hits, words int) float64 {
 // parseRuleAdded parses Rule.Added, reporting whether it was readable. An
 // unreadable or absent date is not evidence of age, so callers give it the
 // neutral recency rather than the oldest.
+//
+// It is parseUsageDate and not a second parser of the same layout: Added sits
+// beside LastEmitted and LastFinding in the same format, and a rule's dates
+// read one way here and another way in LastActivityIn is exactly the drift the
+// package's one-definition rule exists to prevent. UTC because the ranking
+// only ever orders two rules against each other — a caller SUBTRACTING a rule
+// date from a clock reading passes its own location (see LastActivityIn).
 func parseRuleAdded(r Rule) (time.Time, bool) {
-	if strings.TrimSpace(r.Added) == "" {
-		return time.Time{}, false
-	}
-	t, err := time.Parse(staleAddedLayout, strings.TrimSpace(r.Added))
-	if err != nil {
-		return time.Time{}, false
-	}
-	return t, true
+	return parseUsageDate(r.Added, time.UTC)
 }
 
 // recencyScores normalises the candidates' Added dates onto [0,1] with the
@@ -219,18 +228,30 @@ func recencyScores(scores []ruleScore) {
 // pattern filter — how many of the rule's ≥4-char words the diff contains, and
 // how many it has — so the diff is scanned once per rule rather than twice.
 //
-// All three slices are indexed by candidate: hits[i] and words[i] describe
-// rules[i], and a caller that lets them fall out of alignment scores every rule
-// against another rule's pattern.
-func scoreCandidates(rules []Rule, changedFiles []string, hits, words []int) []ruleScore {
+// All the slices are indexed by candidate: hits[i], words[i] and positions[i]
+// describe rules[i], and a caller that lets them fall out of alignment scores
+// every rule against another rule's pattern.
+//
+// positions is where each candidate sits in the file the caller selected it
+// from, and it is what ruleScore.index carries out: a filtered caller passes
+// the positions it kept, so the ranking speaks the caller's coordinates and
+// nothing downstream has to translate. nil (or a slice that does not match the
+// candidates one for one, which is a caller bug and not a partial mapping)
+// means the candidates ARE the file, and index is the offset in rules.
+func scoreCandidates(rules []Rule, positions []int, changedFiles []string, hits, words []int) []ruleScore {
 	scores := make([]ruleScore, len(rules))
 	for i, r := range rules {
 		added, _ := parseRuleAdded(r)
+		pos := i
+		if len(positions) == len(rules) {
+			pos = positions[i]
+		}
 		scores[i] = ruleScore{
 			rule:        r,
 			specificity: ruleSpecificity(r, changedFiles),
 			pattern:     patternRelevance(hits[i], words[i]),
 			added:       added,
+			index:       pos,
 		}
 	}
 	recencyScores(scores)
@@ -269,21 +290,21 @@ func higherRanked(a, b ruleScore) bool {
 	return ruleTieKey(a.rule) < ruleTieKey(b.rule)
 }
 
-// selectRules ranks the candidates and returns the best max of them. The order
-// is total and deterministic — score, then recency, then a content key — so the
-// emitted set does not depend on the order the candidates arrived in, which is
-// the order they were learned in.
+// selectRules ranks the candidates and returns the best max of them, in ranked
+// order. The order is total and deterministic — score, then recency, then a
+// content key — so the emitted set does not depend on the order the candidates
+// arrived in, which is the order they were learned in.
 //
 // max <= 0 means no cap; the candidates are still returned in ranked order, so
 // the highest-value rules head the checklist either way.
-func selectRules(scores []ruleScore, max int) []Rule {
+//
+// It returns the scored candidates rather than bare Rules so a caller can read
+// each selected rule's index alongside it: the checklist wants the rules, and
+// the usage stamp wants to know which POSITIONS in the file they came from.
+func selectRules(scores []ruleScore, max int) []ruleScore {
 	sort.SliceStable(scores, func(i, j int) bool { return higherRanked(scores[i], scores[j]) })
 	if max > 0 && len(scores) > max {
 		scores = scores[:max]
 	}
-	out := make([]Rule, len(scores))
-	for i, s := range scores {
-		out[i] = s.rule
-	}
-	return out
+	return scores
 }

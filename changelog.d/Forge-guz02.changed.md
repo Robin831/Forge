@@ -1,0 +1,2 @@
+category: Changed
+- **One atomic file-replace helper, `internal/atomicfile`** - The temp-file-plus-rename primitive was written twice — the web layer's for `forge.yaml`, the Warden's for its rules and archive files — and the two had already come apart on the question it exists to answer: only one synced before the rename, so the packages disagreed about whether an atomically written file survives a power loss. Both now call `atomicfile.Write`, which syncs. (Forge-guz02)

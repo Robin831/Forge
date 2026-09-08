@@ -38,29 +38,25 @@ func EvictOverCap(rules []Rule, max int, now time.Time) (active []Rule, archived
 	// selectRules uses) rather than arithmetic of its own, so the two
 	// components eviction reads are the same fields, computed the same way and
 	// ordered by the same comparator, as the ones the review-time selection
-	// reads. Positions are carried
-	// alongside because the kept rules are returned in FILE order: the file is
-	// a record, and rewriting its order on every flush would churn the diff of
-	// a file nothing reads sequentially.
+	// reads. Each entry carries its file position in ruleScore.index — the one
+	// mechanism the ranking has for naming a rule, and the same one the
+	// review-time selection reads back — because the kept rules are returned
+	// in FILE order: the file is a record, and rewriting its order on every
+	// flush would churn the diff of a file nothing reads sequentially.
 	scored := make([]ruleScore, len(rules))
 	for i, r := range rules {
 		added, _ := parseRuleAdded(r)
-		scored[i] = ruleScore{rule: r, added: added, specificity: staticSpecificity(r)}
+		scored[i] = ruleScore{rule: r, added: added, specificity: staticSpecificity(r), index: i}
 	}
 	recencyScores(scored)
-
-	order := make([]int, len(rules))
-	for i := range rules {
-		order[i] = i
+	for i := range scored {
 		scored[i].total = specificityWeight*scored[i].specificity + recencyWeight*scored[i].recency
 	}
-	sort.SliceStable(order, func(i, j int) bool {
-		return higherRanked(scored[order[i]], scored[order[j]])
-	})
+	sort.SliceStable(scored, func(i, j int) bool { return higherRanked(scored[i], scored[j]) })
 
 	keep := make(map[int]bool, max)
-	for _, idx := range order[:max] {
-		keep[idx] = true
+	for _, s := range scored[:max] {
+		keep[s.index] = true
 	}
 	active = make([]Rule, 0, max)
 	for i, r := range rules {

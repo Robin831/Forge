@@ -121,14 +121,14 @@ func MergeMetadata(cluster []Rule) (sources SourceList, oldestAdded string) {
 	sort.Strings(dedup)
 	sources = SourceList(dedup)
 
-	const layout = "2006-01-02"
+	// parseUsageDate/formatUsageDate and not a layout literal of its own: a
+	// rule's three dates are one format, read and written by one pair of
+	// functions, so a merged rule's Added cannot come to be spelled
+	// differently from the ones it was merged from.
 	var oldest time.Time
 	for _, r := range cluster {
-		if r.Added == "" {
-			continue
-		}
-		t, err := time.Parse(layout, r.Added)
-		if err != nil {
+		t, ok := parseUsageDate(r.Added, time.UTC)
+		if !ok {
 			continue
 		}
 		if oldest.IsZero() || t.Before(oldest) {
@@ -136,7 +136,7 @@ func MergeMetadata(cluster []Rule) (sources SourceList, oldestAdded string) {
 		}
 	}
 	if !oldest.IsZero() {
-		oldestAdded = oldest.Format(layout)
+		oldestAdded = formatUsageDate(oldest)
 	}
 	return sources, oldestAdded
 }
@@ -148,7 +148,7 @@ func MergeMetadata(cluster []Rule) (sources SourceList, oldestAdded string) {
 func MergeRule(cluster []Rule, category, pattern, check, suggestedID string, existingIDs map[string]struct{}) Rule {
 	sources, oldestAdded := MergeMetadata(cluster)
 	if oldestAdded == "" {
-		oldestAdded = time.Now().UTC().Format("2006-01-02")
+		oldestAdded = formatUsageDate(time.Now())
 	}
 
 	id := pickMergedID(suggestedID, cluster, existingIDs)
@@ -167,15 +167,60 @@ func MergeRule(cluster []Rule, category, pattern, check, suggestedID string, exi
 		}
 	}
 
+	emitted, findings, emits := mergeUsage(cluster)
+
 	return Rule{
-		ID:       id,
-		Category: category,
-		Pattern:  pattern,
-		Check:    check,
-		Source:   sources,
-		Added:    oldestAdded,
-		Paths:    paths,
+		ID:          id,
+		Category:    category,
+		Pattern:     pattern,
+		Check:       check,
+		Source:      sources,
+		Added:       oldestAdded,
+		Paths:       paths,
+		LastEmitted: emitted,
+		LastFinding: findings,
+		EmitCount:   emits,
 	}
+}
+
+// mergeUsage folds the cluster's usage telemetry into the merged rule's: the
+// most recent emission and finding across its members, and the sum of their
+// emit counts.
+//
+// The merged rule inherits its members' history for the same reason it
+// inherits their Paths — it stands in for all of them, so it must still be
+// selected wherever they were and must still look as alive as they were. Left
+// out, a merge of two rules the reviewer sees weekly produces one rule with no
+// observations at all, dated to the OLDEST member's Added, which is exactly
+// the shape the staleness sweep retires.
+//
+// A rule whose dates do not parse contributes nothing rather than resetting
+// the merged value, on the same rule the rest of this telemetry follows:
+// absence of a measurement is not a measurement of zero.
+//
+// The dates are read and written back in UTC — the zone formatUsageDate wrote
+// them in — because this only ever orders them against each other and then
+// re-renders the winner, so the round trip is byte-stable whatever zone the
+// host keeps. A location only matters where a date is subtracted from a clock
+// reading, which is LastActivityIn's caller (IsStale) and not this one.
+func mergeUsage(cluster []Rule) (lastEmitted, lastFinding string, emitCount int) {
+	var newestEmit, newestFinding time.Time
+	for _, r := range cluster {
+		emitCount += r.EmitCount
+		if t, ok := parseUsageDate(r.LastEmitted, time.UTC); ok && t.After(newestEmit) {
+			newestEmit = t
+		}
+		if t, ok := parseUsageDate(r.LastFinding, time.UTC); ok && t.After(newestFinding) {
+			newestFinding = t
+		}
+	}
+	if !newestEmit.IsZero() {
+		lastEmitted = formatUsageDate(newestEmit)
+	}
+	if !newestFinding.IsZero() {
+		lastFinding = formatUsageDate(newestFinding)
+	}
+	return lastEmitted, lastFinding, emitCount
 }
 
 // pickMergedID chooses an ID for the merged rule. It prefers a non-empty

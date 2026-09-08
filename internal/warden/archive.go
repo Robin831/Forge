@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/Robin831/Forge/internal/atomicfile"
 	"gopkg.in/yaml.v3"
 )
 
@@ -126,16 +127,16 @@ func LoadArchive(path string) (*Archive, error) {
 
 // Save writes the archive to the given file path, creating the parent
 // directory if it does not exist.
+//
+// Atomic on SaveRules' terms: the archive is the record of what the rules file
+// gave up, so a torn write of it during a flush loses the only copy of the
+// rules that flush evicted.
 func (a *Archive) Save(path string) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return fmt.Errorf("creating archive directory: %w", err)
-	}
-
 	data, err := yaml.Marshal(a)
 	if err != nil {
 		return fmt.Errorf("marshaling warden archive: %w", err)
 	}
-	return os.WriteFile(path, data, 0o644)
+	return atomicfile.Write(path, data)
 }
 
 // Add appends a rule to the archive, recording the reason it was archived
