@@ -1370,6 +1370,31 @@ type WardenSettings struct {
 	// DefaultWardenArchiveAfterDays; a negative value disables the pass
 	// (callers may use it to mean "never archive").
 	ArchiveAfterDays int `mapstructure:"archive_after_days" yaml:"archive_after_days,omitempty"`
+	// InactiveAfterDays is the second half of that sweep: how long a rule must
+	// have gone UNUSED — unemitted into any review and uncredited with any
+	// finding (warden.Rule.LastActivityIn) — before it is archived. A rule is
+	// retired only when it has crossed BOTH this and archive_after_days.
+	//
+	// The two are separate knobs because they measure different things: age is
+	// a fact about the distillation session that produced the rule, inactivity
+	// a fact about whether anything has wanted it since. On age alone a rule
+	// the review selection emits every week is retired for being old, which is
+	// the defect the split closes.
+	//
+	// Zero (unset) falls back to the resolved archive_after_days, which is
+	// exactly the behaviour of a deployment that never configured it. A
+	// negative value does NOT disable the inactivity half — unlike every other
+	// knob here, there is no off switch, because switching it off IS the
+	// defect; a deployment that wants retirement on age alone sets this to 1.
+	InactiveAfterDays int `mapstructure:"inactive_after_days" yaml:"inactive_after_days,omitempty"`
+	// AllowArchiveTerminus lets the staleness sweep archive an aged, inactive
+	// rule even when archived rules were merged INTO it. Off by default,
+	// because retiring such a rule retires the merged content of every rule
+	// behind it and each of those is already archived — so nothing left on the
+	// active file says what went. Turning it on is a deliberate statement that
+	// the chains may end; `forge warden consolidate --force` is the same
+	// override for one off-cycle run.
+	AllowArchiveTerminus bool `mapstructure:"allow_archive_terminus" yaml:"allow_archive_terminus,omitempty"`
 	// DedupThreshold is the similarity score (0.0–1.0) above which two
 	// active rules are considered duplicates and the older entry is moved to
 	// the archive with reason "duplicate". Zero falls back to the default
@@ -1472,6 +1497,18 @@ func (w WardenSettings) ResolvedArchiveAfterDays() int {
 		return DefaultWardenArchiveAfterDays
 	}
 	return w.ArchiveAfterDays
+}
+
+// ResolvedInactiveAfterDays returns the effective inactivity threshold in
+// days for the staleness sweep. Zero or negative (unset) resolves to
+// ResolvedArchiveAfterDays, which is the behaviour of every deployment that
+// never configured it — see WardenSettings.InactiveAfterDays for why there is
+// no value here that switches the inactivity half off.
+func (w WardenSettings) ResolvedInactiveAfterDays() int {
+	if w.InactiveAfterDays <= 0 {
+		return w.ResolvedArchiveAfterDays()
+	}
+	return w.InactiveAfterDays
 }
 
 // ResolvedDedupThreshold returns the effective dedup-similarity threshold.
@@ -2748,8 +2785,13 @@ func Defaults() Config {
 				FilterCategory:    boolPtr(true),
 				FilterPatternGrep: boolPtr(true),
 				ArchiveAfterDays:  DefaultWardenArchiveAfterDays,
-				DedupThreshold:    DefaultWardenDedupThreshold,
-				OverlapThreshold:  DefaultWardenOverlapThreshold,
+				// InactiveAfterDays and AllowArchiveTerminus are deliberately
+				// left at their zero values rather than pinned here: the first
+				// resolves to whatever ArchiveAfterDays is (a literal would
+				// stop tracking a lengthened age threshold) and the second is
+				// a guard, whose default has to be "on".
+				DedupThreshold:   DefaultWardenDedupThreshold,
+				OverlapThreshold: DefaultWardenOverlapThreshold,
 			},
 			ForgeChat: ForgeChatSettings{
 				TurnTimeout: DefaultForgeChatTurnTimeout,
@@ -2853,6 +2895,13 @@ func Load(configFile string) (*Config, error) {
 	v.SetDefault("settings.warden.filter_category", true)
 	v.SetDefault("settings.warden.filter_pattern_grep", true)
 	v.SetDefault("settings.warden.archive_after_days", DefaultWardenArchiveAfterDays)
+	// 0, not the age default: the fallback lives in ResolvedInactiveAfterDays
+	// so an unset value tracks whatever archive_after_days resolves to. A
+	// literal default here would pin it to 90 and leave a deployment that
+	// lengthened the age threshold retiring rules on a 90-day silence it
+	// never asked for.
+	v.SetDefault("settings.warden.inactive_after_days", 0)
+	v.SetDefault("settings.warden.allow_archive_terminus", false)
 	v.SetDefault("settings.warden.max_rules_in_file", DefaultWardenMaxRulesInFile)
 	v.SetDefault("settings.warden.dedup_threshold", DefaultWardenDedupThreshold)
 	v.SetDefault("settings.warden.overlap_threshold", DefaultWardenOverlapThreshold)

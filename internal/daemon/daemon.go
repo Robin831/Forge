@@ -1629,6 +1629,12 @@ func (d *Daemon) Run(ctx context.Context) error {
 			smelter.WithArchiveAfterDays(func() int {
 				return d.config().Settings.Warden.ResolvedArchiveAfterDays()
 			}),
+			smelter.WithInactiveAfterDays(func() int {
+				return d.config().Settings.Warden.ResolvedInactiveAfterDays()
+			}),
+			smelter.WithAllowArchiveTerminus(func() bool {
+				return d.config().Settings.Warden.AllowArchiveTerminus
+			}),
 			smelter.WithMaxRulesInFile(func() int {
 				return d.config().Settings.Warden.ResolvedMaxRulesInFile()
 			}),

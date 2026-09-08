@@ -33,9 +33,22 @@ type ConsolidateOptions struct {
 	// Jaccard as the only test. It never enables Pass 1 on its own —
 	// DedupThreshold <= 0 still skips the pass entirely.
 	OverlapThreshold float64
-	// ArchiveAfterDays is the staleness threshold in days for Pass 2. When
-	// <= 0, Pass 2 is skipped.
+	// ArchiveAfterDays is the AGE threshold in days for Pass 2. When <= 0,
+	// Pass 2 is skipped.
 	ArchiveAfterDays int
+	// InactiveAfterDays is the INACTIVITY threshold in days Pass 2 tests
+	// alongside ArchiveAfterDays: a rule is archived only when it has crossed
+	// both. When <= 0 it falls back to ArchiveAfterDays, which is the
+	// behaviour of a caller that does not set it. See warden.StaleConfig for
+	// why there is no value here that switches the inactivity half off.
+	InactiveAfterDays int
+	// AllowArchiveTerminus archives an aged, inactive rule even when archived
+	// rules were merged into it. Off by default: retiring such a rule retires
+	// the merged content of the chain behind it, and every member of that
+	// chain is already archived, so nothing on the active file would say what
+	// went. It is the `--force` an operator reaches for after reading which
+	// rules the guard held.
+	AllowArchiveTerminus bool
 	// MaxRulesInFile is the hard ceiling on the active rules file. When <= 0,
 	// the eviction pass is skipped.
 	MaxRulesInFile int
@@ -265,17 +278,32 @@ func ConsolidateAnvil(ctx context.Context, opts ConsolidateOptions) (Consolidate
 	// over-cap eviction would be reported as a rule that aged out, which is the
 	// one thing it is not.
 	var archivedEntries []warden.ArchivedRule
+	var protectedTermini []warden.Rule
 	if opts.ArchiveAfterDays > 0 {
-		active, stale := warden.ArchiveStale(rf.Rules, opts.ArchiveAfterDays, now)
-		if len(stale) > 0 {
-			rf.Rules = active
-			archivedEntries = append(archivedEntries, stale...)
-			log.Printf("[smelter] archived %d stale rule(s) for %s (threshold=%dd)", len(stale), opts.AnvilName, opts.ArchiveAfterDays)
-			if opts.EventLogger != nil {
-				opts.EventLogger("smelter_flushed",
-					fmt.Sprintf("Archived %d stale rule(s) for %s", len(stale), opts.AnvilName))
-			}
+		// The same sweep the scheduled flush runs (runStaleSweep), with the
+		// same supersession index (supersessionIndex): the two paths had a
+		// copy each of the archive read, the failure log and the archived
+		// line, which is precisely how a guard comes to hold on one of its two
+		// call sites and not the other. `summary` goes in because Pass 1's
+		// supersessions are not on disk until persistRulesAndArchive runs, and
+		// a merged rule can be aged and inactive on the day it is created.
+		//
+		// No announcer: this is a one-shot operator command, so every run is a
+		// fresh artifact read once. Suppression is the scheduled flush's
+		// concern, where the same line would otherwise repeat every cycle.
+		staleCfg := warden.StaleConfig{
+			ArchiveAfterDays:     opts.ArchiveAfterDays,
+			InactiveAfterDays:    opts.InactiveAfterDays,
+			AllowArchiveTerminus: opts.AllowArchiveTerminus,
+			SupersededBy:         supersessionIndex(opts.AnvilPath, opts.AnvilName, summary),
 		}
+		var emit func(string)
+		if opts.EventLogger != nil {
+			emit = func(message string) { opts.EventLogger("smelter_flushed", message) }
+		}
+		var staleArchived []warden.ArchivedRule
+		staleArchived, protectedTermini = runStaleSweep(opts.AnvilName, rf, staleCfg, now, emit, nil)
+		archivedEntries = append(archivedEntries, staleArchived...)
 	}
 
 	// The ceiling runs through the same applyFileCap the scheduled flush uses,
@@ -311,11 +339,12 @@ func ConsolidateAnvil(ctx context.Context, opts ConsolidateOptions) (Consolidate
 	contradictions := reportContradictions(opts.AnvilName, rf.Rules, nil, opts.EventLogger)
 
 	passes := PassResults{
-		Consolidated:   summary,
-		Archived:       archivedEntries,
-		Backfilled:     backfill.Filled,
-		Narrowed:       backfill.Narrowed,
-		Contradictions: contradictions,
+		Consolidated:     summary,
+		Archived:         archivedEntries,
+		Backfilled:       backfill.Filled,
+		Narrowed:         backfill.Narrowed,
+		Contradictions:   contradictions,
+		ProtectedTermini: ruleIDs(protectedTermini),
 		// The occupancy after every pass, against the ceiling this run was
 		// actually held to — so `forge warden consolidate` reports a file that
 		// is one rule under its ceiling as such, which an eviction count of

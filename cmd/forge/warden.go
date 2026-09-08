@@ -29,6 +29,9 @@ func init() {
 	wardenRestoreCmd.Flags().StringP("anvil", "a", "", "Anvil name (required)")
 	_ = wardenRestoreCmd.MarkFlagRequired("anvil")
 
+	wardenConsolidateCmd.Flags().Bool("force", false,
+		"Archive aged, inactive rules even when archived rules were merged into them (supersession termini)")
+
 	wardenCmd.AddCommand(wardenLearnCmd)
 	wardenCmd.AddCommand(wardenForgetCmd)
 	wardenCmd.AddCommand(wardenListCmd)
@@ -271,9 +274,16 @@ var wardenConsolidateCmd = &cobra.Command{
 	Long: `Off-cycle manual trigger for the same three-pass merge logic the
 scheduled smelter runs:
   Pass 1 — cluster near-duplicate rules and merge each cluster.
-  Pass 2 — archive rules whose Added date is older than archive_after_days,
-           then evict the lowest-value rules over max_rules_in_file.
+  Pass 2 — archive rules that are BOTH older than archive_after_days and
+           unused for inactive_after_days, then evict the lowest-value rules
+           over max_rules_in_file.
   Pass 3 — backfill the Paths field from each rule's source PR(s).
+
+A rule that other, archived rules were merged into is kept by Pass 2 even when
+both staleness thresholds are crossed: archiving it retires the merged content
+of the whole chain behind it, and every member of that chain is already
+archived, so nothing on the active file would say what went. Such rules are
+named in the summary; --force archives them anyway.
 
 Exits non-zero when Pass 1 did not get an answer for every cluster it found
 (a cluster the AI provider failed, or a pass that could not run at all). Such
@@ -309,6 +319,8 @@ in the active rules file.`,
 			return fmt.Errorf("anvil %q not found in config", anvilName)
 		}
 
+		force, _ := cmd.Flags().GetBool("force")
+
 		opts := smelter.ConsolidateOptions{
 			AnvilPath:        anvil.Path,
 			AnvilName:        anvilName,
@@ -316,11 +328,19 @@ in the active rules file.`,
 			DedupThreshold:   cfg.Settings.Warden.ResolvedDedupThreshold(),
 			OverlapThreshold: cfg.Settings.Warden.ResolvedOverlapThreshold(),
 			ArchiveAfterDays: cfg.Settings.Warden.ResolvedArchiveAfterDays(),
-			MaxRulesInFile:   cfg.Settings.Warden.ResolvedMaxRulesInFile(),
+			// Resolved rather than passed through raw, so an unset
+			// inactive_after_days runs this command against the same
+			// effective threshold the scheduled flush uses. The flag ORs with
+			// the config: --force is one run's override and cannot be a way
+			// of turning the setting back off.
+			InactiveAfterDays:    cfg.Settings.Warden.ResolvedInactiveAfterDays(),
+			AllowArchiveTerminus: force || cfg.Settings.Warden.AllowArchiveTerminus,
+			MaxRulesInFile:       cfg.Settings.Warden.ResolvedMaxRulesInFile(),
 		}
 
-		fmt.Fprintf(cmd.ErrOrStderr(), "Running three-pass consolidation against %s (dedup_threshold=%.2f, overlap_threshold=%.2f, archive_after_days=%d, max_rules_in_file=%d)...\n",
-			anvilName, opts.DedupThreshold, opts.OverlapThreshold, opts.ArchiveAfterDays, opts.MaxRulesInFile)
+		fmt.Fprintf(cmd.ErrOrStderr(), "Running three-pass consolidation against %s (dedup_threshold=%.2f, overlap_threshold=%.2f, archive_after_days=%d, inactive_after_days=%d, allow_archive_terminus=%t, max_rules_in_file=%d)...\n",
+			anvilName, opts.DedupThreshold, opts.OverlapThreshold, opts.ArchiveAfterDays,
+			opts.InactiveAfterDays, opts.AllowArchiveTerminus, opts.MaxRulesInFile)
 
 		result, err := smelter.ConsolidateAnvil(rootCtx, opts)
 		if err != nil {
@@ -414,6 +434,18 @@ func renderConsolidateSummary(out, errOut io.Writer, anvilName, anvilPath string
 	}
 	if n := len(result.Passes.Narrowed); n > 0 {
 		fmt.Fprintf(out, "Narrowed:        %d rule(s)\n", n)
+	}
+	if n := len(result.Passes.ProtectedTermini); n > 0 {
+		// Its own line, above the contradictions and outside the change
+		// summary: nothing was written for these rules, and the count of
+		// archived rules cannot say they exist — "Archived stale: 0" reads
+		// identically for a file with nothing stale in it and one whose every
+		// stale rule is holding a supersession chain.
+		fmt.Fprintf(out, "Kept (termini):  %d aged, inactive rule(s) with archived rules merged into them\n", n)
+		for _, id := range result.Passes.ProtectedTermini {
+			fmt.Fprintf(out, "  - %s\n", smelter.DisplayRuleID(id))
+		}
+		fmt.Fprintln(out, "  Re-run with --force to archive them anyway.")
 	}
 	if len(result.Passes.Contradictions) > 0 {
 		// Printed to stderr, and never folded into the change summary
