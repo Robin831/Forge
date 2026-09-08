@@ -42,7 +42,7 @@ func TestIsStale_NoAddedDate_NotStale(t *testing.T) {
 
 	stale, reason := IsStale(r, ageOnly(30), now)
 	assert.False(t, stale)
-	assert.Equal(t, ReasonNoAddedDate, reason)
+	assert.Equal(t, ReasonNoAgeAnchor, reason)
 }
 
 func TestIsStale_MalformedAddedDate_NotStale(t *testing.T) {
@@ -51,7 +51,7 @@ func TestIsStale_MalformedAddedDate_NotStale(t *testing.T) {
 
 	stale, reason := IsStale(r, ageOnly(30), now)
 	assert.False(t, stale)
-	assert.Equal(t, ReasonNoAddedDate, reason)
+	assert.Equal(t, ReasonNoAgeAnchor, reason)
 }
 
 // TestIsStale_UnreadableAddedIsNotRescuedByAStamp pins the direction the age
@@ -64,7 +64,7 @@ func TestIsStale_UnreadableAddedIsNotRescuedByAStamp(t *testing.T) {
 
 	stale, reason := IsStale(r, ageOnly(180), now)
 	assert.False(t, stale, "an ancient emission does not establish an age the rule never recorded")
-	assert.Equal(t, ReasonNoAddedDate, reason)
+	assert.Equal(t, ReasonNoAgeAnchor, reason)
 }
 
 func TestIsStale_FreshRule_NotStale(t *testing.T) {

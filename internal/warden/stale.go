@@ -25,15 +25,23 @@ type StaleReason string
 const (
 	// ReasonStalenessDisabled: ArchiveAfterDays <= 0, so the sweep did not run.
 	ReasonStalenessDisabled StaleReason = "staleness-disabled"
-	// ReasonNoAddedDate: one half of the test has no date to read. It is
-	// returned from both halves, because both read the same absent value from
-	// opposite ends: either the rule has no readable age anchor at all
-	// (neither MergedAt nor Added), or it has an anchor from MergedAt while
-	// carrying no readable Added and no usage stamps, so its AGE is
-	// establishable and its ACTIVITY is not. One reason for the two because
-	// the fate is one — a question the sweep cannot answer is resolved as not
-	// stale — and the missing Added date is what produces it either way.
-	ReasonNoAddedDate StaleReason = "no-added-date"
+	// ReasonNoAgeAnchor: the AGE half has no date to read — neither MergedAt
+	// nor Added parses, so the rule records no point in time to measure its
+	// age from (Rule.ageAnchorIn).
+	ReasonNoAgeAnchor StaleReason = "no-age-anchor"
+	// ReasonNoActivitySignal: the age half was answered and the ACTIVITY half
+	// cannot be. It is reachable only through MergedAt: Added is one of the
+	// dates LastActivityIn reads, so a rule whose age came from Added always
+	// has an activity date too, and only a merged rule can have an anchor
+	// while carrying no readable Added and no usage stamp.
+	//
+	// It is its own reason rather than a second caller of ReasonNoAgeAnchor
+	// because a reason value is what an operator reads back out of one rule's
+	// fate, and the two complaints are different — one says the rule records
+	// no age, the other that nothing dates the last time anything wanted it.
+	// The FATE they share (an unanswerable question is resolved as not stale)
+	// is IsStale's rule and not a property of either value.
+	ReasonNoActivitySignal StaleReason = "no-activity-signal"
 	// ReasonTooYoung: the rule has not aged past ArchiveAfterDays.
 	ReasonTooYoung StaleReason = "too-young"
 	// ReasonRecentActivity: the rule is old enough, but something has used it
@@ -134,9 +142,11 @@ func (c StaleConfig) inactiveDays() int {
 // deployment can demand a rule be a quarter old and silent for a month.
 //
 // Every unanswerable question is resolved as NOT stale, in one direction on
-// purpose. A rule with no readable anchor date has no age to test, and one
-// with an anchor but no readable Added and no usage stamps has no activity to
-// test (both ReasonNoAddedDate). A rule with no usage stamps — every rule on
+// purpose. A rule with no readable anchor date has no age to test
+// (ReasonNoAgeAnchor), and one with an anchor but no readable Added and no
+// usage stamps has no activity to test (ReasonNoActivitySignal) — one reason
+// per half, because which half went unanswered is the whole of what there is
+// to say about such a rule. A rule with no usage stamps — every rule on
 // every file written before the telemetry existed — reads its Added date for
 // both halves exactly as it always did. Retiring rules on a measurement
 // nobody took is the one failure this sweep must not produce; keeping one
@@ -173,7 +183,7 @@ func IsStale(rule Rule, cfg StaleConfig, now time.Time) (bool, StaleReason) {
 
 	anchor, ok := rule.ageAnchorIn(loc)
 	if !ok {
-		return false, ReasonNoAddedDate
+		return false, ReasonNoAgeAnchor
 	}
 	if !olderThanDays(nowDay, anchor, cfg.ArchiveAfterDays) {
 		return false, ReasonTooYoung
@@ -184,10 +194,12 @@ func IsStale(rule Rule, cfg StaleConfig, now time.Time) (bool, StaleReason) {
 	// here, because the anchor above may have come from MergedAt instead — a
 	// merged rule whose Added is unreadable and which has never been emitted
 	// has an age and no usage record at all. That is the sweep's unanswerable
-	// question, and it resolves the way every other one does: not stale.
+	// question, and it resolves the way every other one does: not stale — but
+	// under its own reason, since what went unanswered here is the activity
+	// half rather than the age one.
 	last := rule.LastActivityIn(loc)
 	if last.IsZero() {
-		return false, ReasonNoAddedDate
+		return false, ReasonNoActivitySignal
 	}
 	if !olderThanDays(nowDay, last, cfg.inactiveDays()) {
 		return false, ReasonRecentActivity

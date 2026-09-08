@@ -137,12 +137,14 @@ func TestIsStale_AgeAnchorPrefersMergedAt(t *testing.T) {
 	// An anchor with no activity record at all is the sweep's unanswerable
 	// question: MergedAt gives it an age, but Added is unreadable and nothing
 	// has ever been stamped, so there is no inactivity to measure. It resolves
-	// the way every unanswerable question here does.
+	// the way every unanswerable question here does, under the reason that
+	// names the half which went unanswered — the age half was answered, so
+	// this is not the ageless rule's ReasonNoAgeAnchor.
 	t.Run("anchor without any activity record is not stale", func(t *testing.T) {
 		r := Rule{ID: "r", Added: "not-a-date", MergedAt: oldDate(now, 380)}
 		stale, reason := IsStale(r, cfg, now)
 		assert.False(t, stale)
-		assert.Equal(t, ReasonNoAddedDate, reason)
+		assert.Equal(t, ReasonNoActivitySignal, reason)
 	})
 }
 
