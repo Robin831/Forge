@@ -367,6 +367,22 @@ func TestApplyChanges_WardenSmelterThresholds(t *testing.T) {
 			new:  config.WardenSettings{ArchiveAfterDays: 30},
 			want: "warden.archive_after_days: 180 → 30",
 		},
+		{
+			name: "inactive_after_days",
+			old:  config.WardenSettings{ArchiveAfterDays: 90, InactiveAfterDays: 30},
+			new:  config.WardenSettings{ArchiveAfterDays: 90, InactiveAfterDays: 7},
+			want: "warden.inactive_after_days: 30 → 7",
+		},
+		{
+			// The knob the terminus guard is built around: an operator reads
+			// which rules the sweep held and then flips this. Missing from
+			// applyChanges it is inert until a restart, which is the one
+			// setting that failure mode is least acceptable on.
+			name: "allow_archive_terminus",
+			old:  config.WardenSettings{},
+			new:  config.WardenSettings{AllowArchiveTerminus: true},
+			want: "warden.allow_archive_terminus: false → true",
+		},
 	}
 
 	for _, tc := range cases {
@@ -393,6 +409,9 @@ func TestApplyChanges_WardenSmelterThresholdsUnchangedWhenResolvedEqual(t *testi
 		DedupThreshold:   config.DefaultWardenDedupThreshold,
 		OverlapThreshold: config.DefaultWardenOverlapThreshold,
 		ArchiveAfterDays: config.DefaultWardenArchiveAfterDays,
+		// Unset, the inactivity threshold resolves to the age one, so
+		// spelling that value out explicitly must report no change either.
+		InactiveAfterDays: config.DefaultWardenArchiveAfterDays,
 	}}}
 
 	for _, c := range applyChanges(old, new) {

@@ -280,42 +280,30 @@ func ConsolidateAnvil(ctx context.Context, opts ConsolidateOptions) (Consolidate
 	var archivedEntries []warden.ArchivedRule
 	var protectedTermini []warden.Rule
 	if opts.ArchiveAfterDays > 0 {
+		// The same sweep the scheduled flush runs (runStaleSweep), with the
+		// same supersession index (supersessionIndex): the two paths had a
+		// copy each of the archive read, the failure log and the archived
+		// line, which is precisely how a guard comes to hold on one of its two
+		// call sites and not the other. `summary` goes in because Pass 1's
+		// supersessions are not on disk until persistRulesAndArchive runs, and
+		// a merged rule can be aged and inactive on the day it is created.
+		//
+		// No announcer: this is a one-shot operator command, so every run is a
+		// fresh artifact read once. Suppression is the scheduled flush's
+		// concern, where the same line would otherwise repeat every cycle.
 		staleCfg := warden.StaleConfig{
 			ArchiveAfterDays:     opts.ArchiveAfterDays,
 			InactiveAfterDays:    opts.InactiveAfterDays,
 			AllowArchiveTerminus: opts.AllowArchiveTerminus,
+			SupersededBy:         supersessionIndex(opts.AnvilPath, opts.AnvilName, summary),
 		}
-		// Best-effort, on the scheduled flush's argument (see
-		// Smelter.staleConfig): the index feeds a guard that sits on top of
-		// the age test rather than gating it, so an unreadable archive costs
-		// the protection and never the sweep — but it is logged, because a
-		// guard that quietly stops guarding is the failure it exists to
-		// prevent.
-		if archive, err := warden.LoadArchive(warden.ArchivePath(opts.AnvilPath)); err != nil {
-			log.Printf("[smelter] reading archive for %s to protect supersession termini: %v", opts.AnvilName, err)
-		} else if archive != nil {
-			staleCfg.SupersededBy = warden.BuildSupersededByIndex(archive.Rules)
+		var emit func(string)
+		if opts.EventLogger != nil {
+			emit = func(message string) { opts.EventLogger("smelter_flushed", message) }
 		}
-		sweep := warden.ArchiveStale(rf.Rules, staleCfg, now)
-		if len(sweep.Archived) > 0 || len(sweep.Protected) > 0 {
-			rf.Rules = sweep.Active
-		}
-		if len(sweep.Archived) > 0 {
-			archivedEntries = append(archivedEntries, sweep.Archived...)
-			log.Printf("[smelter] archived %d stale rule(s) for %s (age=%dd, inactive=%dd)",
-				len(sweep.Archived), opts.AnvilName, opts.ArchiveAfterDays, opts.InactiveAfterDays)
-			if opts.EventLogger != nil {
-				opts.EventLogger("smelter_flushed",
-					fmt.Sprintf("Archived %d stale rule(s) for %s", len(sweep.Archived), opts.AnvilName))
-			}
-		}
-		if len(sweep.Protected) > 0 {
-			protectedTermini = sweep.Protected
-			log.Printf("[smelter] %s", protectedTerminiLine(opts.AnvilName, protectedTermini))
-			if opts.EventLogger != nil {
-				opts.EventLogger("smelter_flushed", protectedTerminiLine(opts.AnvilName, protectedTermini))
-			}
-		}
+		var staleArchived []warden.ArchivedRule
+		staleArchived, protectedTermini = runStaleSweep(opts.AnvilName, rf, staleCfg, now, emit, nil)
+		archivedEntries = append(archivedEntries, staleArchived...)
 	}
 
 	// The ceiling runs through the same applyFileCap the scheduled flush uses,

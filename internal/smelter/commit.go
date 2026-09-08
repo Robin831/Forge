@@ -191,22 +191,27 @@ func formatProtectedTerminiSection(ids []string) string {
 	if len(ids) == 0 {
 		return ""
 	}
-	var sb strings.Builder
-	fmt.Fprintf(&sb, "Protected (aged and inactive, kept as supersession termini): %d rule(s)\n", len(ids))
-	for _, id := range ids {
-		fmt.Fprintf(&sb, "- %s\n", displayID(id))
-	}
-	sb.WriteString("Archived rules were merged into each of these, so retiring one retires the chain behind it. Re-run with warden.allow_archive_terminus (or `forge warden consolidate --force`) to take them anyway.\n")
-	return strings.TrimRight(sb.String(), "\n")
+	// The header and bullets come from formatIDSection, the one renderer of a
+	// labelled rule-ID list, so a change to how an ID is rendered reaches this
+	// section too rather than every section but this one. Only the trailing
+	// sentence is this section's own.
+	return formatIDSection("Protected (aged and inactive, kept as supersession termini)", ids) +
+		"\nArchived rules were merged into each of these, so retiring one retires the chain behind it. " +
+		"Re-run with warden.allow_archive_terminus (or `forge warden consolidate --force`) to take them anyway."
 }
 
 // protectedTerminiLine is the one-line form the flush logs and the activity
 // feed share, so a reader of either is told the same count for the same
 // anvil.
 func protectedTerminiLine(anvilName string, protected []warden.Rule) string {
+	// The remedy names both spellings because both surfaces render this line:
+	// the scheduled flush (which is not `forge warden consolidate`, so --force
+	// is not a flag its reader can reach for) and the off-cycle command. Named
+	// one at a time, whichever reader gets the wrong half is pointed at
+	// something that does not apply to the run they are reading about.
 	return fmt.Sprintf("Kept %s for %s: aged and inactive, but %s",
 		textfmt.Count(len(protected), "supersession terminus rule"), anvilName,
-		"archived rules point at them (re-run with --force to archive anyway)")
+		"archived rules point at them (set warden.allow_archive_terminus, or run `forge warden consolidate --force`, to archive them anyway)")
 }
 
 // ruleIDs projects rules onto their IDs for the reporting fields, which carry

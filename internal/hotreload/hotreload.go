@@ -424,11 +424,11 @@ func applyChanges(old, new *config.Config) []string {
 			old.Settings.CopilotWardenSampleRate, new.Settings.CopilotWardenSampleRate))
 	}
 
-	// The smelter resolves all three of its knobs through a closure at flush
+	// The smelter resolves every one of its knobs through a closure at flush
 	// time precisely so an edit takes effect without a restart — but a
 	// closure only ever sees the config the watcher swapped in, and nothing
 	// is swapped in unless applyChanges reports a change. Without these
-	// three entries the knobs were reloadable in shape and inert in fact.
+	// entries the knobs were reloadable in shape and inert in fact.
 	//
 	// Compared through the Resolved* helpers, so an edit between two
 	// spellings of one effective value (unset and an explicit 0.6) reports
@@ -446,6 +446,21 @@ func applyChanges(old, new *config.Config) []string {
 	if old.Settings.Warden.ResolvedArchiveAfterDays() != new.Settings.Warden.ResolvedArchiveAfterDays() {
 		changes = append(changes, fmt.Sprintf("warden.archive_after_days: %d → %d",
 			old.Settings.Warden.ResolvedArchiveAfterDays(), new.Settings.Warden.ResolvedArchiveAfterDays()))
+	}
+
+	if old.Settings.Warden.ResolvedInactiveAfterDays() != new.Settings.Warden.ResolvedInactiveAfterDays() {
+		changes = append(changes, fmt.Sprintf("warden.inactive_after_days: %d → %d",
+			old.Settings.Warden.ResolvedInactiveAfterDays(), new.Settings.Warden.ResolvedInactiveAfterDays()))
+	}
+
+	// Not a Resolved* comparison, because there is nothing to resolve: the
+	// zero value IS the shipped behaviour (the guard holds). This is the knob
+	// the terminus guard is built around — an operator reads which rules the
+	// sweep held and then flips it — so an edit that needs a restart to take
+	// effect is the one this list most has to carry.
+	if old.Settings.Warden.AllowArchiveTerminus != new.Settings.Warden.AllowArchiveTerminus {
+		changes = append(changes, fmt.Sprintf("warden.allow_archive_terminus: %v → %v",
+			old.Settings.Warden.AllowArchiveTerminus, new.Settings.Warden.AllowArchiveTerminus))
 	}
 
 	if old.Settings.Warden.ResolvedMaxRulesInFile() != new.Settings.Warden.ResolvedMaxRulesInFile() {

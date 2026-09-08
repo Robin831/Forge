@@ -93,3 +93,44 @@ func TestRenderConsolidateSummary_EvictionAndOccupancyAreBothReported(t *testing
 	assert.False(t, strings.Contains(text, "Archived stale:"),
 		"an over-cap eviction is not a rule that aged out")
 }
+
+// "Archived stale: 0" reads identically for a file with nothing stale in it
+// and one whose every stale rule is holding a supersession chain, so the CLI
+// names the held rules on their own line — and it is the reason
+// smelter.DisplayRuleID is exported, so the hostile ID pins that the
+// sanitization is applied at this call site and not just at the ones inside
+// the smelter package.
+func TestRenderConsolidateSummary_NamesProtectedTerminiAndSanitizesThem(t *testing.T) {
+	var out, errOut bytes.Buffer
+	err := renderConsolidateSummary(&out, &errOut, "anvil-a", t.TempDir(), smelter.ConsolidateResult{
+		InitialCount: 12,
+		FinalActive:  12,
+		Passes: smelter.PassResults{
+			ActiveRules:      12,
+			RuleCap:          300,
+			ProtectedTermini: []string{"terminus-1", "bad`rule\n@org/team"},
+		},
+	})
+	require.NoError(t, err)
+	text := out.String()
+	assert.Contains(t, text, "Kept (termini):  2 aged, inactive rule(s) with archived rules merged into them")
+	assert.Contains(t, text, "  - terminus-1")
+	assert.Contains(t, text, "  - bad?rule?org/team")
+	assert.Contains(t, text, "Re-run with --force to archive them anyway.")
+	for _, line := range strings.Split(text, "\n") {
+		assert.NotContains(t, line, "@org/team", "an unsanitized mention must not survive")
+	}
+}
+
+// A run that held nothing says nothing: the block is the operator's signal
+// that a decision is waiting, so printing it empty would make it noise.
+func TestRenderConsolidateSummary_OmitsTheTerminusBlockWhenNothingWasHeld(t *testing.T) {
+	var out, errOut bytes.Buffer
+	err := renderConsolidateSummary(&out, &errOut, "anvil-a", t.TempDir(), smelter.ConsolidateResult{
+		InitialCount: 12,
+		FinalActive:  12,
+		Passes:       smelter.PassResults{ActiveRules: 12, RuleCap: 300},
+	})
+	require.NoError(t, err)
+	assert.NotContains(t, out.String(), "Kept (termini):")
+}

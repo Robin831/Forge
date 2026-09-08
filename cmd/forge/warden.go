@@ -277,13 +277,13 @@ scheduled smelter runs:
   Pass 2 — archive rules that are BOTH older than archive_after_days and
            unused for inactive_after_days, then evict the lowest-value rules
            over max_rules_in_file.
-
-A rule that other, archived rules were merged into is kept even when both
-staleness thresholds are crossed: archiving it retires the merged content of
-the whole chain behind it, and every member of that chain is already archived,
-so nothing on the active file would say what went. Such rules are named in the
-summary; --force archives them anyway.
   Pass 3 — backfill the Paths field from each rule's source PR(s).
+
+A rule that other, archived rules were merged into is kept by Pass 2 even when
+both staleness thresholds are crossed: archiving it retires the merged content
+of the whole chain behind it, and every member of that chain is already
+archived, so nothing on the active file would say what went. Such rules are
+named in the summary; --force archives them anyway.
 
 Exits non-zero when Pass 1 did not get an answer for every cluster it found
 (a cluster the AI provider failed, or a pass that could not run at all). Such

@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -448,7 +449,7 @@ func TestRunStaleness_DisabledByDefault(t *testing.T) {
 		{ID: "r1", Category: "style", Pattern: "p", Check: "c", Added: "2020-01-01"},
 	}}
 
-	archived, protected := s.runStaleness(t.TempDir(), "anvil-a", rf)
+	archived, protected := s.runStaleness(t.TempDir(), "anvil-a", rf, nil)
 	assert.Empty(t, archived)
 	assert.Empty(t, protected)
 	assert.Len(t, rf.Rules, 1, "rf.Rules must be untouched when the staleness pass is disabled")
@@ -467,7 +468,7 @@ func TestRunStaleness_ZeroThresholdSkipsPass(t *testing.T) {
 		{ID: "r1", Added: "2020-01-01"},
 	}}
 
-	archived, protected := s.runStaleness(t.TempDir(), "anvil-a", rf)
+	archived, protected := s.runStaleness(t.TempDir(), "anvil-a", rf, nil)
 	assert.Empty(t, archived)
 	assert.Empty(t, protected)
 	assert.Len(t, rf.Rules, 1)
@@ -488,7 +489,7 @@ func TestRunStaleness_MovesOldRulesAndUpdatesRulesFile(t *testing.T) {
 		Added: "2020-01-01"}
 	rf := &warden.RulesFile{Rules: []warden.Rule{fresh, stale}}
 
-	archived, protected := s.runStaleness(t.TempDir(), "anvil-a", rf)
+	archived, protected := s.runStaleness(t.TempDir(), "anvil-a", rf, nil)
 	assert.Empty(t, protected, "nothing in the archive points at either rule")
 	require.Len(t, archived, 1)
 	assert.Equal(t, "stale", archived[0].ID)
@@ -735,7 +736,7 @@ func TestRunStaleness_ProtectsASupersessionTerminusFromTheAnvilsArchive(t *testi
 		WithArchiveAfterDays(func() int { return 180 }),
 	)
 	rf := newRules()
-	archived, protected := s.runStaleness(wt, "anvil-a", rf)
+	archived, protected := s.runStaleness(wt, "anvil-a", rf, nil)
 
 	require.Len(t, archived, 1)
 	assert.Equal(t, "plain", archived[0].ID)
@@ -751,7 +752,7 @@ func TestRunStaleness_ProtectsASupersessionTerminusFromTheAnvilsArchive(t *testi
 		WithAllowArchiveTerminus(func() bool { return true }),
 	)
 	rf = newRules()
-	archived, protected = forced.runStaleness(wt, "anvil-a", rf)
+	archived, protected = forced.runStaleness(wt, "anvil-a", rf, nil)
 	assert.Equal(t, []string{"terminus", "plain"}, archivedRuleIDs(archived))
 	assert.Empty(t, protected)
 	assert.Empty(t, rf.Rules)
@@ -770,7 +771,7 @@ func TestRunStaleness_MissingArchiveStillSweeps(t *testing.T) {
 	rf := &warden.RulesFile{Rules: []warden.Rule{
 		{ID: "old", Category: "style", Pattern: "p", Check: "c", Added: "2020-01-01"},
 	}}
-	archived, protected := s.runStaleness(t.TempDir(), "anvil-a", rf)
+	archived, protected := s.runStaleness(t.TempDir(), "anvil-a", rf, nil)
 
 	require.Len(t, archived, 1)
 	assert.Equal(t, "old", archived[0].ID)
@@ -797,7 +798,7 @@ func TestRunStaleness_InactivityHalfKeepsAnEmittedRule(t *testing.T) {
 			Added:       now.AddDate(0, 0, -400).Format("2006-01-02"),
 			LastEmitted: now.AddDate(0, 0, -200).Format("2006-01-02")},
 	}}
-	archived, protected := s.runStaleness(t.TempDir(), "anvil-a", rf)
+	archived, protected := s.runStaleness(t.TempDir(), "anvil-a", rf, nil)
 
 	assert.Equal(t, []string{"silent"}, archivedRuleIDs(archived))
 	assert.Empty(t, protected)
@@ -810,4 +811,112 @@ func archivedRuleIDs(rules []warden.ArchivedRule) []string {
 		out = append(out, r.ID)
 	}
 	return out
+}
+
+// countTerminusEvents counts the smelter_flushed rows announcing a rule the
+// terminus guard held, which is the surface the announcer suppresses.
+func countTerminusEvents(t *testing.T, db *state.DB) int {
+	t.Helper()
+	events, err := db.RecentEvents(200)
+	require.NoError(t, err)
+	n := 0
+	for _, e := range events {
+		if strings.Contains(e.Message, "supersession terminus rule") {
+			n++
+		}
+	}
+	return n
+}
+
+// A protected terminus is a condition only a human can clear: the sweep leaves
+// the rule untouched, so the next flush finds it in exactly the same state.
+// Unsuppressed, one held rule produces one log line and one feed row per flush
+// cycle forever, burying the rows that report actual changes — the same failure
+// contradictionAnnouncer exists to prevent, on the same code path.
+func TestRunStaleness_ProtectedTerminusAnnouncedOnceButAlwaysReported(t *testing.T) {
+	db := openTestDB(t)
+	wt := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(wt, ".forge"), 0o755))
+	archive := &warden.Archive{Rules: []warden.ArchivedRule{
+		{Rule: warden.Rule{ID: "member-a"}, SupersededBy: "terminus", ArchiveReason: warden.ArchiveReasonDuplicate},
+	}}
+	require.NoError(t, archive.Save(warden.ArchivePath(wt)))
+
+	s := New(db, time.Hour, map[string]string{},
+		WithArchiveAfterDays(func() int { return 180 }),
+	)
+	newRules := func() *warden.RulesFile {
+		return &warden.RulesFile{Rules: []warden.Rule{
+			{ID: "terminus", Category: "style", Pattern: "p", Check: "c", Added: "2020-01-01"},
+		}}
+	}
+
+	_, protected := s.runStaleness(wt, "anvil-a", newRules(), nil)
+	require.Equal(t, []string{"terminus"}, ruleIDs(protected))
+	require.Equal(t, 1, countTerminusEvents(t, db), "the held rule is announced on the flush that finds it")
+
+	_, protected = s.runStaleness(wt, "anvil-a", newRules(), nil)
+	assert.Equal(t, []string{"terminus"}, ruleIDs(protected),
+		"the full set is still returned: the commit and PR bodies describe the file, not the delta")
+	assert.Equal(t, 1, countTerminusEvents(t, db),
+		"a rule already announced does not produce a second feed row")
+
+	// A different anvil is a different condition for an operator to act on,
+	// so it is announced in its own right.
+	_, protected = s.runStaleness(wt, "anvil-b", newRules(), nil)
+	require.Len(t, protected, 1)
+	assert.Equal(t, 2, countTerminusEvents(t, db))
+}
+
+// The index the guard reads must include the supersessions THIS run has
+// decided on and not yet written. warden.MergeRule dates a merged rule from
+// its OLDEST member and carries the members' usage stamps — empty when they
+// were never emitted, which is the population of old near-duplicates Pass 1
+// exists to fold — so a merged rule can be aged AND inactive on the day it is
+// created. Reading the archive alone, Pass 2 archives it in the same run that
+// created it, retiring the whole chain with nothing left on the active file to
+// say what went.
+func TestRunStaleness_DoesNotRetireAChainThisRunJustCreated(t *testing.T) {
+	db := openTestDB(t)
+	wt := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(wt, ".forge"), 0o755))
+
+	s := New(db, time.Hour, map[string]string{},
+		WithArchiveAfterDays(func() int { return 180 }),
+	)
+	// Pass 1 merged two 400-day-old, never-emitted rules into "merged"; the
+	// archive on disk still knows nothing about it.
+	pending := []warden.MergeResult{{
+		Merged:      warden.Rule{ID: "merged"},
+		ReplacedIDs: []string{"member-a", "member-b"},
+	}}
+	merged := warden.Rule{ID: "merged", Category: "style", Pattern: "p", Check: "c",
+		Added: time.Now().UTC().AddDate(0, 0, -400).Format("2006-01-02")}
+
+	rf := &warden.RulesFile{Rules: []warden.Rule{merged}}
+	archived, protected := s.runStaleness(wt, "anvil-a", rf, pending)
+	assert.Empty(t, archived, "the merged rule holds a chain this run created")
+	assert.Equal(t, []string{"merged"}, ruleIDs(protected))
+	assert.Equal(t, []string{"merged"}, ruleIDs(rf.Rules))
+
+	// Without the pending supersessions it is swept on the day it was made,
+	// which is the defect the seeding closes.
+	rf = &warden.RulesFile{Rules: []warden.Rule{merged}}
+	archived, protected = s.runStaleness(wt, "anvil-b", rf, nil)
+	assert.Equal(t, []string{"merged"}, archivedRuleIDs(archived))
+	assert.Empty(t, protected)
+}
+
+// A merge whose replaced rule shares the merged rule's ID says nothing about
+// anything standing behind it — the same degenerate record
+// BuildSupersededByIndex drops from the archive — so the pending half must be
+// filtered on the same rules rather than protecting a rule on the strength of
+// its own retirement.
+func TestSupersessionIndex_DropsSelfReferentialAndEmptyPendingEntries(t *testing.T) {
+	idx := supersessionIndex(t.TempDir(), "anvil-a", []warden.MergeResult{
+		{Merged: warden.Rule{ID: "self"}, ReplacedIDs: []string{"self"}},
+		{Merged: warden.Rule{ID: ""}, ReplacedIDs: []string{"orphan"}},
+		{Merged: warden.Rule{ID: "real"}, ReplacedIDs: []string{"member"}},
+	})
+	assert.Equal(t, map[string][]string{"real": {"member"}}, idx)
 }

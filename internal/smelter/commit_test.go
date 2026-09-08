@@ -188,3 +188,72 @@ func TestBuildCommitMessage_MissingIDsRenderPlaceholder(t *testing.T) {
 	assert.Contains(t, msg, "- (no id)")
 	assert.Contains(t, msg, "- (no id) (stale)", "archive reason falls back to 'stale' when empty")
 }
+
+// The guard's whole value is that the rules it holds are NAMED: "0 archived"
+// reads identically for a file with nothing stale in it and one whose every
+// stale rule is holding a supersession chain. Each of the surfaces that names
+// them is asserted here, because dropping one is otherwise a silent regression
+// back to a sweep that quietly keeps rules and says nothing.
+func TestBuildCommitMessage_ProtectedTerminiSection(t *testing.T) {
+	msg := buildCommitMessage(PassResults{ProtectedTermini: []string{"rule-a", "rule-b"}})
+
+	assert.Contains(t, msg, "Protected (aged and inactive, kept as supersession termini): 2 rule(s)")
+	assert.Contains(t, msg, "- rule-a")
+	assert.Contains(t, msg, "- rule-b")
+	assert.Contains(t, msg, "warden.allow_archive_terminus")
+	assert.Contains(t, msg, "forge warden consolidate --force")
+}
+
+// The header and bullets come from formatIDSection, the one renderer of a
+// labelled rule-ID list — so a change to how an ID is rendered reaches this
+// section too, rather than every section but this one.
+func TestFormatProtectedTerminiSection_UsesTheSharedIDSection(t *testing.T) {
+	ids := []string{"rule-a", "rule-b"}
+	shared := formatIDSection("Protected (aged and inactive, kept as supersession termini)", ids)
+
+	assert.True(t, strings.HasPrefix(formatProtectedTerminiSection(ids), shared),
+		"the section must open with the shared renderer's output verbatim")
+}
+
+// A rule ID is whatever the distillation JSON returned and nothing validates a
+// character of it, while this body is published under Forge's own GitHub
+// identity — so the section is only safe if displayID actually reaches it.
+func TestBuildCommitMessage_ProtectedTerminiSanitizesRuleIDs(t *testing.T) {
+	msg := buildCommitMessage(PassResults{
+		ProtectedTermini: []string{"bad`rule\n@org/team"},
+	})
+
+	assert.Contains(t, msg, "- bad?rule?org/team")
+	for _, line := range strings.Split(msg, "\n") {
+		assert.NotContains(t, line, "@org/team", "an unsanitized mention must not survive")
+	}
+}
+
+// The PR body is the surface a reviewer reads before deciding whether the
+// chain can end, so it carries the same list plus the remedy.
+func TestBuildPRBody_NamesProtectedTerminiAndSanitizesThem(t *testing.T) {
+	body := buildPRBody(PassResults{
+		Added:            []string{"new-rule"},
+		ProtectedTermini: []string{"terminus-1", "bad`rule\n@org/team"},
+	})
+
+	assert.Contains(t, body, "**2 rule(s) were aged and inactive but not archived.**")
+	assert.Contains(t, body, "`terminus-1`")
+	assert.Contains(t, body, "`bad?rule?org/team`")
+	assert.Contains(t, body, "`warden.allow_archive_terminus`")
+}
+
+// The flush's own one-line summary: without it a run that held a chain reads
+// exactly like a run with nothing stale on the file.
+func TestPassResultsSummary_ReportsProtectedTermini(t *testing.T) {
+	assert.Contains(t,
+		passResultsSummary(PassResults{ProtectedTermini: []string{"a", "b"}}),
+		"2 kept as supersession termini")
+}
+
+// A protected terminus left the file exactly as the sweep found it, so it must
+// not make the flush commit and push an unchanged rules file. Pinned here
+// because the disjunction is one edit away from including it.
+func TestPassResults_ProtectedTerminiAloneAreNotAChange(t *testing.T) {
+	assert.False(t, PassResults{ProtectedTermini: []string{"terminus"}}.HasChanges())
+}

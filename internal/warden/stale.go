@@ -12,8 +12,14 @@ const staleAddedLayout = "2006-01-02"
 // same for a rule learned yesterday, a rule the reviewer saw last week, and a
 // rule that is old, unused and kept only because the archive still points at
 // it — and the third is the one an operator has an action for (re-run with
-// AllowArchiveTerminus). The reason is what turns a silent no-op into a line
-// that says which.
+// AllowArchiveTerminus).
+//
+// Only that third reading is acted on today: ArchiveStale reads
+// ReasonProtectedTerminus to fill StaleSweep.Protected, which is what every
+// surface reporting a held rule renders. The other reasons are the sweep's
+// own reasoning, observable in tests and available to a caller that wants to
+// explain one rule's fate; nothing renders them, so this type is deliberately
+// a plain named string with no formatting of its own.
 type StaleReason string
 
 const (
@@ -35,9 +41,6 @@ const (
 	// ReasonAgedAndInactive is the only reason that retires a rule.
 	ReasonAgedAndInactive StaleReason = "aged-and-inactive"
 )
-
-// String renders the reason for a log line or a summary column.
-func (r StaleReason) String() string { return string(r) }
 
 // StaleConfig is everything the staleness sweep decides from. It is a struct
 // and not two ints because the two thresholds are only half of it: the

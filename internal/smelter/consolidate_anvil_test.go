@@ -762,3 +762,92 @@ func sealWorktreeParent(t *testing.T, worktreeDir string) string {
 	require.NoError(t, os.Chmod(parent, 0o500))
 	return parent
 }
+
+// The off-cycle command builds its staleness inputs at its own call site, so
+// every input the scheduled flush's sweep honours has to be pinned here too:
+// deleting the supersession index this path supplies leaves the flush-path
+// tests green while `forge warden consolidate` retires a chain whose every
+// member is already archived.
+func TestConsolidateAnvil_ProtectsASupersessionTerminus(t *testing.T) {
+	setup := func(t *testing.T) string {
+		t.Helper()
+		dir := t.TempDir()
+		writeRulesFile(t, dir, &warden.RulesFile{Rules: []warden.Rule{
+			{ID: "terminus", Category: "style", Pattern: "p", Check: "c", Source: warden.SourceList{"manual"}, Added: "2020-01-01"},
+			{ID: "plain", Category: "style", Pattern: "p2", Check: "c2", Source: warden.SourceList{"manual"}, Added: "2020-01-01"},
+		}})
+		archive := &warden.Archive{Rules: []warden.ArchivedRule{
+			{Rule: warden.Rule{ID: "member-a"}, SupersededBy: "terminus", ArchiveReason: warden.ArchiveReasonDuplicate},
+			{Rule: warden.Rule{ID: "long-gone"}, ArchiveReason: warden.ArchiveReasonStale},
+		}}
+		require.NoError(t, archive.Save(warden.ArchivePath(dir)))
+		return dir
+	}
+	now := time.Date(2026, 5, 20, 0, 0, 0, 0, time.UTC)
+
+	dir := setup(t)
+	res, err := ConsolidateAnvil(context.Background(), ConsolidateOptions{
+		AnvilPath:        dir,
+		AnvilName:        "test",
+		ArchiveAfterDays: 30,
+		Now:              now,
+	})
+	require.NoError(t, err)
+	require.Len(t, res.Passes.Archived, 1)
+	assert.Equal(t, "plain", res.Passes.Archived[0].ID)
+	assert.Equal(t, []string{"terminus"}, res.Passes.ProtectedTermini,
+		"the held rule must be named, not merely absent from the archived count")
+
+	active, err := warden.LoadRules(dir)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"terminus"}, ruleIDs(active.Rules),
+		"a protected terminus stays on the active file on disk")
+
+	// --force is the operator's answer once they have read which rules were
+	// held, and it must reach this pass rather than only the flush's.
+	dir = setup(t)
+	forced, err := ConsolidateAnvil(context.Background(), ConsolidateOptions{
+		AnvilPath:            dir,
+		AnvilName:            "test",
+		ArchiveAfterDays:     30,
+		AllowArchiveTerminus: true,
+		Now:                  now,
+	})
+	require.NoError(t, err)
+	assert.ElementsMatch(t, []string{"terminus", "plain"}, archivedRuleIDs(forced.Passes.Archived))
+	assert.Empty(t, forced.Passes.ProtectedTermini)
+
+	active, err = warden.LoadRules(dir)
+	require.NoError(t, err)
+	assert.Empty(t, active.Rules)
+}
+
+// The inactivity half of the test, at this call site: an aged rule a review
+// emitted yesterday is not stale. Without InactiveAfterDays reaching the sweep
+// from here, `forge warden consolidate` archives a rule the reviewer is
+// actively being shown.
+func TestConsolidateAnvil_InactivityHalfKeepsAnEmittedRule(t *testing.T) {
+	dir := t.TempDir()
+	now := time.Date(2026, 5, 20, 0, 0, 0, 0, time.UTC)
+	writeRulesFile(t, dir, &warden.RulesFile{Rules: []warden.Rule{
+		{ID: "old-but-used", Category: "style", Pattern: "p", Check: "c",
+			Source: warden.SourceList{"manual"}, Added: "2020-01-01",
+			LastEmitted: now.AddDate(0, 0, -1).Format("2006-01-02")},
+		{ID: "old-and-silent", Category: "style", Pattern: "p2", Check: "c2",
+			Source: warden.SourceList{"manual"}, Added: "2020-01-01"},
+	}})
+
+	res, err := ConsolidateAnvil(context.Background(), ConsolidateOptions{
+		AnvilPath:         dir,
+		AnvilName:         "test",
+		ArchiveAfterDays:  30,
+		InactiveAfterDays: 30,
+		Now:               now,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, []string{"old-and-silent"}, archivedRuleIDs(res.Passes.Archived))
+
+	active, err := warden.LoadRules(dir)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"old-but-used"}, ruleIDs(active.Rules))
+}
