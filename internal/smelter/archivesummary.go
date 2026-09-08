@@ -21,11 +21,13 @@ import (
 // consolidation superseded: reason "duplicate", superseded_by naming the rule
 // each was merged into.
 //
-// It exists because two callers need the same entries for opposite reasons —
+// It exists because two consumers need the same entries for opposite reasons —
 // archiveRules to persist them, and the archive summary to count them and to
 // see that their content moved forward into a rule that is still on the file.
-// Derived twice, the summary could report a fold as a loss on the strength of
-// a superseded_by mapping the persisted entries never carried.
+// So each run calls it ONCE and carries the result to both: derived twice, the
+// summary could report a fold as a loss on the strength of a superseded_by
+// mapping the persisted entries never carried, and the two derivations would
+// stamp one fold with two clock readings besides.
 //
 // A rule the summary does not name is left with an empty superseded_by, which
 // is what BuildSupersededByIndex reads as "merged into nothing" — the same
@@ -62,7 +64,10 @@ func duplicateArchiveEntries(replaced []warden.Rule, summary []warden.MergeResul
 //
 // A run with nothing to say says nothing (ArchiveSummary.HasSubstance): a line
 // of zeros on every flush of every anvil is the noise that buries the one
-// flush where a class went unrepresented.
+// flush where a class went unrepresented. The summary is RETURNED whether or
+// not it was rendered, because logging is not a surface a caller can read:
+// both call sites carry it onto PassResults.ArchiveSummary, from which the
+// commit body, the PR body and `forge warden consolidate` name the classes.
 //
 // The log line always carries the whole summary. The activity-feed event is
 // emitted only when a class went unrepresented, because the counts already

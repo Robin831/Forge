@@ -398,7 +398,7 @@ func (s *Smelter) flushAnvil(ctx context.Context, anvilName, anvilPath string, r
 	if err != nil {
 		return err
 	}
-	rf, passes, archived, flushedIDs := built.rules, built.passes, built.archived, built.flushedIDs
+	rf, passes, flushedIDs := built.rules, built.passes, built.flushedIDs
 
 	if !passes.HasChanges() {
 		// All rules were duplicates (already in the file) or malformed AND
@@ -421,7 +421,7 @@ func (s *Smelter) flushAnvil(ctx context.Context, anvilName, anvilPath string, r
 	//    archive entry for the rules it replaced (the bead contract). If
 	//    either step fails we abort before staging/commit/push, leaving the
 	//    pending queue intact for the next flush.
-	if err := persistRulesAndArchive(wt.Path, rf, archived, passes.Consolidated, passes.Archived); err != nil {
+	if err := persistRulesAndArchive(wt.Path, rf, built.duplicates, passes.Archived); err != nil {
 		return fmt.Errorf("persisting warden rules for %s: %w", anvilName, err)
 	}
 
@@ -451,9 +451,19 @@ func (s *Smelter) flushAnvil(ctx context.Context, anvilName, anvilPath string, r
 // the per-pass outcomes to render, the entries to archive, and the pending
 // queue rows to delete.
 type flushBuild struct {
-	rules      *warden.RulesFile
-	passes     PassResults
-	archived   []warden.Rule
+	rules  *warden.RulesFile
+	passes PassResults
+	// archived is Pass 1's raw superseded rules, kept for the callers that
+	// report what the consolidation replaced.
+	archived []warden.Rule
+	// duplicates is those same rules as the archive entries the flush will
+	// persist, derived ONCE (duplicateArchiveEntries) and carried rather than
+	// re-derived at the write. Derived twice, the two derivations take two
+	// clocks — the entries the summary counted and the entries on disk would
+	// carry different ArchivedAt/LastSeen stamps for one fold — and nothing
+	// but their construction keeps their superseded_by mapping agreeing at
+	// all, which is the mapping that decides whether a class reads as lost.
+	duplicates []warden.ArchivedRule
 	flushedIDs []int
 }
 
@@ -612,9 +622,16 @@ func (s *Smelter) buildFlushRules(ctx context.Context, wtPath, anvilName string,
 	// supersessionIndex over the same arguments the staleness guard was handed
 	// (this worktree, this flush's merge summary), so the summary cannot name
 	// a chain the guard read differently.
+	//
+	// The entries are derived here and CARRIED to the write (flushBuild.
+	// duplicates), not derived again inside archiveRules: one derivation is
+	// what makes the summary a statement about the entries that land on disk
+	// rather than about a second set built from the same inputs at a second
+	// clock reading.
 	duplicateEntries := duplicateArchiveEntries(archived, consolidationSummary, time.Now().UTC())
+	var archiveSummary warden.ArchiveSummary
 	if len(duplicateEntries)+len(staleArchived) > 0 {
-		reportArchiveSummary(anvilName, beforePasses, rf.Rules,
+		archiveSummary = reportArchiveSummary(anvilName, beforePasses, rf.Rules,
 			append(append([]warden.ArchivedRule(nil), duplicateEntries...), staleArchived...),
 			supersessionIndex(wtPath, anvilName, consolidationSummary),
 			func(message string) {
@@ -637,10 +654,12 @@ func (s *Smelter) buildFlushRules(ctx context.Context, wtPath, anvilName string,
 			// eviction pass was handed, read through the one accessor, so the
 			// reported occupancy cannot be measured against a ceiling other
 			// than the one that ran.
-			ActiveRules: len(rf.Rules),
-			RuleCap:     ruleCap,
+			ActiveRules:    len(rf.Rules),
+			RuleCap:        ruleCap,
+			ArchiveSummary: archiveSummary,
 		},
 		archived:   archived,
+		duplicates: duplicateEntries,
 		flushedIDs: flushedIDs,
 	}, nil
 }
@@ -1013,9 +1032,9 @@ func (s *Smelter) ruleCap() int {
 //
 // This is a free function (not a method) so the off-cycle CLI consolidate
 // command shares the same persistence path as the scheduled smelter loop.
-func persistRulesAndArchive(wtPath string, rf *warden.RulesFile, archived []warden.Rule, summary []warden.MergeResult, stale []warden.ArchivedRule) error {
-	if len(archived) > 0 || len(stale) > 0 {
-		if err := archiveRules(wtPath, archived, summary, stale); err != nil {
+func persistRulesAndArchive(wtPath string, rf *warden.RulesFile, duplicates, stale []warden.ArchivedRule) error {
+	if len(duplicates) > 0 || len(stale) > 0 {
+		if err := archiveRules(wtPath, duplicates, stale); err != nil {
 			return fmt.Errorf("archiving rules: %w", err)
 		}
 	}
@@ -1026,21 +1045,25 @@ func persistRulesAndArchive(wtPath string, rf *warden.RulesFile, archived []ward
 }
 
 // archiveRules persists archive entries from Pass 1 (duplicates) and Pass 2
-// (stale) to the per-anvil archive store. Pass 1 entries are added with
-// reason="duplicate" and superseded_by set to the merged rule's ID. Pass 2
-// entries are appended verbatim, preserving the LastSeen and ArchiveReason
-// values supplied by ArchiveStale.
-func archiveRules(wtPath string, archived []warden.Rule, summary []warden.MergeResult, stale []warden.ArchivedRule) error {
+// (stale) to the per-anvil archive store. Both lists are appended verbatim,
+// preserving the SupersededBy, LastSeen and ArchiveReason values their
+// producers stamped.
+//
+// The Pass 1 entries arrive already built (duplicateArchiveEntries, run once
+// per run by the caller that also reported the archive summary) rather than
+// being derived here from the replaced rules and the merge summary. Derived
+// at the write instead, this function would stamp them from its own clock and
+// map superseded_by from its own reading of the summary, so the entries the
+// summary counted and the entries on disk would be two sets that only happen
+// to agree — and the one thing that must not differ between them is exactly
+// the superseded_by mapping the class analysis reads.
+func archiveRules(wtPath string, duplicates, stale []warden.ArchivedRule) error {
 	archivePath := warden.ArchivePath(wtPath)
 	archive, err := warden.LoadArchive(archivePath)
 	if err != nil {
 		return fmt.Errorf("loading archive: %w", err)
 	}
-	// Through duplicateArchiveEntries rather than a superseded_by map built
-	// here, so what this persists is what the archive summary counted:
-	// derived twice, a fold could be written with a successor the summary
-	// never saw, and reported as a class lost.
-	for _, ar := range duplicateArchiveEntries(archived, summary, time.Now().UTC()) {
+	for _, ar := range duplicates {
 		archive.AddArchived(ar)
 	}
 	for _, ar := range stale {

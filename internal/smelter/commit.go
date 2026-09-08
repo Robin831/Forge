@@ -80,6 +80,25 @@ type PassResults struct {
 	// supersession chain, and only the second has something for an operator
 	// to decide.
 	ProtectedTermini []string
+
+	// ArchiveSummary is what this run took off the active rules file, as
+	// warden.SummarizeArchiveRun described it: the counts split by archive
+	// reason, and the supersession classes the run left with no rule of their
+	// chain on the file.
+	//
+	// The counts here duplicate what Archived already holds and are not read
+	// by any renderer for that reason; the class list is the field that has
+	// no other source. It is carried on the results rather than only logged
+	// because a log line is not a surface a caller can read: the commit body,
+	// the PR body and `forge warden consolidate` all name what left the file,
+	// and a class going unrepresented is the one thing among those a count
+	// cannot state.
+	//
+	// Like ProtectedTermini and Contradictions it is reported, never acted on,
+	// so it is NOT part of HasChanges — a run whose only outcome is an empty
+	// summary changed nothing, and a run that did archive something already
+	// says so through Archived.
+	ArchiveSummary warden.ArchiveSummary
 }
 
 // HasChanges reports whether at least one pass produced an outcome. When
@@ -165,6 +184,9 @@ func buildCommitBody(passes PassResults) string {
 	if s := formatProtectedTerminiSection(passes.ProtectedTermini); s != "" {
 		sections = append(sections, s)
 	}
+	if s := formatUnrepresentedClassesSection(passes.ArchiveSummary); s != "" {
+		sections = append(sections, s)
+	}
 	if s := formatContradictionsSection(passes.Contradictions); s != "" {
 		sections = append(sections, s)
 	}
@@ -198,6 +220,24 @@ func formatProtectedTerminiSection(ids []string) string {
 	return formatIDSection("Protected (aged and inactive, kept as supersession termini)", ids) +
 		"\nArchived rules were merged into each of these, so retiring one retires the chain behind it. " +
 		"Re-run with warden.allow_archive_terminus (or `forge warden consolidate --force`) to take them anyway."
+}
+
+// formatUnrepresentedClassesSection names the supersession classes this run
+// left with nothing on the active file — the rules that carried merged
+// content for a whole chain, archived while every member of that chain was
+// already in the archive.
+//
+// It renders only when there is a class to name. The counts beside it are
+// already in the "Archived:" section, and the whole argument for naming the
+// classes is that those counts cannot: `archive 12 rules` reads identically
+// for twelve independent checks and for one chain twelve deep.
+func formatUnrepresentedClassesSection(summary warden.ArchiveSummary) string {
+	if len(summary.UnrepresentedClasses) == 0 {
+		return ""
+	}
+	return formatIDSection("Classes now unrepresented", summary.UnrepresentedClasses) +
+		"\nEach of these carried the merged content of a supersession chain whose every other member is already archived, " +
+		"so no rule on the active file covers it now. Recover one from the archive by ID while the entry is still findable by name."
 }
 
 // protectedTerminiLine is the one-line form the flush logs and the activity
@@ -503,6 +543,12 @@ func buildPRBody(passes PassResults) string {
 	if n := len(passes.ProtectedTermini); n > 0 {
 		lines = append(lines, "", fmt.Sprintf("**%d rule(s) were aged and inactive but not archived.** Archived rules were merged into each of them, so retiring one would retire the merged content of the whole chain behind it with nothing left on the active file to say what went. Re-run with `warden.allow_archive_terminus` (or `forge warden consolidate --force`) to archive them anyway:", n))
 		for _, id := range passes.ProtectedTermini {
+			lines = append(lines, fmt.Sprintf("- `%s`", displayID(id)))
+		}
+	}
+	if ids := passes.ArchiveSummary.UnrepresentedClasses; len(ids) > 0 {
+		lines = append(lines, "", fmt.Sprintf("**%d supersession class(es) left the active file with nothing representing them.** Archived rules had been merged into each of these, and every other member of those chains is already archived, so no rule on the file covers them now. Recover one from the archive by ID while the entry is still findable by name:", len(ids)))
+		for _, id := range ids {
 			lines = append(lines, fmt.Sprintf("- `%s`", displayID(id)))
 		}
 	}

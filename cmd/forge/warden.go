@@ -447,6 +447,18 @@ func renderConsolidateSummary(out, errOut io.Writer, anvilName, anvilPath string
 		}
 		fmt.Fprintln(out, "  Re-run with --force to archive them anyway.")
 	}
+	if ids := result.Passes.ArchiveSummary.UnrepresentedClasses; len(ids) > 0 {
+		// The counterpart of the line above, for the chains this run DID
+		// take — through --force, or because the last member left by a
+		// route the terminus guard never sees (the file ceiling, a fold).
+		// Named here because the archive counts printed above cannot: an
+		// operator who has just retired a whole class has to know its ID
+		// today, while the archive entry is still findable by name.
+		fmt.Fprintf(out, "Unrepresented:   %d supersession class(es) with nothing left on the active file\n", len(ids))
+		for _, id := range ids {
+			fmt.Fprintf(out, "  - %s\n", smelter.DisplayRuleID(id))
+		}
+	}
 	if len(result.Passes.Contradictions) > 0 {
 		// Printed to stderr, and never folded into the change summary
 		// above: nothing was written for these, and a human has to pick

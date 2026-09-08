@@ -82,3 +82,57 @@ func TestReportArchiveSummaryEmitsOnlyForAnUnrepresentedClass(t *testing.T) {
 	assert.Contains(t, messages[0], "classes now unrepresented: terminus")
 	assert.Contains(t, messages[0], "anvil-a")
 }
+
+// The entries the summary counted must be the entries that land in the
+// archive store — same superseded_by, same stamps. Derived a second time at
+// the write, one fold is recorded under two clock readings and its mapping is
+// only accidentally the one the class analysis read.
+func TestTheArchiveWritePersistsTheEntriesTheSummaryCounted(t *testing.T) {
+	dir := t.TempDir()
+	stamped := time.Date(2026, 9, 8, 9, 30, 0, 0, time.UTC)
+	entries := duplicateArchiveEntries(
+		[]warden.Rule{{ID: "dup", Category: "style", Pattern: "p", Check: "c"}},
+		[]warden.MergeResult{{Merged: warden.Rule{ID: "merged"}, ReplacedIDs: []string{"dup"}}},
+		stamped,
+	)
+
+	summary := warden.SummarizeArchiveRun(
+		[]warden.Rule{{ID: "dup"}, {ID: "merged"}}, []warden.Rule{{ID: "merged"}}, entries)
+	require.Equal(t, 1, summary.Duplicate)
+
+	require.NoError(t, archiveRules(dir, entries, nil))
+
+	a, err := warden.LoadArchive(warden.ArchivePath(dir))
+	require.NoError(t, err)
+	require.Len(t, a.Rules, 1)
+	assert.Equal(t, "merged", a.Rules[0].SupersededBy)
+	assert.True(t, a.Rules[0].ArchivedAt.Equal(stamped),
+		"the write must not re-stamp an entry the summary already counted")
+}
+
+// The summary has to reach a surface a caller can read: logging it leaves the
+// class list nowhere the commit body, the PR body or the CLI can find it.
+func TestUnrepresentedClassesReachTheCommitAndPRBodies(t *testing.T) {
+	passes := PassResults{
+		Archived: []warden.ArchivedRule{
+			{Rule: warden.Rule{ID: "terminus"}, ArchiveReason: warden.ArchiveReasonStale},
+		},
+		ArchiveSummary: warden.ArchiveSummary{
+			Archived:             1,
+			Stale:                1,
+			UnrepresentedClasses: []string{"terminus"},
+		},
+	}
+
+	assert.Contains(t, buildCommitBody(passes), "terminus")
+	assert.Contains(t, buildCommitBody(passes), "Classes now unrepresented")
+	assert.Contains(t, buildPRBody(passes), "terminus")
+
+	// And a run that left every class represented says nothing about them:
+	// the section exists to name a loss, not to report its absence in every
+	// commit message the smelter writes.
+	quiet := passes
+	quiet.ArchiveSummary.UnrepresentedClasses = nil
+	assert.NotContains(t, buildCommitBody(quiet), "Classes now unrepresented")
+	assert.NotContains(t, buildPRBody(quiet), "supersession class")
+}
