@@ -134,3 +134,49 @@ func TestRenderConsolidateSummary_OmitsTheTerminusBlockWhenNothingWasHeld(t *tes
 	require.NoError(t, err)
 	assert.NotContains(t, out.String(), "Kept (termini):")
 }
+
+// The counterpart of the terminus block, for the chains this run DID take, and
+// with the same reason for pinning it here: the IDs come out of distillation
+// JSON, so the sanitization has to be applied at this call site and not only
+// inside the smelter package.
+func TestRenderConsolidateSummary_NamesUnrepresentedClassesAndSanitizesThem(t *testing.T) {
+	var out, errOut bytes.Buffer
+	err := renderConsolidateSummary(&out, &errOut, "anvil-a", t.TempDir(), smelter.ConsolidateResult{
+		InitialCount: 12,
+		FinalActive:  10,
+		Passes: smelter.PassResults{
+			ActiveRules: 10,
+			RuleCap:     300,
+			ArchiveSummary: warden.ArchiveSummary{
+				Archived:             2,
+				Stale:                2,
+				UnrepresentedClasses: []string{"class-1", "bad`rule\n@org/team"},
+			},
+		},
+	})
+	require.NoError(t, err)
+	text := out.String()
+	assert.Contains(t, text, "Unrepresented:   2 supersession class(es) with nothing left on the active file")
+	assert.Contains(t, text, "  - class-1")
+	assert.Contains(t, text, "  - bad?rule?org/team")
+	for _, line := range strings.Split(text, "\n") {
+		assert.NotContains(t, line, "@org/team", "an unsanitized mention must not survive")
+	}
+}
+
+// A run that left every class represented says nothing about them: the block
+// names a loss, and printed empty it would be noise on every consolidation.
+func TestRenderConsolidateSummary_OmitsTheUnrepresentedBlockWhenNoClassWasLost(t *testing.T) {
+	var out, errOut bytes.Buffer
+	err := renderConsolidateSummary(&out, &errOut, "anvil-a", t.TempDir(), smelter.ConsolidateResult{
+		InitialCount: 12,
+		FinalActive:  11,
+		Passes: smelter.PassResults{
+			ActiveRules:    11,
+			RuleCap:        300,
+			ArchiveSummary: warden.ArchiveSummary{Archived: 1, Stale: 1},
+		},
+	})
+	require.NoError(t, err)
+	assert.NotContains(t, out.String(), "Unrepresented:")
+}

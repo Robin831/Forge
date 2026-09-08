@@ -547,7 +547,11 @@ func buildPRBody(passes PassResults) string {
 		}
 	}
 	if ids := passes.ArchiveSummary.UnrepresentedClasses; len(ids) > 0 {
-		lines = append(lines, "", fmt.Sprintf("**%d supersession class(es) left the active file with nothing representing them.** Archived rules had been merged into each of these, and every other member of those chains is already archived, so no rule on the file covers them now. Recover one from the archive by ID while the entry is still findable by name:", len(ids)))
+		lines = append(lines, "", fmt.Sprintf(
+			"**%d supersession class(es) left the active file with nothing representing them.** "+
+				"Archived rules had been merged into each of these, and every other member of those chains "+
+				"is already archived, so no rule on the file covers them now. Recover one from the archive "+
+				"by ID while the entry is still findable by name:", len(ids)))
 		for _, id := range ids {
 			lines = append(lines, fmt.Sprintf("- `%s`", displayID(id)))
 		}

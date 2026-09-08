@@ -453,10 +453,7 @@ func (s *Smelter) flushAnvil(ctx context.Context, anvilName, anvilPath string, r
 type flushBuild struct {
 	rules  *warden.RulesFile
 	passes PassResults
-	// archived is Pass 1's raw superseded rules, kept for the callers that
-	// report what the consolidation replaced.
-	archived []warden.Rule
-	// duplicates is those same rules as the archive entries the flush will
+	// duplicates is Pass 1's superseded rules as the archive entries the flush will
 	// persist, derived ONCE (duplicateArchiveEntries) and carried rather than
 	// re-derived at the write. Derived twice, the two derivations take two
 	// clocks — the entries the summary counted and the entries on disk would
@@ -629,10 +626,10 @@ func (s *Smelter) buildFlushRules(ctx context.Context, wtPath, anvilName string,
 	// rather than about a second set built from the same inputs at a second
 	// clock reading.
 	duplicateEntries := duplicateArchiveEntries(archived, consolidationSummary, time.Now().UTC())
+	archivedEntries := append(append([]warden.ArchivedRule(nil), duplicateEntries...), staleArchived...)
 	var archiveSummary warden.ArchiveSummary
-	if len(duplicateEntries)+len(staleArchived) > 0 {
-		archiveSummary = reportArchiveSummary(anvilName, beforePasses, rf.Rules,
-			append(append([]warden.ArchivedRule(nil), duplicateEntries...), staleArchived...),
+	if len(archivedEntries) > 0 {
+		archiveSummary = reportArchiveSummary(anvilName, beforePasses, rf.Rules, archivedEntries,
 			supersessionIndex(wtPath, anvilName, consolidationSummary),
 			func(message string) {
 				_ = s.db.LogEvent(state.EventSmelterFlushed, message, "", anvilName)
@@ -658,7 +655,6 @@ func (s *Smelter) buildFlushRules(ctx context.Context, wtPath, anvilName string,
 			RuleCap:        ruleCap,
 			ArchiveSummary: archiveSummary,
 		},
-		archived:   archived,
 		duplicates: duplicateEntries,
 		flushedIDs: flushedIDs,
 	}, nil

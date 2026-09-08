@@ -1,12 +1,15 @@
 package smelter
 
 import (
+	"context"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/Robin831/Forge/internal/state"
 	"github.com/Robin831/Forge/internal/warden"
 )
 
@@ -135,4 +138,102 @@ func TestUnrepresentedClassesReachTheCommitAndPRBodies(t *testing.T) {
 	quiet.ArchiveSummary.UnrepresentedClasses = nil
 	assert.NotContains(t, buildCommitBody(quiet), "Classes now unrepresented")
 	assert.NotContains(t, buildPRBody(quiet), "supersession class")
+}
+
+// Everything above tests the summary from its own inputs. These two pin the
+// ASSEMBLY at the entry points the daemon and the operator actually run, which
+// is where every failure mode is silent: a beforePasses snapshot taken after
+// the passes have mutated rf.Rules in place makes the startedActive filter drop
+// every archived rule, a missed entry list or supersession index makes the walk
+// find no chain, and a summary that never reaches PassResults leaves the commit
+// body, the PR body and the CLI with nothing to render. Each one reports no
+// classes and keeps every other assertion in this package passing.
+
+// The scheduled flush's half. The archive holds member-a merged into terminus,
+// and the file ceiling — which deliberately does not honour the terminus guard
+// — evicts terminus, so the chain ends the run with nothing on the active file.
+func TestBuildFlushRules_NamesTheClassTheCeilingLeftUnrepresented(t *testing.T) {
+	db := openTestDB(t)
+	dir := t.TempDir()
+	withStubFetcher(t, func(_ context.Context, _ string, _ int) ([]string, error) { return nil, nil })
+
+	older := time.Now().UTC().AddDate(0, 0, -20).Format("2006-01-02")
+	newer := time.Now().UTC().AddDate(0, 0, -1).Format("2006-01-02")
+	require.NoError(t, warden.SaveRules(dir, &warden.RulesFile{Rules: []warden.Rule{
+		{ID: "terminus", Category: "other", Pattern: "terminus pattern", Check: "terminus check", Added: older},
+		{ID: "keeper", Category: "other", Pattern: "keeper pattern", Check: "keeper check", Added: newer},
+	}}))
+	archive := &warden.Archive{Rules: []warden.ArchivedRule{
+		{Rule: warden.Rule{ID: "member-a"}, SupersededBy: "terminus", ArchiveReason: warden.ArchiveReasonDuplicate},
+	}}
+	require.NoError(t, archive.Save(warden.ArchivePath(dir)))
+
+	s := New(db, time.Hour, map[string]string{},
+		WithArchiveAfterDays(func() int { return 180 }),
+		WithMaxRulesInFile(func() int { return 1 }),
+		WithDedupThreshold(func() float64 { return -1 }),
+	)
+
+	built, err := s.buildFlushRules(context.Background(), dir, "anvil-a", nil)
+	require.NoError(t, err)
+
+	require.Len(t, built.passes.Archived, 1)
+	require.Equal(t, "terminus", built.passes.Archived[0].ID, "the ceiling evicts the older rule")
+	assert.Equal(t, []string{"terminus"}, built.passes.ArchiveSummary.UnrepresentedClasses,
+		"the flush must carry the assembled summary onto PassResults, where every renderer reads it")
+	assert.Equal(t, 1, built.passes.ArchiveSummary.OverCap)
+
+	// And it reaches the feed, which is the only surface that says a class went
+	// unrepresented — the counts already get there from the passes themselves.
+	events, err := db.RecentEvents(20)
+	require.NoError(t, err)
+	var found bool
+	for _, e := range events {
+		if e.Type == state.EventSmelterFlushed && strings.Contains(e.Message, "classes now unrepresented: terminus") {
+			found = true
+		}
+	}
+	assert.True(t, found, "the class list must reach the activity feed: %+v", events)
+}
+
+// The operator's half: `forge warden consolidate --force` is how a terminus the
+// guard held gets archived anyway, so it is exactly the run that has to name
+// the class it took.
+func TestConsolidateAnvil_NamesTheClassAForcedSweepTook(t *testing.T) {
+	setup := func(t *testing.T) string {
+		t.Helper()
+		dir := t.TempDir()
+		writeRulesFile(t, dir, &warden.RulesFile{Rules: []warden.Rule{
+			{ID: "terminus", Category: "style", Pattern: "p", Check: "c", Source: warden.SourceList{"manual"}, Added: "2020-01-01"},
+		}})
+		archive := &warden.Archive{Rules: []warden.ArchivedRule{
+			{Rule: warden.Rule{ID: "member-a"}, SupersededBy: "terminus", ArchiveReason: warden.ArchiveReasonDuplicate},
+		}}
+		require.NoError(t, archive.Save(warden.ArchivePath(dir)))
+		return dir
+	}
+	now := time.Date(2026, 5, 20, 0, 0, 0, 0, time.UTC)
+
+	forced, err := ConsolidateAnvil(context.Background(), ConsolidateOptions{
+		AnvilPath:            setup(t),
+		AnvilName:            "test",
+		ArchiveAfterDays:     30,
+		AllowArchiveTerminus: true,
+		Now:                  now,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, []string{"terminus"}, forced.Passes.ArchiveSummary.UnrepresentedClasses,
+		"an operator who has just retired a whole class must be told its ID while the archive entry is findable by name")
+
+	// Without --force the guard holds the rule, so nothing left the file and
+	// there is no class to name: the two lines are counterparts, never both.
+	held, err := ConsolidateAnvil(context.Background(), ConsolidateOptions{
+		AnvilPath:        setup(t),
+		AnvilName:        "test",
+		ArchiveAfterDays: 30,
+		Now:              now,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, []string{"terminus"}, held.Passes.ProtectedTermini)
+	assert.Empty(t, held.Passes.ArchiveSummary.UnrepresentedClasses)
 }

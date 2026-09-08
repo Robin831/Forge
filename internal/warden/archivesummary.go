@@ -52,7 +52,10 @@ type ArchiveSummary struct {
 	// UnrepresentedClasses names the supersession termini this run archived
 	// while leaving no rule of their chain on the active file. Sorted and
 	// deduplicated, so the rendered line is stable however the archive
-	// entries were ordered.
+	// entries were ordered, and one entry per chain rather than one per link
+	// (see maximalClasses): a chain broken in a single run answers the
+	// terminus test at every intermediate member, and a list of those reads
+	// as several classes lost where one was.
 	UnrepresentedClasses []string
 }
 
@@ -66,7 +69,10 @@ type ArchiveSummary struct {
 // The trailing clause is always present, reading "none" when the run left
 // every class represented. Omitted, a line that checked and found nothing
 // would be byte-identical to one written before the check existed, which is
-// the reading this summary exists to make impossible.
+// the reading this summary exists to make impossible. It is capped at
+// maxNamedClasses IDs with a count of the rest, since this is a one-line
+// surface; the whole list stays on UnrepresentedClasses for the surfaces that
+// render it in full.
 func (s ArchiveSummary) String() string {
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "archived %d rule(s) (%d stale, %d duplicate", s.Archived, s.Stale, s.Duplicate)
@@ -78,8 +84,28 @@ func (s ArchiveSummary) String() string {
 		sb.WriteString("none")
 		return sb.String()
 	}
-	sb.WriteString(strings.Join(safeClassNames(s.UnrepresentedClasses), ", "))
+	sb.WriteString(namedClasses(s.UnrepresentedClasses))
 	return sb.String()
+}
+
+// maxNamedClasses bounds how many IDs the one-line form names. The class list
+// is bounded only by how many of a run's archived entries are termini with no
+// live chain member, and a single file-ceiling run can evict hundreds of rules
+// at once — while this string is a daemon.log record and an activity-feed row
+// Hearth renders as one line. It is the bound smelter's protectedTerminiLine
+// puts on the same shape of list for the same reason; the multi-line commit
+// body, the PR body and `forge warden consolidate` still carry the whole set
+// off UnrepresentedClasses.
+const maxNamedClasses = 5
+
+// namedClasses renders the class IDs for that line: sanitized, and capped with
+// a count of what the cap left out rather than trailing off.
+func namedClasses(ids []string) string {
+	safe := safeClassNames(ids)
+	if len(safe) <= maxNamedClasses {
+		return strings.Join(safe, ", ")
+	}
+	return fmt.Sprintf("%s and %d more", strings.Join(safe[:maxNamedClasses], ", "), len(safe)-maxNamedClasses)
 }
 
 // HasSubstance reports whether the run has anything to say: it archived
@@ -161,7 +187,7 @@ func SummarizeArchiveRunWithIndex(before, after []Rule, archived []ArchivedRule,
 	}
 
 	seen := make(map[string]struct{})
-	var classes []string
+	var candidates []string
 	for _, ar := range archived {
 		id := ar.Rule.ID
 		if id == "" {
@@ -181,11 +207,51 @@ func SummarizeArchiveRunWithIndex(before, after []Rule, archived []ArchivedRule,
 			continue
 		}
 		seen[id] = struct{}{}
-		classes = append(classes, id)
+		candidates = append(candidates, id)
 	}
+	classes := maximalClasses(candidates, seen, successorOf)
 	sort.Strings(classes)
 	summary.UnrepresentedClasses = classes
 	return summary
+}
+
+// maximalClasses drops every candidate whose own successor is also a
+// candidate, leaving one entry per chain rather than one per link.
+//
+// A chain broken in a single run reaches the loop above once per intermediate
+// terminus: the on-disk archive holds a -> b, this run folds b into m and then
+// evicts m, and both b and m answer isUnrepresentedClass — b because its one
+// successor is archived rather than live, m because everything behind it is.
+// Reported as they stand, the operator-facing count is a count of chain links,
+// which is exactly the reading this file's header argues a count cannot be
+// trusted for.
+//
+// The maximal member is the one to keep: m already carries b's merged content,
+// so recovering m is recovering the class, and nothing recoverable is lost by
+// leaving b off the list. The test is against the candidate set and not
+// against the run's archived entries, so an id is only ever suppressed in
+// favour of a successor that is itself being reported — a successor archived
+// by this run but represented some other way (it was never on the active file,
+// or its own chain moved forward into a live rule) leaves the predecessor
+// named, which is the safe direction.
+func maximalClasses(candidates []string, isCandidate map[string]struct{}, successorOf map[string]string) []string {
+	if len(candidates) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(candidates))
+	for _, id := range candidates {
+		next, ok := successorOf[id]
+		if ok {
+			if _, forward := isCandidate[next]; forward {
+				continue
+			}
+		}
+		out = append(out, id)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // isUnrepresentedClass decides whether archiving id left its supersession

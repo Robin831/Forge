@@ -221,3 +221,65 @@ func TestSummarizeArchiveRun_EmptyRunIsAllZeroes(t *testing.T) {
 	assert.Empty(t, got.UnrepresentedClasses)
 	assert.False(t, got.HasSubstance())
 }
+
+// A chain broken in ONE run answers the terminus test at every intermediate
+// member, and reported as they stand the class list is a count of chain links.
+// The archive holds a -> b; this run folds b into m (Pass 1) and then evicts m
+// (the file ceiling, which deliberately does not honour the terminus guard), so
+// both b and m end the run archived with nothing live behind them. One class
+// went unrepresented, not two, and m is the member to name: it already carries
+// b's merged content, so recovering m recovers the class.
+func TestSummarizeArchiveRun_ChainBrokenInOneRunIsOneClass(t *testing.T) {
+	archive := []ArchivedRule{archivedInto("a", "b")}
+	archived := []ArchivedRule{
+		archivedInto("b", "m"),
+		{Rule: Rule{ID: "m", Added: "2024-01-01"}, ArchiveReason: ArchiveReasonOverCap},
+	}
+
+	got := SummarizeArchiveRunWithIndex(
+		summaryRules("b", "m"),
+		nil,
+		archived,
+		BuildSupersededByIndex(append(archive, archived...)),
+	)
+
+	assert.Equal(t, 2, got.Archived)
+	assert.Equal(t, []string{"m"}, got.UnrepresentedClasses,
+		"one chain must read as one class, named by its maximal member")
+}
+
+// The suppression is against the classes being REPORTED and not against the
+// run's archived entries: b's successor m is archived here too, but m's own
+// chain moved forward into a live rule, so m is represented and b is not.
+// Suppressed on the strength of m being archived, the one class that did go
+// unrepresented would go unnamed.
+func TestSummarizeArchiveRun_SuccessorArchivedButRepresentedStillNamesTheClass(t *testing.T) {
+	archive := []ArchivedRule{archivedInto("a", "b")}
+	archived := []ArchivedRule{
+		archivedInto("b", "m"),
+		archivedInto("m", "live"),
+	}
+
+	got := SummarizeArchiveRunWithIndex(
+		summaryRules("b", "m", "live"),
+		summaryRules("live"),
+		archived,
+		BuildSupersededByIndex(append(archive, archived...)),
+	)
+
+	assert.Equal(t, []string{"b"}, got.UnrepresentedClasses,
+		"m moved forward into a live rule, so b is the maximal member with nothing representing it")
+}
+
+// The line is a daemon.log record and a one-line activity-feed row, and a
+// single file-ceiling run can archive hundreds of rules. The whole set stays on
+// UnrepresentedClasses for the surfaces that render it in full.
+func TestArchiveSummaryStringCapsTheClassList(t *testing.T) {
+	ids := []string{"c1", "c2", "c3", "c4", "c5", "c6", "c7"}
+	line := ArchiveSummary{Archived: 7, Stale: 7, UnrepresentedClasses: ids}.String()
+
+	assert.Equal(t,
+		"archived 7 rule(s) (7 stale, 0 duplicate), classes now unrepresented: c1, c2, c3, c4, c5 and 2 more",
+		line)
+	assert.NotContains(t, line, "c6", "past the cap the count stands in for the names")
+}

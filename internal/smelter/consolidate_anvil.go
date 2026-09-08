@@ -355,14 +355,14 @@ func ConsolidateAnvil(ctx context.Context, opts ConsolidateOptions) (Consolidate
 	// same superseded_by mapping, same timestamps — rather than a second set
 	// built from the same inputs at the write.
 	duplicateEntries := duplicateArchiveEntries(replaced, summary, now)
+	persistedEntries := append(append([]warden.ArchivedRule(nil), duplicateEntries...), archivedEntries...)
 	var archiveSummary warden.ArchiveSummary
-	if len(duplicateEntries)+len(archivedEntries) > 0 {
+	if len(persistedEntries) > 0 {
 		var summaryEmit func(string)
 		if opts.EventLogger != nil {
 			summaryEmit = func(message string) { opts.EventLogger("smelter_flushed", message) }
 		}
-		archiveSummary = reportArchiveSummary(opts.AnvilName, beforePasses, rf.Rules,
-			append(append([]warden.ArchivedRule(nil), duplicateEntries...), archivedEntries...),
+		archiveSummary = reportArchiveSummary(opts.AnvilName, beforePasses, rf.Rules, persistedEntries,
 			supersessionIndex(opts.AnvilPath, opts.AnvilName, summary),
 			summaryEmit)
 	}
