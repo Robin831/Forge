@@ -27,6 +27,23 @@ type fakeParkHandle struct {
 func (h *fakeParkHandle) PauseRequested() <-chan struct{} { return h.pause }
 func (h *fakeParkHandle) ResumeRequested() <-chan string  { return h.resume }
 
+// pipelineSettleTimeout bounds every wait for a pipeline goroutine to reach an
+// expected state — parked in the paused status, or returned after a resume or
+// steer was signalled. Each is a LIVENESS assertion ("the signal was honoured
+// at all"), never a latency one: the pipeline blocks on an unbuffered select
+// and the resume channel is buffered, so on the happy path these waits cost
+// microseconds and the bound is never approached. What it therefore only needs
+// to clear is the slowest a healthy host can be, and the windows it spans
+// contain real `git` subprocess execs (worktree create, rev-parse HEAD) — so
+// the cost is a fork/exec, not arithmetic. At 2s that was not enough: on a CI
+// runner building the whole suite in parallel, TestPause_BetweenSpawns_
+// ParksAtWardenApproval resumed 2s past the deadline having done nothing
+// wrong, failing the build on PR #912. The bound is generous because a value
+// tuned close to the observed cost is the same bug again on a slower runner;
+// a genuine hang still fails, just later, with `go test`'s own timeout as the
+// backstop.
+const pipelineSettleTimeout = 30 * time.Second
+
 // TestExtendDeadlineForPause exercises the pure timeout-extension math that backs
 // "pausing the deadline": time spent parked is added back to the smith-timeout
 // deadline so a pause is never charged against the smith budget.
@@ -145,7 +162,7 @@ func TestPause_ParkAndResume(t *testing.T) {
 	require.Eventually(t, func() bool {
 		w, err := db.GetWorker("test-worker")
 		return err == nil && w.Status == state.WorkerPaused
-	}, 2*time.Second, 5*time.Millisecond, "pipeline should park the worker in paused status")
+	}, pipelineSettleTimeout, 5*time.Millisecond, "pipeline should park the worker in paused status")
 
 	// While parked, the pipeline must NOT have returned an outcome.
 	select {
@@ -165,7 +182,7 @@ func TestPause_ParkAndResume(t *testing.T) {
 	var outcome *Outcome
 	select {
 	case outcome = <-done:
-	case <-time.After(2 * time.Second):
+	case <-time.After(pipelineSettleTimeout):
 		t.Fatal("pipeline did not resume within the deadline")
 	}
 
@@ -254,7 +271,7 @@ func TestPause_SmithTimeoutSuspendedWhileParked(t *testing.T) {
 	require.Eventually(t, func() bool {
 		w, err := db.GetWorker("test-worker")
 		return err == nil && w.Status == state.WorkerPaused
-	}, 2*time.Second, 5*time.Millisecond, "pipeline should park the worker")
+	}, pipelineSettleTimeout, 5*time.Millisecond, "pipeline should park the worker")
 
 	// Stay parked well beyond the smith budget. If the deadline were not
 	// suspended, the pipeline context would expire during this sleep.
@@ -272,7 +289,7 @@ func TestPause_SmithTimeoutSuspendedWhileParked(t *testing.T) {
 	var outcome *Outcome
 	select {
 	case outcome = <-done:
-	case <-time.After(5 * time.Second):
+	case <-time.After(pipelineSettleTimeout):
 		t.Fatal("pipeline did not resume within the deadline")
 	}
 
@@ -336,14 +353,14 @@ func TestPause_ShutdownWhileParkedUnblocksAndStaysPaused(t *testing.T) {
 	require.Eventually(t, func() bool {
 		w, err := db.GetWorker("test-worker")
 		return err == nil && w.Status == state.WorkerPaused
-	}, 2*time.Second, 5*time.Millisecond, "pipeline should park the worker")
+	}, pipelineSettleTimeout, 5*time.Millisecond, "pipeline should park the worker")
 
 	// Signal shutdown while parked.
 	shutdownCancel()
 
 	select {
 	case <-done:
-	case <-time.After(2 * time.Second):
+	case <-time.After(pipelineSettleTimeout):
 		t.Fatal("parked pipeline did not unblock on shutdown — drain would hang")
 	}
 
@@ -395,14 +412,14 @@ func TestPause_ResumeWithExplicitMessage(t *testing.T) {
 	require.Eventually(t, func() bool {
 		w, err := db.GetWorker("test-worker")
 		return err == nil && w.Status == state.WorkerPaused
-	}, 2*time.Second, 5*time.Millisecond, "pipeline should park the worker")
+	}, pipelineSettleTimeout, 5*time.Millisecond, "pipeline should park the worker")
 
 	ph.resume <- "focus on the retry logic"
 
 	var outcome *Outcome
 	select {
 	case outcome = <-done:
-	case <-time.After(2 * time.Second):
+	case <-time.After(pipelineSettleTimeout):
 		t.Fatal("pipeline did not resume within the deadline")
 	}
 
@@ -473,7 +490,7 @@ func TestPause_ResumeWithNoSessionFoldsIntoFreshPrompt(t *testing.T) {
 	require.Eventually(t, func() bool {
 		w, err := db.GetWorker("test-worker")
 		return err == nil && w.Status == state.WorkerPaused
-	}, 2*time.Second, 5*time.Millisecond, "pipeline should park the worker even with no session_id")
+	}, pipelineSettleTimeout, 5*time.Millisecond, "pipeline should park the worker even with no session_id")
 
 	// Resume with an explicit message so we can assert it is folded into the
 	// fresh prompt.
@@ -482,7 +499,7 @@ func TestPause_ResumeWithNoSessionFoldsIntoFreshPrompt(t *testing.T) {
 	var outcome *Outcome
 	select {
 	case outcome = <-done:
-	case <-time.After(2 * time.Second):
+	case <-time.After(pipelineSettleTimeout):
 		t.Fatal("pipeline did not resume within the deadline")
 	}
 
@@ -536,7 +553,7 @@ func TestPause_CancelWhileParkedDoesNotFail(t *testing.T) {
 	require.Eventually(t, func() bool {
 		w, err := db.GetWorker("test-worker")
 		return err == nil && w.Status == state.WorkerPaused
-	}, 2*time.Second, 5*time.Millisecond, "pipeline should park the worker")
+	}, pipelineSettleTimeout, 5*time.Millisecond, "pipeline should park the worker")
 
 	// Cancel while parked — the pipeline must exit without resuming.
 	cancel()
@@ -544,7 +561,7 @@ func TestPause_CancelWhileParkedDoesNotFail(t *testing.T) {
 	var outcome *Outcome
 	select {
 	case outcome = <-done:
-	case <-time.After(2 * time.Second):
+	case <-time.After(pipelineSettleTimeout):
 		t.Fatal("pipeline did not return after cancellation while parked")
 	}
 

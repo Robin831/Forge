@@ -275,6 +275,9 @@ Respond with ONLY a JSON object (no markdown fences, no explanation) in this exa
 	}
 	rule.Source = SourceList(sources)
 	rule.Added = time.Now().Format("2006-01-02")
+	// A freshly learned rule is not a merge product and has never been
+	// emitted, whatever the model's JSON claimed. See clearModelSuppliedState.
+	clearModelSuppliedState(&rule)
 	// Derived, never taken from the model's answer: the output contract asks
 	// for no paths, so anything that arrived in that field is invented, while
 	// the files the comments sit on are observed. A rule written with the
@@ -291,6 +294,39 @@ Respond with ONLY a JSON object (no markdown fences, no explanation) in this exa
 	rule.Paths = DeriveRulePaths(rule, commentPaths(comments))
 
 	return &rule, nil
+}
+
+// clearModelSuppliedState zeroes the four Rule fields a learner may neither
+// accept from the model nor derive: they record what has HAPPENED to a rule
+// since it was written, and a rule the learner is producing has no history
+// yet.
+//
+// Both learners unmarshal the model's answer straight into a Rule, and
+// extractJSON does not restrict the object to the keys the output contract
+// asked for: any JSON key matching a field's tag lands on the rule. Source,
+// Added, Paths (and the CI-fix path's ID) are overwritten immediately after,
+// so a model that invents those is harmlessly ignored. These four are not,
+// and each one gates retirement:
+//
+//   - MergedAt is the AGE anchor IsStale prefers over Added, so a model
+//     writing a recent or future date there makes the rule report too-young
+//     forever. Nothing else retires it: the file ceiling deliberately does
+//     not read MergedAt, and the terminus guard is only reached after both
+//     thresholds. Its documented invariant is that an empty value means
+//     "this rule is not a merge product" — an invariant only this enforces.
+//   - LastEmitted/EmitCount/LastFinding are the INACTIVITY half of the same
+//     test: LastActivityIn reads the two dates, so a model-supplied
+//     last_emitted makes a rule that no review has ever selected read as
+//     recently used.
+//
+// A freshly learned rule has by definition never been merged and never been
+// emitted, so the honest value for all four is the zero one — which is also
+// what every consumer reads as "not observed".
+func clearModelSuppliedState(rule *Rule) {
+	rule.MergedAt = ""
+	rule.LastEmitted = ""
+	rule.EmitCount = 0
+	rule.LastFinding = ""
 }
 
 // commentPaths returns the repository-relative files the review comments a rule
@@ -524,6 +560,9 @@ Respond with ONLY a JSON object (no markdown fences, no explanation) using this 
 	rule.ID = ruleID
 	rule.Source = SourceList{source}
 	rule.Added = time.Now().Format("2006-01-02")
+	// A freshly learned rule is not a merge product and has never been
+	// emitted, whatever the model's JSON claimed. See clearModelSuppliedState.
+	clearModelSuppliedState(&rule)
 	// The fix diff is this rule's evidence: the files a CI lint failure was
 	// actually fixed in are the files the rule is about. Same derivation the
 	// Copilot path and the smelter's backfill use, so a rule learned here is

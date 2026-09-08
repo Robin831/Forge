@@ -161,14 +161,17 @@ func TestFlush_EightRestatementsBecomeOneRule(t *testing.T) {
 	assert.Equal(t, "log-filename-doc-drift", merged.ID)
 
 	// Provenance survives the merge: every source PR is still named, and the
-	// merged rule keeps the oldest Added date so the staleness sweep does not
-	// treat it as brand new.
+	// merged rule keeps the NEWEST Added date — the last time a session
+	// thought this check worth writing down. Its own age, which is what the
+	// staleness sweep measures, is MergedAt.
 	wantSources := make([]string, 0, len(learned))
 	for _, r := range learned {
 		wantSources = append(wantSources, r.Source[0])
 	}
 	assert.ElementsMatch(t, wantSources, []string(merged.Source))
-	assert.Equal(t, "2026-08-10", merged.Added)
+	assert.Equal(t, "2026-08-17", merged.Added)
+	assert.NotEmpty(t, merged.MergedAt,
+		"a merged rule is dated by its merge, not by the rules it folded")
 
 	assert.Equal(t, 1, calls, "one cluster costs one distillation call, not eight")
 	require.Len(t, passes.Consolidated, 1)

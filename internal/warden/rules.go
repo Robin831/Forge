@@ -90,6 +90,37 @@ type Rule struct {
 	LastEmitted string `yaml:"last_emitted,omitempty" json:"last_emitted,omitempty"`
 	EmitCount   int    `yaml:"emit_count,omitempty"   json:"emit_count,omitempty"`
 	LastFinding string `yaml:"last_finding,omitempty" json:"last_finding,omitempty"`
+	// MergedAt is when consolidation folded a cluster of rules into this one.
+	// It is set only by an actual merge of two or more rules (MergeRule),
+	// never by a rule arriving from the pending queue, so an empty value
+	// means "this rule is not a merge product" and not "merged at an unknown
+	// time". That invariant is enforced and not assumed: the field is
+	// json-tagged, both learners unmarshal the model's raw answer into a
+	// Rule, and clearModelSuppliedState is what stops a model-invented
+	// merged_at from becoming a rule's age anchor.
+	//
+	// It exists because Added cannot answer the question the staleness sweep
+	// asks. A merged rule's Added is inherited from its members — it dates
+	// the youngest claim the merge folded, which is a fact about the
+	// distillation sessions behind it and says nothing about when this rule
+	// came to exist. Fold a cluster whose members are all older than
+	// archive_after_days and the survivor is born past the age threshold: the
+	// very next sweep archives a rule created minutes earlier, and every rule
+	// behind it is already archived, so the consolidation deletes coverage
+	// and leaves nothing on the active file to say what went. IsStale
+	// therefore anchors the AGE half here when it is set (Rule.ageAnchorIn)
+	// and falls back to Added when it is not.
+	//
+	// It is a date string in Added's layout for the reason the usage stamps
+	// are: this is a file people read and edit by hand, every date on a rule
+	// is read through one parser (parseUsageDate), and the comparison it
+	// feeds is in whole days.
+	//
+	// It deliberately does NOT enter LastActivityIn. A merge is something
+	// Forge did to the file, not evidence that a reviewer wanted the rule, so
+	// counting it as activity would let a merge reset the inactivity clock of
+	// rules nothing has used in a year.
+	MergedAt string `yaml:"merged_at,omitempty" json:"merged_at,omitempty"`
 }
 
 // needsQuoting returns true if a YAML scalar value needs explicit quoting

@@ -199,7 +199,7 @@ func TestPause_BetweenSpawns_ParksAtWardenApproval(t *testing.T) {
 	require.Eventually(t, func() bool {
 		w, err := db.GetWorker("test-worker")
 		return err == nil && w.Status == state.WorkerPaused
-	}, 2*time.Second, 5*time.Millisecond, "an acknowledged between-spawns pause must park the bead at Warden approval instead of completing")
+	}, pipelineSettleTimeout, 5*time.Millisecond, "an acknowledged between-spawns pause must park the bead at Warden approval instead of completing")
 
 	select {
 	case <-done:
@@ -211,7 +211,7 @@ func TestPause_BetweenSpawns_ParksAtWardenApproval(t *testing.T) {
 	var outcome *Outcome
 	select {
 	case outcome = <-done:
-	case <-time.After(2 * time.Second):
+	case <-time.After(pipelineSettleTimeout):
 		t.Fatal("pipeline did not resume within the deadline")
 	}
 
@@ -266,7 +266,7 @@ func TestPause_BetweenSpawns_DuringTemper_ParksAtApproval(t *testing.T) {
 	require.Eventually(t, func() bool {
 		w, err := db.GetWorker("test-worker")
 		return err == nil && w.Status == state.WorkerPaused
-	}, 2*time.Second, 5*time.Millisecond, "a pause enqueued during Temper must park the bead, not be dropped at completion")
+	}, pipelineSettleTimeout, 5*time.Millisecond, "a pause enqueued during Temper must park the bead, not be dropped at completion")
 
 	ph.resume <- ""
 	select {
@@ -274,7 +274,7 @@ func TestPause_BetweenSpawns_DuringTemper_ParksAtApproval(t *testing.T) {
 		require.NoError(t, outcome.Error)
 		assert.True(t, outcome.Success)
 		assert.EqualValues(t, 1, atomic.LoadInt32(&resumeCalls))
-	case <-time.After(2 * time.Second):
+	case <-time.After(pipelineSettleTimeout):
 		t.Fatal("pipeline did not resume within the deadline")
 	}
 }
@@ -370,7 +370,7 @@ func TestPause_BetweenSpawns_LoopTop_ParksBeforeNextSpawn(t *testing.T) {
 	require.Eventually(t, func() bool {
 		w, err := db.GetWorker("test-worker")
 		return err == nil && w.Status == state.WorkerPaused
-	}, 2*time.Second, 5*time.Millisecond, "a pause enqueued during a request_changes iteration must park the bead at the next loop top, not be dropped")
+	}, pipelineSettleTimeout, 5*time.Millisecond, "a pause enqueued during a request_changes iteration must park the bead at the next loop top, not be dropped")
 
 	// The next spawn must not have started while parked.
 	assert.EqualValues(t, 0, atomic.LoadInt32(&resumeCalls), "the pipeline must park BEFORE the next spawn, not after starting it")
@@ -382,7 +382,7 @@ func TestPause_BetweenSpawns_LoopTop_ParksBeforeNextSpawn(t *testing.T) {
 		assert.True(t, outcome.Success, "pipeline should succeed after the parked pause resumes")
 		assert.EqualValues(t, 1, atomic.LoadInt32(&resumeCalls), "the parked session must be resumed exactly once after resume")
 		assert.Equal(t, "sess-1", resumeSession, "resume must reuse the session captured before the pause")
-	case <-time.After(2 * time.Second):
+	case <-time.After(pipelineSettleTimeout):
 		t.Fatal("pipeline did not resume within the deadline")
 	}
 }

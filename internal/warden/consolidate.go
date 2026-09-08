@@ -99,11 +99,25 @@ func buildConsolidationPrompt(cluster []Rule) string {
 	return sb.String()
 }
 
-// MergeMetadata combines the deduplicated source list and oldest Added
+// MergeMetadata combines the deduplicated source list and the NEWEST Added
 // timestamp from a cluster of rules. Returned Added is in YYYY-MM-DD form;
 // if no cluster member carries a parseable Added date, the returned string
 // is empty (callers can default to "today").
-func MergeMetadata(cluster []Rule) (sources SourceList, oldestAdded string) {
+//
+// Newest and not oldest, which is what this returned before. Added is what
+// the file ceiling's recency component ranks on (EvictOverCap) and what
+// scoreCandidates reads for its recency term, and both ask the same question:
+// how current is this rule's content. A cluster's oldest member dates the
+// first time anybody wrote the check down; the newest dates the last time a
+// distillation session thought it worth writing again, which is the claim the
+// merged rule actually carries forward. Dating the survivor from the oldest
+// member also put the merged rule at the far end of both rankings the moment
+// it was created, which is the wrong end for a rule that has just absorbed
+// the file's most recent statement of its own subject.
+//
+// Neither answer is the rule's own age — that is MergedAt, which is what the
+// staleness sweep anchors on. See Rule.ageAnchorIn.
+func MergeMetadata(cluster []Rule) (sources SourceList, newestAdded string) {
 	seen := make(map[string]struct{})
 	var dedup []string
 	for _, r := range cluster {
@@ -125,30 +139,51 @@ func MergeMetadata(cluster []Rule) (sources SourceList, oldestAdded string) {
 	// rule's three dates are one format, read and written by one pair of
 	// functions, so a merged rule's Added cannot come to be spelled
 	// differently from the ones it was merged from.
-	var oldest time.Time
+	var newest time.Time
 	for _, r := range cluster {
 		t, ok := parseUsageDate(r.Added, time.UTC)
 		if !ok {
 			continue
 		}
-		if oldest.IsZero() || t.Before(oldest) {
-			oldest = t
+		if t.After(newest) {
+			newest = t
 		}
 	}
-	if !oldest.IsZero() {
-		oldestAdded = formatUsageDate(oldest)
+	if !newest.IsZero() {
+		newestAdded = formatUsageDate(newest)
 	}
-	return sources, oldestAdded
+	return sources, newestAdded
 }
 
 // MergeRule builds the canonical merged Rule from a cluster, the AI-derived
 // pattern/check, and a freshly minted ID. existingIDs is consulted so the
 // generated ID does not collide with active rules in the file; when a
 // collision is found, a numeric suffix is appended.
-func MergeRule(cluster []Rule, category, pattern, check, suggestedID string, existingIDs map[string]struct{}) Rule {
-	sources, oldestAdded := MergeMetadata(cluster)
-	if oldestAdded == "" {
-		oldestAdded = formatUsageDate(time.Now())
+//
+// now is what the survivor's MergedAt is stamped with, and MergedAt is the
+// date the staleness sweep measures the merged rule's age from — so this is
+// the value that decides whether a consolidation produces a rule the next
+// sweep can archive. It is stamped only for a real merge of two or more
+// rules: MergeRule over a single-member cluster rewrites one rule rather than
+// folding several, and stamping it there would hand any rule that passed
+// through consolidation a fresh age it did not earn.
+//
+// now is a parameter rather than a time.Now() call inside for the reason
+// every other time-dependent function in this package takes one (IsStale,
+// ArchiveStale, EvictOverCap, MarkEmitted): the sole production caller reads
+// the clock once, so every cluster one pass folds carries the same merge
+// date, and a test can assert on the value rather than on the clock.
+func MergeRule(cluster []Rule, category, pattern, check, suggestedID string, existingIDs map[string]struct{}, now time.Time) Rule {
+	sources, newestAdded := MergeMetadata(cluster)
+	if newestAdded == "" {
+		newestAdded = formatUsageDate(now)
+	}
+
+	// Only an actual fold of several rules is a merge, and only a merge
+	// re-anchors the age. See Rule.MergedAt.
+	var mergedAt string
+	if len(cluster) > 1 {
+		mergedAt = formatUsageDate(now)
 	}
 
 	id := pickMergedID(suggestedID, cluster, existingIDs)
@@ -175,11 +210,12 @@ func MergeRule(cluster []Rule, category, pattern, check, suggestedID string, exi
 		Pattern:     pattern,
 		Check:       check,
 		Source:      sources,
-		Added:       oldestAdded,
+		Added:       newestAdded,
 		Paths:       paths,
 		LastEmitted: emitted,
 		LastFinding: findings,
 		EmitCount:   emits,
+		MergedAt:    mergedAt,
 	}
 }
 
@@ -191,8 +227,8 @@ func MergeRule(cluster []Rule, category, pattern, check, suggestedID string, exi
 // inherits their Paths — it stands in for all of them, so it must still be
 // selected wherever they were and must still look as alive as they were. Left
 // out, a merge of two rules the reviewer sees weekly produces one rule with no
-// observations at all, dated to the OLDEST member's Added, which is exactly
-// the shape the staleness sweep retires.
+// observations at all — which, with an inherited Added and an inactivity
+// window measured from it, is exactly the shape the staleness sweep retires.
 //
 // A rule whose dates do not parse contributes nothing rather than resetting
 // the merged value, on the same rule the rest of this telemetry follows:
@@ -644,6 +680,12 @@ func applyClusters(ctx context.Context, repoDir string, rf *RulesFile, clusters 
 		}
 	}
 
+	// One clock reading for the whole pass, so every cluster it folds carries
+	// the same MergedAt: distilling a cluster is a model round-trip, so a pass
+	// started before midnight would otherwise stamp its later clusters a day
+	// on and date two halves of one consolidation differently.
+	now := time.Now()
+
 	for _, cc := range clusters {
 		if len(cc.Positions) != len(cc.Rules) {
 			// A cluster whose members cannot be located in rf.Rules is not
@@ -659,7 +701,7 @@ func applyClusters(ctx context.Context, repoDir string, rf *RulesFile, clusters 
 			continue
 		}
 
-		mergedRule := MergeRule(cc.Rules, cc.Category, pattern, check, suggestedID, usedIDs)
+		mergedRule := MergeRule(cc.Rules, cc.Category, pattern, check, suggestedID, usedIDs, now)
 		usedIDs[mergedRule.ID] = struct{}{}
 
 		ids := make([]string, 0, len(cc.Rules))

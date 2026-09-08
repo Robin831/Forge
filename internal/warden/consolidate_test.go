@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -52,7 +53,7 @@ func TestDistillMergedRule_RejectsMissingCheckField(t *testing.T) {
 	require.Error(t, err)
 }
 
-func TestMergeMetadata_UnionsSourcesAndPicksOldestAdded(t *testing.T) {
+func TestMergeMetadata_UnionsSourcesAndPicksNewestAdded(t *testing.T) {
 	cluster := []Rule{
 		{Source: SourceList{"copilot:PR#1", "copilot:PR#2"}, Added: "2025-01-15"},
 		{Source: SourceList{"copilot:PR#2", "copilot:PR#3"}, Added: "2024-12-01"},
@@ -60,7 +61,8 @@ func TestMergeMetadata_UnionsSourcesAndPicksOldestAdded(t *testing.T) {
 	}
 	sources, added := MergeMetadata(cluster)
 	assert.Equal(t, SourceList{"copilot:PR#1", "copilot:PR#2", "copilot:PR#3"}, sources)
-	assert.Equal(t, "2024-12-01", added)
+	assert.Equal(t, "2025-01-15", added,
+		"the merged rule carries the last time a session thought this check worth writing down")
 }
 
 func TestMergeMetadata_EmptyClusterReturnsEmpty(t *testing.T) {
@@ -74,12 +76,12 @@ func TestMergeRule_SetsAllFields(t *testing.T) {
 		{ID: "r1", Source: SourceList{"PR-1"}, Added: "2024-01-01", Paths: []string{"**/*.go"}},
 		{ID: "r2", Source: SourceList{"PR-2"}, Added: "2023-06-01", Paths: []string{"**/*.go", "**/*.ts"}},
 	}
-	merged := MergeRule(cluster, "style", "shared pattern", "verify x", "err-check", map[string]struct{}{})
+	merged := MergeRule(cluster, "style", "shared pattern", "verify x", "err-check", map[string]struct{}{}, time.Now())
 	assert.Equal(t, "err-check", merged.ID)
 	assert.Equal(t, "style", merged.Category)
 	assert.Equal(t, "shared pattern", merged.Pattern)
 	assert.Equal(t, "verify x", merged.Check)
-	assert.Equal(t, "2023-06-01", merged.Added)
+	assert.Equal(t, "2024-01-01", merged.Added)
 	assert.Equal(t, SourceList{"PR-1", "PR-2"}, merged.Source)
 	assert.Equal(t, []string{"**/*.go", "**/*.ts"}, merged.Paths)
 }
@@ -87,13 +89,13 @@ func TestMergeRule_SetsAllFields(t *testing.T) {
 func TestMergeRule_GeneratesNonCollidingID(t *testing.T) {
 	cluster := []Rule{{ID: "r1"}, {ID: "r2"}}
 	existing := map[string]struct{}{"err-check": {}, "err-check-2": {}}
-	merged := MergeRule(cluster, "style", "p", "c", "err-check", existing)
+	merged := MergeRule(cluster, "style", "p", "c", "err-check", existing, time.Now())
 	assert.Equal(t, "err-check-3", merged.ID)
 }
 
 func TestMergeRule_FallbackIDWhenSuggestionEmpty(t *testing.T) {
 	cluster := []Rule{{ID: "r1"}, {ID: "r2"}}
-	merged := MergeRule(cluster, "style", "p", "c", "", map[string]struct{}{})
+	merged := MergeRule(cluster, "style", "p", "c", "", map[string]struct{}{}, time.Now())
 	assert.Equal(t, "merged-r1", merged.ID)
 }
 
@@ -121,8 +123,9 @@ func TestConsolidate_GroupsByCategoryAndMerges(t *testing.T) {
 	assert.Equal(t, "trailing-comma", summary[0].Merged.ID)
 	// Sources should be unioned and sorted.
 	assert.Equal(t, SourceList{"PR-1", "PR-2"}, summary[0].Merged.Source)
-	// Added should pick the oldest.
-	assert.Equal(t, "2024-01-01", summary[0].Merged.Added)
+	// Added should pick the newest; the merge itself is dated by MergedAt.
+	assert.Equal(t, "2024-02-01", summary[0].Merged.Added)
+	assert.NotEmpty(t, summary[0].Merged.MergedAt)
 
 	// Verify the rules file: a1/a2 gone, b1 + a3 + merged remain.
 	ids := []string{}

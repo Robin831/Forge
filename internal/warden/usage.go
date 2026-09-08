@@ -84,6 +84,35 @@ func (r *Rule) LastActivityIn(loc *time.Location) time.Time {
 	return best
 }
 
+// ageAnchorIn reports the date the rule's AGE is measured from, and whether
+// there was one to read: MergedAt when consolidation stamped it, else Added.
+//
+// The two are not interchangeable and the order matters in one direction
+// only. Added on a merged rule is inherited from the cluster it folded, so it
+// dates a distillation session rather than the rule reading it — merge a
+// cluster of rules that are all past archive_after_days and the survivor is
+// born stale, which the next sweep archives while every member it stands in
+// for is already in the archive. MergedAt is the one date that says when this
+// rule came to exist, so it wins wherever it exists; a rule that is not a
+// merge product carries none and reads exactly as it always did.
+//
+// It is a fixed point under repeated merging: a merge of merged rules stamps
+// a fresh MergedAt, so the anchor is always the most recent time this content
+// was assembled.
+//
+// The location is the caller's for LastActivityIn's reason — these are
+// date-only values parsed at midnight, and the consumer subtracts the result
+// from a clock reading.
+func (r *Rule) ageAnchorIn(loc *time.Location) (time.Time, bool) {
+	if r == nil {
+		return time.Time{}, false
+	}
+	if t, ok := parseUsageDate(r.MergedAt, loc); ok {
+		return t, true
+	}
+	return parseUsageDate(r.Added, loc)
+}
+
 // MarkEmitted records that the rule was rendered into a review at now.
 //
 // now is a parameter rather than a time.Now() call inside so that a caller
