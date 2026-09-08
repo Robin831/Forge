@@ -457,6 +457,61 @@ func TestEmissionStampSkipsAPositionThatMoved(t *testing.T) {
 	}
 }
 
+// TestEmissionStampLandsOnTopOfAConcurrentStamp is the guard on the one clause
+// recordEmissions' correctness rests on: positions are re-verified by
+// ruleTieKey, which reads a rule's identity and NONE of its usage fields, so a
+// concurrent review that already stamped the same rule is not mistaken for a
+// different rule sitting at that position.
+//
+// The other stamp tests cannot see this: they construct selected and the
+// on-disk copy with identical usage fields, so a tie key that also read
+// LastEmitted/EmitCount would agree there anyway. Here the disk holds the rule
+// as a concurrent review left it — stamped — while selected holds it as it
+// stood before, which is the only shape that tells the two apart.
+//
+// The regression it catches is severe and silent: with usage in the key, every
+// rule already carrying a stamp fails the identity check on every subsequent
+// review, so EmitCount freezes at 1 and LastEmitted at the first review's
+// date, file-wide. IsStale then reads LastActivityIn off a date that stopped
+// advancing and retires rules that are being emitted every week — the exact
+// failure the counter was added to fix.
+func TestEmissionStampLandsOnTopOfAConcurrentStamp(t *testing.T) {
+	anvil := t.TempDir()
+	rule := Rule{ID: "matches", Category: "style", Pattern: "controller authorization filter", Check: "check the filter", Added: "2026-01-01", Paths: []string{"api/**/*.cs"}}
+
+	// The copy this review's checklist was built from: no stamps yet.
+	selected := &RulesFile{Rules: []Rule{rule}}
+
+	// What another review left on disk in the meantime — same rule, stamped.
+	concurrent := rule
+	concurrent.LastEmitted = "2026-03-03"
+	concurrent.EmitCount = 4
+	if err := SaveRules(anvil, &RulesFile{Rules: []Rule{concurrent}}); err != nil {
+		t.Fatalf("SaveRules: %v", err)
+	}
+
+	if err := recordEmissions(anvil, selected, []int{0}, day("2026-03-04")); err != nil {
+		t.Fatalf("recordEmissions: %v", err)
+	}
+
+	back, err := LoadRules(anvil)
+	if err != nil {
+		t.Fatalf("LoadRules: %v", err)
+	}
+	if len(back.Rules) != 1 {
+		t.Fatalf("rules = %+v, want 1", back.Rules)
+	}
+	got := back.Rules[0]
+	// Incremented from the DISK count, not from selected's zero: the other
+	// review's four emissions are still counted.
+	if got.EmitCount != 5 {
+		t.Errorf("EmitCount = %d, want 5 (4 on disk + this review); a stamp that read usage fields as identity would skip the position and leave 4, or restart from selected and leave 1", got.EmitCount)
+	}
+	if got.LastEmitted != "2026-03-04" {
+		t.Errorf("LastEmitted = %q, want 2026-03-04", got.LastEmitted)
+	}
+}
+
 // TestSaveRulesIsAtomic: no reader ever sees a truncated rules file, because a
 // YAML sequence cut at a rule boundary is still valid YAML with fewer rules in
 // it — a loss indistinguishable from an archive sweep. The observable is that

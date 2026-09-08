@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Robin831/Forge/internal/atomicfile"
 	"gopkg.in/yaml.v3"
 )
 
@@ -179,7 +180,7 @@ func LoadRules(anvilPath string) (*RulesFile, error) {
 // SaveRules writes the rules file to the anvil path, creating the
 // .forge directory if it does not exist.
 //
-// The write is atomic (writeFileAtomic: temp file plus rename), because every
+// The write is atomic (atomicfile.Write: temp file plus rename), because every
 // reader of this file parses whatever it is handed: a truncate-then-write cut
 // at a rule boundary is still valid YAML, so LoadRules and the smelter's
 // copyIntoWorktree would read a short file as a smaller rule set and persist
@@ -189,7 +190,7 @@ func SaveRules(anvilPath string, rf *RulesFile) error {
 	if err != nil {
 		return fmt.Errorf("marshaling warden rules: %w", err)
 	}
-	return writeFileAtomic(RulesPath(anvilPath), data, 0o644)
+	return atomicfile.Write(RulesPath(anvilPath), data)
 }
 
 // AddRule appends a rule to the file, skipping duplicates by ID.

@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/Robin831/Forge/internal/atomicfile"
 	"gopkg.in/yaml.v3"
 )
 
@@ -135,7 +136,7 @@ func (a *Archive) Save(path string) error {
 	if err != nil {
 		return fmt.Errorf("marshaling warden archive: %w", err)
 	}
-	return writeFileAtomic(path, data, 0o644)
+	return atomicfile.Write(path, data)
 }
 
 // Add appends a rule to the archive, recording the reason it was archived

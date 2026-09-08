@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Robin831/Forge/internal/atomicfile"
 	"github.com/Robin831/Forge/internal/config"
 	"github.com/go-chi/chi/v5"
 	"gopkg.in/yaml.v3"
@@ -1145,7 +1146,7 @@ func applyAnvilConfigPatch(path, anvil, anvilPath string, sets map[string]*yaml.
 	if err != nil {
 		return fmt.Errorf("marshal config: %w", err)
 	}
-	return writeFileAtomic(path, out)
+	return atomicfile.Write(path, out)
 }
 
 // applyConfigPatch edits the YAML document at path in place, setting each
@@ -1201,7 +1202,7 @@ func applyConfigPatch(path string, patch map[string]*yaml.Node) error {
 	if err != nil {
 		return fmt.Errorf("marshal config: %w", err)
 	}
-	return writeFileAtomic(path, out)
+	return atomicfile.Write(path, out)
 }
 
 // setValueNode sets m[key] to vn, editing the existing value node in place
@@ -1274,45 +1275,4 @@ func marshalNode(n *yaml.Node) ([]byte, error) {
 		return nil, err
 	}
 	return []byte(b.String()), nil
-}
-
-// writeFileAtomic writes data to path via a temp file in the same directory
-// followed by a rename, so a concurrent fsnotify watcher only ever observes a
-// complete file. The parent directory is created when missing.
-func writeFileAtomic(path string, data []byte) error {
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return fmt.Errorf("create config dir: %w", err)
-	}
-	// Preserve the existing file mode where possible; default to 0644.
-	mode := os.FileMode(0o644)
-	if info, err := os.Stat(path); err == nil {
-		mode = info.Mode().Perm()
-	}
-	tmp, err := os.CreateTemp(dir, ".forge-config-*.yaml.tmp")
-	if err != nil {
-		return fmt.Errorf("create temp file: %w", err)
-	}
-	tmpName := tmp.Name()
-	cleanup := true
-	defer func() {
-		if cleanup {
-			_ = os.Remove(tmpName)
-		}
-	}()
-	if _, err := tmp.Write(data); err != nil {
-		_ = tmp.Close()
-		return fmt.Errorf("write temp file: %w", err)
-	}
-	if err := tmp.Close(); err != nil {
-		return fmt.Errorf("close temp file: %w", err)
-	}
-	if err := os.Chmod(tmpName, mode); err != nil {
-		return fmt.Errorf("chmod temp file: %w", err)
-	}
-	if err := os.Rename(tmpName, path); err != nil {
-		return fmt.Errorf("rename temp file: %w", err)
-	}
-	cleanup = false
-	return nil
 }
