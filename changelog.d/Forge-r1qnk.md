@@ -1,0 +1,2 @@
+category: Added
+- **Per-anvil warden archive summary** - Each smelter flush and `forge warden consolidate` run now logs one line naming what left the active rules file — `archived N rule(s) (M stale, K duplicate), classes now unrepresented: <ids>` — where an unrepresented class is a supersession terminus that was archived leaving no rule of its chain on the file. A count alone cannot say that, because the survivor of a merge is one rule standing in for several. (Forge-r1qnk)
