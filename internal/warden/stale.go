@@ -100,10 +100,21 @@ func (c StaleConfig) inactiveDays() int {
 //
 // A rule is stale only when BOTH halves hold:
 //
-//	(a) it has AGED — now - Rule.Added > ArchiveAfterDays; and
+//	(a) it has AGED — now - Rule.ageAnchorIn > ArchiveAfterDays, where the
+//	    anchor is Rule.MergedAt when consolidation stamped one and Rule.Added
+//	    otherwise; and
 //	(b) it is INACTIVE — now - Rule.LastActivityIn > InactiveAfterDays,
 //	    where the activity is the most recent of the last review the rule was
 //	    emitted into, the last finding it contributed to, and its Added date.
+//
+// The anchor is two dates and not one because a merged rule's Added belongs
+// to the rules it folded rather than to itself. Consolidation exists to
+// collapse old near-duplicates, so a survivor's members are routinely all
+// past ArchiveAfterDays already — read on Added alone, the merge produces a
+// rule that is stale the moment it is written, the next sweep archives it,
+// and every member it stands in for is archived too, so the file loses the
+// coverage with nothing left on it to say what went. MergedAt dates the rule
+// itself; see Rule.ageAnchorIn.
 //
 // Two signals and not one because they answer different questions. Age says
 // how long the rule has existed, which is a fact about the distillation
@@ -117,8 +128,10 @@ func (c StaleConfig) inactiveDays() int {
 // deployment can demand a rule be a quarter old and silent for a month.
 //
 // Every unanswerable question is resolved as NOT stale, in one direction on
-// purpose. A rule with no readable Added date has no age to test
-// (ReasonNoAddedDate). A rule with no usage stamps — every rule on every file
+// purpose. A rule with no readable anchor date has no age to test, and one
+// with an anchor but no readable Added and no usage stamps has no activity to
+// test (both ReasonNoAddedDate). A rule with no usage stamps — every rule on
+// every file
 // written before the telemetry existed — reads its Added date for both halves
 // exactly as it always did. Retiring rules on a measurement nobody took is
 // the one failure this sweep must not produce; keeping one costs a line in a
@@ -153,18 +166,24 @@ func IsStale(rule Rule, cfg StaleConfig, now time.Time) (bool, StaleReason) {
 	// 30 and a date 30 days ago is not past the threshold).
 	nowDay := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, loc)
 
-	added, ok := parseUsageDate(rule.Added, loc)
+	anchor, ok := rule.ageAnchorIn(loc)
 	if !ok {
 		return false, ReasonNoAddedDate
 	}
-	if !olderThanDays(nowDay, added, cfg.ArchiveAfterDays) {
+	if !olderThanDays(nowDay, anchor, cfg.ArchiveAfterDays) {
 		return false, ReasonTooYoung
 	}
 
-	// LastActivityIn is the max of the three dates and Added is one of them,
-	// so it is non-zero here by construction — the "no evidence at all" case
-	// was already answered by ReasonNoAddedDate above.
+	// LastActivityIn is the max of the three usage dates, of which Added is
+	// one, so it is non-zero for every rule whose Added parses. It CAN be zero
+	// here, because the anchor above may have come from MergedAt instead — a
+	// merged rule whose Added is unreadable and which has never been emitted
+	// has an age and no usage record at all. That is the sweep's unanswerable
+	// question, and it resolves the way every other one does: not stale.
 	last := rule.LastActivityIn(loc)
+	if last.IsZero() {
+		return false, ReasonNoAddedDate
+	}
 	if !olderThanDays(nowDay, last, cfg.inactiveDays()) {
 		return false, ReasonRecentActivity
 	}

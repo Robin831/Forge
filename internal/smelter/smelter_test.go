@@ -313,7 +313,8 @@ func TestRunConsolidation_MergesClusterAndPopulatesSummary(t *testing.T) {
 	assert.Equal(t, "style", summary[0].Category)
 	assert.ElementsMatch(t, []string{"r1", "r2"}, summary[0].ReplacedIDs)
 	assert.Equal(t, "shared-concern", summary[0].Merged.ID)
-	assert.Equal(t, "2024-01-01", summary[0].Merged.Added, "merged Added should be the oldest in cluster")
+	assert.Equal(t, "2024-02-01", summary[0].Merged.Added, "merged Added should be the newest in cluster")
+	assert.NotEmpty(t, summary[0].Merged.MergedAt, "the merge dates the rule's own age")
 	assert.Equal(t, warden.SourceList{"PR-1", "PR-2"}, summary[0].Merged.Source)
 
 	assert.Len(t, replaced, 2)
@@ -934,13 +935,14 @@ func TestRunStaleness_AnnouncedLineCountsTheWholeProtectedSet(t *testing.T) {
 }
 
 // The index the guard reads must include the supersessions THIS run has
-// decided on and not yet written. warden.MergeRule dates a merged rule from
-// its OLDEST member and carries the members' usage stamps — empty when they
-// were never emitted, which is the population of old near-duplicates Pass 1
-// exists to fold — so a merged rule can be aged AND inactive on the day it is
-// created. Reading the archive alone, Pass 2 archives it in the same run that
-// created it, retiring the whole chain with nothing left on the active file to
-// say what went.
+// decided on and not yet written. A merged rule carries its members' usage
+// stamps — empty when they were never emitted, which is the population of old
+// near-duplicates Pass 1 exists to fold — so once its own MergedAt has aged
+// past the threshold it is aged AND inactive with nothing having used it.
+// Reading the archive alone, Pass 2 archives it while every rule it stands in
+// for is already archived, retiring the whole chain with nothing left on the
+// active file to say what went. The fixture below is such a rule: an ancient
+// anchor, no usage, and a supersession the archive on disk knows nothing of.
 func TestRunStaleness_DoesNotRetireAChainThisRunJustCreated(t *testing.T) {
 	db := openTestDB(t)
 	wt := t.TempDir()
@@ -949,8 +951,9 @@ func TestRunStaleness_DoesNotRetireAChainThisRunJustCreated(t *testing.T) {
 	s := New(db, time.Hour, map[string]string{},
 		WithArchiveAfterDays(func() int { return 180 }),
 	)
-	// Pass 1 merged two 400-day-old, never-emitted rules into "merged"; the
-	// archive on disk still knows nothing about it.
+	// Pass 1 merged two never-emitted rules into "merged" and its own merge
+	// stamp has since aged past the threshold; the archive on disk still knows
+	// nothing about the supersession.
 	pending := []warden.MergeResult{{
 		Merged:      warden.Rule{ID: "merged"},
 		ReplacedIDs: []string{"member-a", "member-b"},

@@ -231,7 +231,7 @@ func TestConsolidateBatch_CollapsesTheRestatementCluster(t *testing.T) {
 	merged := rf.Rules[2]
 	assert.Equal(t, "log-filename-doc-drift", merged.ID)
 	assert.Equal(t, SourceList{"copilot:PR#708"}, merged.Source, "provenance is the union of the cluster's sources")
-	assert.Equal(t, "2026-08-18", merged.Added, "the merged rule keeps the oldest Added date")
+	assert.Equal(t, "2026-08-21", merged.Added, "the merged rule keeps the newest Added date")
 	// The category is the cluster's most common one; ties break by first
 	// appearance. style appears three times here, more than any other.
 	assert.Equal(t, "style", merged.Category)

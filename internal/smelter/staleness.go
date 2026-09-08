@@ -31,15 +31,21 @@ import (
 // merging it into another and recording superseded_by on the archive entry,
 // but archiveRules persists those entries only after the passes have all run,
 // so a sweep reading the archive alone cannot see a chain the same run just
-// created. And warden.MergeRule dates a merged rule from the OLDEST member it
-// folded, carrying the newest member's emission — empty when the members were
-// never emitted, which is exactly the population of old, unused near-duplicates
-// Pass 1 exists to fold. So a merged rule can be aged AND inactive on the day
-// it is created: without the pending entries, Pass 1 merges two 400-day-old
-// rules into M, records superseded_by: M for both, and Pass 2 archives M in
-// the same run — the whole chain retired at once with nothing left on the
-// active file to say what went, which is the one shape of staleness the guard
-// was written to refuse.
+// created. The rule holding that chain can be aged AND inactive: it carries
+// its members' usage stamps, empty when they were never emitted, which is
+// exactly the population of old, unused near-duplicates Pass 1 exists to fold.
+// Without the pending entries, Pass 1 merges two 400-day-old rules into M,
+// records superseded_by: M for both, and Pass 2 is free to archive M — the
+// whole chain retired at once with nothing left on the active file to say
+// what went, which is the one shape of staleness the guard was written to
+// refuse.
+//
+// warden.Rule.MergedAt closes the same-run case from the other end (a merged
+// rule's AGE is measured from the merge and not from the members it folded,
+// so M is too young to sweep on the day it is created), and this guard is
+// still what holds the chain from the run after that: M ages, nothing has
+// emitted it, and only the supersession index says that archiving it would
+// retire two rules that are no longer on the file to speak for themselves.
 //
 // The pending supersessions are folded in as synthetic archive entries rather
 // than merged into the map by hand, so BuildSupersededByIndex's own rules
