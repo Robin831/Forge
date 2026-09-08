@@ -203,15 +203,52 @@ func formatProtectedTerminiSection(ids []string) string {
 // protectedTerminiLine is the one-line form the flush logs and the activity
 // feed share, so a reader of either is told the same count for the same
 // anvil.
-func protectedTerminiLine(anvilName string, protected []warden.Rule) string {
+//
+// The count is the WHOLE set the sweep held (protected), never the
+// announcer's subset (fresh). Those two are different quantities and the
+// noun phrase here is a total: a rule enters the protected set the day its
+// inactivity window expires, one at a time, so after the first flush fresh is
+// almost always a strict subset of what the sweep is actually holding —
+// rendered from fresh, a sweep holding three rules logs "Kept 1 supersession
+// terminus rule", which is false, and is contradicted by the commit body and
+// the PR body of that same run, both of which list all three from
+// PassResults.ProtectedTermini. Suppression exists to stop the line REPEATING,
+// not to change what it counts, so the newly held rules get a clause of their
+// own instead — omitted when every protected rule is new, where the total
+// already says it.
+func protectedTerminiLine(anvilName string, protected, fresh []warden.Rule) string {
+	var newly string
+	if len(fresh) > 0 && len(fresh) < len(protected) {
+		newly = fmt.Sprintf(" (%d newly held: %s)", len(fresh), namedRuleIDs(fresh))
+	}
 	// The remedy names both spellings because both surfaces render this line:
 	// the scheduled flush (which is not `forge warden consolidate`, so --force
 	// is not a flag its reader can reach for) and the off-cycle command. Named
 	// one at a time, whichever reader gets the wrong half is pointed at
 	// something that does not apply to the run they are reading about.
-	return fmt.Sprintf("Kept %s for %s: aged and inactive, but %s",
-		textfmt.Count(len(protected), "supersession terminus rule"), anvilName,
+	return fmt.Sprintf("Kept %s for %s%s: aged and inactive, but %s",
+		textfmt.Count(len(protected), "supersession terminus rule"), anvilName, newly,
 		"archived rules point at them (set warden.allow_archive_terminus, or run `forge warden consolidate --force`, to archive them anyway)")
+}
+
+// maxNamedTerminiIDs bounds how many IDs the one-line form names. The set is
+// bounded only by how many termini a rules file holds, and this line is a log
+// record and an activity-feed row, both of which are read as one line.
+const maxNamedTerminiIDs = 5
+
+// namedRuleIDs renders rule IDs for that line: sanitized through displayID,
+// since a rule ID is whatever the distillation JSON returned and this text
+// reaches daemon.log and a feed row Hearth wraps, and capped with a count of
+// what the cap left out rather than trailing off.
+func namedRuleIDs(rules []warden.Rule) string {
+	names := make([]string, 0, len(rules))
+	for _, r := range rules {
+		if len(names) == maxNamedTerminiIDs {
+			return fmt.Sprintf("%s and %d more", strings.Join(names, ", "), len(rules)-maxNamedTerminiIDs)
+		}
+		names = append(names, displayID(r.ID))
+	}
+	return strings.Join(names, ", ")
 }
 
 // ruleIDs projects rules onto their IDs for the reporting fields, which carry

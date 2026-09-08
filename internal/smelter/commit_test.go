@@ -1,6 +1,7 @@
 package smelter
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -249,6 +250,54 @@ func TestPassResultsSummary_ReportsProtectedTermini(t *testing.T) {
 	assert.Contains(t,
 		passResultsSummary(PassResults{ProtectedTermini: []string{"a", "b"}}),
 		"2 kept as supersession termini")
+}
+
+// The one-line form counts the whole set the sweep held and names only the
+// rules this announcement is about, since the two are different quantities and
+// the noun phrase is a total. Rendered from the fresh subset it would state a
+// smaller sweep than the commit body of the same run.
+func TestProtectedTerminiLine_CountsTheSetAndNamesTheNewlyHeld(t *testing.T) {
+	rules := func(ids ...string) []warden.Rule {
+		out := make([]warden.Rule, 0, len(ids))
+		for _, id := range ids {
+			out = append(out, warden.Rule{ID: id})
+		}
+		return out
+	}
+
+	all := rules("a", "b", "c")
+
+	line := protectedTerminiLine("munin", all, rules("c"))
+	assert.Contains(t, line, "Kept 3 supersession terminus rules for munin (1 newly held: c):")
+	assert.Contains(t, line, "warden.allow_archive_terminus")
+
+	assert.NotContains(t, protectedTerminiLine("munin", all, all), "newly held",
+		"a first announcement holds nothing back, so the total already says it")
+
+	assert.Contains(t, protectedTerminiLine("munin", rules("a"), rules("a")),
+		"Kept 1 supersession terminus rule for munin:")
+}
+
+// The named IDs are the model's text and the set is bounded only by how many
+// termini a file holds, while the line is one log record and one feed row.
+func TestProtectedTerminiLine_SanitizesAndCapsTheNamedIDs(t *testing.T) {
+	all := make([]warden.Rule, 9)
+	fresh := make([]warden.Rule, 0, 8)
+	for i := range all {
+		all[i] = warden.Rule{ID: fmt.Sprintf("rule-%d", i)}
+		if i > 0 {
+			fresh = append(fresh, all[i])
+		}
+	}
+	fresh[0].ID = "bad`rule\n@org/team"
+
+	line := protectedTerminiLine("munin", all, fresh)
+
+	assert.Contains(t, line, "Kept 9 supersession terminus rules for munin (8 newly held: ")
+	assert.Contains(t, line, "bad?rule?org/team", "a rule ID is model text, sanitized like every other rendering")
+	assert.Contains(t, line, "and 3 more", "the cap says what it left out rather than trailing off")
+	assert.NotContains(t, line, "rule-8")
+	assert.Equal(t, 1, len(strings.Split(line, "\n")), "the log and the feed row read this as one line")
 }
 
 // A protected terminus left the file exactly as the sweep found it, so it must

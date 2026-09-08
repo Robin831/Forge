@@ -106,13 +106,18 @@ func runStaleSweep(anvilName string, rf *warden.RulesFile, cfg warden.StaleConfi
 	// the PR body and the CLI summary are fresh artifacts read once, and only
 	// the log line and the feed row accumulate. Same split as
 	// reportContradictions, which returns `found` and announces `fresh`.
+	//
+	// What the announcer decides is WHETHER this run says anything, never what
+	// the sentence counts: the line is rendered from the whole protected set
+	// with fresh named inside it, so the log and the feed never report a
+	// smaller sweep than the commit body of the same run does.
 	if len(sweep.Protected) > 0 {
 		fresh := sweep.Protected
 		if ann != nil {
 			fresh = ann.unannounced(anvilName, sweep.Protected)
 		}
 		if len(fresh) > 0 {
-			line := protectedTerminiLine(anvilName, fresh)
+			line := protectedTerminiLine(anvilName, sweep.Protected, fresh)
 			log.Printf("[smelter] %s", line)
 			if emit != nil {
 				emit(line)

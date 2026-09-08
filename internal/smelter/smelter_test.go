@@ -813,6 +813,25 @@ func archivedRuleIDs(rules []warden.ArchivedRule) []string {
 	return out
 }
 
+// terminusEventMessages returns the smelter_flushed rows announcing a rule the
+// terminus guard held, oldest first, so a test can assert on what the line
+// SAYS and not only on how many of them there are.
+func terminusEventMessages(t *testing.T, db *state.DB) []string {
+	t.Helper()
+	events, err := db.RecentEvents(200)
+	require.NoError(t, err)
+	var msgs []string
+	for _, e := range events {
+		if strings.Contains(e.Message, "supersession terminus rule") {
+			msgs = append(msgs, e.Message)
+		}
+	}
+	for i, j := 0, len(msgs)-1; i < j; i, j = i+1, j-1 {
+		msgs[i], msgs[j] = msgs[j], msgs[i]
+	}
+	return msgs
+}
+
 // countTerminusEvents counts the smelter_flushed rows announcing a rule the
 // terminus guard held, which is the surface the announcer suppresses.
 func countTerminusEvents(t *testing.T, db *state.DB) int {
@@ -866,6 +885,52 @@ func TestRunStaleness_ProtectedTerminusAnnouncedOnceButAlwaysReported(t *testing
 	_, protected = s.runStaleness(wt, "anvil-b", newRules(), nil)
 	require.Len(t, protected, 1)
 	assert.Equal(t, 2, countTerminusEvents(t, db))
+}
+
+// The suppression is over WHETHER the line is emitted, never over what it
+// counts. The protected set grows one rule at a time — a rule enters it the
+// day its inactivity window expires — so on every flush after the first the
+// newly held rules are a strict subset of what the sweep is holding. Counted
+// from that subset, the log line and the feed row report a smaller sweep than
+// the commit body and the PR body of the very same run, which list the full
+// set from PassResults.ProtectedTermini.
+func TestRunStaleness_AnnouncedLineCountsTheWholeProtectedSet(t *testing.T) {
+	db := openTestDB(t)
+	wt := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(wt, ".forge"), 0o755))
+	archive := &warden.Archive{Rules: []warden.ArchivedRule{
+		{Rule: warden.Rule{ID: "member-a"}, SupersededBy: "terminus-a", ArchiveReason: warden.ArchiveReasonDuplicate},
+		{Rule: warden.Rule{ID: "member-b"}, SupersededBy: "terminus-b", ArchiveReason: warden.ArchiveReasonDuplicate},
+	}}
+	require.NoError(t, archive.Save(warden.ArchivePath(wt)))
+
+	s := New(db, time.Hour, map[string]string{},
+		WithArchiveAfterDays(func() int { return 180 }),
+	)
+	rules := func(ids ...string) *warden.RulesFile {
+		rf := &warden.RulesFile{}
+		for _, id := range ids {
+			rf.Rules = append(rf.Rules,
+				warden.Rule{ID: id, Category: "style", Pattern: "p", Check: "c", Added: "2020-01-01"})
+		}
+		return rf
+	}
+
+	_, protected := s.runStaleness(wt, "anvil-a", rules("terminus-a"), nil)
+	require.Equal(t, []string{"terminus-a"}, ruleIDs(protected))
+
+	// terminus-b has now aged into protection. It is the only news, but the
+	// sweep is holding two.
+	_, protected = s.runStaleness(wt, "anvil-a", rules("terminus-a", "terminus-b"), nil)
+	require.Equal(t, []string{"terminus-a", "terminus-b"}, ruleIDs(protected))
+
+	msgs := terminusEventMessages(t, db)
+	require.Len(t, msgs, 2, "the second flush is announced: it holds a rule nobody has been told about")
+	assert.Contains(t, msgs[0], "Kept 1 supersession terminus rule for anvil-a:")
+	assert.NotContains(t, msgs[0], "newly held",
+		"where every protected rule is new the total already says so")
+	assert.Contains(t, msgs[1], "Kept 2 supersession terminus rules for anvil-a (1 newly held: terminus-b):",
+		"the count is the sweep's, and the delta the suppression is about is named inside it")
 }
 
 // The index the guard reads must include the supersessions THIS run has
