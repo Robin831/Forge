@@ -171,6 +171,10 @@ func ConsolidateAnvil(ctx context.Context, opts ConsolidateOptions) (Consolidate
 		return ConsolidateResult{}, fmt.Errorf("loading warden rules: %w", err)
 	}
 	initialCount := len(rf.Rules)
+	// The active set the passes below start from, copied because each of them
+	// mutates rf.Rules in place. It is what lets the archive summary speak
+	// about rules that left THIS file rather than about entries a run wrote.
+	beforePasses := append([]warden.Rule(nil), rf.Rules...)
 
 	var (
 		summary      []warden.MergeResult
@@ -338,6 +342,31 @@ func ConsolidateAnvil(ctx context.Context, opts ConsolidateOptions) (Consolidate
 	// across invocations is what the daemon's per-anvil memory is for.
 	contradictions := reportContradictions(opts.AnvilName, rf.Rules, nil, opts.EventLogger)
 
+	// The same one-line archive summary the scheduled flush renders, over this
+	// run's entries: Pass 1's duplicates beside the stale and over-cap ones,
+	// since a supersession class is lost by the last rule of its chain leaving
+	// and it does not matter which pass took it. The index is resolved only
+	// when something was archived, and through supersessionIndex over the same
+	// arguments the staleness guard was handed, so an operator running
+	// `--force` past the guard is told by name which chains they took.
+	//
+	// Derived once and carried to persistRulesAndArchive below, so the entries
+	// this summary counted are the entries that reach the archive store —
+	// same superseded_by mapping, same timestamps — rather than a second set
+	// built from the same inputs at the write.
+	duplicateEntries := duplicateArchiveEntries(replaced, summary, now)
+	persistedEntries := append(append([]warden.ArchivedRule(nil), duplicateEntries...), archivedEntries...)
+	var archiveSummary warden.ArchiveSummary
+	if len(persistedEntries) > 0 {
+		var summaryEmit func(string)
+		if opts.EventLogger != nil {
+			summaryEmit = func(message string) { opts.EventLogger("smelter_flushed", message) }
+		}
+		archiveSummary = reportArchiveSummary(opts.AnvilName, beforePasses, rf.Rules, persistedEntries,
+			supersessionIndex(opts.AnvilPath, opts.AnvilName, summary),
+			summaryEmit)
+	}
+
 	passes := PassResults{
 		Consolidated:     summary,
 		Archived:         archivedEntries,
@@ -349,8 +378,9 @@ func ConsolidateAnvil(ctx context.Context, opts ConsolidateOptions) (Consolidate
 		// actually held to — so `forge warden consolidate` reports a file that
 		// is one rule under its ceiling as such, which an eviction count of
 		// zero reads exactly like a file at half of it.
-		ActiveRules: len(rf.Rules),
-		RuleCap:     opts.MaxRulesInFile,
+		ActiveRules:    len(rf.Rules),
+		RuleCap:        opts.MaxRulesInFile,
+		ArchiveSummary: archiveSummary,
 	}
 
 	result := ConsolidateResult{
@@ -373,7 +403,7 @@ func ConsolidateAnvil(ctx context.Context, opts ConsolidateOptions) (Consolidate
 		return result, nil
 	}
 
-	if err := persistRulesAndArchive(opts.AnvilPath, rf, replaced, summary, archivedEntries); err != nil {
+	if err := persistRulesAndArchive(opts.AnvilPath, rf, duplicateEntries, archivedEntries); err != nil {
 		return result, fmt.Errorf("persisting warden rules: %w", err)
 	}
 

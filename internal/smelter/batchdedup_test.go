@@ -106,8 +106,8 @@ func learnAndFlush(t *testing.T, s *Smelter, db *state.DB, anvil, dir string, ru
 	require.NoError(t, err)
 
 	if built.passes.HasChanges() {
-		require.NoError(t, persistRulesAndArchive(dir, built.rules, built.archived,
-			built.passes.Consolidated, built.passes.Archived))
+		require.NoError(t, persistRulesAndArchive(dir, built.rules, built.duplicates,
+			built.passes.Archived))
 	}
 
 	// flushAnvil drains the queue once the passes have run; the helper does

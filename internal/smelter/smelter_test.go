@@ -364,7 +364,7 @@ func TestArchiveRules_WritesSupersededByCorrectly(t *testing.T) {
 		},
 	}
 
-	require.NoError(t, archiveRules(dir, archived, summary, nil))
+	require.NoError(t, archiveRules(dir, duplicateArchiveEntries(archived, summary, time.Now().UTC()), nil))
 
 	a, err := warden.LoadArchive(warden.ArchivePath(dir))
 	require.NoError(t, err)
@@ -393,7 +393,8 @@ func TestPersistRulesAndArchive_ArchiveFirstThenRules(t *testing.T) {
 		Category:    "style",
 	}}
 
-	require.NoError(t, persistRulesAndArchive(dir, rf, archived, summary, nil))
+	require.NoError(t, persistRulesAndArchive(dir, rf,
+		duplicateArchiveEntries(archived, summary, time.Now().UTC()), nil))
 
 	rulesData, err := os.ReadFile(filepath.Join(dir, warden.RulesFileName))
 	require.NoError(t, err)
@@ -430,7 +431,8 @@ func TestPersistRulesAndArchive_ArchiveFailureAbortsRulesSave(t *testing.T) {
 		Category:    "style",
 	}}
 
-	err := persistRulesAndArchive(dir, rf, archived, summary, nil)
+	err := persistRulesAndArchive(dir, rf,
+		duplicateArchiveEntries(archived, summary, time.Now().UTC()), nil)
 	require.Error(t, err, "archive failure must propagate")
 	assert.Contains(t, err.Error(), "archiving rules")
 
@@ -517,7 +519,7 @@ func TestArchiveRules_WritesStaleEntries(t *testing.T) {
 		},
 	}
 
-	require.NoError(t, archiveRules(dir, nil, nil, staleArchived))
+	require.NoError(t, archiveRules(dir, nil, staleArchived))
 
 	a, err := warden.LoadArchive(warden.ArchivePath(dir))
 	require.NoError(t, err)
@@ -550,7 +552,7 @@ func TestArchiveRules_CombinesPass1AndPass2Entries(t *testing.T) {
 		},
 	}
 
-	require.NoError(t, archiveRules(dir, dupArchived, summary, staleArchived))
+	require.NoError(t, archiveRules(dir, duplicateArchiveEntries(dupArchived, summary, time.Now().UTC()), staleArchived))
 
 	a, err := warden.LoadArchive(warden.ArchivePath(dir))
 	require.NoError(t, err)
@@ -586,7 +588,7 @@ func TestPersistRulesAndArchive_StaleOnlyWritesArchive(t *testing.T) {
 		},
 	}
 
-	require.NoError(t, persistRulesAndArchive(dir, rf, nil, nil, staleArchived))
+	require.NoError(t, persistRulesAndArchive(dir, rf, nil, staleArchived))
 
 	rulesData, err := os.ReadFile(filepath.Join(dir, warden.RulesFileName))
 	require.NoError(t, err)
@@ -608,7 +610,7 @@ func TestPersistRulesAndArchive_NoArchiveSkipsArchiveStep(t *testing.T) {
 		{ID: "r1", Category: "style", Pattern: "p", Check: "c"},
 	}}
 
-	require.NoError(t, persistRulesAndArchive(dir, rf, nil, nil, nil))
+	require.NoError(t, persistRulesAndArchive(dir, rf, nil, nil))
 
 	_, err := os.Stat(filepath.Join(dir, warden.RulesFileName))
 	assert.NoError(t, err, "rules file should be saved")
