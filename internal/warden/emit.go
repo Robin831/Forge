@@ -17,11 +17,16 @@ import (
 // undercounting is the direction the consumers tolerate, but there is no
 // reason to accept it when the window is one small file read and one write.
 //
-// It does not make the write safe against a SECOND process (a `forge warden
-// consolidate` run, another daemon on the same anvil). Nothing here is worth a
-// lock file: the field it protects is telemetry, the failure mode is a lost
-// stamp rather than a corrupt rule, and the sweep that reads it treats a
-// missing observation as unknown rather than as evidence of disuse.
+// What it does NOT serialise against is every other writer of the same file.
+// In this process that is the learner (LearnFromCIFix saves the anvil's rules
+// file directly) and the smelter's flush; out of it, a `forge warden
+// consolidate` run or a second daemon on the same anvil. Each of those is the
+// same whole-file read-modify-write, so a stamp can still be lost to one — a
+// race those paths have always had with each other, and one nothing here makes
+// worse. Nothing is worth a lock file for: the field this protects is
+// telemetry, the failure mode is a lost stamp rather than a corrupt rule, and
+// the sweep that reads it treats a missing observation as unknown rather than
+// as evidence of disuse.
 var emitMu sync.Mutex
 
 // learnedRulesSection builds the "Learned Review Rules" section of a review

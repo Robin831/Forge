@@ -25,15 +25,24 @@ import (
 // converting between two representations.
 const usageDateLayout = staleAddedLayout
 
-// parseUsageDate parses one of the rule's date fields, reporting whether it
-// was readable. An empty or malformed value yields the zero time, which every
-// caller here treats as "no evidence" rather than as the oldest possible date.
-func parseUsageDate(s string) (time.Time, bool) {
+// parseUsageDate parses one of the rule's date fields in loc, reporting
+// whether it was readable. An empty or malformed value yields the zero time,
+// which every caller here treats as "no evidence" rather than as the oldest
+// possible date.
+//
+// The location is a parameter for the reason IsStale gives for taking now's:
+// these are date-only values parsed at midnight, so parsing them in one zone
+// and subtracting them from a timestamp in another injects a fixed offset and
+// moves the whole-day boundary the comparison is about.
+func parseUsageDate(s string, loc *time.Location) (time.Time, bool) {
 	s = strings.TrimSpace(s)
 	if s == "" {
 		return time.Time{}, false
 	}
-	t, err := time.Parse(usageDateLayout, s)
+	if loc == nil {
+		loc = time.UTC
+	}
+	t, err := time.ParseInLocation(usageDateLayout, s, loc)
 	if err != nil {
 		return time.Time{}, false
 	}
@@ -49,19 +58,33 @@ func formatUsageDate(t time.Time) string {
 
 // LastActivity reports the most recent evidence that the rule is alive: the
 // last time it was emitted into a review, the last time it contributed to a
-// finding, or — failing both — when it was added.
+// finding, or — failing both — when it was added. The dates are read in UTC.
 //
 // The zero time is returned when none of the three is readable, and it means
 // "unknown", never "ancient": a rule whose Added date does not parse has no
 // timestamp at all, and a consumer that reads the zero time as a date in 1970
 // would retire it for having no record rather than for having no use.
+//
+// A caller that is going to SUBTRACT this from a clock reading — the staleness
+// sweep is the one this was written for — must use LastActivityIn(now.Location())
+// instead. UTC is right for a caller that only orders two rules against each
+// other, and wrong for one comparing against a local now: these are date-only
+// values parsed at midnight, so the mismatch is a fixed offset on the whole-day
+// boundary that IsStale documents and takes now's location to avoid.
 func (r *Rule) LastActivity() time.Time {
+	return r.LastActivityIn(time.UTC)
+}
+
+// LastActivityIn is LastActivity with the location the dates are read in made
+// explicit, so that a consumer comparing the result against now can parse them
+// in now's zone exactly as IsStale parses Added. A nil location reads as UTC.
+func (r *Rule) LastActivityIn(loc *time.Location) time.Time {
 	if r == nil {
 		return time.Time{}
 	}
 	var best time.Time
 	for _, field := range []string{r.LastEmitted, r.LastFinding, r.Added} {
-		if t, ok := parseUsageDate(field); ok && t.After(best) {
+		if t, ok := parseUsageDate(field, loc); ok && t.After(best) {
 			best = t
 		}
 	}

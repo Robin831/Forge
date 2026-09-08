@@ -197,14 +197,20 @@ func MergeRule(cluster []Rule, category, pattern, check, suggestedID string, exi
 // A rule whose dates do not parse contributes nothing rather than resetting
 // the merged value, on the same rule the rest of this telemetry follows:
 // absence of a measurement is not a measurement of zero.
+//
+// The dates are read and written back in UTC — the zone formatUsageDate wrote
+// them in — because this only ever orders them against each other and then
+// re-renders the winner, so the round trip is byte-stable whatever zone the
+// host keeps. A location only matters where a date is subtracted from a clock
+// reading, which is LastActivityIn's caller and not this one.
 func mergeUsage(cluster []Rule) (lastEmitted, lastFinding string, emitCount int) {
 	var newestEmit, newestFinding time.Time
 	for _, r := range cluster {
 		emitCount += r.EmitCount
-		if t, ok := parseUsageDate(r.LastEmitted); ok && t.After(newestEmit) {
+		if t, ok := parseUsageDate(r.LastEmitted, time.UTC); ok && t.After(newestEmit) {
 			newestEmit = t
 		}
-		if t, ok := parseUsageDate(r.LastFinding); ok && t.After(newestFinding) {
+		if t, ok := parseUsageDate(r.LastFinding, time.UTC); ok && t.After(newestFinding) {
 			newestFinding = t
 		}
 	}

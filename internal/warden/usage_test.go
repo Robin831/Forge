@@ -109,6 +109,36 @@ func TestLastActivity(t *testing.T) {
 	}
 }
 
+// TestLastActivityInReadsDatesInTheGivenZone is the guard on the one thing a
+// date-only value can get wrong: LastActivity's stated consumer is the
+// staleness sweep, which subtracts it from a local now, and a date parsed in
+// UTC and subtracted from a local clock reading is off by the host's offset —
+// which is a whole day at the boundary IsStale counts in. LastActivityIn is
+// what a caller with a now in hand uses, on the same terms IsStale parses
+// Added in now's location.
+func TestLastActivityInReadsDatesInTheGivenZone(t *testing.T) {
+	loc := time.FixedZone("UTC+5", 5*60*60)
+	r := Rule{Added: "2026-01-02", LastEmitted: "2026-02-03"}
+
+	got := r.LastActivityIn(loc)
+	want := time.Date(2026, 2, 3, 0, 0, 0, 0, loc)
+	if !got.Equal(want) {
+		t.Fatalf("LastActivityIn(%v) = %v, want %v", loc, got, want)
+	}
+	if _, offset := got.Zone(); offset != 5*60*60 {
+		t.Fatalf("parsed in the wrong zone: %v", got)
+	}
+	// Same calendar date, so the two readings differ by exactly the offset —
+	// which is the error the sweep would inherit from the UTC accessor.
+	if diff := r.LastActivity().Sub(got); diff != 5*time.Hour {
+		t.Fatalf("UTC and zoned readings differ by %v, want 5h", diff)
+	}
+	// A nil location is UTC, not a panic.
+	if !r.LastActivityIn(nil).Equal(r.LastActivity()) {
+		t.Fatalf("nil location did not read as UTC: %v", r.LastActivityIn(nil))
+	}
+}
+
 func TestLastActivityNilReceiver(t *testing.T) {
 	var r *Rule
 	if got := r.LastActivity(); !got.IsZero() {
