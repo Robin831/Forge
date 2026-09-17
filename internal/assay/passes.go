@@ -1021,34 +1021,18 @@ func sanitize(s string) string {
 // records for it: how the pass's session ended, how many turns it burned, and
 // whether it took a second session to get there.
 type passResult struct {
+	// chainTelemetry is the spend, exploration and provider attribution of
+	// every session the pass made — cumulative across sessions and across the
+	// chain entries it ran on, the provider fields the final entry's. See
+	// chainTelemetry for each field's terms.
+	chainTelemetry
 	// findings is what the pass produced (nil when it failed).
 	findings []Finding
-	// usage is the cumulative token accounting across every provider session
-	// the pass made — the strict-JSON re-prompt and any turn-budget retry
-	// included, and failed sessions along with successful ones, since the
-	// provider bills all of them. The cache halves are summed for the same
-	// reason the cost is: a pass that took a re-prompt or a retry really did
-	// write the prefix more than once.
-	usage cost.Usage
-	// estCostUSD is costTracker's estimate of that same spend, summed over the
-	// same sessions — the unit assay.max_cost_per_pass_usd is compared against.
-	// Zero when no ceiling is configured or the backend streams no per-turn
-	// usage, which are the cases where nothing measured it.
-	estCostUSD float64
 	// turns is the turn count of the session whose output the pass recorded,
 	// i.e. the final one. Cumulating turns across sessions would say nothing
 	// about how close any single session came to the --max-turns budget, which
 	// is the number the budget is tuned against.
 	turns int
-	// toolCalls is how many tool calls every session of the pass made together,
-	// and filesRead how many distinct files they opened between them. Both are
-	// cumulative, on usage's terms rather than turns': they measure how much
-	// this pass explored, and exploration a re-prompt or a retry paid for was
-	// still exploration. See PassReport.ToolCalls. filesRead is the file-shaped
-	// part of the union (countFilesRead) rather than its length — the union
-	// itself is the looser list the retry's diff scoping selects from.
-	toolCalls int
-	filesRead int
 	// failure is the classified termination, derived once here so nothing
 	// downstream re-runs classifyPassError on the same error. Its zero value
 	// (empty Name and Reason) means the pass answered.
@@ -1056,10 +1040,14 @@ type passResult struct {
 	// attempts is how many turn-budget attempts the pass took — 2 when it was
 	// re-run after exhausting its budget. A strict-JSON re-prompt inside a
 	// single attempt is another provider session but not another attempt; see
-	// PassReport.Attempts.
+	// PassReport.Attempts. Across a failover it is 1 plus every turn-budget
+	// re-run on every provider the pass ran on: moving to the next entry is not
+	// itself a retry, and counting it as one would print retry= for a pass
+	// that was never re-run.
 	attempts int
 	// retried reports whether a fresh session was started after the first one
-	// exhausted its turn budget.
+	// exhausted its turn budget — on any provider the pass ran on, so a retry
+	// followed by a failover is still reported.
 	retried bool
 	// retrySkipped reports that the pass exhausted its turn budget, was
 	// eligible for the fresh-session re-run, and did not get one because no
@@ -1067,31 +1055,13 @@ type passResult struct {
 	// telemetry, not a second failure: the pass fails on error_max_turns either
 	// way and the run reports partial coverage either way — this is what says
 	// the missing coverage was a deliberate refusal to pay twice for the same
-	// request rather than a retry that silently never happened.
+	// request rather than a retry that silently never happened. Never true
+	// alongside retried, even when the two happened on different providers:
+	// the pass WAS re-run, which is the claim the telemetry line makes.
 	retrySkipped bool
 	// err is the failure, if any. It is the *final* attempt's error, so the
 	// reason a retried pass reports is the one it ended on.
 	err error
-	// opened is the union of the files every session of the pass read, on
-	// every provider it ran on. filesRead is its file-shaped count; the list
-	// itself is kept so a failover can fold the next provider's reads into the
-	// same union rather than adding two counts that may overlap.
-	opened []string
-	// provider is the chain entry the pass ENDED on — the one its recorded
-	// outcome came from — and model the model that session reported (falling
-	// back to the entry's configured one). Together they are what the pass
-	// row persists, which is why they are the final provider's and not the
-	// chain head's: a pass that failed over did not run on its head.
-	provider provider.Provider
-	model    string
-	// failedOver reports that the pass moved past its chain's head because
-	// an earlier entry was rate limited. It is what adds provider= to the
-	// pass's segment of the telemetry line.
-	failedOver bool
-	// byProvider splits usage by the provider kind each session ran on. It
-	// sums to usage: a pass that failed over was billed on both providers,
-	// and the cost tables' per-provider aggregate must say so.
-	byProvider []ProviderUsage
 }
 
 // runDeepPass runs one finding-producing pass and returns its outcome plus
@@ -1131,8 +1101,10 @@ type passResult struct {
 // which must surface rather than hide behind a pass that quietly ran elsewhere.
 // A chain whose every entry is rate limited reports the last entry's rate
 // limit. Usage, tool calls and opened files accumulate across providers on
-// the same terms they accumulate across sessions; everything else is the final
-// provider's, since that is the outcome the pass records.
+// the same terms they accumulate across sessions (chainTelemetry.fold, the
+// one fold runTriage's walk shares), and so does the turn-budget retry
+// telemetry; everything else is the final provider's, since that is the
+// outcome the pass records.
 func runDeepPass(ctx context.Context, runner PassRunner, cfg Config, req ReviewRequest, scopedDiff, triageNotes string, p passDef) passResult {
 	chain := cfg.providersFor(p.Name)
 	// The prompt is built once, here, rather than per attempt or per provider:
@@ -1146,7 +1118,7 @@ func runDeepPass(ctx context.Context, runner PassRunner, cfg Config, req ReviewR
 		// No session was ever started, so there is nothing to bill or count.
 		perr := newPassError(p.Name, ReasonPromptFailed, err.Error(), err)
 		return passResult{attempts: 1, err: perr, failure: classifyPassError(p.Name, perr),
-			provider: chain[0], model: chain[0].Model}
+			chainTelemetry: chainTelemetry{provider: chain[0], model: chain[0].Model}}
 	}
 	base := retryInputs{prompt: prompt, diff: scopedDiff, turns: passTurnBudget(cfg)}
 
@@ -1156,29 +1128,21 @@ func runDeepPass(ctx context.Context, runner PassRunner, cfg Config, req ReviewR
 	// local to this call, so one pass failing over never changes which
 	// provider another pass runs on: there is no shared "current provider".
 	var res passResult
-	var usage cost.Usage
-	var est float64
-	var calls int
-	var opened []string
-	var byProvider []ProviderUsage
+	var acc chainTelemetry
+	var retries int
+	var retried, retrySkipped bool
 	for i, pv := range chain {
 		r := runDeepPassOn(withPassProvider(ctx, pv), runner, cfg, p, req, base, build)
-		usage.Add(r.usage)
-		est += r.estCostUSD
-		calls += r.toolCalls
-		opened = mergeOpenedFiles(opened, r.opened)
-		byProvider = addProviderUsage(byProvider, pv.Kind, r.usage)
+		acc.fold(i, pv, r.chainTelemetry)
+		retries += max(r.attempts-1, 0)
+		retried = retried || r.retried
+		retrySkipped = retrySkipped || r.retrySkipped
 
 		res = r
-		res.usage = usage
-		res.estCostUSD = est
-		res.toolCalls = calls
-		res.opened = opened
-		res.filesRead = countFilesRead(opened)
-		res.byProvider = byProvider
-		res.provider = pv
-		res.model = sessionModel(r.model, pv)
-		res.failedOver = i > 0
+		res.chainTelemetry = acc
+		res.attempts = 1 + retries
+		res.retried = retried
+		res.retrySkipped = retrySkipped && !retried
 		if !failsOver(r.failure) {
 			break
 		}

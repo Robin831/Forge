@@ -449,8 +449,13 @@ func checkAssayPasses() []checkResult {
 			head := rc.Providers[0]
 			chain := fmt.Sprintf("provider %s from %s", head.Label(), rc.SourceLabel())
 			var fallbacks, missing []string
+			seen := map[string]bool{}
 			for _, pv := range rc.Fallbacks() {
 				fallbacks = append(fallbacks, pv.Label())
+				if seen[pv.Cmd()] {
+					continue
+				}
+				seen[pv.Cmd()] = true
 				if _, err := execLookPath(pv.Cmd()); err != nil {
 					missing = append(missing, pv.Cmd())
 				}

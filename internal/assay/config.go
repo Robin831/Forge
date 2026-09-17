@@ -308,9 +308,10 @@ func (c Config) providersFor(pass string) []provider.Provider {
 }
 
 // providerFor is the head of a pass's chain: the provider its first session
-// spawns, and the one a runner called outside the chain walk uses. The model is taken exclusively from configuration (a stage spec's
-// "/model" suffix or the legacy hints), never hard-coded; an unset model
-// leaves Provider.Model empty so the provider uses its own default.
+// spawns, and the one a runner called outside the chain walk uses. The model
+// is taken exclusively from configuration (a stage spec's "/model" suffix or
+// the legacy hints), never hard-coded; an unset model leaves Provider.Model
+// empty so the provider uses its own default.
 func (c Config) providerFor(pass string) provider.Provider {
 	return c.providersFor(pass)[0]
 }

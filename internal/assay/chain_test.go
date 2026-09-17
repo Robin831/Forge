@@ -6,6 +6,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/Robin831/Forge/internal/provider"
 	"github.com/Robin831/Forge/internal/smith"
@@ -277,8 +278,95 @@ func TestTurnBudgetRetryStaysOnProviderBeforeFailover(t *testing.T) {
 		t.Errorf("retry budget %d not reduced from %d — the second claude session was not the turn-budget retry",
 			logic[1].turnBudget, logic[0].turnBudget)
 	}
-	if p := chainPassReport(t, res, "logic"); p.Provider != "gemini" || !p.FailedOver || p.TerminationReason != "" {
+	p := chainPassReport(t, res, "logic")
+	if p.Provider != "gemini" || !p.FailedOver || p.TerminationReason != "" {
 		t.Errorf("logic report = %+v; want answered on gemini after failing over", p)
+	}
+	// The retry on claude is still telemetry once the pass leaves claude: the
+	// failover is not a retry, and it must not erase the one that happened.
+	if p.Attempts != 2 || !p.Retried || p.RetrySkipped {
+		t.Errorf("logic retry telemetry = attempts %d, retried %v, skipped %v; want 2, true, false",
+			p.Attempts, p.Retried, p.RetrySkipped)
+	}
+	if line := res.PassTelemetryText(); !strings.Contains(line, "pass=logic turns=3 term=success retry=1") {
+		t.Errorf("telemetry %q does not carry logic's retry=1 past the failover", line)
+	}
+}
+
+// The primer is the one pass the rest of the fan-out waits on, and its chain
+// walk runs inside that wait. A rate-limited primer head emits no model output,
+// so the release must come from the FALLBACK session's first token — the
+// first-output callback has to survive the walk re-wrapping the context — and
+// not from the primer's whole chain returning or from primerWait running out.
+func TestRateLimitedPrimerFailoverReleasesFanOutOnFallbackOutput(t *testing.T) {
+	primer := deepPasses[primerPass].Name
+	othersStarted := make(chan struct{})
+	var startOnce sync.Once
+	var mu sync.Mutex
+	var releasedBeforePrimerReturned bool
+	primerReturned := false
+
+	runner := func(ctx context.Context, pass, _, _ string) (PassOutput, error) {
+		pv, ok := PassProviderFrom(ctx)
+		if !ok {
+			return PassOutput{}, errors.New("no provider handed to the runner")
+		}
+		switch {
+		case pass == primer && pv.Kind == provider.Claude:
+			// Rate limited before any model output: no signal.
+			return failWith(pass, ReasonRateLimited)(pv)
+		case pass == primer:
+			fn := firstOutputFn(ctx)
+			if fn == nil {
+				return PassOutput{}, errors.New("fallback primer session lost the first-output callback")
+			}
+			fn()
+			// Hold the session open until the others start, so only the
+			// signal — not the primer returning — can have released them.
+			select {
+			case <-othersStarted:
+			case <-time.After(5 * time.Second):
+			}
+			mu.Lock()
+			primerReturned = true
+			mu.Unlock()
+			return answer(pv), nil
+		case pass != passTriage.Name:
+			mu.Lock()
+			if !primerReturned {
+				releasedBeforePrimerReturned = true
+			}
+			mu.Unlock()
+			startOnce.Do(func() { close(othersStarted) })
+		}
+		return answer(pv), nil
+	}
+
+	cfg := DefaultConfig()
+	cfg.AnvilStageProviders = map[string][]string{"assay": {"claude/model-a", "gemini/model-b"}}
+	cfg.primerWaitOverride = 30 * time.Second // never the thing that releases them here
+	cfg = cfg.WithRunner(runner)
+
+	start := time.Now()
+	res, err := Review(context.Background(), testRequest(), openTestDB(t), cfg)
+	if err != nil {
+		t.Fatalf("Review: %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > 4*time.Second {
+		t.Errorf("review took %v; the fan-out waited on a timeout rather than the fallback's first output", elapsed)
+	}
+	mu.Lock()
+	released := releasedBeforePrimerReturned
+	mu.Unlock()
+	if !released {
+		t.Error("the other passes started only after the primer returned; the fallback's first output did not open the barrier")
+	}
+	p := chainPassReport(t, res, primer)
+	if p.Provider != "gemini" || p.Model != "model-b" || !p.FailedOver || !p.Primer {
+		t.Errorf("primer report = %+v; want the primer, failed over to gemini/model-b", p)
+	}
+	if res.Status != RunStatusComplete {
+		t.Errorf("status = %s (%v); want complete", res.Status, res.PassErrors)
 	}
 }
 

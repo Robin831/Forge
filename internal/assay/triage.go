@@ -6,9 +6,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/Robin831/Forge/internal/cost"
 	"github.com/Robin831/Forge/internal/diff"
-	"github.com/Robin831/Forge/internal/provider"
 )
 
 // triageResult is what the Triage pass produces: the subset of changed files
@@ -26,43 +24,17 @@ type triageResult struct {
 // because these travel together and always have — a fifth return value is how
 // a caller comes to drop one.
 type triageRun struct {
+	// chainTelemetry is passResult's, on the same terms: cumulative spend and
+	// exploration across every session and chain entry, reported on the error
+	// paths too, and the provider fields of the entry triage ended on. Triage
+	// is expected to report zero tool calls — it reads the diff and answers —
+	// which is precisely why the figure is carried: a triage pass that starts
+	// opening files is scoping work that has stopped being cheap.
+	chainTelemetry
 	// result is the scoping decision. Zero-valued when the pass failed.
 	result triageResult
-	// usage is cumulative across every session the pass made — tokens, the
-	// prompt-cache halves and the cost alike — and is reported on the error
-	// paths too.
-	usage cost.Usage
-	// estCostUSD is costTracker's estimate of that same spend, cumulative on
-	// usage's terms — the unit the per-pass spend ceiling is written in. Zero
-	// when no ceiling is configured or the backend streams no per-turn usage.
-	estCostUSD float64
 	// turns is the recorded (final) session's turn count.
 	turns int
-	// toolCalls is how many tool calls every session of the pass made together,
-	// cumulative like usage rather than final-session like turns. Triage is
-	// expected to report zero — it reads the diff and answers — which is
-	// precisely why the figure is carried: a triage pass that starts opening
-	// files is scoping work that has stopped being cheap.
-	toolCalls int
-	// filesRead is how many distinct files those sessions opened between them,
-	// carried beside toolCalls so the rendered line cannot report a pass that
-	// opened files as having opened none. It counts the file-shaped entries of
-	// the tracked list (countFilesRead), not its length: the list is also what
-	// the retry's diff scoping selects from, and that consumer is happy with a
-	// directory or a fragment that matches nothing while this one is not.
-	filesRead int
-	// opened is the union of the files those sessions named, kept so a
-	// failover folds the next provider's reads into one set before filesRead
-	// counts it.
-	opened []string
-	// provider, model, failedOver and byProvider are passResult's fields of the
-	// same names, on the same terms: the entry triage ended on, the model that
-	// session reported, whether it got there past a rate-limited head, and the
-	// usage split by the provider each session ran on.
-	provider   provider.Provider
-	model      string
-	failedOver bool
-	byProvider []ProviderUsage
 }
 
 // runTriage runs the scoping pass. Like the deep passes it parses strict JSON
@@ -93,33 +65,17 @@ func runTriage(ctx context.Context, runner PassRunner, cfg Config, req ReviewReq
 	chain := cfg.providersFor(passTriage.Name)
 	prompt, err := buildTriagePrompt(req, filteredDiff)
 	if err != nil {
-		return triageRun{provider: chain[0], model: chain[0].Model}, err
+		return triageRun{chainTelemetry: chainTelemetry{provider: chain[0], model: chain[0].Model}}, err
 	}
 
 	var run triageRun
-	var usage cost.Usage
-	var est float64
-	var calls int
-	var opened []string
-	var byProvider []ProviderUsage
+	var acc chainTelemetry
 	for i, pv := range chain {
 		r, rerr := runTriageOn(withPassProvider(ctx, pv), runner, prompt)
-		usage.Add(r.usage)
-		est += r.estCostUSD
-		calls += r.toolCalls
-		opened = mergeOpenedFiles(opened, r.opened)
-		byProvider = addProviderUsage(byProvider, pv.Kind, r.usage)
+		acc.fold(i, pv, r.chainTelemetry)
 
 		run = r
-		run.usage = usage
-		run.estCostUSD = est
-		run.toolCalls = calls
-		run.opened = opened
-		run.filesRead = countFilesRead(opened)
-		run.byProvider = byProvider
-		run.provider = pv
-		run.model = sessionModel(r.model, pv)
-		run.failedOver = i > 0
+		run.chainTelemetry = acc
 		err = rerr
 		if err == nil || !failsOver(classifyPassError(passTriage.Name, err)) {
 			break
@@ -138,18 +94,20 @@ func runTriageOn(ctx context.Context, runner PassRunner, prompt string) (triageR
 		// reached after a session has already produced a PassOutput.
 		u, turns, calls, est := passErrorTelemetry(err)
 		opened := passErrorFiles(err)
-		return triageRun{usage: u, estCostUSD: est, turns: turns, toolCalls: calls,
-			filesRead: countFilesRead(opened), opened: opened, model: passErrorModel(err)}, err
+		return triageRun{turns: turns, chainTelemetry: chainTelemetry{usage: u, estCostUSD: est, toolCalls: calls,
+			filesRead: countFilesRead(opened), opened: opened, model: passErrorModel(err)}}, err
 	}
 	opened := out.OpenedFiles
 	run := triageRun{
-		usage:      out.usage(),
-		estCostUSD: out.EstCostUSD,
-		turns:      out.Turns,
-		toolCalls:  out.ToolCalls,
-		filesRead:  countFilesRead(opened),
-		opened:     opened,
-		model:      out.Model,
+		turns: out.Turns,
+		chainTelemetry: chainTelemetry{
+			usage:      out.usage(),
+			estCostUSD: out.EstCostUSD,
+			toolCalls:  out.ToolCalls,
+			filesRead:  countFilesRead(opened),
+			opened:     opened,
+			model:      out.Model,
+		},
 	}
 
 	res, perr := parseTriage(out.Text)
