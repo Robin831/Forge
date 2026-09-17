@@ -37,4 +37,33 @@ func TestWarnAssayProviderConflictsLogsOncePerCondition(t *testing.T) {
 	if n := strings.Count(buf.String(), "Assay provider keys overlap"); n != 2 {
 		t.Fatalf("logged %d times after the edit, want 2:\n%s", n, buf.String())
 	}
+
+	// Reverting to the first condition puts it back in force: news again.
+	a.StageProviders = map[string][]string{"assay": {"gemini"}}
+	cfg.Anvils["api"] = a
+	d.warnAssayProviderConflicts(cfg)
+	if n := strings.Count(buf.String(), "Assay provider keys overlap"); n != 3 {
+		t.Fatalf("logged %d times after reverting, want 3:\n%s", n, buf.String())
+	}
+}
+
+func TestWarnAssayProviderConflictsNamesIgnoredFallbacks(t *testing.T) {
+	var buf bytes.Buffer
+	d := &Daemon{logger: slog.New(slog.NewTextHandler(&buf, nil))}
+	enabled := true
+	cfg := &config.Config{
+		Assay: config.AssayConfig{Enabled: &enabled},
+		Anvils: map[string]config.AnvilConfig{
+			"api": {Path: "/a", StageProviders: map[string][]string{"assay": {"claude", "gemini"}}},
+		},
+	}
+	d.warnAssayProviderConflicts(cfg)
+	d.warnAssayProviderConflicts(cfg)
+	out := buf.String()
+	if n := strings.Count(out, "Assay provider fallbacks ignored"); n != 1 {
+		t.Fatalf("logged %d times, want 1:\n%s", n, out)
+	}
+	if !strings.Contains(out, "anvil api stage_providers[assay] lists fallbacks [gemini] after claude") {
+		t.Errorf("warning does not name the ignored tail:\n%s", out)
+	}
 }

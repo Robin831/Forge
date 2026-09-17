@@ -266,7 +266,10 @@ func passStageKey(pass string) string { return assayStageKey + "." + pass }
 type ResolvedChain struct {
 	// Pass is the pass identifier ("triage", "logic", …).
 	Pass string
-	// Providers is the ordered chain. It is never empty.
+	// Providers is the ordered chain as configured. It is never empty. Only
+	// its head is ever spawned: Assay has no rate-limit fallback, so a pass
+	// whose head is rate limited fails rather than moving down the chain.
+	// IgnoredFallbacks names the rest so doctor and the daemon can say so.
 	Providers []provider.Provider
 	// Source is the precedence step the chain came from.
 	Source ProviderSource
@@ -276,8 +279,8 @@ type ResolvedChain struct {
 }
 
 // SourceLabel renders where the chain came from for doctor and the conflict
-// warning: "anvil stage_providers[assay.logic]", "assay.review_provider/
-// review_model", "provider defaults".
+// warning: "anvil stage_providers[assay.logic]", "assay.review_provider+
+// assay.review_model", "provider defaults".
 func (r ResolvedChain) SourceLabel() string {
 	switch r.Source {
 	case SourceAnvilPassStage, SourceAnvilAssayStage:
@@ -289,6 +292,15 @@ func (r ResolvedChain) SourceLabel() string {
 	default:
 		return "provider defaults"
 	}
+}
+
+// IgnoredFallbacks returns the chain entries after the head — configured, but
+// never spawned by Assay, which runs each pass on its chain's head alone.
+func (r ResolvedChain) IgnoredFallbacks() []provider.Provider {
+	if len(r.Providers) <= 1 {
+		return nil
+	}
+	return r.Providers[1:]
 }
 
 // ChainLabel renders the chain as "claude/claude-opus-5 -> gemini".
@@ -310,7 +322,12 @@ func (r ResolvedChain) ChainLabel() string {
 //     config.ResolvedAssay): triage_provider/triage_model for triage, falling
 //     back to review_provider/review_model exactly as it always did, and
 //     review_provider/review_model for every deep pass
-//  6. provider.Defaults
+//  6. the head of provider.Defaults
+//
+// A stage_providers value elsewhere is a rate-limit fallback chain; Assay reads
+// the same syntax but spawns only the head (providerFor). The tail is reported
+// as ignored by forge doctor and by a daemon WARN (IgnoredAssayFallbacks)
+// rather than silently dropped.
 //
 // Anvil scope outranks pass specificity: an anvil's "assay" beats a global
 // "assay.logic", because an anvil override is a statement about this
@@ -348,7 +365,10 @@ func (c Config) resolveChain(pass string) ResolvedChain {
 	if pv, key, ok := c.legacyProvider(pass); ok {
 		return ResolvedChain{Pass: pass, Providers: []provider.Provider{pv}, Source: SourceLegacyAssayBlock, Key: key}
 	}
-	return ResolvedChain{Pass: pass, Providers: provider.Defaults(), Source: SourceProviderDefaults}
+	// Only the default chain's head: Assay never falls back down a chain, so
+	// reporting provider.Defaults() whole would describe a fallback that does
+	// not exist on a config that asked for nothing.
+	return ResolvedChain{Pass: pass, Providers: provider.Defaults()[:1], Source: SourceProviderDefaults}
 }
 
 // stageChain parses one stage_providers entry. An absent key, an empty list and
@@ -521,4 +541,68 @@ func assayStageKeys(scope string, m map[string][]string) []string {
 	}
 	sort.Strings(keys)
 	return keys
+}
+
+// IgnoredAssayFallback is one assay stage_providers chain with more than one
+// entry. Assay spawns only a chain's head, so the entries after it never run.
+type IgnoredAssayFallback struct {
+	// Scope is "anvil <name>" or "settings".
+	Scope string
+	Key   string
+	// Head and Ignored are provider labels.
+	Head    string
+	Ignored []string
+}
+
+// String renders the one log line the warning is.
+func (f IgnoredAssayFallback) String() string {
+	return fmt.Sprintf("%s stage_providers[%s] lists fallbacks [%s] after %s; Assay spawns only the head and has no rate-limit fallback, so they never run",
+		f.Scope, f.Key, strings.Join(f.Ignored, ", "), f.Head)
+}
+
+// IgnoredAssayFallbacks reports every multi-entry assay/assay.<pass> chain in
+// settings.stage_providers and in each Assay-enabled anvil's stage_providers,
+// settings first, then anvils in name order, keys sorted within each. A global
+// chain is reported whenever Assay is enabled globally or on any anvil.
+func IgnoredAssayFallbacks(cfg *config.Config) []IgnoredAssayFallback {
+	if cfg == nil {
+		return nil
+	}
+	names := make([]string, 0, len(cfg.Anvils))
+	anyEnabled := cfg.Assay.IsEnabled()
+	for name := range cfg.Anvils {
+		if cfg.ResolvedAssay(name).IsEnabled() {
+			names = append(names, name)
+			anyEnabled = true
+		}
+	}
+	sort.Strings(names)
+	var out []IgnoredAssayFallback
+	collect := func(scope string, m map[string][]string) {
+		keys := make([]string, 0, len(m))
+		for k := range m {
+			if k == assayStageKey || strings.HasPrefix(k, assayStageKey+".") {
+				keys = append(keys, k)
+			}
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			chain := stageChain(m, k)
+			if len(chain) <= 1 {
+				continue
+			}
+			f := IgnoredAssayFallback{Scope: scope, Key: k, Head: chain[0].Label()}
+			for _, pv := range chain[1:] {
+				f.Ignored = append(f.Ignored, pv.Label())
+			}
+			out = append(out, f)
+		}
+	}
+	if anyEnabled {
+		collect("settings", cfg.Settings.StageProviders)
+	}
+	for _, name := range names {
+		collect("anvil "+name, cfg.Anvils[name].StageProviders)
+	}
+	return out
 }

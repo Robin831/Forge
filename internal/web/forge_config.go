@@ -417,7 +417,7 @@ var managedConfigKeys = []configKeyDef{
 		Type:        typeProviderMap,
 		Area:        "Providers",
 		Label:       "Per-stage providers",
-		Description: "Per-stage provider overrides keyed by pipeline stage (smith, warden, schematic, cifix, reviewfix, assay, and the per-pass assay.triage, assay.logic, assay.security, assay.conventions, assay.tests-missing, assay.repo-specific). Each value is an ordered provider chain. Assay resolves each pass from anvil assay.<pass>, anvil assay, global assay.<pass>, global assay, then the legacy assay.triage_provider / assay.review_provider keys, then the provider defaults; it never inherits smith_providers or providers.",
+		Description: "Per-stage provider overrides keyed by pipeline stage (smith, warden, schematic, cifix, reviewfix, assay, and the per-pass assay.triage, assay.logic, assay.security, assay.conventions, assay.tests-missing, assay.repo-specific). Each value is an ordered provider chain. Assay resolves each pass from anvil assay.<pass>, anvil assay, global assay.<pass>, global assay, then the legacy assay.triage_provider / assay.review_provider keys, then the provider defaults; it never inherits smith_providers or providers. Assay spawns only the head of an assay chain (no rate-limit fallback); later entries are ignored.",
 		Options:     providerStages,
 		// internal/hotreload compares stage_providers and swaps the new map in,
 		// and every stage that reads the map resolves its chain from the live
@@ -911,7 +911,7 @@ var managedAnvilKeys = []anvilKeyDef{
 
 	// --- Composite per-anvil overrides (Forge-vo5a). Send null to inherit. ---
 	{Key: "stage_providers", Type: typeProviderMap, Options: providerStages, Instant: true,
-		Label: "Per-stage providers", Description: "Per-anvil override of the global per-stage provider chains (smith, warden, schematic, cifix, reviewfix, assay and the per-pass assay.* keys). An anvil assay or assay.<pass> key outranks every global one."},
+		Label: "Per-stage providers", Description: "Per-anvil override of the global per-stage provider chains (smith, warden, schematic, cifix, reviewfix, assay and the per-pass assay.* keys). An anvil assay or assay.<pass> key outranks every global one. Assay spawns only the head of an assay chain; later entries are ignored."},
 	{Key: "wicket_trusted_users", Type: typeStringList,
 		Label: "Wicket trusted users", Description: "GitHub logins whose issues are auto-dispatched without extra review for this anvil."},
 	{Key: "wicket_ignore_users", Type: typeStringList,

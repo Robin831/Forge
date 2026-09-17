@@ -18,9 +18,10 @@ import (
 	"github.com/Robin831/Forge/internal/textfmt"
 )
 
-// Model tiers. The deep passes use the "review" tier (stronger model hint); the
-// scoping pass uses the cheaper "triage" tier. The concrete model identifier
-// for each pass comes entirely from Config — see Config.providersFor.
+// Tiers label a session as scoping ("triage") or finding ("review") and are
+// passed through to the PassRunner. They do NOT choose a provider or model:
+// both are resolved per pass NAME (Config.providerFor), so changing a pass's
+// tier changes nothing about what it runs on.
 const (
 	tierTriage = "triage"
 	tierReview = "review"
@@ -427,6 +428,11 @@ func inferPassReason(err error) string {
 	}
 }
 
+// spawnPassSession is the one call newSmithRunner makes to start a provider
+// session. A variable so a test can observe which provider each pass is handed
+// without spawning a CLI.
+var spawnPassSession = smith.SpawnWithOptions
+
 // newSmithRunner returns the production PassRunner. It spawns a one-shot Smith
 // session in workDir using the provider/model resolved from cfg for the pass.
 func newSmithRunner(cfg Config, req ReviewRequest) PassRunner {
@@ -494,7 +500,7 @@ func newSmithRunner(cfg Config, req ReviewRequest) PassRunner {
 			stream(ev)
 		}
 
-		proc, err := smith.SpawnWithOptions(sessionCtx, workDir, prompt, logDir, pv, flags, opts)
+		proc, err := spawnPassSession(sessionCtx, workDir, prompt, logDir, pv, flags, opts)
 		if err != nil {
 			return PassOutput{}, newPassError(pass, ReasonSpawnFailed,
 				fmt.Sprintf("spawning %s: %v", pv.Label(), err), err)

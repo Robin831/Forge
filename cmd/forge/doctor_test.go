@@ -754,8 +754,12 @@ func TestCheckAssayPasses_PerAnvilChainsAndSources(t *testing.T) {
 		if strings.Contains(r.Name, "(off/") {
 			t.Errorf("anvil with Assay disabled must not be reported: %q", r.Name)
 		}
-		if r.Status != "ok" {
-			t.Errorf("%s: status %q, want ok (%s)", r.Name, r.Status, r.Detail)
+		wantStatus := "ok"
+		if r.Name == "Assay pass (zeta/conventions)" {
+			wantStatus = "warn" // its chain lists a fallback Assay never spawns
+		}
+		if r.Status != wantStatus {
+			t.Errorf("%s: status %q, want %s (%s)", r.Name, r.Status, wantStatus, r.Detail)
 		}
 	}
 	if len(results) != 12 {
@@ -769,7 +773,7 @@ func TestCheckAssayPasses_PerAnvilChainsAndSources(t *testing.T) {
 	if !ok {
 		t.Fatalf("missing alpha/triage row; got %v", order)
 	}
-	if want := "chain claude/global-assay from settings.stage_providers[assay]"; !strings.Contains(triage.Detail, want) {
+	if want := "provider claude/global-assay from settings.stage_providers[assay]"; !strings.Contains(triage.Detail, want) {
 		t.Errorf("alpha/triage detail %q does not contain %q", triage.Detail, want)
 	}
 
@@ -777,7 +781,7 @@ func TestCheckAssayPasses_PerAnvilChainsAndSources(t *testing.T) {
 	if !ok {
 		t.Fatalf("missing zeta/conventions row; got %v", order)
 	}
-	if want := "chain gemini/gemini-2.5-pro -> claude from anvil stage_providers[assay.conventions]"; !strings.Contains(conv.Detail, want) {
+	if want := "provider gemini/gemini-2.5-pro from anvil stage_providers[assay.conventions]; fallbacks [claude] ignored"; !strings.Contains(conv.Detail, want) {
 		t.Errorf("zeta/conventions detail %q does not contain %q", conv.Detail, want)
 	}
 	if !strings.Contains(conv.Detail, "gemini 1.0.0") {
@@ -840,9 +844,33 @@ func TestCheckAssayPasses_PerAnvilMissingHeadNamesChain(t *testing.T) {
 	if security.Status != "fail" {
 		t.Errorf("munin/security status %q, want fail", security.Status)
 	}
-	for _, want := range []string{"gemini not found in PATH", "chain gemini from anvil stage_providers[assay.security]"} {
+	for _, want := range []string{"gemini not found in PATH", "provider gemini from anvil stage_providers[assay.security]"} {
 		if !strings.Contains(security.Detail, want) {
 			t.Errorf("munin/security detail %q does not contain %q", security.Detail, want)
 		}
+	}
+}
+
+// Registered anvils that all disable Assay mean no review ever runs, so the
+// global-only fallback (meant for a config with no anvils yet) must not report
+// per-pass rows — and must not fail on a missing binary.
+func TestCheckAssayPasses_AllAnvilsDisabledReportsDisabled(t *testing.T) {
+	enabled := true
+	disabled := false
+	origCfg := cfg
+	cfg = &config.Config{
+		Assay: config.AssayConfig{Enabled: &enabled},
+		Anvils: map[string]config.AnvilConfig{
+			"api": {Assay: &config.AssayConfig{Enabled: &disabled}},
+		},
+	}
+	defer func() { cfg = origCfg }()
+	mockExec(t,
+		func(file string) (string, error) { return "", errors.New("not found") },
+		func(name string, args ...string) ([]byte, error) { return nil, errors.New("unreachable") },
+	)
+	results := checkAssayPasses()
+	if len(results) != 1 || results[0].Status != "ok" || !strings.Contains(results[0].Detail, "assay disabled") {
+		t.Fatalf("results = %+v, want one ok 'assay disabled' row", results)
 	}
 }

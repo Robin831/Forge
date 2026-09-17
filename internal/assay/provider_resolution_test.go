@@ -1,12 +1,16 @@
 package assay
 
 import (
+	"context"
+	"errors"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/Robin831/Forge/internal/config"
 	"github.com/Robin831/Forge/internal/provider"
+	"github.com/Robin831/Forge/internal/smith"
 )
 
 // legacyProviderForBeforeIyddo is the resolver this package shipped before
@@ -183,7 +187,7 @@ func TestProvidersForPrecedence(t *testing.T) {
 		{"3 global assay.logic", layers{false, false, true, true, true}, "openai/global-pass", SourceGlobalPassStage, "settings.stage_providers[assay.logic]"},
 		{"4 global assay", layers{false, false, false, true, true}, "openai/global-assay", SourceGlobalAssayStage, "settings.stage_providers[assay]"},
 		{"5 legacy block", layers{false, false, false, false, true}, "claude/legacy-review", SourceLegacyAssayBlock, "assay.review_provider+assay.review_model"},
-		{"6 provider defaults", layers{}, "claude -> gemini", SourceProviderDefaults, "provider defaults"},
+		{"6 provider defaults", layers{}, "claude", SourceProviderDefaults, "provider defaults"},
 		// Anvil scope outranks pass specificity.
 		{"anvil assay beats global assay.logic", layers{false, true, true, false, false}, "gemini/anvil-assay", SourceAnvilAssayStage, "anvil stage_providers[assay]"},
 	}
@@ -237,6 +241,33 @@ func TestReviewProviderKindFollowsDeepPassMajority(t *testing.T) {
 	}
 }
 
+func TestIgnoredAssayFallbacks(t *testing.T) {
+	enabled := true
+	cfg := &config.Config{
+		Assay: config.AssayConfig{Enabled: &enabled},
+		Settings: config.SettingsConfig{
+			StageProviders: map[string][]string{"assay": {"claude"}, "assay.logic": {"claude", "gemini"}, "smith": {"claude", "gemini"}},
+		},
+		Anvils: map[string]config.AnvilConfig{
+			"api": {Path: "/a", StageProviders: map[string][]string{"assay.security": {"gemini/g", "claude", "copilot"}}},
+			"off": {Path: "/b", Assay: &config.AssayConfig{Enabled: new(bool)}, StageProviders: map[string][]string{"assay": {"claude", "gemini"}}},
+		},
+	}
+	got := IgnoredAssayFallbacks(cfg)
+	if len(got) != 2 {
+		t.Fatalf("got %+v, want settings assay.logic and anvil api assay.security", got)
+	}
+	if got[0].Scope != "settings" || got[0].Key != "assay.logic" || strings.Join(got[0].Ignored, ",") != "gemini" {
+		t.Errorf("first = %+v", got[0])
+	}
+	if got[1].Scope != "anvil api" || got[1].Head != "gemini/g" || strings.Join(got[1].Ignored, ",") != "claude,copilot" {
+		t.Errorf("second = %+v", got[1])
+	}
+	if rc := ForAnvil(cfg, "api").resolveChain("security"); len(rc.IgnoredFallbacks()) != 2 {
+		t.Errorf("IgnoredFallbacks = %v, want 2", rc.IgnoredFallbacks())
+	}
+}
+
 func TestLegacyStageConflicts(t *testing.T) {
 	enabled := true
 	cfg := &config.Config{
@@ -262,6 +293,84 @@ func TestLegacyStageConflicts(t *testing.T) {
 	for _, want := range []string{"anvil api", "assay.review_provider", "anvil:assay.logic", "stage_providers wins for logic", "legacy keys still decide triage, security"} {
 		if !strings.Contains(msg, want) {
 			t.Errorf("message %q missing %q", msg, want)
+		}
+	}
+}
+
+// mixedPassConfig puts logic on copilot and triage on gemini beside a claude
+// default for everything else.
+func mixedPassConfig() Config {
+	c := DefaultConfig()
+	c.ReviewProvider = "claude"
+	c.AnvilStageProviders = map[string][]string{
+		"assay.logic":  {"copilot"},
+		"assay.triage": {"gemini"},
+	}
+	return c
+}
+
+func wantKindForPass(pass string) provider.Kind {
+	switch pass {
+	case "logic":
+		return provider.Copilot
+	case passTriage.Name:
+		return provider.Gemini
+	default:
+		return provider.Claude
+	}
+}
+
+// Review must attribute each PassReport to the provider its own pass resolved,
+// not to one provider per tier: RenderPassTelemetry groups on this field, and a
+// lookup by tier would put the copilot logic pass under claude and license
+// tools=0 on it.
+func TestReviewPassReportsCarryPerPassProvider(t *testing.T) {
+	db := openTestDB(t)
+	runner := newScriptRunner(baseScript(triageJSON(t, nil, ""), nil))
+	cfg := mixedPassConfig().WithRunner(runner.run)
+
+	res, err := Review(context.Background(), testRequest(), db, cfg)
+	if err != nil {
+		t.Fatalf("Review: %v", err)
+	}
+	if len(res.Passes) != 1+len(deepPasses) {
+		t.Fatalf("got %d pass reports, want %d", len(res.Passes), 1+len(deepPasses))
+	}
+	for _, p := range res.Passes {
+		if want := string(wantKindForPass(p.Name)); p.Provider != want {
+			t.Errorf("pass %s: Provider = %q, want %q", p.Name, p.Provider, want)
+		}
+	}
+}
+
+// The production runner must spawn each pass on the provider resolved for
+// that pass NAME, whatever tier it is called with.
+func TestSmithRunnerSpawnsPerPassProvider(t *testing.T) {
+	var mu sync.Mutex
+	got := map[string]provider.Provider{}
+	orig := spawnPassSession
+	spawnPassSession = func(_ context.Context, _, _, _ string, pv provider.Provider, _ []string, opts smith.SpawnOptions) (*smith.Process, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		got[opts.LogPrefix] = pv
+		return nil, errors.New("stub spawn")
+	}
+	t.Cleanup(func() { spawnPassSession = orig })
+
+	req := testRequest()
+	req.WorkDir = t.TempDir()
+	run := newSmithRunner(mixedPassConfig(), req)
+	for _, pass := range PassNames() {
+		// Every pass is called with the review tier: the tier must not decide.
+		if _, err := run(context.Background(), pass, tierReview, "prompt"); err == nil {
+			t.Fatalf("%s: expected the stub spawn error", pass)
+		}
+		pv, ok := got[PassLogPrefix(req.LogKey, pass)]
+		if !ok {
+			t.Fatalf("%s: runner never spawned", pass)
+		}
+		if pv.Kind != wantKindForPass(pass) {
+			t.Errorf("%s: spawned %s, want %s", pass, pv.Kind, wantKindForPass(pass))
 		}
 	}
 }

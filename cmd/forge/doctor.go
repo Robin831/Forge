@@ -401,11 +401,13 @@ func checkOpenAIAuth(name string) checkResult {
 // ["assay"], then the global pair, then the legacy triage_/review_ keys, then
 // the provider defaults. Each row names the chain and the step that supplied
 // it. The binary checked is the chain's head, the provider a review session
-// actually spawns; a missing one means that pass cannot run and fails.
+// actually spawns; a missing one means that pass cannot run and fails. Assay
+// has no rate-limit fallback, so a chain listing entries after its head is a
+// warn naming them as ignored rather than a row implying a fallback exists.
 //
-// Every anvil with Assay enabled gets its own rows. With no anvil enabling it
-// but the global block enabled (a config with no anvils yet), the global
-// resolution is reported alone.
+// Every anvil with Assay enabled gets its own rows. With no anvils registered
+// at all but the global block enabled, the global resolution is reported
+// alone; anvils that are registered but all disable Assay report it disabled.
 func checkAssayPasses() []checkResult {
 	if cfg == nil {
 		return []checkResult{{
@@ -422,7 +424,7 @@ func checkAssayPasses() []checkResult {
 		}
 	}
 	sort.Strings(anvils)
-	global := len(anvils) == 0 && cfg.Assay.IsEnabled()
+	global := len(cfg.Anvils) == 0 && cfg.Assay.IsEnabled()
 	if len(anvils) == 0 && !global {
 		return []checkResult{{
 			Name:   "Assay passes",
@@ -443,8 +445,15 @@ func checkAssayPasses() []checkResult {
 			if anvil != "" {
 				name = "Assay pass (" + anvil + "/" + rc.Pass + ")"
 			}
-			chain := fmt.Sprintf("chain %s from %s", rc.ChainLabel(), rc.SourceLabel())
 			head := rc.Providers[0]
+			chain := fmt.Sprintf("provider %s from %s", head.Label(), rc.SourceLabel())
+			var ignored []string
+			for _, pv := range rc.IgnoredFallbacks() {
+				ignored = append(ignored, pv.Label())
+			}
+			if len(ignored) > 0 {
+				chain += fmt.Sprintf("; fallbacks [%s] ignored — Assay spawns only the head of a chain", strings.Join(ignored, ", "))
+			}
 			bin := head.Cmd()
 			path, err := execLookPath(bin)
 			if err != nil {
@@ -465,9 +474,13 @@ func checkAssayPasses() []checkResult {
 				}
 				versions[path] = version
 			}
+			status := "ok"
+			if len(ignored) > 0 {
+				status = "warn"
+			}
 			results = append(results, checkResult{
 				Name:   name,
-				Status: "ok",
+				Status: status,
 				Detail: fmt.Sprintf("%s (%s); %s", version, head.Label(), chain),
 			})
 		}

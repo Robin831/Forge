@@ -350,10 +350,11 @@ type Daemon struct {
 	// log spam when the file is invalid or unreadable.
 	temperCache sync.Map // map[string]*temperCacheEntry
 
-	// assayProviderConflictsLogged holds the rendered legacy-vs-stage_providers
-	// warnings already logged (see warnAssayProviderConflicts), so a hot reload
-	// that leaves the condition unchanged does not repeat it.
-	assayProviderConflictsLogged sync.Map
+	// assayProviderWarned holds the Assay provider warnings the previous config
+	// produced (see warnAssayProviderConflicts), so a hot reload that leaves a
+	// condition unchanged does not repeat it. Replaced whole on every call.
+	assayProviderWarnMu sync.Mutex
+	assayProviderWarned map[string]struct{}
 
 	// Active Crucible statuses (parentBeadID -> crucible.Status)
 	crucibleStatuses sync.Map
