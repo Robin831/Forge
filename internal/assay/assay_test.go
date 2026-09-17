@@ -1528,16 +1528,16 @@ func TestProviderForUsesConfiguredModelHintsOnly(t *testing.T) {
 		TriageModel:    "triage-model",
 		ReviewModel:    "review-model",
 	}
-	if pv := cfg.providerFor(tierTriage); pv.Model != "triage-model" {
+	if pv := cfg.providerFor(passTriage.Name); pv.Model != "triage-model" {
 		t.Errorf("triage model = %q, want triage-model", pv.Model)
 	}
-	if pv := cfg.providerFor(tierReview); pv.Model != "review-model" {
+	if pv := cfg.providerFor("logic"); pv.Model != "review-model" {
 		t.Errorf("review model = %q, want review-model", pv.Model)
 	}
 	// With no hints, Model must stay empty (provider default) — never a
 	// hard-coded identifier.
 	empty := Config{}
-	if pv := empty.providerFor(tierReview); pv.Model != "" {
+	if pv := empty.providerFor("logic"); pv.Model != "" {
 		t.Errorf("expected empty model with no hints, got %q", pv.Model)
 	}
 }

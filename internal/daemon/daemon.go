@@ -351,6 +351,11 @@ type Daemon struct {
 	temperCache sync.Map // map[string]*temperCacheEntry
 
 	// Active Crucible statuses (parentBeadID -> crucible.Status)
+	// assayProviderConflictsLogged holds the rendered legacy-vs-stage_providers
+	// warnings already logged (see warnAssayProviderConflicts), so a hot reload
+	// that leaves the condition unchanged does not repeat it.
+	assayProviderConflictsLogged sync.Map
+
 	crucibleStatuses sync.Map
 
 	// Periodic bead recovery counter (runs every N poll cycles)
@@ -764,6 +769,7 @@ func New(cfg *config.Config, configPath string) (*Daemon, error) {
 	// makes the intent explicit and avoids any future ambiguity).
 	d.costLimitLoggedDate.Store("")
 	d.cfg.Store(cfg)
+	d.warnAssayProviderConflicts(cfg)
 	applyWardenFilterConfig(cfg)
 	applyPricingConfig(cfg)
 	applyWorktreeTimeoutConfig(cfg)
@@ -1347,6 +1353,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 		d.configWatcher = hotreload.NewWatcher(d.configFile, d.cfg.Load(), d.logger)
 		d.configWatcher.OnChange(func(old, new *config.Config) {
 			d.cfg.Store(new)
+			d.warnAssayProviderConflicts(new)
 			applyWardenFilterConfig(new)
 			applyPricingConfig(new)
 			applyWorktreeTimeoutConfig(new)
@@ -2056,8 +2063,10 @@ func (d *Daemon) reviewAssay(ctx context.Context, req assay.ReviewRequest, db *s
 }
 
 func (d *Daemon) runAssayReview(ctx context.Context, anvil, anvilPath, beadID string, prNumber int, headSHA, worktreePath, workerID string) (*state.AssayRun, error) {
-	resolved := d.cfg.Load().ResolvedAssay(anvil)
-	engineCfg := assay.FromAssayConfig(resolved)
+	// ForAnvil, not FromAssayConfig: the per-pass provider chains are resolved
+	// from the anvil's and the global stage_providers as well as the assay
+	// block, and doctor builds its report through the same constructor.
+	engineCfg := assay.ForAnvil(d.cfg.Load(), anvil)
 
 	started := time.Now()
 	// The key is minted here, before the engine runs, because both halves need

@@ -1,6 +1,9 @@
 package assay
 
 import (
+	"fmt"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/Robin831/Forge/internal/config"
@@ -25,10 +28,12 @@ type Config struct {
 	// TriageModel/ReviewModel hints below, never a literal baked into the code.
 	ModelTier string
 
-	// TriageProvider and ReviewProvider are provider specs (the same syntax as
-	// settings.providers, e.g. "claude", "gemini/gemini-2.5-pro"). Empty
-	// defaults to the Claude provider. TriageProvider drives the cheap scoping
-	// pass; ReviewProvider drives the five deep passes.
+	// TriageProvider and ReviewProvider are the LEGACY provider specs (the same
+	// syntax as settings.providers, e.g. "claude", "gemini/gemini-2.5-pro").
+	// TriageProvider drives the cheap scoping pass; ReviewProvider drives the
+	// five deep passes. They are step 5 of the per-pass resolution in
+	// providersFor, below every assay stage_providers key: a pass whose stage
+	// key is set never reads them.
 	TriageProvider string
 	ReviewProvider string
 
@@ -37,6 +42,16 @@ type Config struct {
 	// Empty means "let the provider pick its default model".
 	TriageModel string
 	ReviewModel string
+
+	// AnvilStageProviders and GlobalStageProviders are the anvil's own
+	// stage_providers map and settings.stage_providers, handed in whole so the
+	// engine resolves each pass from the same maps doctor and the cost tables
+	// read (see ForAnvil). Only the "assay" and "assay.<pass>" keys are ever
+	// consulted: an Assay pass never inherits the smith chain or
+	// settings.providers, since a review model chosen for implementation work
+	// is a choice nobody made for review.
+	AnvilStageProviders  map[string][]string
+	GlobalStageProviders map[string][]string
 
 	// NitCap caps the number of Nit-severity findings retained after
 	// aggregation. Values <= 0 mean "no cap". The cap is cumulative per PR:
@@ -145,6 +160,24 @@ func FromAssayConfig(ac config.AssayConfig) Config {
 	return cfg
 }
 
+// ForAnvil builds the engine Config for one anvil: the anvil's resolved assay
+// block (overlay over global) plus the two stage_providers maps the per-pass
+// provider resolution reads. It is the one constructor the daemon and doctor
+// share, so the provider a review runs on and the provider doctor reports for
+// it cannot come from two derivations. An anvil name the config does not know
+// resolves against the global configuration alone.
+func ForAnvil(cfg *config.Config, anvil string) Config {
+	if cfg == nil {
+		return DefaultConfig()
+	}
+	c := FromAssayConfig(cfg.ResolvedAssay(anvil))
+	c.GlobalStageProviders = cfg.Settings.StageProviders
+	if a, ok := cfg.Anvils[anvil]; ok {
+		c.AnvilStageProviders = a.StageProviders
+	}
+	return c
+}
+
 // WithRunner returns a copy of the Config with the given pass runner installed.
 // External callers use this to inject a custom runner; the package's own tests
 // may set the unexported field directly.
@@ -183,29 +216,183 @@ func (c Config) autoGenPatterns() []string {
 // ReviewProviderKind names the provider the deep passes run on, as the cost
 // tables key their per-provider aggregate: "claude", "copilot", "gemini".
 //
-// A run can straddle two providers when triage is configured separately, and
-// the deep passes are five of a run's six sessions and by far the bulk of its
-// spend — so their provider is the one a whole run is attributed to rather than
-// splitting one run's usage across two rows on a guess at the ratio.
+// A run can straddle providers — triage resolves separately, and since the
+// assay.<pass> stage keys each deep pass can too — but the cost fold records a
+// run's usage under one provider rather than splitting it on a guess at the
+// ratio. The deep passes are five of a run's six sessions and the bulk of its
+// spend, so the kind most of them run on is the one a run is attributed to; a
+// tie goes to the kind that appears first in deepPasses order, which keeps the
+// answer deterministic.
 func (c Config) ReviewProviderKind() string {
-	return string(c.providerFor(tierReview).Kind)
+	counts := make(map[provider.Kind]int, len(deepPasses))
+	var order []provider.Kind
+	for _, p := range deepPasses {
+		k := c.providerFor(p.Name).Kind
+		if counts[k] == 0 {
+			order = append(order, k)
+		}
+		counts[k]++
+	}
+	best := provider.Claude
+	bestN := 0
+	for _, k := range order {
+		if counts[k] > bestN {
+			best, bestN = k, counts[k]
+		}
+	}
+	return string(best)
 }
 
-// providerFor resolves the provider and model hint for the given tier. The
-// model is taken exclusively from the configured hints (never hard-coded); an
-// empty hint leaves Provider.Model unset so the provider uses its own default.
-func (c Config) providerFor(tier string) provider.Provider {
-	spec := c.ReviewProvider
-	model := c.ReviewModel
-	if tier == tierTriage {
+// ProviderSource names which precedence step supplied a pass's provider chain.
+type ProviderSource int
+
+// The six steps of providersFor, in precedence order.
+const (
+	SourceAnvilPassStage ProviderSource = iota + 1
+	SourceAnvilAssayStage
+	SourceGlobalPassStage
+	SourceGlobalAssayStage
+	SourceLegacyAssayBlock
+	SourceProviderDefaults
+)
+
+// assayStageKey is the stage_providers key every Assay pass falls back to.
+const assayStageKey = "assay"
+
+// passStageKey is the per-pass stage_providers key, e.g. "assay.logic".
+func passStageKey(pass string) string { return assayStageKey + "." + pass }
+
+// ResolvedChain is one pass's provider chain and the step that supplied it.
+type ResolvedChain struct {
+	// Pass is the pass identifier ("triage", "logic", …).
+	Pass string
+	// Providers is the ordered chain. It is never empty.
+	Providers []provider.Provider
+	// Source is the precedence step the chain came from.
+	Source ProviderSource
+	// Key is the stage_providers key (steps 1-4) or the legacy assay keys
+	// (step 5) that supplied the chain; empty for provider defaults.
+	Key string
+}
+
+// SourceLabel renders where the chain came from for doctor and the conflict
+// warning: "anvil stage_providers[assay.logic]", "assay.review_provider/
+// review_model", "provider defaults".
+func (r ResolvedChain) SourceLabel() string {
+	switch r.Source {
+	case SourceAnvilPassStage, SourceAnvilAssayStage:
+		return "anvil stage_providers[" + r.Key + "]"
+	case SourceGlobalPassStage, SourceGlobalAssayStage:
+		return "settings.stage_providers[" + r.Key + "]"
+	case SourceLegacyAssayBlock:
+		return r.Key
+	default:
+		return "provider defaults"
+	}
+}
+
+// ChainLabel renders the chain as "claude/claude-opus-5 -> gemini".
+func (r ResolvedChain) ChainLabel() string {
+	parts := make([]string, 0, len(r.Providers))
+	for _, p := range r.Providers {
+		parts = append(parts, p.Label())
+	}
+	return strings.Join(parts, " -> ")
+}
+
+// providersFor resolves the provider chain for one pass. The order is:
+//
+//  1. the anvil's stage_providers["assay.<pass>"]
+//  2. the anvil's stage_providers["assay"]
+//  3. settings.stage_providers["assay.<pass>"]
+//  4. settings.stage_providers["assay"]
+//  5. the legacy assay block (overlay already folded over global by
+//     config.ResolvedAssay): triage_provider/triage_model for triage, falling
+//     back to review_provider/review_model exactly as it always did, and
+//     review_provider/review_model for every deep pass
+//  6. provider.Defaults
+//
+// Anvil scope outranks pass specificity: an anvil's "assay" beats a global
+// "assay.logic", because an anvil override is a statement about this
+// repository and a global per-pass key is a statement about every repository.
+// smith_providers and settings.providers are never read — see
+// AnvilStageProviders.
+func (c Config) providersFor(pass string) []provider.Provider {
+	return c.resolveChain(pass).Providers
+}
+
+// providerFor is the provider a pass session actually spawns: the head of its
+// chain. The model is taken exclusively from configuration (a stage spec's
+// "/model" suffix or the legacy hints), never hard-coded; an unset model
+// leaves Provider.Model empty so the provider uses its own default.
+func (c Config) providerFor(pass string) provider.Provider {
+	return c.providersFor(pass)[0]
+}
+
+func (c Config) resolveChain(pass string) ResolvedChain {
+	steps := []struct {
+		m   map[string][]string
+		key string
+		src ProviderSource
+	}{
+		{c.AnvilStageProviders, passStageKey(pass), SourceAnvilPassStage},
+		{c.AnvilStageProviders, assayStageKey, SourceAnvilAssayStage},
+		{c.GlobalStageProviders, passStageKey(pass), SourceGlobalPassStage},
+		{c.GlobalStageProviders, assayStageKey, SourceGlobalAssayStage},
+	}
+	for _, st := range steps {
+		if chain := stageChain(st.m, st.key); len(chain) > 0 {
+			return ResolvedChain{Pass: pass, Providers: chain, Source: st.src, Key: st.key}
+		}
+	}
+	if pv, key, ok := c.legacyProvider(pass); ok {
+		return ResolvedChain{Pass: pass, Providers: []provider.Provider{pv}, Source: SourceLegacyAssayBlock, Key: key}
+	}
+	return ResolvedChain{Pass: pass, Providers: provider.Defaults(), Source: SourceProviderDefaults}
+}
+
+// stageChain parses one stage_providers entry. An absent key, an empty list and
+// a list of blank specs all read as unset, so resolution moves on to the next
+// step rather than returning a chain with nothing in it.
+func stageChain(m map[string][]string, key string) []provider.Provider {
+	specs, ok := m[key]
+	if !ok || len(specs) == 0 {
+		return nil
+	}
+	return provider.FromConfig(specs)
+}
+
+// legacyProvider applies the legacy assay block for a pass, reporting false
+// when none of the keys that pass reads is set. The triage fallback to the
+// review keys is today's behaviour and is kept byte-for-byte: an anvil that
+// set only review_model has always run triage on that model too.
+func (c Config) legacyProvider(pass string) (provider.Provider, string, bool) {
+	spec, model := c.ReviewProvider, c.ReviewModel
+	var keys []string
+	if pass == passTriage.Name {
 		if c.TriageProvider != "" {
 			spec = c.TriageProvider
+			keys = append(keys, "assay.triage_provider")
+		} else if spec != "" {
+			keys = append(keys, "assay.review_provider")
 		}
 		if c.TriageModel != "" {
 			model = c.TriageModel
+			keys = append(keys, "assay.triage_model")
+		} else if model != "" {
+			keys = append(keys, "assay.review_model")
+		}
+	} else {
+		if spec != "" {
+			keys = append(keys, "assay.review_provider")
+		}
+		if model != "" {
+			keys = append(keys, "assay.review_model")
 		}
 	}
-
+	if spec == "" && model == "" {
+		return provider.Provider{}, "", false
+	}
 	pv := provider.Provider{Kind: provider.Claude}
 	if spec != "" {
 		if list := provider.FromConfig([]string{spec}); len(list) > 0 {
@@ -215,5 +402,123 @@ func (c Config) providerFor(tier string) provider.Provider {
 	if model != "" {
 		pv.Model = model
 	}
-	return pv
+	return pv, strings.Join(keys, "+"), true
+}
+
+// PassNames returns every Assay pass identifier in run order: triage first,
+// then the five deep passes.
+func PassNames() []string {
+	out := make([]string, 0, 1+len(deepPasses))
+	out = append(out, passTriage.Name)
+	for _, p := range deepPasses {
+		out = append(out, p.Name)
+	}
+	return out
+}
+
+// ResolvedChains returns every pass's resolved chain, in PassNames order.
+func (c Config) ResolvedChains() []ResolvedChain {
+	names := PassNames()
+	out := make([]ResolvedChain, 0, len(names))
+	for _, n := range names {
+		out = append(out, c.resolveChain(n))
+	}
+	return out
+}
+
+// LegacyStageConflict is an anvil that sets both a legacy assay provider/model
+// key and an assay stage_providers key. Both are valid on their own; together
+// they read as two answers to one question, so the daemon names which one
+// actually decides each pass.
+type LegacyStageConflict struct {
+	Anvil string
+	// LegacyKeys are the legacy assay keys set for the anvil (overlay or global).
+	LegacyKeys []string
+	// StageKeys are the assay stage_providers keys in scope, qualified by
+	// where they are set ("anvil:assay.logic", "settings:assay").
+	StageKeys []string
+	// StageWins and LegacyWins partition the passes by which one decides them.
+	StageWins  []string
+	LegacyWins []string
+}
+
+// String renders the one log line the warning is.
+func (lc LegacyStageConflict) String() string {
+	msg := fmt.Sprintf("anvil %s sets legacy assay keys [%s] and stage_providers keys [%s]; stage_providers wins",
+		lc.Anvil, strings.Join(lc.LegacyKeys, ", "), strings.Join(lc.StageKeys, ", "))
+	if len(lc.StageWins) > 0 {
+		msg += " for " + strings.Join(lc.StageWins, ", ")
+	}
+	if len(lc.LegacyWins) > 0 {
+		msg += "; legacy keys still decide " + strings.Join(lc.LegacyWins, ", ")
+	}
+	return msg
+}
+
+// LegacyStageConflicts reports every Assay-enabled anvil on which a legacy
+// assay provider/model key and an assay stage_providers key are both set, in
+// anvil-name order.
+func LegacyStageConflicts(cfg *config.Config) []LegacyStageConflict {
+	if cfg == nil {
+		return nil
+	}
+	names := make([]string, 0, len(cfg.Anvils))
+	for name := range cfg.Anvils {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	var out []LegacyStageConflict
+	for _, name := range names {
+		resolved := cfg.ResolvedAssay(name)
+		if !resolved.IsEnabled() {
+			continue
+		}
+		var legacy []string
+		for _, kv := range []struct{ key, val string }{
+			{"assay.triage_provider", resolved.TriageProvider},
+			{"assay.triage_model", resolved.TriageModel},
+			{"assay.review_provider", resolved.ReviewProvider},
+			{"assay.review_model", resolved.ReviewModel},
+		} {
+			if kv.val != "" {
+				legacy = append(legacy, kv.key)
+			}
+		}
+		stage := append(assayStageKeys("anvil", cfg.Anvils[name].StageProviders),
+			assayStageKeys("settings", cfg.Settings.StageProviders)...)
+		if len(legacy) == 0 || len(stage) == 0 {
+			continue
+		}
+		lc := LegacyStageConflict{Anvil: name, LegacyKeys: legacy, StageKeys: stage}
+		for _, rc := range ForAnvil(cfg, name).ResolvedChains() {
+			switch rc.Source {
+			case SourceLegacyAssayBlock:
+				lc.LegacyWins = append(lc.LegacyWins, rc.Pass)
+			case SourceProviderDefaults:
+				// Neither key reaches this pass (e.g. only triage_provider is
+				// set beside a stage key for logic), so neither "wins" it.
+			default:
+				lc.StageWins = append(lc.StageWins, rc.Pass)
+			}
+		}
+		out = append(out, lc)
+	}
+	return out
+}
+
+// assayStageKeys lists the non-empty "assay" and "assay.*" keys of one
+// stage_providers map, sorted and prefixed with the scope they came from.
+func assayStageKeys(scope string, m map[string][]string) []string {
+	var keys []string
+	for k, v := range m {
+		if len(v) == 0 {
+			continue
+		}
+		if k == assayStageKey || strings.HasPrefix(k, assayStageKey+".") {
+			keys = append(keys, scope+":"+k)
+		}
+	}
+	sort.Strings(keys)
+	return keys
 }
