@@ -62,6 +62,20 @@ import (
 // but it is reported as unattributable instead of as a confident zero. That is
 // the graceful degradation older rows need: the report never fails on them, it
 // says how much of the window it could not attribute.
+//
+// # Every pass is priced at the model that ran it
+//
+// A run is not one model: each pass resolves its own provider chain, and a
+// pass that was rate limited moves down it. Pricing a run's tokens at one
+// model's rates therefore misprices every mixed run — an Opus 5 cache write
+// costs two and a half times a Sonnet 5 one. So the priced figures here are
+// built pass by pass: each pass's tokens at the rates of the model recorded on
+// its own row (RatesForModel, the resolver the in-flight cost ceiling uses
+// too). Where a row cannot say, the resolution falls back one level at a time
+// and says which level answered (ModelSource*): the pass's own model, then the
+// run-level model, then the report's fallback model. A row written before
+// per-pass tokens were recorded carries no pass tokens at all, and its run
+// totals are priced as one unit at the run-level model on the same terms.
 
 // Token class names. A run's cache accounting is either present, in which case
 // its tokens land in one or both of the two priced classes, or absent, in which
@@ -82,6 +96,23 @@ const (
 	// involved. Used for the unknown class, whose tokens are not knowable.
 	BasisRecorded = "recorded"
 )
+
+// Model sources: which level of a row named the model a unit was priced at.
+const (
+	// ModelSourcePass: the pass row recorded the model it ran on.
+	ModelSourcePass = "pass"
+	// ModelSourceRun: the pass named none (or the row carries no pass
+	// tokens), and the run-level model answered.
+	ModelSourceRun = "run"
+	// ModelSourceFallback: neither the pass nor the run named a model this
+	// package can price, so the report's fallback model was used.
+	ModelSourceFallback = "fallback"
+)
+
+// DefaultFallbackModel is the model a unit is priced at when neither its pass
+// row nor its run names one that resolves: the current Sonnet, which is what
+// Assay runs on when nothing is configured.
+const DefaultFallbackModel = ModelClaudeSonnet5
 
 // GroupFirstRun / GroupRepeatRun are the two halves of the split this report
 // exists for.
@@ -125,6 +156,35 @@ type RunRecord struct {
 	// not "no cache traffic" — see the package note above.
 	CacheCreationTokens int `json:"cache_creation_tokens"`
 	CacheReadTokens     int `json:"cache_read_tokens"`
+	// Model is the run-level model: the one model the run's passes ran on,
+	// where a source can establish it. It is what a pass that names no model
+	// of its own — and a row with no per-pass tokens — is priced at. Empty
+	// when the source cannot say (pre-attribution rows, or a run whose passes
+	// ran on different models).
+	Model string `json:"model,omitempty"`
+	// Passes is the run's per-pass attribution: which model each pass ran on
+	// and what it was billed for. Nil on rows written before it was recorded.
+	Passes []PassRecord `json:"passes,omitempty"`
+}
+
+// PassRecord is one pass of a run as the per-model pricing reads it.
+type PassRecord struct {
+	Name     string `json:"name"`
+	Provider string `json:"provider,omitempty"`
+	// Model is the model the pass ran on; empty when the row does not say.
+	Model               string  `json:"model,omitempty"`
+	CostUSD             float64 `json:"cost_usd"`
+	InputTokens         int     `json:"input_tokens"`
+	OutputTokens        int     `json:"output_tokens"`
+	CacheCreationTokens int     `json:"cache_creation_tokens"`
+	CacheReadTokens     int     `json:"cache_read_tokens"`
+}
+
+// HasTokens reports whether the pass row carries any token accounting. A pass
+// row written before tokens were recorded carries none, and is not priced on
+// its own.
+func (p PassRecord) HasTokens() bool {
+	return p.InputTokens > 0 || p.OutputTokens > 0 || p.CacheCreationTokens > 0 || p.CacheReadTokens > 0
 }
 
 // PRKey identifies the PR a run belongs to. PR numbers are per-repository, so
@@ -245,12 +305,15 @@ type TokenClassBreakdown struct {
 	// class, the runs with no cache accounting at all.
 	Runs   int   `json:"runs"`
 	Tokens int64 `json:"tokens"`
-	// CostUSD is priced from Tokens for the cache classes, and is the
-	// recorded provider cost for the unknown class. Basis says which.
+	// CostUSD is priced from Tokens for the cache classes — each pass's
+	// tokens at its own model's rate — and is the recorded provider cost for
+	// the unknown class. Basis says which.
 	CostUSD float64 `json:"cost_usd"`
 	Basis   string  `json:"basis"`
-	// RatePerM is the per-million-token rate applied, and is zero for a
-	// class that was not priced from tokens.
+	// RatePerM is the EFFECTIVE per-million-token rate: CostUSD over Tokens.
+	// It is one model's rate only when every unit in the class ran on one
+	// model; across models it is the blend. Zero for a class that was not
+	// priced from tokens.
 	RatePerM float64 `json:"rate_per_m,omitempty"`
 }
 
@@ -296,8 +359,69 @@ type OrdinalBucket struct {
 	CacheReadTokens     int64   `json:"cache_read_tokens"`
 }
 
+// ModelRate is one pricing row a report applied, named by its key.
+type ModelRate struct {
+	Model string  `json:"model"`
+	Rates Pricing `json:"rates"`
+}
+
+// ModelBreakdown is the spend priced at one model's rates. Rows are keyed by
+// the pricing row, so two ids billed identically (claude-opus-4-8 and
+// claude-opus-5) are one row.
+type ModelBreakdown struct {
+	Model string  `json:"model"`
+	Rates Pricing `json:"rates"`
+	// Runs is how many distinct runs contributed a unit priced here; a mixed
+	// run counts under every model it used.
+	Runs int `json:"runs"`
+	// Passes is how many pass rows were priced here, and RunLevelUnits how
+	// many runs with no per-pass tokens were priced here whole.
+	Passes        int `json:"passes"`
+	RunLevelUnits int `json:"run_level_units"`
+	// FallbackUnits is how many of those units reached this model only
+	// because nothing on the row named a model that resolves.
+	FallbackUnits        int     `json:"fallback_units"`
+	InputTokens          int64   `json:"input_tokens"`
+	OutputTokens         int64   `json:"output_tokens"`
+	CacheCreationTokens  int64   `json:"cache_creation_tokens"`
+	CacheReadTokens      int64   `json:"cache_read_tokens"`
+	InputCostUSD         float64 `json:"input_cost_usd"`
+	OutputCostUSD        float64 `json:"output_cost_usd"`
+	CacheCreationCostUSD float64 `json:"cache_creation_cost_usd"`
+	CacheReadCostUSD     float64 `json:"cache_read_cost_usd"`
+	// PricedCostUSD is the four classes above summed. RecordedCostUSD is the
+	// provider's own figure for the same units — per pass where the row
+	// carries one, the run's where it does not — and, as everywhere in this
+	// report, the two are never added together.
+	PricedCostUSD   float64 `json:"priced_cost_usd"`
+	RecordedCostUSD float64 `json:"recorded_cost_usd"`
+}
+
+// PassBreakdown is one priced unit: a pass, or a whole run whose row carries no
+// per-pass tokens (Pass empty).
+type PassBreakdown struct {
+	RunID    int    `json:"run_id"`
+	Anvil    string `json:"anvil"`
+	PRNumber int    `json:"pr_number"`
+	Ordinal  int    `json:"ordinal"`
+	Pass     string `json:"pass,omitempty"`
+	Provider string `json:"provider,omitempty"`
+	// RecordedModel is the model the pass row named, verbatim; Model is the
+	// pricing row the unit was priced at, and ModelSource the level that
+	// supplied it.
+	RecordedModel       string  `json:"recorded_model,omitempty"`
+	Model               string  `json:"model"`
+	ModelSource         string  `json:"model_source"`
+	InputTokens         int64   `json:"input_tokens"`
+	OutputTokens        int64   `json:"output_tokens"`
+	CacheCreationTokens int64   `json:"cache_creation_tokens"`
+	CacheReadTokens     int64   `json:"cache_read_tokens"`
+	PricedCostUSD       float64 `json:"priced_cost_usd"`
+	RecordedCostUSD     float64 `json:"recorded_cost_usd"`
+}
+
 // Options tunes a report. The zero value is the baseline methodology: skipped
-// runs excluded, every anvil included, Claude Sonnet-class list pricing.
+// runs excluded, every anvil included, each pass priced at its own model.
 type Options struct {
 	// IncludeSkipped keeps runs that dispatched no passes. Off by default,
 	// which matches the definition of "a run" the per-PR run cap already uses
@@ -309,25 +433,115 @@ type Options struct {
 	// applied BEFORE ordinals are derived, which is safe because a PR belongs
 	// to exactly one anvil, so no PR's history is ever split by it.
 	Anvil string
-	// ModelTier selects the pricing row ("haiku", "sonnet", "opus",
-	// "fable"); empty resolves to the Sonnet defaults, matching
-	// PricingForTier.
-	ModelTier string
-	// Pricing overrides ModelTier outright when non-zero, for a caller that
-	// has already resolved rates (or is reproducing a historical run at the
-	// rates that applied then).
-	Pricing Pricing
+	// FallbackModel is the model a unit is priced at when neither its pass
+	// nor its run names one that resolves (a model id or alias: "opus",
+	// "claude-sonnet-5", …). Empty, or a name that does not resolve, means
+	// DefaultFallbackModel. It never overrides a model a row does name.
+	FallbackModel string
+	// ByModel / ByPass populate the report's per-model and per-pass
+	// breakdowns. They are opt-in because the per-pass list grows with every
+	// run in the window.
+	ByModel bool
+	ByPass  bool
 	// Now stamps the report. Zero means time.Now(); tests set it so output
 	// is byte-stable.
 	Now time.Time
 }
 
-// resolvePricing returns the rates a report should price token classes at.
-func (o Options) resolvePricing() Pricing {
-	if o.Pricing != (Pricing{}) {
-		return o.Pricing
+// fallbackRates resolves the fallback model to its pricing row.
+func (o Options) fallbackRates() (Pricing, string) {
+	if p, key, ok := RatesForModel(o.FallbackModel); ok {
+		return p, key
 	}
-	return PricingForTier(o.ModelTier)
+	p, key, _ := RatesForModel(DefaultFallbackModel)
+	return p, key
+}
+
+// pricedUnit is one thing priced at one model's rates: a pass, or a run whose
+// row carries no per-pass tokens.
+type pricedUnit struct {
+	pass          string
+	provider      string
+	recordedModel string
+	key           string
+	source        string
+	rates         Pricing
+	input         int64
+	output        int64
+	cacheCreation int64
+	cacheRead     int64
+	recorded      float64
+}
+
+func (u pricedUnit) inputCost() float64  { return float64(u.input) * u.rates.InputPerM / 1_000_000 }
+func (u pricedUnit) outputCost() float64 { return float64(u.output) * u.rates.OutputPerM / 1_000_000 }
+func (u pricedUnit) cacheCreationCost() float64 {
+	return float64(u.cacheCreation) * u.rates.CacheWritePerM / 1_000_000
+}
+func (u pricedUnit) cacheReadCost() float64 {
+	return float64(u.cacheRead) * u.rates.CacheReadPerM / 1_000_000
+}
+func (u pricedUnit) pricedCost() float64 {
+	return u.inputCost() + u.outputCost() + u.cacheCreationCost() + u.cacheReadCost()
+}
+
+// resolveUnitModel walks the fallback order for one unit: the pass's own model,
+// then the run-level model, then the report's fallback. A name that does not
+// resolve to a pricing row is passed over rather than priced at a guess.
+func resolveUnitModel(passModel, runModel string, fallback Pricing, fallbackKey string) (Pricing, string, string) {
+	if p, key, ok := RatesForModel(passModel); ok {
+		return p, key, ModelSourcePass
+	}
+	if p, key, ok := RatesForModel(runModel); ok {
+		return p, key, ModelSourceRun
+	}
+	return fallback, fallbackKey, ModelSourceFallback
+}
+
+// priceRun splits a run into priced units. A row whose passes carry tokens is
+// priced pass by pass; one whose passes carry none (or that has no pass rows)
+// is priced whole, from its run-level cache tokens and at its run-level model.
+func priceRun(r RunRecord, fallback Pricing, fallbackKey string) []pricedUnit {
+	perPass := false
+	for _, p := range r.Passes {
+		if p.HasTokens() {
+			perPass = true
+			break
+		}
+	}
+	if !perPass {
+		rates, key, source := resolveUnitModel("", r.Model, fallback, fallbackKey)
+		return []pricedUnit{{
+			recordedModel: r.Model,
+			key:           key,
+			source:        source,
+			rates:         rates,
+			cacheCreation: int64(r.CacheCreationTokens),
+			cacheRead:     int64(r.CacheReadTokens),
+			recorded:      r.CostUSD,
+		}}
+	}
+	units := make([]pricedUnit, 0, len(r.Passes))
+	for _, p := range r.Passes {
+		if !p.HasTokens() && p.CostUSD == 0 {
+			continue
+		}
+		rates, key, source := resolveUnitModel(p.Model, r.Model, fallback, fallbackKey)
+		units = append(units, pricedUnit{
+			pass:          p.Name,
+			provider:      p.Provider,
+			recordedModel: p.Model,
+			key:           key,
+			source:        source,
+			rates:         rates,
+			input:         int64(p.InputTokens),
+			output:        int64(p.OutputTokens),
+			cacheCreation: int64(p.CacheCreationTokens),
+			cacheRead:     int64(p.CacheReadTokens),
+			recorded:      p.CostUSD,
+		})
+	}
+	return units
 }
 
 // CostReport is the whole answer: totals, the first-vs-repeat split, the
@@ -345,9 +559,12 @@ type CostReport struct {
 	// IncludeSkipped echoes the option, because two reports over one window
 	// that disagree on it are not comparable and the difference is otherwise
 	// invisible in the output.
-	IncludeSkipped bool    `json:"include_skipped"`
-	ModelTier      string  `json:"model_tier,omitempty"`
-	Pricing        Pricing `json:"pricing"`
+	IncludeSkipped bool `json:"include_skipped"`
+	// FallbackModel is the pricing row a unit naming no resolvable model was
+	// priced at, and ModelRates every row the report applied — one per model
+	// the window's passes actually ran on, not one rate for the whole report.
+	FallbackModel string      `json:"fallback_model"`
+	ModelRates    []ModelRate `json:"model_rates"`
 
 	TotalRuns int `json:"total_runs"`
 	TotalPRs  int `json:"total_prs"`
@@ -370,6 +587,19 @@ type CostReport struct {
 
 	RunsWithoutCacheAccounting    int     `json:"runs_without_cache_accounting"`
 	CostWithoutCacheAccountingUSD float64 `json:"cost_without_cache_accounting_usd"`
+
+	// PricedCostUSD is every unit's tokens at its own model's rates. It
+	// covers plain input/output only for pass rows that record them, so like
+	// every priced figure here it is not the recorded total.
+	PricedCostUSD float64 `json:"priced_cost_usd"`
+	// FallbackPricedUnits counts the units priced at FallbackModel because
+	// nothing on the row named a model — the part of the pricing that is an
+	// assumption rather than a record.
+	FallbackPricedUnits int `json:"fallback_priced_units"`
+	// ByModel sums to PricedCostUSD; ByPass lists every unit. Populated only
+	// when Options.ByModel / Options.ByPass ask for them.
+	ByModel []ModelBreakdown `json:"by_model,omitempty"`
+	ByPass  []PassBreakdown  `json:"by_pass,omitempty"`
 }
 
 // RunSource supplies the run rows a report is built from. The implementation
@@ -418,7 +648,7 @@ var ordinalBucketSpec = []struct {
 // occupy ordinal 1; restricting before deriving would relabel every repeat run
 // whose first review predates the window.
 func BuildReport(runs []RunRecord, since, until time.Time, opts Options) *CostReport {
-	pricing := opts.resolvePricing()
+	fallback, fallbackKey := opts.fallbackRates()
 	now := opts.Now
 	if now.IsZero() {
 		now = time.Now()
@@ -430,8 +660,7 @@ func BuildReport(runs []RunRecord, since, until time.Time, opts Options) *CostRe
 		GeneratedAt:    now,
 		Anvil:          opts.Anvil,
 		IncludeSkipped: opts.IncludeSkipped,
-		ModelTier:      opts.ModelTier,
-		Pricing:        pricing,
+		FallbackModel:  fallbackKey,
 		FirstRun:       RunGroup{Label: GroupFirstRun},
 		RepeatRun:      RunGroup{Label: GroupRepeatRun},
 	}
@@ -446,6 +675,7 @@ func BuildReport(runs []RunRecord, since, until time.Time, opts Options) *CostRe
 	var (
 		firstAcc, repeatAcc groupAccumulator
 		buckets             = make([]OrdinalBucket, len(ordinalBucketSpec))
+		models              = modelAccumulator{}
 	)
 	for i, spec := range ordinalBucketSpec {
 		buckets[i] = OrdinalBucket{Label: spec.label, MinOrdinal: spec.min, MaxOrdinal: spec.max}
@@ -456,11 +686,13 @@ func BuildReport(runs []RunRecord, since, until time.Time, opts Options) *CostRe
 			report.HistoryRunsOutsideWindow++
 			continue
 		}
+		units := priceRun(o.Run, fallback, fallbackKey)
 		if o.IsRepeat() {
-			repeatAcc.add(o.Run)
+			repeatAcc.add(o.Run, units)
 		} else {
-			firstAcc.add(o.Run)
+			firstAcc.add(o.Run, units)
 		}
+		models.add(o, units, opts.ByPass)
 		for i, spec := range ordinalBucketSpec {
 			if o.Ordinal < spec.min || (spec.max > 0 && o.Ordinal > spec.max) {
 				continue
@@ -473,8 +705,8 @@ func BuildReport(runs []RunRecord, since, until time.Time, opts Options) *CostRe
 		}
 	}
 
-	report.FirstRun = firstAcc.group(GroupFirstRun, pricing)
-	report.RepeatRun = repeatAcc.group(GroupRepeatRun, pricing)
+	report.FirstRun = firstAcc.group(GroupFirstRun)
+	report.RepeatRun = repeatAcc.group(GroupRepeatRun)
 	report.ByOrdinal = buckets
 
 	report.TotalRuns = report.FirstRun.Runs + report.RepeatRun.Runs
@@ -488,8 +720,17 @@ func BuildReport(runs []RunRecord, since, until time.Time, opts Options) *CostRe
 	var total groupAccumulator
 	total.merge(firstAcc)
 	total.merge(repeatAcc)
-	report.ByTokenClass = total.tokenClasses(pricing)
+	report.ByTokenClass = total.tokenClasses()
 
+	report.ModelRates = models.rates()
+	report.PricedCostUSD = models.pricedTotal()
+	report.FallbackPricedUnits = models.fallbackUnits
+	if opts.ByModel {
+		report.ByModel = models.breakdown()
+	}
+	if opts.ByPass {
+		report.ByPass = models.passes
+	}
 	return report
 }
 
@@ -542,6 +783,8 @@ type groupAccumulator struct {
 	cost            float64
 	cacheCreation   int64
 	cacheRead       int64
+	creationCost    float64
+	readCost        float64
 	creationRuns    int
 	readRuns        int
 	findings        int
@@ -552,7 +795,9 @@ type groupAccumulator struct {
 	prs             map[string]struct{}
 }
 
-func (a *groupAccumulator) add(r RunRecord) {
+// add folds one run in. units are the run priced per model (priceRun); only
+// their cache classes feed a group, whose priced figure is cache-only.
+func (a *groupAccumulator) add(r RunRecord, units []pricedUnit) {
 	if a.prs == nil {
 		a.prs = map[string]struct{}{}
 	}
@@ -564,17 +809,32 @@ func (a *groupAccumulator) add(r RunRecord) {
 		a.zeroFindingRuns++
 		a.zeroFindingCost += r.CostUSD
 	}
-	if !r.HasCacheAccounting() {
+	// Token counts and their cost are taken from the SAME priced units, never
+	// the counts from the run row and the cost from the passes: a row whose
+	// pass sums disagree with its run totals would otherwise report an
+	// effective rate that is neither model's, and a row carrying cache tokens
+	// on its passes alone would land in 'unknown' while the by-model breakdown
+	// still priced them — breaking the by-model-sums-to-attributed invariant.
+	var creation, read int64
+	for _, u := range units {
+		creation += u.cacheCreation
+		read += u.cacheRead
+	}
+	if creation == 0 && read == 0 {
 		a.unaccountedRuns++
 		a.unaccountedCost += r.CostUSD
 		return
 	}
-	if r.CacheCreationTokens > 0 {
-		a.cacheCreation += int64(r.CacheCreationTokens)
+	for _, u := range units {
+		a.creationCost += u.cacheCreationCost()
+		a.readCost += u.cacheReadCost()
+	}
+	if creation > 0 {
+		a.cacheCreation += creation
 		a.creationRuns++
 	}
-	if r.CacheReadTokens > 0 {
-		a.cacheRead += int64(r.CacheReadTokens)
+	if read > 0 {
+		a.cacheRead += read
 		a.readRuns++
 	}
 }
@@ -588,6 +848,8 @@ func (a *groupAccumulator) merge(b groupAccumulator) {
 	a.cost += b.cost
 	a.cacheCreation += b.cacheCreation
 	a.cacheRead += b.cacheRead
+	a.creationCost += b.creationCost
+	a.readCost += b.readCost
 	a.creationRuns += b.creationRuns
 	a.readRuns += b.readRuns
 	a.findings += b.findings
@@ -600,28 +862,30 @@ func (a *groupAccumulator) merge(b groupAccumulator) {
 	}
 }
 
-// tokenClasses prices the accumulated tokens. The two cache classes are priced
-// from tokens at their own rates — a cache write and a cache read differ by
-// more than a factor of ten, so collapsing them into one input rate would
-// misattribute the bulk of the traffic — and the unknown class reports the
-// recorded cost of the rows no class could be derived for.
-func (a *groupAccumulator) tokenClasses(p Pricing) []TokenClassBreakdown {
+// tokenClasses reports the accumulated classes. The two cache classes are
+// priced from tokens at their own rates — a cache write and a cache read differ
+// by more than a factor of ten, so collapsing them into one input rate would
+// misattribute the bulk of the traffic — and each unit at its own model's
+// rates, so the class cost is already a sum over models by the time it gets
+// here. The unknown class reports the recorded cost of the rows no class could
+// be derived for.
+func (a *groupAccumulator) tokenClasses() []TokenClassBreakdown {
 	return []TokenClassBreakdown{
 		{
 			Class:    TokenClassCacheCreation,
 			Runs:     a.creationRuns,
 			Tokens:   a.cacheCreation,
-			CostUSD:  float64(a.cacheCreation) * p.CacheWritePerM / 1_000_000,
+			CostUSD:  a.creationCost,
 			Basis:    BasisPriced,
-			RatePerM: p.CacheWritePerM,
+			RatePerM: effectiveRate(a.creationCost, a.cacheCreation),
 		},
 		{
 			Class:    TokenClassCacheRead,
 			Runs:     a.readRuns,
 			Tokens:   a.cacheRead,
-			CostUSD:  float64(a.cacheRead) * p.CacheReadPerM / 1_000_000,
+			CostUSD:  a.readCost,
 			Basis:    BasisPriced,
-			RatePerM: p.CacheReadPerM,
+			RatePerM: effectiveRate(a.readCost, a.cacheRead),
 		},
 		{
 			Class:   TokenClassUnknown,
@@ -633,8 +897,124 @@ func (a *groupAccumulator) tokenClasses(p Pricing) []TokenClassBreakdown {
 	}
 }
 
-func (a *groupAccumulator) group(label string, p Pricing) RunGroup {
-	classes := a.tokenClasses(p)
+// effectiveRate is cost per million tokens, zero for no tokens.
+func effectiveRate(costUSD float64, tokens int64) float64 {
+	if tokens == 0 {
+		return 0
+	}
+	return costUSD / float64(tokens) * 1_000_000
+}
+
+// modelAccumulator sums priced units by pricing row, and keeps the per-unit
+// rows when they were asked for.
+type modelAccumulator struct {
+	byKey         map[string]*ModelBreakdown
+	runsByKey     map[string]map[int]struct{}
+	fallbackUnits int
+	passes        []PassBreakdown
+}
+
+func (m *modelAccumulator) add(o OrdinalRun, units []pricedUnit, keepPasses bool) {
+	if m.byKey == nil {
+		m.byKey = map[string]*ModelBreakdown{}
+		m.runsByKey = map[string]map[int]struct{}{}
+	}
+	for _, u := range units {
+		b, ok := m.byKey[u.key]
+		if !ok {
+			b = &ModelBreakdown{Model: u.key, Rates: u.rates}
+			m.byKey[u.key] = b
+			m.runsByKey[u.key] = map[int]struct{}{}
+		}
+		m.runsByKey[u.key][o.Run.RunID] = struct{}{}
+		b.Runs = len(m.runsByKey[u.key])
+		if u.pass == "" {
+			b.RunLevelUnits++
+		} else {
+			b.Passes++
+		}
+		if u.source == ModelSourceFallback {
+			b.FallbackUnits++
+			m.fallbackUnits++
+		}
+		b.InputTokens += u.input
+		b.OutputTokens += u.output
+		b.CacheCreationTokens += u.cacheCreation
+		b.CacheReadTokens += u.cacheRead
+		b.InputCostUSD += u.inputCost()
+		b.OutputCostUSD += u.outputCost()
+		b.CacheCreationCostUSD += u.cacheCreationCost()
+		b.CacheReadCostUSD += u.cacheReadCost()
+		b.PricedCostUSD += u.pricedCost()
+		b.RecordedCostUSD += u.recorded
+
+		if keepPasses {
+			m.passes = append(m.passes, PassBreakdown{
+				RunID:               o.Run.RunID,
+				Anvil:               o.Run.Anvil,
+				PRNumber:            o.Run.PRNumber,
+				Ordinal:             o.Ordinal,
+				Pass:                u.pass,
+				Provider:            u.provider,
+				RecordedModel:       u.recordedModel,
+				Model:               u.key,
+				ModelSource:         u.source,
+				InputTokens:         u.input,
+				OutputTokens:        u.output,
+				CacheCreationTokens: u.cacheCreation,
+				CacheReadTokens:     u.cacheRead,
+				PricedCostUSD:       u.pricedCost(),
+				RecordedCostUSD:     u.recorded,
+			})
+		}
+	}
+}
+
+// breakdown returns the per-model rows, costliest first, ties on the key so
+// the order is repeatable.
+func (m *modelAccumulator) breakdown() []ModelBreakdown {
+	out := make([]ModelBreakdown, 0, len(m.byKey))
+	for _, b := range m.byKey {
+		out = append(out, *b)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].PricedCostUSD != out[j].PricedCostUSD {
+			return out[i].PricedCostUSD > out[j].PricedCostUSD
+		}
+		return out[i].Model < out[j].Model
+	})
+	return out
+}
+
+// rates lists every pricing row applied, by key.
+func (m *modelAccumulator) rates() []ModelRate {
+	out := make([]ModelRate, 0, len(m.byKey))
+	for key, b := range m.byKey {
+		out = append(out, ModelRate{Model: key, Rates: b.Rates})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Model < out[j].Model })
+	return out
+}
+
+// pricedTotal sums the per-model priced cost over the keys in sorted order.
+// The order is deliberate: map iteration is random and float addition is not
+// associative, so an unordered sum could differ in the last cent between two
+// runs over the same data.
+func (m *modelAccumulator) pricedTotal() float64 {
+	keys := make([]string, 0, len(m.byKey))
+	for k := range m.byKey {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	var total float64
+	for _, k := range keys {
+		total += m.byKey[k].PricedCostUSD
+	}
+	return total
+}
+
+func (a *groupAccumulator) group(label string) RunGroup {
+	classes := a.tokenClasses()
 	g := RunGroup{
 		Label:                      label,
 		Runs:                       a.runs,
@@ -773,6 +1153,29 @@ func (r *CostReport) WriteCSV(w io.Writer) error {
 			return err
 		}
 	}
+	if err := row("total", "priced", r.TotalRuns, 0, r.PricedCostUSD, BasisPriced); err != nil {
+		return err
+	}
+	for _, m := range r.ByModel {
+		tokens := m.InputTokens + m.OutputTokens + m.CacheCreationTokens + m.CacheReadTokens
+		if err := row("model", m.Model, m.Runs, tokens, m.PricedCostUSD, BasisPriced); err != nil {
+			return err
+		}
+		if err := row("model_recorded", m.Model, m.Runs, tokens, m.RecordedCostUSD, BasisRecorded); err != nil {
+			return err
+		}
+	}
+	for _, p := range r.ByPass {
+		pass := p.Pass
+		if pass == "" {
+			pass = "(run)"
+		}
+		key := fmt.Sprintf("%s#%d/%d/%s@%s(%s)", p.Anvil, p.PRNumber, p.RunID, pass, p.Model, p.ModelSource)
+		tokens := p.InputTokens + p.OutputTokens + p.CacheCreationTokens + p.CacheReadTokens
+		if err := row("pass", key, 1, tokens, p.PricedCostUSD, BasisPriced); err != nil {
+			return err
+		}
+	}
 	cw.Flush()
 	return cw.Error()
 }
@@ -792,11 +1195,15 @@ func (r *CostReport) WriteTable(w io.Writer) error {
 	if r.Anvil != "" {
 		fmt.Fprintf(w, "  anvil             %s\n", r.Anvil)
 	}
-	tier := r.ModelTier
-	if tier == "" {
-		tier = "sonnet (default)"
+	fmt.Fprintf(w, "  pricing           per pass, at the rates of the model that ran it (fallback %s)\n", r.FallbackModel)
+	for i, m := range r.ModelRates {
+		label := ""
+		if i == 0 {
+			label = "rates"
+		}
+		fmt.Fprintf(w, "  %-17s %s — input $%.2f/M, output $%.2f/M, cache write $%.2f/M, cache read $%.2f/M\n",
+			label, m.Model, m.Rates.InputPerM, m.Rates.OutputPerM, m.Rates.CacheWritePerM, m.Rates.CacheReadPerM)
 	}
-	fmt.Fprintf(w, "  pricing           %s — cache write $%.2f/M, cache read $%.2f/M\n", tier, r.Pricing.CacheWritePerM, r.Pricing.CacheReadPerM)
 	fmt.Fprintf(w, "  runs              %d over %d PRs ($%.2f recorded)\n", r.TotalRuns, r.TotalPRs, r.TotalCostUSD)
 	if r.SkippedRunsExcluded > 0 {
 		fmt.Fprintf(w, "  excluded          %d skipped run(s) — no passes dispatched (--include-skipped to keep)\n", r.SkippedRunsExcluded)
@@ -827,7 +1234,7 @@ func (r *CostReport) WriteTable(w io.Writer) error {
 	fmt.Fprintln(w)
 
 	tw = tabwriter.NewWriter(w, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(tw, "TOKEN CLASS\tRUNS\tTOKENS\tRATE $/M\tCOST $\tBASIS")
+	fmt.Fprintln(tw, "TOKEN CLASS\tRUNS\tTOKENS\tEFF RATE $/M\tCOST $\tBASIS")
 	for _, c := range r.ByTokenClass {
 		rate := "-"
 		if c.RatePerM > 0 {
@@ -850,11 +1257,25 @@ func (r *CostReport) WriteTable(w io.Writer) error {
 		return err
 	}
 
+	if r.ByModel != nil {
+		fmt.Fprintln(w)
+		if err := r.writeByModelTable(w); err != nil {
+			return err
+		}
+	}
+	if r.ByPass != nil {
+		fmt.Fprintln(w)
+		if err := r.writeByPassTable(w); err != nil {
+			return err
+		}
+	}
+
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Notes:")
 	fmt.Fprintln(w, "  - RECORDED $ is the provider's own cost_usd. PRICED CACHE $ is cache tokens x their")
-	fmt.Fprintln(w, "    own rates and is a SUBSET of it: assay_runs stores no plain input/output token")
-	fmt.Fprintln(w, "    counts, so the two cache classes can never sum to the recorded total.")
+	fmt.Fprintln(w, "    own rates and is a SUBSET of it: it leaves out input and output tokens, which only")
+	fmt.Fprintln(w, "    rows with per-pass token counts record (older rows carry cache tokens alone), so the")
+	fmt.Fprintln(w, "    two cache classes can never sum to the recorded total.")
 	if r.RunsWithoutCacheAccounting > 0 {
 		fmt.Fprintf(w, "  - %d of %d run(s) ($%.2f, %s of recorded spend) carry no cache accounting and are\n",
 			r.RunsWithoutCacheAccounting, r.TotalRuns, r.CostWithoutCacheAccountingUSD,
@@ -862,8 +1283,64 @@ func (r *CostReport) WriteTable(w io.Writer) error {
 		fmt.Fprintln(w, "    reported as token class 'unknown'. Zero cache tokens on a row means 'not knowable'")
 		fmt.Fprintln(w, "    (pre-instrumentation row, or a backend that reports none), not 'no cache traffic'.")
 	}
+	fmt.Fprintln(w, "  - Each pass is priced at the model recorded on its own row; a pass naming none takes the")
+	fmt.Fprintln(w, "    run's model, and a row naming neither takes the fallback. Rows predating per-pass")
+	fmt.Fprintln(w, "    tokens are priced whole, from their run-level cache tokens.")
+	if r.FallbackPricedUnits > 0 {
+		fmt.Fprintf(w, "  - %d unit(s) named no model that resolves and were priced at the fallback %s.\n",
+			r.FallbackPricedUnits, r.FallbackModel)
+	}
 	fmt.Fprintln(w, "  - Ordinals are derived over each PR's full review history, then restricted to the window.")
 	return nil
+}
+
+// writeByModelTable renders the per-model breakdown with a TOTAL row, which is
+// PricedCostUSD by construction.
+func (r *CostReport) writeByModelTable(w io.Writer) error {
+	tw := tabwriter.NewWriter(w, 0, 4, 2, ' ', 0)
+	fmt.Fprintln(tw, "MODEL\tRUNS\tPASSES\tRUN-LEVEL\tINPUT TOK\tOUTPUT TOK\tCACHE-W TOK\tCACHE-R TOK\tPRICED $\tSHARE\tRECORDED $")
+	var total ModelBreakdown
+	for _, m := range r.ByModel {
+		fmt.Fprintf(tw, "%s\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%.2f\t%s\t%.2f\n",
+			m.Model, m.Runs, m.Passes, m.RunLevelUnits, m.InputTokens, m.OutputTokens,
+			m.CacheCreationTokens, m.CacheReadTokens, m.PricedCostUSD,
+			percentOf(m.PricedCostUSD, r.PricedCostUSD), m.RecordedCostUSD)
+		total.Passes += m.Passes
+		total.RunLevelUnits += m.RunLevelUnits
+		total.InputTokens += m.InputTokens
+		total.OutputTokens += m.OutputTokens
+		total.CacheCreationTokens += m.CacheCreationTokens
+		total.CacheReadTokens += m.CacheReadTokens
+		total.RecordedCostUSD += m.RecordedCostUSD
+	}
+	// RUNS is not summed: a mixed run counts under every model it used.
+	fmt.Fprintf(tw, "TOTAL\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%.2f\t%s\t%.2f\n",
+		r.TotalRuns, total.Passes, total.RunLevelUnits, total.InputTokens, total.OutputTokens,
+		total.CacheCreationTokens, total.CacheReadTokens, r.PricedCostUSD,
+		percentOf(r.PricedCostUSD, r.PricedCostUSD), total.RecordedCostUSD)
+	return tw.Flush()
+}
+
+// writeByPassTable renders every priced unit. A run priced whole reads "(run)"
+// in the PASS column, and the SOURCE column says which level named the model.
+func (r *CostReport) writeByPassTable(w io.Writer) error {
+	tw := tabwriter.NewWriter(w, 0, 4, 2, ' ', 0)
+	fmt.Fprintln(tw, "RUN\tPR\tORDINAL\tPASS\tPROVIDER\tMODEL\tSOURCE\tINPUT TOK\tOUTPUT TOK\tCACHE-W TOK\tCACHE-R TOK\tPRICED $\tRECORDED $")
+	for _, p := range r.ByPass {
+		pass := p.Pass
+		if pass == "" {
+			pass = "(run)"
+		}
+		provider := p.Provider
+		if provider == "" {
+			provider = "-"
+		}
+		fmt.Fprintf(tw, "%d\t%s#%d\t%d\t%s\t%s\t%s\t%s\t%d\t%d\t%d\t%d\t%.4f\t%.4f\n",
+			p.RunID, p.Anvil, p.PRNumber, p.Ordinal, pass, provider, p.Model, p.ModelSource,
+			p.InputTokens, p.OutputTokens, p.CacheCreationTokens, p.CacheReadTokens,
+			p.PricedCostUSD, p.RecordedCostUSD)
+	}
+	return tw.Flush()
 }
 
 // optionalTime turns a zero time into a nil pointer, which is how an open

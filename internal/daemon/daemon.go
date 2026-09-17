@@ -1855,8 +1855,10 @@ func statePassFailures(failed []assay.PassFailure) []state.AssayPassFailure {
 // statePassFindings projects the engine's per-pass reports onto the run
 // record's persisted pass rows: pass name, findings contributed, and the
 // provider kind and model the pass actually ran on (plus whether it got there
-// by failing over). The rest of a PassReport (turns, cost, cache accounting)
-// is telemetry for the daemon log line. The findings count is the half the
+// by failing over), and what the pass was billed for — its cost and token
+// counts, which a per-model cost report prices at that model's rates. The rest
+// of a PassReport (turns, tool calls, retries) is telemetry for the daemon log
+// line. The findings count is the half the
 // bead Logs panel renders, so a session that found the PR's one real problem
 // is distinguishable from the four that found nothing and from triage, which
 // produces none by design; the provider and model are what lets spend be
@@ -1873,6 +1875,12 @@ func statePassFindings(passes []assay.PassReport) []state.AssayPassFindings {
 			Provider:   p.Provider,
 			Model:      p.Model,
 			FailedOver: p.FailedOver,
+
+			CostUSD:             p.CostUSD,
+			InputTokens:         p.InputTokens,
+			OutputTokens:        p.OutputTokens,
+			CacheCreationTokens: p.CacheCreationTokens,
+			CacheReadTokens:     p.CacheReadTokens,
 		})
 	}
 	return out

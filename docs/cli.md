@@ -502,6 +502,8 @@ the baseline reconciliation.
 forge cost assay
 forge cost assay --since 2026-06-01 --until 2026-07-01
 forge cost assay --format json --out before.json
+forge cost assay --by-model
+forge cost assay --since 2026-09-01 --by-pass
 forge cost assay --expect-repeat-cost 2326.54 --expect-repeat-runs 780
 ```
 
@@ -513,13 +515,24 @@ forge cost assay --expect-repeat-cost 2326.54 --expect-repeat-runs 780
 | `--out` | Write the report to this file instead of stdout |
 | `--anvil` | Restrict the report to one anvil |
 | `--include-skipped` | Count runs that dispatched no passes (default: excluded, matching the per-PR run cap) |
-| `--model-tier` | Pricing row for token classes: `haiku`, `sonnet` (default), `opus`, `fable` |
+| `--by-model` | Break priced spend down by the model each pass ran on; the rows sum to the priced total |
+| `--by-pass` | List every priced pass: run, PR, ordinal, provider, model, where the model came from (`pass`/`run`/`fallback`), tokens and cost |
+| `--fallback-model` | Model to price a pass at when neither the pass nor its run recorded one (id or alias; default `claude-sonnet-5`) |
+| `--model-tier` | Deprecated alias for `--fallback-model` |
 | `--expect-repeat-cost` | Reconcile the repeat-run total against a published baseline figure (USD) |
 | `--expect-repeat-runs` | Reconcile the repeat-run count against a published baseline figure |
 
-Recorded spend (the provider's own `cost_usd`) and priced cache attribution are
-reported separately and never summed: `assay_runs` stores no plain input/output
-token counts, so the cache classes are a subset of the recorded total. Runs
+Tokens are priced **per pass** at the rates of the model that pass ran on — Opus 5
+($5/$25 input/output, $6.25/$0.50 cache write/read per M), Sonnet 5 ($2/$10,
+$2.50/$0.20), Haiku 4.5 ($1/$5, $1.25/$0.10), with `settings.pricing` overrides
+applied — because a run is not one model. A pass whose row records no model takes
+its run's model, and a row naming neither takes `--fallback-model`; rows written
+before per-pass tokens were recorded are priced whole from their run-level cache
+tokens.
+
+Recorded spend (the provider's own `cost_usd`) and priced attribution are
+reported separately and never summed: priced figures cover only the tokens a row
+records, so they are a subset of the recorded total. Runs
 predating cache instrumentation report token class `unknown` rather than a
 misleading zero. `forge cost` with no subcommand runs this report.
 

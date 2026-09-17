@@ -72,7 +72,10 @@ those, not the logs.
   "measured, and there was nothing there".
 - **Both sides of a comparison use the same invocation** apart from the window
   flags. Changing `--anvil`, `--model-tier` or `--include-skipped` between the
-  two produces two reports that cannot be compared.
+  two produces two reports that cannot be compared. The same holds for the
+  **binary**: `forge cost assay`'s pricing basis changed in Forge-ojer7 (per-pass
+  models, `--fallback-model` replacing `--model-tier`), so priced figures are
+  comparable only between reports produced by the same version.
 
 ## Warden rule paths: repo-wide glob share (Forge-jehv, 2026-09-02)
 
