@@ -314,8 +314,8 @@ type PassReport struct {
 	// regression.
 	Primer bool
 	// Provider is the kind of backend that ran the pass ("claude", "copilot",
-	// "gemini"), resolved from the Config's per-tier hints exactly as the
-	// session itself was.
+	// "gemini"): the chain entry the pass ENDED on, which is its chain's head
+	// unless an earlier entry was rate limited (FailedOver).
 	//
 	// It is here for one reason: what a zero in ToolCalls/FilesRead MEANS is a
 	// property of the backend, not of the pass or of the run. A run is not one
@@ -333,6 +333,18 @@ type PassReport struct {
 	// passes together — the run-level reading, which is right whenever a run
 	// does turn out to be one provider.
 	Provider string
+	// Model is the model the pass's recorded session ran on — reported in-band
+	// by the provider where it does so, else the chain entry's configured
+	// model — and empty where the provider ran its own default and named
+	// none. It is persisted on the run's pass row (state.AssayPassFindings)
+	// so spend can be priced per model rather than per run.
+	Model string
+	// FailedOver reports that the pass did not run on its chain's head: an
+	// earlier entry was rate limited and the pass moved down its OWN chain.
+	// RenderPassTelemetry adds provider=<kind> for such a pass only, since on
+	// every other pass the provider is the configured one and saying so on
+	// every segment would bury the one that moved.
+	FailedOver bool
 }
 
 // ReviewResult is the outcome of a Review.
@@ -368,6 +380,12 @@ type ReviewResult struct {
 	// cache halves the same as the pair above, which stay their own fields
 	// because callers render and persist them directly.
 	Usage cost.Usage
+	// UsageByProvider is Usage split by the provider kind each session ran
+	// on, in first-seen order. It sums to Usage. It replaces attributing a
+	// whole run to one provider: every pass resolves its own chain and a pass
+	// that failed over was billed on two, so the per-provider cost aggregate
+	// is written from this.
+	UsageByProvider []ProviderUsage
 	// Duration is the wall-clock time spent in Review.
 	Duration time.Duration
 	// Passes holds per-pass metadata.
@@ -492,6 +510,9 @@ type RunError struct {
 	// and RunCacheTokens read it back through RunUsage rather than from fields
 	// of their own.
 	Usage cost.Usage
+	// UsageByProvider is Usage split by provider kind, on
+	// ReviewResult.UsageByProvider's terms.
+	UsageByProvider []ProviderUsage
 	// Err is the underlying failure.
 	Err error
 }
@@ -513,6 +534,16 @@ func RunUsage(err error) cost.Usage {
 		return re.Usage
 	}
 	return cost.Usage{}
+}
+
+// RunUsageByProvider is RunUsage split by provider kind, for the per-provider
+// cost aggregate. nil wherever RunUsage is zero.
+func RunUsageByProvider(err error) []ProviderUsage {
+	var re *RunError
+	if errors.As(err, &re) {
+		return re.UsageByProvider
+	}
+	return nil
 }
 
 // RunCost is the dollars half of RunUsage, for the callers that record only the
@@ -631,12 +662,15 @@ func Review(ctx context.Context, req ReviewRequest, db *state.DB, cfg Config) (*
 		// off, so they cannot drift apart. A pass that wrote the prefix and
 		// then died was billed for the write, so its usage is banked too.
 		totalUsage cost.Usage
+		// byProvider is totalUsage split by provider kind, banked alongside
+		// it at every site so the two always sum to the same thing.
+		byProvider []ProviderUsage
 	)
 
 	// fail wraps an error raised after sessions have run so the run's spend to
 	// that point survives the nil result — see RunError.
 	fail := func(err error) (*ReviewResult, error) {
-		return nil, &RunError{Usage: totalUsage, Err: err}
+		return nil, &RunError{Usage: totalUsage, UsageByProvider: byProvider, Err: err}
 	}
 
 	// 1. Triage — scope which files warrant deeper review. Its cost is banked
@@ -645,6 +679,7 @@ func Review(ctx context.Context, req ReviewRequest, db *state.DB, cfg Config) (*
 	// only place that spend can be attributed.
 	triageRes, err := runTriage(ctx, runner, cfg, req, filtered)
 	totalUsage.Add(triageRes.usage)
+	byProvider = mergeProviderUsage(byProvider, triageRes.byProvider)
 	if err != nil {
 		return fail(err)
 	}
@@ -663,7 +698,9 @@ func Review(ctx context.Context, req ReviewRequest, db *state.DB, cfg Config) (*
 		Attempts:            1,
 		CacheCreationTokens: triageRes.usage.CacheWriteTokens,
 		CacheReadTokens:     triageRes.usage.CacheReadTokens,
-		Provider:            string(cfg.providerFor(passTriage.Name).Kind),
+		Provider:            string(triageRes.provider.Kind),
+		Model:               triageRes.model,
+		FailedOver:          triageRes.failedOver,
 	})
 
 	scoped := scopeDiffToFiles(filtered, triage.ReviewFiles)
@@ -727,6 +764,7 @@ func Review(ctx context.Context, req ReviewRequest, db *state.DB, cfg Config) (*
 		// retried pass ran twice. Its cache accounting is banked on the same
 		// terms.
 		totalUsage.Add(o.usage)
+		byProvider = mergeProviderUsage(byProvider, o.byProvider)
 		passes = append(passes, PassReport{
 			Name:                deepPasses[i].Name,
 			Findings:            len(o.findings),
@@ -742,7 +780,9 @@ func Review(ctx context.Context, req ReviewRequest, db *state.DB, cfg Config) (*
 			CacheCreationTokens: o.usage.CacheWriteTokens,
 			CacheReadTokens:     o.usage.CacheReadTokens,
 			Primer:              i == primerPass,
-			Provider:            string(cfg.providerFor(deepPasses[i].Name).Kind),
+			Provider:            string(o.provider.Kind),
+			Model:               o.model,
+			FailedOver:          o.failedOver,
 		})
 		if o.err != nil {
 			passErrors = append(passErrors, o.err.Error())
@@ -832,6 +872,7 @@ func Review(ctx context.Context, req ReviewRequest, db *state.DB, cfg Config) (*
 		CacheCreationTokens: totalUsage.CacheWriteTokens,
 		CacheReadTokens:     totalUsage.CacheReadTokens,
 		Usage:               totalUsage,
+		UsageByProvider:     byProvider,
 		Duration:            time.Since(start),
 		Passes:              passes,
 		NitsCapped:          nCapped,

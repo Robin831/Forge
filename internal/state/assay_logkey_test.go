@@ -2,6 +2,8 @@ package state
 
 import (
 	"path/filepath"
+	"reflect"
+	"strings"
 	"testing"
 	"time"
 )
@@ -78,5 +80,30 @@ func TestAssayRunsByLogKeys(t *testing.T) {
 
 	if empty, err := db.AssayRunsByLogKeys(nil); err != nil || len(empty) != 0 {
 		t.Errorf("empty key list = %v, %v", empty, err)
+	}
+}
+
+// TestAssayPassRowsCarryProviderAndModel pins the per-pass attribution a
+// per-model cost report reads: the provider and model each pass actually ran
+// on survive the round trip, and a row written before the keys existed decodes
+// with them empty rather than failing.
+func TestAssayPassRowsCarryProviderAndModel(t *testing.T) {
+	passes := []AssayPassFindings{
+		{Name: "triage", Provider: "claude", Model: "claude-sonnet-5"},
+		{Name: "security", Findings: 2, Provider: "gemini", Model: "gemini-2.5-pro", FailedOver: true},
+	}
+	raw := EncodeAssayPassFindings(passes)
+	for _, key := range []string{`"provider":"gemini"`, `"model":"gemini-2.5-pro"`, `"failed_over":true`} {
+		if !strings.Contains(raw, key) {
+			t.Errorf("encoded pass rows %s missing %s", raw, key)
+		}
+	}
+	if got := DecodeAssayPassFindings(raw); !reflect.DeepEqual(got, passes) {
+		t.Errorf("round-trip = %+v, want %+v", got, passes)
+	}
+
+	old := DecodeAssayPassFindings(`[{"name":"logic","findings":1}]`)
+	if len(old) != 1 || old[0].Provider != "" || old[0].Model != "" || old[0].FailedOver {
+		t.Errorf("pre-attribution row decoded as %+v", old)
 	}
 }

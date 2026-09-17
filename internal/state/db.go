@@ -5417,14 +5417,28 @@ type AssayRun struct {
 	PassFindings []AssayPassFindings
 }
 
-// AssayPassFindings is one pass's contribution to a run: its name and the
-// number of findings it produced before dedupe/capping. Persisted as JSON on
-// the run record so the bead Logs panel can label each session in a run
-// without re-deriving it from pr_findings, whose category is the model's to
-// override and so does not reliably name the emitting pass.
+// AssayPassFindings is one pass row of a run: its name, the number of findings
+// it produced before dedupe/capping, and the provider and model it actually ran
+// on. Persisted as a JSON array in assay_runs.pass_findings so the bead Logs
+// panel can label each session in a run without re-deriving it from
+// pr_findings, whose category is the model's to override and so does not
+// reliably name the emitting pass.
+//
+// Provider and Model are the per-pass attribution spend is priced by: a run is
+// not one provider or one model, since every pass resolves its own chain and a
+// pass that was rate limited moves down it. The JSON keys "provider" and
+// "model" are a stable contract — readers pricing a pass at its own model's
+// rate read them — and live inside the existing column rather than beside it,
+// which is why no migration adds them: a row written before them decodes with
+// both empty, meaning "not recorded", never "ran on no provider". Model is also
+// empty where the provider ran its own default and named none. FailedOver marks
+// a pass that did not run on its chain's head.
 type AssayPassFindings struct {
-	Name     string `json:"name"`
-	Findings int    `json:"findings"`
+	Name       string `json:"name"`
+	Findings   int    `json:"findings"`
+	Provider   string `json:"provider,omitempty"`
+	Model      string `json:"model,omitempty"`
+	FailedOver bool   `json:"failed_over,omitempty"`
 }
 
 // EncodeAssayPassFindings marshals a per-pass findings breakdown for the

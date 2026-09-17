@@ -47,7 +47,9 @@ func TestWarnAssayProviderConflictsLogsOncePerCondition(t *testing.T) {
 	}
 }
 
-func TestWarnAssayProviderConflictsNamesIgnoredFallbacks(t *testing.T) {
+// A multi-entry assay chain is a real rate-limit fallback now, so it is not
+// news worth a WARN.
+func TestWarnAssayProviderConflictsIsQuietAboutFallbackChains(t *testing.T) {
 	var buf bytes.Buffer
 	d := &Daemon{logger: slog.New(slog.NewTextHandler(&buf, nil))}
 	enabled := true
@@ -58,12 +60,7 @@ func TestWarnAssayProviderConflictsNamesIgnoredFallbacks(t *testing.T) {
 		},
 	}
 	d.warnAssayProviderConflicts(cfg)
-	d.warnAssayProviderConflicts(cfg)
-	out := buf.String()
-	if n := strings.Count(out, "Assay provider fallbacks ignored"); n != 1 {
-		t.Fatalf("logged %d times, want 1:\n%s", n, out)
-	}
-	if !strings.Contains(out, "anvil api stage_providers[assay] lists fallbacks [gemini] after claude") {
-		t.Errorf("warning does not name the ignored tail:\n%s", out)
+	if strings.Contains(buf.String(), "fallback") {
+		t.Errorf("a fallback chain must not warn:\n%s", buf.String())
 	}
 }

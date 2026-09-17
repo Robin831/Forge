@@ -562,7 +562,7 @@ func TestToolTelemetryIsGatedPerProviderNotPerRun(t *testing.T) {
 	if !strings.Contains(got, "pass=security turns=2 term=success tools=0 files=0") {
 		t.Errorf("RenderPassTelemetry = %q; want tools=0 files=0 for the claude pass that used no tool", got)
 	}
-	if !strings.Contains(got, "pass=triage turns=3 term=success,") {
+	if !strings.Contains(got, "pass=triage turns=3 term=success model=default,") {
 		t.Errorf("RenderPassTelemetry = %q; want no tool fields on the copilot pass", got)
 	}
 }

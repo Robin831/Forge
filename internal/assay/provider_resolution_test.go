@@ -227,44 +227,18 @@ func TestProvidersForPrecedence(t *testing.T) {
 	}
 }
 
-func TestReviewProviderKindFollowsDeepPassMajority(t *testing.T) {
-	c := Config{
-		ReviewProvider:       "claude",
-		GlobalStageProviders: map[string][]string{"assay.logic": {"gemini"}, "assay.triage": {"copilot"}},
-	}
-	if got := c.ReviewProviderKind(); got != "claude" {
-		t.Errorf("kind = %s, want claude (4 of 5 deep passes)", got)
-	}
-	c.GlobalStageProviders = map[string][]string{"assay": {"gemini"}, "assay.logic": {"claude"}}
-	if got := c.ReviewProviderKind(); got != "gemini" {
-		t.Errorf("kind = %s, want gemini (4 of 5 deep passes)", got)
-	}
-}
-
-func TestIgnoredAssayFallbacks(t *testing.T) {
-	enabled := true
+func TestResolvedChainFallbacks(t *testing.T) {
 	cfg := &config.Config{
-		Assay: config.AssayConfig{Enabled: &enabled},
-		Settings: config.SettingsConfig{
-			StageProviders: map[string][]string{"assay": {"claude"}, "assay.logic": {"claude", "gemini"}, "smith": {"claude", "gemini"}},
-		},
 		Anvils: map[string]config.AnvilConfig{
 			"api": {Path: "/a", StageProviders: map[string][]string{"assay.security": {"gemini/g", "claude", "copilot"}}},
-			"off": {Path: "/b", Assay: &config.AssayConfig{Enabled: new(bool)}, StageProviders: map[string][]string{"assay": {"claude", "gemini"}}},
 		},
 	}
-	got := IgnoredAssayFallbacks(cfg)
-	if len(got) != 2 {
-		t.Fatalf("got %+v, want settings assay.logic and anvil api assay.security", got)
+	rc := ForAnvil(cfg, "api").resolveChain("security")
+	if got := rc.Fallbacks(); len(got) != 2 || got[0].Kind != provider.Claude || got[1].Kind != provider.Copilot {
+		t.Errorf("Fallbacks = %v, want [claude copilot]", got)
 	}
-	if got[0].Scope != "settings" || got[0].Key != "assay.logic" || strings.Join(got[0].Ignored, ",") != "gemini" {
-		t.Errorf("first = %+v", got[0])
-	}
-	if got[1].Scope != "anvil api" || got[1].Head != "gemini/g" || strings.Join(got[1].Ignored, ",") != "claude,copilot" {
-		t.Errorf("second = %+v", got[1])
-	}
-	if rc := ForAnvil(cfg, "api").resolveChain("security"); len(rc.IgnoredFallbacks()) != 2 {
-		t.Errorf("IgnoredFallbacks = %v, want 2", rc.IgnoredFallbacks())
+	if got := ForAnvil(cfg, "api").resolveChain("logic").Fallbacks(); got != nil {
+		t.Errorf("default chain Fallbacks = %v, want none", got)
 	}
 }
 

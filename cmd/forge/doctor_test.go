@@ -754,12 +754,10 @@ func TestCheckAssayPasses_PerAnvilChainsAndSources(t *testing.T) {
 		if strings.Contains(r.Name, "(off/") {
 			t.Errorf("anvil with Assay disabled must not be reported: %q", r.Name)
 		}
-		wantStatus := "ok"
-		if r.Name == "Assay pass (zeta/conventions)" {
-			wantStatus = "warn" // its chain lists a fallback Assay never spawns
-		}
-		if r.Status != wantStatus {
-			t.Errorf("%s: status %q, want %s (%s)", r.Name, r.Status, wantStatus, r.Detail)
+		// Every binary resolves, so a chain with a fallback is as healthy as
+		// one without: the fallback runs on a rate limit.
+		if r.Status != "ok" {
+			t.Errorf("%s: status %q, want ok (%s)", r.Name, r.Status, r.Detail)
 		}
 	}
 	if len(results) != 12 {
@@ -781,7 +779,7 @@ func TestCheckAssayPasses_PerAnvilChainsAndSources(t *testing.T) {
 	if !ok {
 		t.Fatalf("missing zeta/conventions row; got %v", order)
 	}
-	if want := "provider gemini/gemini-2.5-pro from anvil stage_providers[assay.conventions]; fallbacks [claude] ignored"; !strings.Contains(conv.Detail, want) {
+	if want := "provider gemini/gemini-2.5-pro from anvil stage_providers[assay.conventions]; rate-limit fallbacks [claude]"; !strings.Contains(conv.Detail, want) {
 		t.Errorf("zeta/conventions detail %q does not contain %q", conv.Detail, want)
 	}
 	if !strings.Contains(conv.Detail, "gemini 1.0.0") {

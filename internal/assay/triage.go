@@ -8,6 +8,7 @@ import (
 
 	"github.com/Robin831/Forge/internal/cost"
 	"github.com/Robin831/Forge/internal/diff"
+	"github.com/Robin831/Forge/internal/provider"
 )
 
 // triageResult is what the Triage pass produces: the subset of changed files
@@ -50,6 +51,18 @@ type triageRun struct {
 	// the retry's diff scoping selects from, and that consumer is happy with a
 	// directory or a fragment that matches nothing while this one is not.
 	filesRead int
+	// opened is the union of the files those sessions named, kept so a
+	// failover folds the next provider's reads into one set before filesRead
+	// counts it.
+	opened []string
+	// provider, model, failedOver and byProvider are passResult's fields of the
+	// same names, on the same terms: the entry triage ended on, the model that
+	// session reported, whether it got there past a rate-limited head, and the
+	// usage split by the provider each session ran on.
+	provider   provider.Provider
+	model      string
+	failedOver bool
+	byProvider []ProviderUsage
 }
 
 // runTriage runs the scoping pass. Like the deep passes it parses strict JSON
@@ -69,20 +82,64 @@ type triageRun struct {
 // Triage gets no turn-budget retry: unlike a deep pass it is a hard gate — a
 // triage failure aborts the whole run rather than costing one pass's coverage,
 // so there is no partial outcome for a retry to salvage.
+//
+// It does walk its own provider chain, on runDeepPass's rule: the strict-JSON
+// re-prompt runs on one provider, and only a rate limit moves the pass to the
+// next entry. A hard gate is the pass that most needs the fallback — a
+// rate-limited triage head otherwise fails the whole run — and the one that
+// must least loop on an auth failure, which ends the walk like everything else
+// that is not a rate limit.
 func runTriage(ctx context.Context, runner PassRunner, cfg Config, req ReviewRequest, filteredDiff string) (triageRun, error) {
+	chain := cfg.providersFor(passTriage.Name)
 	prompt, err := buildTriagePrompt(req, filteredDiff)
 	if err != nil {
-		return triageRun{}, err
+		return triageRun{provider: chain[0], model: chain[0].Model}, err
 	}
 
+	var run triageRun
+	var usage cost.Usage
+	var est float64
+	var calls int
+	var opened []string
+	var byProvider []ProviderUsage
+	for i, pv := range chain {
+		r, rerr := runTriageOn(withPassProvider(ctx, pv), runner, prompt)
+		usage.Add(r.usage)
+		est += r.estCostUSD
+		calls += r.toolCalls
+		opened = mergeOpenedFiles(opened, r.opened)
+		byProvider = addProviderUsage(byProvider, pv.Kind, r.usage)
+
+		run = r
+		run.usage = usage
+		run.estCostUSD = est
+		run.toolCalls = calls
+		run.opened = opened
+		run.filesRead = countFilesRead(opened)
+		run.byProvider = byProvider
+		run.provider = pv
+		run.model = sessionModel(r.model, pv)
+		run.failedOver = i > 0
+		err = rerr
+		if err == nil || !failsOver(classifyPassError(passTriage.Name, err)) {
+			break
+		}
+	}
+	return run, err
+}
+
+// runTriageOn runs the triage session, and its strict-JSON re-prompt, on the
+// provider withPassProvider put on ctx.
+func runTriageOn(ctx context.Context, runner PassRunner, prompt string) (triageRun, error) {
 	out, err := runner(ctx, passTriage.Name, passTriage.Tier, prompt)
 	if err != nil {
 		// One session has run, so its own list IS the union — there is nothing
 		// earlier to merge with. The paths below, which do merge, are the ones
 		// reached after a session has already produced a PassOutput.
 		u, turns, calls, est := passErrorTelemetry(err)
+		opened := passErrorFiles(err)
 		return triageRun{usage: u, estCostUSD: est, turns: turns, toolCalls: calls,
-			filesRead: countFilesRead(passErrorFiles(err))}, err
+			filesRead: countFilesRead(opened), opened: opened, model: passErrorModel(err)}, err
 	}
 	opened := out.OpenedFiles
 	run := triageRun{
@@ -91,6 +148,8 @@ func runTriage(ctx context.Context, runner PassRunner, cfg Config, req ReviewReq
 		turns:      out.Turns,
 		toolCalls:  out.ToolCalls,
 		filesRead:  countFilesRead(opened),
+		opened:     opened,
+		model:      out.Model,
 	}
 
 	res, perr := parseTriage(out.Text)
@@ -102,14 +161,22 @@ func runTriage(ctx context.Context, runner PassRunner, cfg Config, req ReviewReq
 			run.estCostUSD += est2
 			run.turns = turns2
 			run.toolCalls += calls2
-			run.filesRead = countFilesRead(mergeOpenedFiles(opened, passErrorFiles(err2)))
+			run.opened = mergeOpenedFiles(opened, passErrorFiles(err2))
+			run.filesRead = countFilesRead(run.opened)
+			if m := passErrorModel(err2); m != "" {
+				run.model = m
+			}
 			return run, err2
 		}
 		run.usage.Add(out2.usage())
 		run.estCostUSD += out2.EstCostUSD
 		run.turns = out2.Turns
 		run.toolCalls += out2.ToolCalls
-		run.filesRead = countFilesRead(mergeOpenedFiles(opened, out2.OpenedFiles))
+		run.opened = mergeOpenedFiles(opened, out2.OpenedFiles)
+		run.filesRead = countFilesRead(run.opened)
+		if out2.Model != "" {
+			run.model = out2.Model
+		}
 		res, perr = parseTriage(out2.Text)
 		if perr != nil {
 			return run, fmt.Errorf("assay pass %s: invalid JSON output after retry: %w", passTriage.Name, perr)
