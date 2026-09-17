@@ -85,15 +85,15 @@ func TestForgeConfig_GetReturnsAllManagedKeys(t *testing.T) {
 		t.Errorf("schematic_enabled: expected default false")
 	}
 
-	// Only the two hot-reloadable keys are flagged.
+	// Only the hot-reloadable keys are flagged.
 	hot := map[string]bool{}
 	for _, k := range resp.Keys {
 		if k.HotReloadable {
 			hot[k.Key] = true
 		}
 	}
-	if len(hot) != 2 || !hot["copilot_combined_smith_warden"] || !hot["smelter_enabled"] {
-		t.Errorf("expected exactly copilot_combined_smith_warden + smelter_enabled hotReloadable, got %v", hot)
+	if len(hot) != 3 || !hot["copilot_combined_smith_warden"] || !hot["smelter_enabled"] || !hot["stage_providers"] {
+		t.Errorf("expected exactly copilot_combined_smith_warden + smelter_enabled + stage_providers hotReloadable, got %v", hot)
 	}
 }
 
@@ -983,9 +983,13 @@ func TestForgeConfig_GetExposesNewValueTypes(t *testing.T) {
 	if sp.Type != "provider_map" {
 		t.Errorf("stage_providers type = %q, want provider_map", sp.Type)
 	}
-	wantStages := map[string]bool{"smith": true, "warden": true, "schematic": true, "cifix": true, "reviewfix": true}
+	wantStages := map[string]bool{
+		"smith": true, "warden": true, "schematic": true, "cifix": true, "reviewfix": true,
+		"assay": true, "assay.triage": true, "assay.logic": true, "assay.security": true,
+		"assay.conventions": true, "assay.tests-missing": true, "assay.repo-specific": true,
+	}
 	if len(sp.Options) != len(wantStages) {
-		t.Errorf("stage_providers options = %v, want the 5 stage keys", sp.Options)
+		t.Errorf("stage_providers options = %v, want the %d stage keys", sp.Options, len(wantStages))
 	}
 	for _, o := range sp.Options {
 		if !wantStages[o] {

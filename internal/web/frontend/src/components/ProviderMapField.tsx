@@ -1,18 +1,38 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { RotateCcw } from 'lucide-react'
+import { ChevronDown, ChevronRight, RotateCcw } from 'lucide-react'
 import ChainList, { reorder } from './ChainList'
 
 // PROVIDER_STAGES is the default, ordered stage set for a provider_map value:
 // the pipeline stages that accept their own provider chain. It mirrors the
 // backend's providerStages (internal/web/forge_config.go) and is the fallback
 // when the caller does not pass `stages` from the schema's Options metadata.
+// The order is part of the mirror: TestFrontendProviderStagesMatchBackend
+// (internal/web/forge_config_stages_test.go) reads this literal and fails when
+// it differs from the backend list.
 export const PROVIDER_STAGES = [
   'smith',
   'warden',
   'schematic',
   'cifix',
   'reviewfix',
+  'assay',
+  'assay.triage',
+  'assay.logic',
+  'assay.security',
+  'assay.conventions',
+  'assay.tests-missing',
+  'assay.repo-specific',
 ]
+
+// ASSAY_PASS_PREFIX marks the per-pass Assay stage keys. They are rendered
+// under a collapsed "Assay passes" disclosure, but each one is still a real,
+// flat stage_providers key: the disclosure only groups rows, it never nests or
+// renames what is written.
+const ASSAY_PASS_PREFIX = 'assay.'
+
+export function isAssayPassStage(stage: string): boolean {
+  return stage.startsWith(ASSAY_PASS_PREFIX)
+}
 
 // ProviderMap is the value shape of a `provider_map` setting (stage_providers):
 // each stage maps to an ordered provider chain. A stage absent from the map has
@@ -55,6 +75,7 @@ export default function ProviderMapField({
 }: ProviderMapFieldProps) {
   const [optimistic, setOptimistic] = useState<ProviderMap | null>(value)
   const [pending, setPending] = useState(false)
+  const [passesOpen, setPassesOpen] = useState(false)
   const mounted = useRef(true)
   const pendingRef = useRef(false)
 
@@ -128,28 +149,59 @@ export default function ProviderMapField({
     )
   }
 
+  const renderStage = (stage: string) => {
+    const chain = map[stage] ?? []
+    return (
+      <div key={stage} className="flex flex-col gap-1.5">
+        <span className="text-xs font-medium uppercase tracking-wide text-slate-400">
+          {stage}
+        </span>
+        <ChainList
+          items={chain}
+          disabled={isDisabled}
+          placeholder="provider (e.g. claude)"
+          addLabel={`Add provider for ${stage}`}
+          idPrefix={`provider-${stage}`}
+          onAdd={(v) => setStage(stage, [...chain, v])}
+          onRemove={(i) => setStage(stage, chain.filter((_, j) => j !== i))}
+          onMove={(i, dir) => setStage(stage, reorder(chain, i, dir))}
+        />
+      </div>
+    )
+  }
+
+  const mainStages = stages.filter((s) => !isAssayPassStage(s))
+  const passStages = stages.filter(isAssayPassStage)
+  const configuredPasses = passStages.filter((s) => (map[s]?.length ?? 0) > 0).length
+  const passesId = `provider-assay-passes-${(ariaLabel ?? 'stages').replace(/\W+/g, '-')}`
+
   return (
     <div role="group" aria-label={ariaLabel} className="flex flex-col gap-3">
-      {stages.map((stage) => {
-        const chain = map[stage] ?? []
-        return (
-          <div key={stage} className="flex flex-col gap-1.5">
-            <span className="text-xs font-medium uppercase tracking-wide text-slate-400">
-              {stage}
-            </span>
-            <ChainList
-              items={chain}
-              disabled={isDisabled}
-              placeholder="provider (e.g. claude)"
-              addLabel={`Add provider for ${stage}`}
-              idPrefix={`provider-${stage}`}
-              onAdd={(v) => setStage(stage, [...chain, v])}
-              onRemove={(i) => setStage(stage, chain.filter((_, j) => j !== i))}
-              onMove={(i, dir) => setStage(stage, reorder(chain, i, dir))}
-            />
-          </div>
-        )
-      })}
+      {mainStages.map(renderStage)}
+      {passStages.length > 0 && (
+        <div className="flex flex-col gap-3">
+          <button
+            type="button"
+            aria-expanded={passesOpen}
+            aria-controls={passesId}
+            onClick={() => setPassesOpen((o) => !o)}
+            className="inline-flex w-fit items-center gap-1 text-xs font-medium uppercase tracking-wide text-slate-400 transition-colors hover:text-slate-200 focus:outline-none focus-visible:ring-1 focus-visible:ring-emerald-400"
+          >
+            {passesOpen ? <ChevronDown size={12} aria-hidden /> : <ChevronRight size={12} aria-hidden />}
+            Assay passes
+            {configuredPasses > 0 && (
+              <span className="normal-case tracking-normal text-slate-500">
+                ({configuredPasses} configured)
+              </span>
+            )}
+          </button>
+          {passesOpen && (
+            <div id={passesId} className="flex flex-col gap-3 border-l border-slate-800 pl-3">
+              {passStages.map(renderStage)}
+            </div>
+          )}
+        </div>
+      )}
       {inheritable && (
         <button
           type="button"

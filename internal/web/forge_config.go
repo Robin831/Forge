@@ -38,7 +38,22 @@ const (
 // providerStages is the allowed key set for provider_map values: the pipeline
 // stages that accept their own provider chain. It doubles as the Options hint
 // in the schema metadata so the frontend can offer exactly these stage keys.
-var providerStages = []string{"smith", "warden", "schematic", "cifix", "reviewfix"}
+//
+// The Assay keys follow reviewfix: "assay" is the chain for the whole review,
+// and each "assay.<pass>" names one pass (triage plus the five deep passes).
+// They are RESERVED, not yet in effect: nothing resolves a provider from them
+// until Forge-iyddo lands, and Assay still picks its providers through
+// assay.review_provider / assay.triage_provider. They are accepted and saved
+// so a chain can be staged ahead of that change, and every description that
+// names them says so rather than implying a save takes effect.
+// The frontend mirrors this list, in this order, as PROVIDER_STAGES
+// (frontend/src/components/ProviderMapField.tsx);
+// TestFrontendProviderStagesMatchBackend fails when the two drift.
+var providerStages = []string{
+	"smith", "warden", "schematic", "cifix", "reviewfix",
+	"assay",
+	"assay.triage", "assay.logic", "assay.security", "assay.conventions", "assay.tests-missing", "assay.repo-specific",
+}
 
 // providerStageSet indexes providerStages for O(1) membership checks during
 // provider_map validation.
@@ -403,10 +418,16 @@ var managedConfigKeys = []configKeyDef{
 		Type:        typeProviderMap,
 		Area:        "Providers",
 		Label:       "Per-stage providers",
-		Description: "Per-stage provider overrides keyed by pipeline stage (smith, warden, schematic, cifix, reviewfix). Each value is an ordered provider chain.",
+		Description: "Per-stage provider overrides keyed by pipeline stage (smith, warden, schematic, cifix, reviewfix, assay, and the per-pass assay.triage, assay.logic, assay.security, assay.conventions, assay.tests-missing, assay.repo-specific). Each value is an ordered provider chain. The assay and assay.* keys are reserved and not yet in effect: Assay still uses assay.review_provider / assay.triage_provider until per-pass resolution lands (Forge-iyddo).",
 		Options:     providerStages,
-		Default:     map[string][]string(nil),
-		value:       func(s config.SettingsConfig) any { return s.StageProviders },
+		// internal/hotreload compares stage_providers and swaps the new map in,
+		// and every stage that reads the map resolves its chain from the live
+		// config per spawn. The assay/assay.* keys are swapped in too, but no
+		// stage reads them yet (Forge-iyddo), so for those keys a reload is a
+		// stored value and not a behaviour change — the description says so.
+		HotReloadable: true,
+		Default:       map[string][]string(nil),
+		value:         func(s config.SettingsConfig) any { return s.StageProviders },
 	},
 	durationKey("poll_interval", "Scheduling", "Poll interval",
 		"How often the poller checks each anvil for ready beads.", "5m0s",
@@ -890,8 +911,8 @@ var managedAnvilKeys = []anvilKeyDef{
 		Label: "VCS platform", Description: "Hosting platform for this anvil's PR operations."},
 
 	// --- Composite per-anvil overrides (Forge-vo5a). Send null to inherit. ---
-	{Key: "stage_providers", Type: typeProviderMap, Options: providerStages,
-		Label: "Per-stage providers", Description: "Per-anvil override of the global per-stage provider chains (smith, warden, schematic, cifix, reviewfix)."},
+	{Key: "stage_providers", Type: typeProviderMap, Options: providerStages, Instant: true,
+		Label: "Per-stage providers", Description: "Per-anvil override of the global per-stage provider chains (smith, warden, schematic, cifix, reviewfix, assay and the per-pass assay.* keys). The assay and assay.* keys are reserved and not yet in effect until per-pass resolution lands (Forge-iyddo)."},
 	{Key: "wicket_trusted_users", Type: typeStringList,
 		Label: "Wicket trusted users", Description: "GitHub logins whose issues are auto-dispatched without extra review for this anvil."},
 	{Key: "wicket_ignore_users", Type: typeStringList,

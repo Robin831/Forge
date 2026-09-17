@@ -2,7 +2,7 @@ import '@testing-library/jest-dom/vitest'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { act, cleanup, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import ProviderMapField, { PROVIDER_STAGES } from './ProviderMapField'
+import ProviderMapField, { PROVIDER_STAGES, isAssayPassStage } from './ProviderMapField'
 
 afterEach(cleanup)
 
@@ -17,7 +17,8 @@ function deferred<T = void>() {
 }
 
 describe('ProviderMapField', () => {
-  it('renders one chain editor per stage', () => {
+  it('renders one chain editor per stage', async () => {
+    const user = userEvent.setup()
     render(
       <ProviderMapField
         value={{ smith: ['claude'] }}
@@ -25,6 +26,7 @@ describe('ProviderMapField', () => {
         aria-label="Stage providers"
       />,
     )
+    await user.click(screen.getByRole('button', { name: /assay passes/i }))
     for (const stage of PROVIDER_STAGES) {
       expect(
         screen.getByRole('textbox', { name: `Add provider for ${stage}` }),
@@ -32,6 +34,72 @@ describe('ProviderMapField', () => {
     }
     // The existing smith chain renders its provider.
     expect(screen.getByText('claude')).toBeInTheDocument()
+  })
+
+  it('keeps the assay pass stages under a collapsed disclosure', async () => {
+    const user = userEvent.setup()
+    render(
+      <ProviderMapField
+        value={{}}
+        onChange={() => {}}
+        aria-label="Stage providers"
+      />,
+    )
+    const toggle = screen.getByRole('button', { name: /assay passes/i })
+    expect(toggle).toHaveAttribute('aria-expanded', 'false')
+    // The whole-review assay chain is an ordinary row, visible while collapsed.
+    expect(
+      screen.getByRole('textbox', { name: 'Add provider for assay' }),
+    ).toBeInTheDocument()
+    const passes = PROVIDER_STAGES.filter(isAssayPassStage)
+    expect(passes).toEqual([
+      'assay.triage',
+      'assay.logic',
+      'assay.security',
+      'assay.conventions',
+      'assay.tests-missing',
+      'assay.repo-specific',
+    ])
+    for (const stage of passes) {
+      expect(
+        screen.queryByRole('textbox', { name: `Add provider for ${stage}` }),
+      ).not.toBeInTheDocument()
+    }
+
+    await user.click(toggle)
+    expect(toggle).toHaveAttribute('aria-expanded', 'true')
+    for (const stage of passes) {
+      expect(
+        screen.getByRole('textbox', { name: `Add provider for ${stage}` }),
+      ).toBeInTheDocument()
+    }
+  })
+
+  it('writes a pass chain to its flat stage_providers key', async () => {
+    const user = userEvent.setup()
+    const d = deferred()
+    const onChange = vi.fn(() => d.promise)
+    render(
+      <ProviderMapField
+        value={{ assay: ['claude'] }}
+        onChange={onChange}
+        aria-label="Stage providers"
+      />,
+    )
+
+    await user.click(screen.getByRole('button', { name: /assay passes/i }))
+    await user.type(
+      screen.getByRole('textbox', { name: 'Add provider for assay.conventions' }),
+      'gemini{Enter}',
+    )
+    expect(onChange).toHaveBeenCalledWith({
+      assay: ['claude'],
+      'assay.conventions': ['gemini'],
+    })
+    await act(() => {
+      d.resolve()
+      return d.promise
+    })
   })
 
   it('honors a custom stage set', () => {
