@@ -157,7 +157,7 @@ func TestRateLimitFailsOverOnlyThatPass(t *testing.T) {
 	}
 
 	line := res.PassTelemetryText()
-	if !strings.Contains(line, "pass=security turns=3 term=success model=model-b provider=gemini") {
+	if !strings.Contains(line, "pass=security turns=3 term=success cost_usd=0.1000 model=model-b provider=gemini") {
 		t.Errorf("telemetry %q does not name the failover", line)
 	}
 	if strings.Count(line, "provider=") != 1 {
