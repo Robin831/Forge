@@ -144,6 +144,38 @@ ARG CLAUDE_CODE_VERSION=@latest
 RUN npm install -g @anthropic-ai/claude-code${CLAUDE_CODE_VERSION} \
     && npm cache clean --force
 
+# Shared libraries and fonts Playwright's bundled chromium needs to launch.
+# Without them every Playwright gate in every anvil is unrunnable for Smith:
+# the pod runs as the unprivileged forge user with no sudo, so
+# `npx playwright install-deps` cannot fix it at run time. `install-deps` is
+# Playwright's own maintained per-distro package list, so nobody curates the
+# ~90 noble package names (with their t64 suffixes) by hand.
+#
+# Dependencies only, never a browser: browsers stay per-user in
+# ~/.cache/ms-playwright on the PVC, versioned by whatever each repo pins. The
+# library list barely moves between Playwright releases, so a repo pinning a
+# newer Playwright resolves against the same set.
+#
+# Fonts are the silent half. With the libraries present but no fonts, chromium
+# launches and lays every glyph out at zero width — text has no box and a
+# geometry assertion reports a page defect instead of a tooling failure — so
+# the build fails outright if fontconfig finds no font.
+#
+# Pinned via ARG like CLAUDE_CODE_VERSION so the layer caches and a bump is
+# deliberate. The devbox image is FROM this one and inherits it.
+ARG PLAYWRIGHT_DEPS_VERSION=1.49.1
+RUN set -eux; \
+    apt-get update; \
+    npx --yes "playwright@${PLAYWRIGHT_DEPS_VERSION}" install-deps chromium; \
+    apt-get install -y --no-install-recommends \
+        fontconfig \
+        fonts-dejavu-core \
+        fonts-liberation; \
+    fc-cache -f; \
+    test "$(fc-list | wc -l)" -gt 0; \
+    apt-get clean; \
+    rm -rf /var/lib/apt/lists/* /root/.npm
+
 # Copy the bd binary built in stage 1b. Pure-Go embedded Dolt courtesy of
 # the gms_pure_go build tag — no CGO, statically linked.
 COPY --from=bd-builder --chmod=0755 /out/bd /usr/local/bin/bd
