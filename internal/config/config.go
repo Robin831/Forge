@@ -399,8 +399,10 @@ type AnvilConfig struct {
 
 	// StageProviders is a per-anvil override for stage_providers. When set,
 	// these take precedence over the global stage_providers for beads in this
-	// anvil. Same keys/format as settings.stage_providers.
-	StageProviders map[string][]string `mapstructure:"stage_providers" yaml:"stage_providers,omitempty"`
+	// anvil. Same keys/format as settings.stage_providers. Loaded from the raw
+	// YAML rather than through viper for the same reason as the global map:
+	// see loadDottedKeyTablesFromYAML.
+	StageProviders map[string][]string `mapstructure:"-" yaml:"stage_providers,omitempty"`
 
 	// Smith holds optional Smith configuration for this anvil, including
 	// deny patterns for files and commands.
@@ -738,7 +740,13 @@ type SettingsConfig struct {
 	// Each value uses the same "kind/model" format as Providers. When a stage
 	// key is missing, the fallback chain is:
 	//   stage_providers[stage] → smith_providers (smith/warden/schematic only) → providers → defaults
-	StageProviders map[string][]string `mapstructure:"stage_providers" yaml:"stage_providers,omitempty"`
+	//
+	// The Assay keys are dotted ("assay.logic", "assay.conventions", ...), and
+	// viper treats "." as a nested-key delimiter: decoded through it, one such
+	// key turns the whole map into a nested one and Load fails outright. So
+	// mapstructure:"-" excludes it from viper and Load() reads it from the raw
+	// YAML instead; see loadDottedKeyTablesFromYAML.
+	StageProviders map[string][]string `mapstructure:"-" yaml:"stage_providers,omitempty"`
 	// SchematicEnabled enables the Schematic pre-worker globally. When true,
 	// beads that exceed the word threshold or carry the "decompose" tag are
 	// analysed before Smith starts. Default: false.
@@ -1176,7 +1184,7 @@ type SettingsConfig struct {
 	// mapstructure:"-" excludes this from viper decoding — model keys often
 	// contain dots (e.g. "claude-opus-4.6"), which viper treats as nested-key
 	// delimiters and would mangle. Load() populates it directly from the raw
-	// YAML instead; see loadPricingTablesFromYAML.
+	// YAML instead; see loadDottedKeyTablesFromYAML.
 	Pricing map[string]ModelPricing `mapstructure:"-" yaml:"pricing,omitempty"`
 
 	// CopilotPremiumMultipliers maps a Copilot model name to its premium-request
@@ -3123,11 +3131,11 @@ func Load(configFile string) (*Config, error) {
 		cfg.Settings.ForgeChat.TurnExpiry = d
 	}
 
-	// Pricing tables carry mapstructure:"-" so viper skips them (their model
-	// keys frequently contain dots, which viper's "." delimiter would mangle).
-	// Load them directly from the raw YAML instead.
+	// Pricing tables and stage_providers carry mapstructure:"-" so viper skips
+	// them (their keys frequently contain dots, which viper's "." delimiter
+	// would mangle). Load them directly from the raw YAML instead.
 	if used := v.ConfigFileUsed(); used != "" {
-		if err := loadPricingTablesFromYAML(used, &cfg.Settings); err != nil {
+		if err := loadDottedKeyTablesFromYAML(used, &cfg); err != nil {
 			return nil, err
 		}
 	}
@@ -3138,35 +3146,69 @@ func Load(configFile string) (*Config, error) {
 	return &cfg, nil
 }
 
-// loadPricingTablesFromYAML reads settings.pricing and
-// settings.copilot_premium_multipliers directly from the config file, bypassing
-// viper. Their keys are model identifiers that frequently contain dots (e.g.
-// "claude-opus-4.6"); viper treats "." as a nested-key delimiter and would
-// mangle "claude-opus-4.6: 3" into {"claude-opus-4": {"6": 3}}, failing to
-// decode into float64/ModelPricing. gopkg.in/yaml.v3 preserves dotted keys
-// verbatim. A nil map (key absent from the file) leaves the existing value
-// untouched.
-func loadPricingTablesFromYAML(path string, settings *SettingsConfig) error {
+// loadDottedKeyTablesFromYAML reads the maps whose keys routinely contain
+// dots directly from the config file, bypassing viper: settings.pricing and
+// settings.copilot_premium_multipliers (model identifiers such as
+// "claude-opus-4.6") and stage_providers, global and per-anvil (the Assay pass
+// keys "assay.logic", "assay.conventions", ...). viper treats "." as a
+// nested-key delimiter and would mangle "claude-opus-4.6: 3" into
+// {"claude-opus-4": {"6": 3}}, failing to decode; gopkg.in/yaml.v3 preserves
+// dotted keys verbatim. A nil map (key absent from the file) leaves the
+// existing value untouched.
+//
+// viper lower-cases every key it reads, and stage keys and anvil names were
+// always matched in that form, so both are lower-cased here too: a file that
+// loaded before keeps loading to the same values.
+func loadDottedKeyTablesFromYAML(path string, cfg *Config) error {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return fmt.Errorf("reading config for pricing tables: %w", err)
+		return fmt.Errorf("reading config for dotted-key tables: %w", err)
 	}
 	var shadow struct {
 		Settings struct {
 			Pricing                   map[string]ModelPricing `yaml:"pricing"`
 			CopilotPremiumMultipliers map[string]float64      `yaml:"copilot_premium_multipliers"`
+			StageProviders            map[string][]string     `yaml:"stage_providers"`
 		} `yaml:"settings"`
+		Anvils map[string]struct {
+			StageProviders map[string][]string `yaml:"stage_providers"`
+		} `yaml:"anvils"`
 	}
 	if err := yaml.Unmarshal(data, &shadow); err != nil {
-		return fmt.Errorf("parsing pricing tables: %w", err)
+		return fmt.Errorf("parsing dotted-key tables: %w", err)
 	}
 	if shadow.Settings.Pricing != nil {
-		settings.Pricing = shadow.Settings.Pricing
+		cfg.Settings.Pricing = shadow.Settings.Pricing
 	}
 	if shadow.Settings.CopilotPremiumMultipliers != nil {
-		settings.CopilotPremiumMultipliers = shadow.Settings.CopilotPremiumMultipliers
+		cfg.Settings.CopilotPremiumMultipliers = shadow.Settings.CopilotPremiumMultipliers
+	}
+	if shadow.Settings.StageProviders != nil {
+		cfg.Settings.StageProviders = lowerStageKeys(shadow.Settings.StageProviders)
+	}
+	for name, raw := range shadow.Anvils {
+		if raw.StageProviders == nil {
+			continue
+		}
+		key := strings.ToLower(name)
+		anvil, ok := cfg.Anvils[key]
+		if !ok {
+			continue
+		}
+		anvil.StageProviders = lowerStageKeys(raw.StageProviders)
+		cfg.Anvils[key] = anvil
 	}
 	return nil
+}
+
+// lowerStageKeys returns m with every stage key lower-cased, matching the form
+// viper decoded stage_providers into before it was read from the raw YAML.
+func lowerStageKeys(m map[string][]string) map[string][]string {
+	out := make(map[string][]string, len(m))
+	for k, v := range m {
+		out[strings.ToLower(k)] = v
+	}
+	return out
 }
 
 // ConfigFilePath returns the path of the config file that was loaded,

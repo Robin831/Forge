@@ -38,7 +38,17 @@ const (
 // providerStages is the allowed key set for provider_map values: the pipeline
 // stages that accept their own provider chain. It doubles as the Options hint
 // in the schema metadata so the frontend can offer exactly these stage keys.
-var providerStages = []string{"smith", "warden", "schematic", "cifix", "reviewfix"}
+//
+// The Assay keys follow reviewfix: "assay" is the chain for the whole review,
+// and each "assay.<pass>" names one pass (triage plus the five deep passes).
+// The frontend mirrors this list, in this order, as PROVIDER_STAGES
+// (frontend/src/components/ProviderMapField.tsx);
+// TestFrontendProviderStagesMatchBackend fails when the two drift.
+var providerStages = []string{
+	"smith", "warden", "schematic", "cifix", "reviewfix",
+	"assay",
+	"assay.triage", "assay.logic", "assay.security", "assay.conventions", "assay.tests-missing", "assay.repo-specific",
+}
 
 // providerStageSet indexes providerStages for O(1) membership checks during
 // provider_map validation.
@@ -403,10 +413,13 @@ var managedConfigKeys = []configKeyDef{
 		Type:        typeProviderMap,
 		Area:        "Providers",
 		Label:       "Per-stage providers",
-		Description: "Per-stage provider overrides keyed by pipeline stage (smith, warden, schematic, cifix, reviewfix). Each value is an ordered provider chain.",
+		Description: "Per-stage provider overrides keyed by pipeline stage (smith, warden, schematic, cifix, reviewfix, assay, and the per-pass assay.triage, assay.logic, assay.security, assay.conventions, assay.tests-missing, assay.repo-specific). Each value is an ordered provider chain.",
 		Options:     providerStages,
-		Default:     map[string][]string(nil),
-		value:       func(s config.SettingsConfig) any { return s.StageProviders },
+		// internal/hotreload compares stage_providers and swaps the new map in,
+		// and every stage resolves its chain from the live config per spawn.
+		HotReloadable: true,
+		Default:       map[string][]string(nil),
+		value:         func(s config.SettingsConfig) any { return s.StageProviders },
 	},
 	durationKey("poll_interval", "Scheduling", "Poll interval",
 		"How often the poller checks each anvil for ready beads.", "5m0s",
@@ -890,8 +903,8 @@ var managedAnvilKeys = []anvilKeyDef{
 		Label: "VCS platform", Description: "Hosting platform for this anvil's PR operations."},
 
 	// --- Composite per-anvil overrides (Forge-vo5a). Send null to inherit. ---
-	{Key: "stage_providers", Type: typeProviderMap, Options: providerStages,
-		Label: "Per-stage providers", Description: "Per-anvil override of the global per-stage provider chains (smith, warden, schematic, cifix, reviewfix)."},
+	{Key: "stage_providers", Type: typeProviderMap, Options: providerStages, Instant: true,
+		Label: "Per-stage providers", Description: "Per-anvil override of the global per-stage provider chains (smith, warden, schematic, cifix, reviewfix, assay and the per-pass assay.* keys)."},
 	{Key: "wicket_trusted_users", Type: typeStringList,
 		Label: "Wicket trusted users", Description: "GitHub logins whose issues are auto-dispatched without extra review for this anvil."},
 	{Key: "wicket_ignore_users", Type: typeStringList,
