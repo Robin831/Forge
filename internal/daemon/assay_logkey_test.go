@@ -26,9 +26,9 @@ func TestRunAssayReviewStampsLogKey(t *testing.T) {
 		return &assay.ReviewResult{
 			Status: assay.RunStatusComplete, CompletedPasses: 5, TotalPasses: 5,
 			Passes: []assay.PassReport{
-				{Name: "triage"},
-				{Name: "logic", Findings: 1},
-				{Name: "security"},
+				{Name: "triage", Provider: "claude", Model: "claude-sonnet-5"},
+				{Name: "logic", Findings: 1, Provider: "claude", Model: "claude-opus-5"},
+				{Name: "security", Provider: "gemini", Model: "gemini-2.5-pro", FailedOver: true},
 			},
 			Findings: make([]assay.Finding, 1),
 		}, nil
@@ -47,11 +47,12 @@ func TestRunAssayReviewStampsLogKey(t *testing.T) {
 
 	// The per-pass findings breakdown rides on the same record, which is what
 	// lets the expanded run row tell the pass that found something from the
-	// ones that did not.
+	// ones that did not — and so does the provider and model each pass
+	// actually ran on, the failed-over security pass included.
 	require.Equal(t, []state.AssayPassFindings{
-		{Name: "triage", Findings: 0},
-		{Name: "logic", Findings: 1},
-		{Name: "security", Findings: 0},
+		{Name: "triage", Findings: 0, Provider: "claude", Model: "claude-sonnet-5"},
+		{Name: "logic", Findings: 1, Provider: "claude", Model: "claude-opus-5"},
+		{Name: "security", Findings: 0, Provider: "gemini", Model: "gemini-2.5-pro", FailedOver: true},
 	}, run.PassFindings)
 }
 

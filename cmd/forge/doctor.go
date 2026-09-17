@@ -400,10 +400,11 @@ func checkOpenAIAuth(name string) checkResult {
 // the daemon reviews with): anvil stage_providers["assay.<pass>"], then
 // ["assay"], then the global pair, then the legacy triage_/review_ keys, then
 // the provider defaults. Each row names the chain and the step that supplied
-// it. The binary checked is the chain's head, the provider a review session
-// actually spawns; a missing one means that pass cannot run and fails. Assay
-// has no rate-limit fallback, so a chain listing entries after its head is a
-// warn naming them as ignored rather than a row implying a fallback exists.
+// it. The binary checked first is the chain's head, the provider a review
+// session spawns; a missing one means that pass cannot run and fails. Entries
+// after the head are the pass's rate-limit fallbacks, named on the row; a
+// fallback whose binary is missing is a warn, since the pass still runs but
+// would fail rather than fall back the day its head is rate limited.
 //
 // Every anvil with Assay enabled gets its own rows. With no anvils registered
 // at all but the global block enabled, the global resolution is reported
@@ -447,12 +448,23 @@ func checkAssayPasses() []checkResult {
 			}
 			head := rc.Providers[0]
 			chain := fmt.Sprintf("provider %s from %s", head.Label(), rc.SourceLabel())
-			var ignored []string
-			for _, pv := range rc.IgnoredFallbacks() {
-				ignored = append(ignored, pv.Label())
+			var fallbacks, missing []string
+			seen := map[string]bool{}
+			for _, pv := range rc.Fallbacks() {
+				fallbacks = append(fallbacks, pv.Label())
+				if seen[pv.Cmd()] {
+					continue
+				}
+				seen[pv.Cmd()] = true
+				if _, err := execLookPath(pv.Cmd()); err != nil {
+					missing = append(missing, pv.Cmd())
+				}
 			}
-			if len(ignored) > 0 {
-				chain += fmt.Sprintf("; fallbacks [%s] ignored — Assay spawns only the head of a chain", strings.Join(ignored, ", "))
+			if len(fallbacks) > 0 {
+				chain += fmt.Sprintf("; rate-limit fallbacks [%s]", strings.Join(fallbacks, ", "))
+			}
+			if len(missing) > 0 {
+				chain += fmt.Sprintf("; fallback binaries not found in PATH: %s", strings.Join(missing, ", "))
 			}
 			bin := head.Cmd()
 			path, err := execLookPath(bin)
@@ -475,7 +487,7 @@ func checkAssayPasses() []checkResult {
 				versions[path] = version
 			}
 			status := "ok"
-			if len(ignored) > 0 {
+			if len(missing) > 0 {
 				status = "warn"
 			}
 			results = append(results, checkResult{

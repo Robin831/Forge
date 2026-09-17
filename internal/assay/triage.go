@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/Robin831/Forge/internal/cost"
 	"github.com/Robin831/Forge/internal/diff"
 )
 
@@ -25,31 +24,17 @@ type triageResult struct {
 // because these travel together and always have — a fifth return value is how
 // a caller comes to drop one.
 type triageRun struct {
+	// chainTelemetry is passResult's, on the same terms: cumulative spend and
+	// exploration across every session and chain entry, reported on the error
+	// paths too, and the provider fields of the entry triage ended on. Triage
+	// is expected to report zero tool calls — it reads the diff and answers —
+	// which is precisely why the figure is carried: a triage pass that starts
+	// opening files is scoping work that has stopped being cheap.
+	chainTelemetry
 	// result is the scoping decision. Zero-valued when the pass failed.
 	result triageResult
-	// usage is cumulative across every session the pass made — tokens, the
-	// prompt-cache halves and the cost alike — and is reported on the error
-	// paths too.
-	usage cost.Usage
-	// estCostUSD is costTracker's estimate of that same spend, cumulative on
-	// usage's terms — the unit the per-pass spend ceiling is written in. Zero
-	// when no ceiling is configured or the backend streams no per-turn usage.
-	estCostUSD float64
 	// turns is the recorded (final) session's turn count.
 	turns int
-	// toolCalls is how many tool calls every session of the pass made together,
-	// cumulative like usage rather than final-session like turns. Triage is
-	// expected to report zero — it reads the diff and answers — which is
-	// precisely why the figure is carried: a triage pass that starts opening
-	// files is scoping work that has stopped being cheap.
-	toolCalls int
-	// filesRead is how many distinct files those sessions opened between them,
-	// carried beside toolCalls so the rendered line cannot report a pass that
-	// opened files as having opened none. It counts the file-shaped entries of
-	// the tracked list (countFilesRead), not its length: the list is also what
-	// the retry's diff scoping selects from, and that consumer is happy with a
-	// directory or a fragment that matches nothing while this one is not.
-	filesRead int
 }
 
 // runTriage runs the scoping pass. Like the deep passes it parses strict JSON
@@ -69,28 +54,60 @@ type triageRun struct {
 // Triage gets no turn-budget retry: unlike a deep pass it is a hard gate — a
 // triage failure aborts the whole run rather than costing one pass's coverage,
 // so there is no partial outcome for a retry to salvage.
+//
+// It does walk its own provider chain, on runDeepPass's rule: the strict-JSON
+// re-prompt runs on one provider, and only a rate limit moves the pass to the
+// next entry. A hard gate is the pass that most needs the fallback — a
+// rate-limited triage head otherwise fails the whole run — and the one that
+// must least loop on an auth failure, which ends the walk like everything else
+// that is not a rate limit.
 func runTriage(ctx context.Context, runner PassRunner, cfg Config, req ReviewRequest, filteredDiff string) (triageRun, error) {
+	chain := cfg.providersFor(passTriage.Name)
 	prompt, err := buildTriagePrompt(req, filteredDiff)
 	if err != nil {
-		return triageRun{}, err
+		return triageRun{chainTelemetry: chainTelemetry{provider: chain[0], model: chain[0].Model}}, err
 	}
 
+	var run triageRun
+	var acc chainTelemetry
+	for i, pv := range chain {
+		r, rerr := runTriageOn(withPassProvider(ctx, pv), runner, prompt)
+		acc.fold(i, pv, r.chainTelemetry)
+
+		run = r
+		run.chainTelemetry = acc
+		err = rerr
+		if err == nil || !failsOver(classifyPassError(passTriage.Name, err)) {
+			break
+		}
+	}
+	return run, err
+}
+
+// runTriageOn runs the triage session, and its strict-JSON re-prompt, on the
+// provider withPassProvider put on ctx.
+func runTriageOn(ctx context.Context, runner PassRunner, prompt string) (triageRun, error) {
 	out, err := runner(ctx, passTriage.Name, passTriage.Tier, prompt)
 	if err != nil {
 		// One session has run, so its own list IS the union — there is nothing
 		// earlier to merge with. The paths below, which do merge, are the ones
 		// reached after a session has already produced a PassOutput.
 		u, turns, calls, est := passErrorTelemetry(err)
-		return triageRun{usage: u, estCostUSD: est, turns: turns, toolCalls: calls,
-			filesRead: countFilesRead(passErrorFiles(err))}, err
+		opened := passErrorFiles(err)
+		return triageRun{turns: turns, chainTelemetry: chainTelemetry{usage: u, estCostUSD: est, toolCalls: calls,
+			filesRead: countFilesRead(opened), opened: opened, model: passErrorModel(err)}}, err
 	}
 	opened := out.OpenedFiles
 	run := triageRun{
-		usage:      out.usage(),
-		estCostUSD: out.EstCostUSD,
-		turns:      out.Turns,
-		toolCalls:  out.ToolCalls,
-		filesRead:  countFilesRead(opened),
+		turns: out.Turns,
+		chainTelemetry: chainTelemetry{
+			usage:      out.usage(),
+			estCostUSD: out.EstCostUSD,
+			toolCalls:  out.ToolCalls,
+			filesRead:  countFilesRead(opened),
+			opened:     opened,
+			model:      out.Model,
+		},
 	}
 
 	res, perr := parseTriage(out.Text)
@@ -102,14 +119,22 @@ func runTriage(ctx context.Context, runner PassRunner, cfg Config, req ReviewReq
 			run.estCostUSD += est2
 			run.turns = turns2
 			run.toolCalls += calls2
-			run.filesRead = countFilesRead(mergeOpenedFiles(opened, passErrorFiles(err2)))
+			run.opened = mergeOpenedFiles(opened, passErrorFiles(err2))
+			run.filesRead = countFilesRead(run.opened)
+			if m := passErrorModel(err2); m != "" {
+				run.model = m
+			}
 			return run, err2
 		}
 		run.usage.Add(out2.usage())
 		run.estCostUSD += out2.EstCostUSD
 		run.turns = out2.Turns
 		run.toolCalls += out2.ToolCalls
-		run.filesRead = countFilesRead(mergeOpenedFiles(opened, out2.OpenedFiles))
+		run.opened = mergeOpenedFiles(opened, out2.OpenedFiles)
+		run.filesRead = countFilesRead(run.opened)
+		if out2.Model != "" {
+			run.model = out2.Model
+		}
 		res, perr = parseTriage(out2.Text)
 		if perr != nil {
 			return run, fmt.Errorf("assay pass %s: invalid JSON output after retry: %w", passTriage.Name, perr)

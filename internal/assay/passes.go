@@ -167,6 +167,12 @@ type PassOutput struct {
 	// whether or not the tool named a file. Zero for a backend that streams no
 	// structured tool events. Telemetry: nothing branches on it.
 	ToolCalls int
+	// Model is the model the session ran on, as the provider reported it
+	// in-band (smith.SessionModel), falling back to the chain entry's
+	// configured model. Empty for a provider that ran its own default and
+	// named none. It is what the pass row records, since the model a spec
+	// asked for and the one a provider served are not always the same string.
+	Model string
 }
 
 // usage projects the session's counters onto the cost.Usage every cost sink
@@ -358,6 +364,10 @@ type PassError struct {
 	// tool call and one that failed halfway through reading the repository are
 	// different failures, and the reason label alone says neither.
 	ToolCalls int
+	// Model is the model the failed session ran on, on PassOutput.Model's
+	// terms: a pass whose last session failed still ran somewhere, and the
+	// pass row names where.
+	Model string
 }
 
 func (e *PassError) Error() string { return e.Message }
@@ -438,7 +448,13 @@ var spawnPassSession = smith.SpawnWithOptions
 func newSmithRunner(cfg Config, req ReviewRequest) PassRunner {
 	workDir := req.WorkDir
 	return func(ctx context.Context, pass, tier, prompt string) (PassOutput, error) {
-		pv := cfg.providerFor(pass)
+		// The chain walk (runDeepPass, runTriage) names the entry this session
+		// runs on; a runner called outside it spawns the chain's head, which is
+		// what every pass ran on before chains failed over.
+		pv, ok := PassProviderFrom(ctx)
+		if !ok {
+			pv = cfg.providerFor(pass)
+		}
 		// Logs go to the worktree's .forge-logs like every other stage; the
 		// lifecycle teardown preserves them to ~/.forge/logs/<beadID>/ before
 		// the worktree is removed.
@@ -502,8 +518,10 @@ func newSmithRunner(cfg Config, req ReviewRequest) PassRunner {
 
 		proc, err := spawnPassSession(sessionCtx, workDir, prompt, logDir, pv, flags, opts)
 		if err != nil {
-			return PassOutput{}, newPassError(pass, ReasonSpawnFailed,
+			perr := newPassError(pass, ReasonSpawnFailed,
 				fmt.Sprintf("spawning %s: %v", pv.Label(), err), err)
+			perr.Model = pv.Model
+			return PassOutput{}, perr
 		}
 		if req.OnPassLog != nil && proc.LogPath != "" {
 			req.OnPassLog(proc.LogPath)
@@ -539,13 +557,27 @@ func newSmithRunner(cfg Config, req ReviewRequest) PassRunner {
 // reports zeros for turns the provider did bill); the others take the result's,
 // which is populated on error subtypes too.
 func sessionOutcome(pass string, tracker *costTracker, turns *turnCounter, res *smith.Result, pv provider.Provider) (PassOutput, error) {
+	model := smith.SessionModel(res, pv)
 	if perr := costStopError(pass, tracker, res); perr != nil {
+		perr.Model = model
+		return PassOutput{}, perr
+	}
+	// Auth before the rate limit: it is the failure the chain walk must never
+	// move past (see ReasonAuthFailed), and smith classifies the two as
+	// exclusive already, so the order only matters for a result that claims
+	// both.
+	if res.AuthFailed {
+		perr := newPassError(pass, ReasonAuthFailed,
+			fmt.Sprintf("provider %s rejected its credentials", pv.Label()), nil)
+		withResultTelemetry(perr, tracker, turns, res)
+		perr.Model = model
 		return PassOutput{}, perr
 	}
 	if res.RateLimited {
 		perr := newPassError(pass, ReasonRateLimited,
 			fmt.Sprintf("provider %s rate limited", pv.Label()), nil)
 		withResultTelemetry(perr, tracker, turns, res)
+		perr.Model = model
 		return PassOutput{}, perr
 	}
 	if res.IsError || res.ExitCode != 0 {
@@ -559,6 +591,7 @@ func sessionOutcome(pass string, tracker *costTracker, turns *turnCounter, res *
 		perr := newPassError(pass, reason,
 			fmt.Sprintf("provider %s failed (exit %d, subtype %s)", pv.Label(), res.ExitCode, res.ResultSubtype), nil)
 		withResultTelemetry(perr, tracker, turns, res)
+		perr.Model = model
 		return PassOutput{}, perr
 	}
 	text := res.FullOutput
@@ -574,6 +607,7 @@ func sessionOutcome(pass string, tracker *costTracker, turns *turnCounter, res *
 		TokensOut:           res.TokensOut,
 		CacheCreationTokens: res.CacheCreationTokens,
 		CacheReadTokens:     res.CacheReadTokens,
+		Model:               model,
 	}, nil
 }
 
@@ -987,34 +1021,18 @@ func sanitize(s string) string {
 // records for it: how the pass's session ended, how many turns it burned, and
 // whether it took a second session to get there.
 type passResult struct {
+	// chainTelemetry is the spend, exploration and provider attribution of
+	// every session the pass made — cumulative across sessions and across the
+	// chain entries it ran on, the provider fields the final entry's. See
+	// chainTelemetry for each field's terms.
+	chainTelemetry
 	// findings is what the pass produced (nil when it failed).
 	findings []Finding
-	// usage is the cumulative token accounting across every provider session
-	// the pass made — the strict-JSON re-prompt and any turn-budget retry
-	// included, and failed sessions along with successful ones, since the
-	// provider bills all of them. The cache halves are summed for the same
-	// reason the cost is: a pass that took a re-prompt or a retry really did
-	// write the prefix more than once.
-	usage cost.Usage
-	// estCostUSD is costTracker's estimate of that same spend, summed over the
-	// same sessions — the unit assay.max_cost_per_pass_usd is compared against.
-	// Zero when no ceiling is configured or the backend streams no per-turn
-	// usage, which are the cases where nothing measured it.
-	estCostUSD float64
 	// turns is the turn count of the session whose output the pass recorded,
 	// i.e. the final one. Cumulating turns across sessions would say nothing
 	// about how close any single session came to the --max-turns budget, which
 	// is the number the budget is tuned against.
 	turns int
-	// toolCalls is how many tool calls every session of the pass made together,
-	// and filesRead how many distinct files they opened between them. Both are
-	// cumulative, on usage's terms rather than turns': they measure how much
-	// this pass explored, and exploration a re-prompt or a retry paid for was
-	// still exploration. See PassReport.ToolCalls. filesRead is the file-shaped
-	// part of the union (countFilesRead) rather than its length — the union
-	// itself is the looser list the retry's diff scoping selects from.
-	toolCalls int
-	filesRead int
 	// failure is the classified termination, derived once here so nothing
 	// downstream re-runs classifyPassError on the same error. Its zero value
 	// (empty Name and Reason) means the pass answered.
@@ -1022,10 +1040,14 @@ type passResult struct {
 	// attempts is how many turn-budget attempts the pass took — 2 when it was
 	// re-run after exhausting its budget. A strict-JSON re-prompt inside a
 	// single attempt is another provider session but not another attempt; see
-	// PassReport.Attempts.
+	// PassReport.Attempts. Across a failover it is 1 plus every turn-budget
+	// re-run on every provider the pass ran on: moving to the next entry is not
+	// itself a retry, and counting it as one would print retry= for a pass
+	// that was never re-run.
 	attempts int
 	// retried reports whether a fresh session was started after the first one
-	// exhausted its turn budget.
+	// exhausted its turn budget — on any provider the pass ran on, so a retry
+	// followed by a failover is still reported.
 	retried bool
 	// retrySkipped reports that the pass exhausted its turn budget, was
 	// eligible for the fresh-session re-run, and did not get one because no
@@ -1033,7 +1055,9 @@ type passResult struct {
 	// telemetry, not a second failure: the pass fails on error_max_turns either
 	// way and the run reports partial coverage either way — this is what says
 	// the missing coverage was a deliberate refusal to pay twice for the same
-	// request rather than a retry that silently never happened.
+	// request rather than a retry that silently never happened. Never true
+	// alongside retried, even when the two happened on different providers:
+	// the pass WAS re-run, which is the claim the telemetry line makes.
 	retrySkipped bool
 	// err is the failure, if any. It is the *final* attempt's error, so the
 	// reason a retried pass reports is the one it ended on.
@@ -1069,21 +1093,69 @@ type passResult struct {
 // Only ReasonMaxTurns reaches any of this. A spend-ceiling stop (ReasonMaxCost)
 // is a different failure with the opposite remedy — a re-run buys the identical
 // runaway again — and it never enters the branch.
+//
+// All of the above happens on ONE provider (runDeepPassOn). Around it, the pass
+// walks its own chain from Config.providersFor the way Burnish walks its
+// providers: a pass whose outcome on one entry is a rate limit moves to the
+// next, and every other outcome ends the walk — an auth failure above all,
+// which must surface rather than hide behind a pass that quietly ran elsewhere.
+// A chain whose every entry is rate limited reports the last entry's rate
+// limit. Usage, tool calls and opened files accumulate across providers on
+// the same terms they accumulate across sessions (chainTelemetry.fold, the
+// one fold runTriage's walk shares), and so does the turn-budget retry
+// telemetry; everything else is the final provider's, since that is the
+// outcome the pass records.
 func runDeepPass(ctx context.Context, runner PassRunner, cfg Config, req ReviewRequest, scopedDiff, triageNotes string, p passDef) passResult {
-	var res passResult
-	// The prompt is built once, here, rather than per attempt: the retry is a
-	// modification of this exact payload, and comparing it against one the
-	// retry path rebuilt for itself would compare two things neither of which
-	// was sent.
+	chain := cfg.providersFor(p.Name)
+	// The prompt is built once, here, rather than per attempt or per provider:
+	// the retry is a modification of this exact payload, and comparing it
+	// against one the retry path rebuilt for itself would compare two things
+	// neither of which was sent. Nothing in it depends on the provider, so a
+	// failover sends the same bytes too.
 	build := func(d string) (string, error) { return buildPassPrompt(p, req, d, triageNotes) }
 	prompt, err := build(scopedDiff)
 	if err != nil {
 		// No session was ever started, so there is nothing to bill or count.
 		perr := newPassError(p.Name, ReasonPromptFailed, err.Error(), err)
-		return passResult{attempts: 1, err: perr, failure: classifyPassError(p.Name, perr)}
+		return passResult{attempts: 1, err: perr, failure: classifyPassError(p.Name, perr),
+			chainTelemetry: chainTelemetry{provider: chain[0], model: chain[0].Model}}
 	}
-	in := retryInputs{prompt: prompt, diff: scopedDiff, turns: passTurnBudget(cfg)}
+	base := retryInputs{prompt: prompt, diff: scopedDiff, turns: passTurnBudget(cfg)}
 
+	// Walk the pass's OWN chain. Each entry runs the whole attempt loop below
+	// — turn-budget retry and strict-JSON re-prompt included — before the next
+	// is considered, and only a rate limit moves on (failsOver). The chain is
+	// local to this call, so one pass failing over never changes which
+	// provider another pass runs on: there is no shared "current provider".
+	var res passResult
+	var acc chainTelemetry
+	var retries int
+	var retried, retrySkipped bool
+	for i, pv := range chain {
+		r := runDeepPassOn(withPassProvider(ctx, pv), runner, cfg, p, req, base, build)
+		acc.fold(i, pv, r.chainTelemetry)
+		retries += max(r.attempts-1, 0)
+		retried = retried || r.retried
+		retrySkipped = retrySkipped || r.retrySkipped
+
+		res = r
+		res.chainTelemetry = acc
+		res.attempts = 1 + retries
+		res.retried = retried
+		res.retrySkipped = retrySkipped && !retried
+		if !failsOver(r.failure) {
+			break
+		}
+	}
+	return res
+}
+
+// runDeepPassOn runs one pass on ONE provider — the one withPassProvider put on
+// ctx — with the turn-budget retry described on runDeepPass. It is the unit a
+// chain failover repeats, which is why the retry lives inside it: a pass gets
+// its in-provider recoveries on each provider before the next one is tried.
+func runDeepPassOn(ctx context.Context, runner PassRunner, cfg Config, p passDef, req ReviewRequest, in retryInputs, build func(string) (string, error)) passResult {
+	var res passResult
 	// opened is the union of what every attempt read, which is what filesRead
 	// counts. The retry below is still scoped from the failing attempt's own
 	// list: that one is evidence about where THAT session thought the risk was,
@@ -1096,9 +1168,11 @@ func runDeepPass(ctx context.Context, runner PassRunner, cfg Config, req ReviewR
 		res.turns = a.turns
 		res.toolCalls += a.toolCalls
 		opened = mergeOpenedFiles(opened, a.openedFiles)
+		res.opened = opened
 		res.filesRead = countFilesRead(opened)
 		res.attempts = attempt
 		res.findings = a.findings
+		res.model = a.model
 		res.err = a.err
 		res.failure = PassFailure{}
 		if a.err != nil {
@@ -1163,7 +1237,9 @@ type attemptResult struct {
 	// diff; empty otherwise, and empty for any backend that streams no tool
 	// events.
 	openedFiles []string
-	err         error
+	// model is the recorded session's model (the last one the attempt ran).
+	model string
+	err   error
 }
 
 // runPassAttempt runs one deep-pass session over the given inputs, parsing its
@@ -1191,6 +1267,7 @@ func runPassAttempt(ctx context.Context, runner PassRunner, req ReviewRequest, p
 			sessions:    1,
 			toolCalls:   calls,
 			openedFiles: passErrorFiles(err),
+			model:       passErrorModel(err),
 			err:         err,
 		}
 	}
@@ -1201,6 +1278,7 @@ func runPassAttempt(ctx context.Context, runner PassRunner, req ReviewRequest, p
 		sessions:    1,
 		toolCalls:   out.ToolCalls,
 		openedFiles: out.OpenedFiles,
+		model:       out.Model,
 	}
 
 	findings, perr := parseFindings(out.Text)
@@ -1215,6 +1293,9 @@ func runPassAttempt(ctx context.Context, runner PassRunner, req ReviewRequest, p
 			res.turns = turns2
 			res.toolCalls += calls2
 			res.openedFiles = mergeOpenedFiles(res.openedFiles, passErrorFiles(err2))
+			if m := passErrorModel(err2); m != "" {
+				res.model = m
+			}
 			res.err = err2
 			return res
 		}
@@ -1223,6 +1304,9 @@ func runPassAttempt(ctx context.Context, runner PassRunner, req ReviewRequest, p
 		res.turns = out2.Turns
 		res.toolCalls += out2.ToolCalls
 		res.openedFiles = mergeOpenedFiles(res.openedFiles, out2.OpenedFiles)
+		if out2.Model != "" {
+			res.model = out2.Model
+		}
 		findings, perr = parseFindings(out2.Text)
 		if perr != nil {
 			res.err = newPassError(p.Name, ReasonInvalidJSON,
@@ -1276,6 +1360,17 @@ func passErrorFiles(err error) []string {
 		return pe.OpenedFiles
 	}
 	return nil
+}
+
+// passErrorModel reports the model a failed session ran on, where the error
+// carries it; "" for a foreign error, which the chain walk then reads as the
+// entry's configured model.
+func passErrorModel(err error) string {
+	var pe *PassError
+	if errors.As(err, &pe) {
+		return pe.Model
+	}
+	return ""
 }
 
 // mergeOpenedFiles appends b's entries to a, dropping duplicates and preserving

@@ -1853,18 +1853,27 @@ func statePassFailures(failed []assay.PassFailure) []state.AssayPassFailure {
 }
 
 // statePassFindings projects the engine's per-pass reports onto the run
-// record's persisted breakdown: pass name and findings contributed, nothing
-// else. The rest of a PassReport (turns, cost, cache accounting) is telemetry
-// for the daemon log line; this is the half the bead Logs panel renders, so a
-// session that found the PR's one real problem is distinguishable from the
-// four that found nothing and from triage, which produces none by design.
+// record's persisted pass rows: pass name, findings contributed, and the
+// provider kind and model the pass actually ran on (plus whether it got there
+// by failing over). The rest of a PassReport (turns, cost, cache accounting)
+// is telemetry for the daemon log line. The findings count is the half the
+// bead Logs panel renders, so a session that found the PR's one real problem
+// is distinguishable from the four that found nothing and from triage, which
+// produces none by design; the provider and model are what lets spend be
+// priced per model rather than per run.
 func statePassFindings(passes []assay.PassReport) []state.AssayPassFindings {
 	if len(passes) == 0 {
 		return nil
 	}
 	out := make([]state.AssayPassFindings, 0, len(passes))
 	for _, p := range passes {
-		out = append(out, state.AssayPassFindings{Name: p.Name, Findings: p.Findings})
+		out = append(out, state.AssayPassFindings{
+			Name:       p.Name,
+			Findings:   p.Findings,
+			Provider:   p.Provider,
+			Model:      p.Model,
+			FailedOver: p.FailedOver,
+		})
 	}
 	return out
 }
@@ -2167,7 +2176,7 @@ func (d *Daemon) runAssayReview(ctx context.Context, anvil, anvilPath, beadID st
 			// Into the main ledger as well as assay_runs, from the one site
 			// that may do it — see recordAssayCost, which also carries why
 			// neither the pipeline nor bellows may record a review.
-			d.recordAssayCost(engineCfg.ReviewProviderKind(), beadID, anvil, assay.RunUsage(rerr))
+			d.recordAssayCost(beadID, anvil, assay.RunUsageByProvider(rerr))
 			d.logger.Error("Assay review failed", "pr", prNumber, "bead", beadID, "error", rerr,
 				"cost_usd", run.CostUSD,
 				"cache_w", run.CacheCreationTokens, "cache_r", run.CacheReadTokens)
@@ -2183,7 +2192,7 @@ func (d *Daemon) runAssayReview(ctx context.Context, anvil, anvilPath, beadID st
 			// assay_runs.cost_usd above and daily_costs/provider_daily_costs
 			// here, from the one site allowed to fold it in — see
 			// recordAssayCost.
-			d.recordAssayCost(engineCfg.ReviewProviderKind(), beadID, anvil, result.Usage)
+			d.recordAssayCost(beadID, anvil, result.UsageByProvider)
 			run.FindingsCount = len(result.Findings)
 			// Coverage is recorded on the run, not re-derived: the status,
 			// the pass tally and the named failed passes all come from the

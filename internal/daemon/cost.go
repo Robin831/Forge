@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"github.com/Robin831/Forge/internal/assay"
 	"github.com/Robin831/Forge/internal/cost"
 )
 
@@ -57,6 +58,13 @@ const assayCostStage = "assay"
 // spent nothing (an unfetchable diff, a head with no reviewable changes) passes
 // a zero usage, which cost.Record drops.
 //
+// The usage arrives split by provider kind (assay.ProviderUsage) and is written
+// once per kind. A run is not one provider — every pass resolves its own chain,
+// and a pass that failed over was billed on two — so attributing the whole run
+// to one kind would put a Gemini fallback's spend under Claude in
+// provider_daily_costs. daily_costs and bead_costs are additive, so writing
+// them in per-kind pieces lands the same totals there as one write would.
+//
 // Backfill: historical assay_runs rows predating this recording are NOT
 // reflected in daily_costs — roughly $2,650 of spend since 2026-06-01 — and no
 // backfill is performed. Doing one is an explicit, separate operation, and it
@@ -64,6 +72,8 @@ const assayCostStage = "assay"
 // marker on either side saying which assay_runs rows have reached daily_costs,
 // so a backfill needs a cutoff timestamp (the first run recorded through this
 // helper) rather than a re-scan of the table.
-func (d *Daemon) recordAssayCost(provName, beadID, anvil string, u cost.Usage) {
-	d.recordStageCost(assayCostStage, provName, beadID, anvil, u)
+func (d *Daemon) recordAssayCost(beadID, anvil string, byProvider []assay.ProviderUsage) {
+	for _, pu := range byProvider {
+		d.recordStageCost(assayCostStage, pu.Provider, beadID, anvil, pu.Usage)
+	}
 }

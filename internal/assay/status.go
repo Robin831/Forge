@@ -171,6 +171,13 @@ func RenderStatusText(status RunStatus, completed, total int, failed []PassFailu
 // one's billed figure in cost_usd and session one's estimate in cost_est, and
 // the two do not match.
 //
+// model=<id> is on every segment: the model the pass's recorded session ran
+// on, or model=default where the provider ran its own default and named none.
+// provider=<kind> follows it only on a pass that FAILED OVER — moved down its
+// own chain past a rate-limited entry — because that is the one pass whose
+// provider is not the configured one, and printing the kind on every segment
+// would bury it. Both sit just before primer=.
+//
 // primer=1 stays last so a grep for it still anchors to the end of a segment.
 //
 // Returns "" when there is nothing to report.
@@ -217,6 +224,14 @@ func RenderPassTelemetry(passes []PassReport) string {
 		}
 		if p.EstCostUSD > 0 {
 			s += fmt.Sprintf(" cost_est=%.4f", p.EstCostUSD)
+		}
+		model := p.Model
+		if model == "" {
+			model = "default"
+		}
+		s += " model=" + model
+		if p.FailedOver {
+			s += " provider=" + p.Provider
 		}
 		if p.Primer {
 			s += " primer=1"

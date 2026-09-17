@@ -56,17 +56,19 @@ func readAssayLedger(t *testing.T, db *state.DB, beadID, anvil string) assayLedg
 // ledger usage are the same money reported twice — which is what the engine
 // does: ReviewResult.CostUSD is Usage.EstimatedCostUSD.
 func completedAssayResult(costUSD float64) *assay.ReviewResult {
+	u := cost.Usage{
+		InputTokens:      12000,
+		OutputTokens:     4000,
+		CacheReadTokens:  166000,
+		CacheWriteTokens: 44200,
+		EstimatedCostUSD: costUSD,
+	}
 	return &assay.ReviewResult{
 		Status: assay.RunStatusComplete, CompletedPasses: 5, TotalPasses: 5,
-		Findings: make([]assay.Finding, 3),
-		CostUSD:  costUSD,
-		Usage: cost.Usage{
-			InputTokens:      12000,
-			OutputTokens:     4000,
-			CacheReadTokens:  166000,
-			CacheWriteTokens: 44200,
-			EstimatedCostUSD: costUSD,
-		},
+		Findings:            make([]assay.Finding, 3),
+		CostUSD:             costUSD,
+		Usage:               u,
+		UsageByProvider:     []assay.ProviderUsage{{Provider: "claude", Usage: u}},
 		CacheCreationTokens: 44200,
 		CacheReadTokens:     166000,
 	}
@@ -96,8 +98,7 @@ func TestRunAssayReviewFoldsSpendIntoDailyCosts(t *testing.T) {
 	require.InDelta(t, 2.80, l.assayRuns, 1e-9, "assay_runs keeps its own per-run ledger")
 	require.InDelta(t, 2.80, l.daily, 1e-9, "the same run reaches daily_costs")
 	require.InDelta(t, 2.80, l.bead, 1e-9, "and the bead's cumulative row")
-	// Attributed to the provider the deep passes ran on — the default here,
-	// since the test config names none.
+	// Attributed to the provider the sessions ran on.
 	require.InDelta(t, 2.80, l.byProvider["claude"], 1e-9)
 	require.Len(t, l.byProvider, 1, "one run must not be split across provider rows")
 
@@ -133,6 +134,32 @@ func TestRunAssayReviewRecordsSpendExactlyOnce(t *testing.T) {
 	require.InDelta(t, 3.75, l.bead, 1e-9)
 }
 
+// TestRunAssayReviewSplitsSpendByProvider: a run is not one provider. When a
+// pass failed over to another provider, its spend is recorded under the
+// provider it ran on, while daily_costs and the bead row still carry the run's
+// whole total exactly once.
+func TestRunAssayReviewSplitsSpendByProvider(t *testing.T) {
+	d, db := newAssayRunDaemon(t)
+	d.assayReview = func(context.Context, assay.ReviewRequest, *state.DB, assay.Config) (*assay.ReviewResult, error) {
+		res := completedAssayResult(3.00)
+		res.UsageByProvider = []assay.ProviderUsage{
+			{Provider: "claude", Usage: cost.Usage{InputTokens: 10000, OutputTokens: 3000, CacheReadTokens: 166000, CacheWriteTokens: 44200, EstimatedCostUSD: 2.50}},
+			{Provider: "gemini", Usage: cost.Usage{InputTokens: 2000, OutputTokens: 1000, EstimatedCostUSD: 0.50}},
+		}
+		return res, nil
+	}
+
+	_, err := runTestAssayReview(t, d)
+	require.NoError(t, err)
+
+	l := readAssayLedger(t, db, "Forge-abc1", "forge")
+	require.InDelta(t, 3.00, l.daily, 1e-9)
+	require.InDelta(t, 3.00, l.bead, 1e-9)
+	require.InDelta(t, 2.50, l.byProvider["claude"], 1e-9)
+	require.InDelta(t, 0.50, l.byProvider["gemini"], 1e-9)
+	require.Equal(t, [4]int{12000, 4000, 166000, 44200}, l.dailyTokens)
+}
+
 // TestRunAssayReviewFoldsFailedRunSpend: a failure is not a refund. A run that
 // died still paid for the sessions it made, so its spend reaches the main
 // ledger on the same terms as a completed run's — and by the same single call,
@@ -140,15 +167,17 @@ func TestRunAssayReviewRecordsSpendExactlyOnce(t *testing.T) {
 func TestRunAssayReviewFoldsFailedRunSpend(t *testing.T) {
 	d, db := newAssayRunDaemon(t)
 	d.assayReview = func(context.Context, assay.ReviewRequest, *state.DB, assay.Config) (*assay.ReviewResult, error) {
+		u := cost.Usage{
+			InputTokens:      8000,
+			OutputTokens:     500,
+			CacheReadTokens:  900,
+			CacheWriteTokens: 41500,
+			EstimatedCostUSD: 1.75,
+		}
 		return nil, &assay.RunError{
-			Usage: cost.Usage{
-				InputTokens:      8000,
-				OutputTokens:     500,
-				CacheReadTokens:  900,
-				CacheWriteTokens: 41500,
-				EstimatedCostUSD: 1.75,
-			},
-			Err: errors.New("all assay deep passes failed"),
+			Usage:           u,
+			UsageByProvider: []assay.ProviderUsage{{Provider: "claude", Usage: u}},
+			Err:             errors.New("all assay deep passes failed"),
 		}
 	}
 

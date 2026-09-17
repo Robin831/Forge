@@ -231,19 +231,19 @@ func TestRenderPassTelemetry(t *testing.T) {
 				{Name: "triage", Turns: 3, Attempts: 1},
 				{Name: "logic", Turns: 9, Attempts: 1},
 			},
-			"pass=triage turns=3 term=success, pass=logic turns=9 term=success",
+			"pass=triage turns=3 term=success model=default, pass=logic turns=9 term=success model=default",
 		},
 		{
 			// The retry marker only appears where a pass was actually re-run,
 			// so a grep for "retry=" finds the rare case and nothing else.
 			"retried then answered",
 			[]PassReport{{Name: "logic", Turns: 7, Attempts: 2, Retried: true}},
-			"pass=logic turns=7 term=success retry=1",
+			"pass=logic turns=7 term=success retry=1 model=default",
 		},
 		{
 			"retried and still out of turns",
 			[]PassReport{{Name: "logic", Turns: 12, TerminationReason: ReasonMaxTurns, Attempts: 2, Retried: true}},
-			"pass=logic turns=12 term=error_max_turns retry=1",
+			"pass=logic turns=12 term=error_max_turns retry=1 model=default",
 		},
 		{
 			// A provider that reports no turn count leaves the field at 0
@@ -251,7 +251,18 @@ func TestRenderPassTelemetry(t *testing.T) {
 			// failure in a log query, a zero reads as "not reported".
 			"no turn count reported",
 			[]PassReport{{Name: "security", TerminationReason: ReasonRateLimited, Attempts: 1}},
-			"pass=security turns=0 term=rate_limited",
+			"pass=security turns=0 term=rate_limited model=default",
+		},
+		{
+			// model= is on every segment; provider= only where the pass left
+			// its chain's head, which is the one pass whose provider is not the
+			// configured one.
+			"failed over",
+			[]PassReport{
+				{Name: "logic", Turns: 5, Attempts: 1, Provider: "claude", Model: "claude-opus-5"},
+				{Name: "security", Turns: 4, Attempts: 1, Provider: "gemini", Model: "gemini-2.5-pro", FailedOver: true},
+			},
+			"pass=logic turns=5 term=success model=claude-opus-5, pass=security turns=4 term=success model=gemini-2.5-pro provider=gemini",
 		},
 	}
 	for _, tt := range tests {
@@ -286,7 +297,7 @@ func TestCostRendersInTelemetry(t *testing.T) {
 				CacheCreationTokens: 41500, CacheReadTokens: 900,
 				CostUSD: 1.28, EstCostUSD: 0.79, Primer: true,
 			}},
-			"pass=logic turns=12 term=success cache_w=41500 cache_r=900 cost_usd=1.2800 cost_est=0.7900 primer=1",
+			"pass=logic turns=12 term=success cache_w=41500 cache_r=900 cost_usd=1.2800 cost_est=0.7900 model=default primer=1",
 		},
 		{
 			// A backend that streams no per-turn usage (Gemini deltas, plain
@@ -295,7 +306,7 @@ func TestCostRendersInTelemetry(t *testing.T) {
 			// omitted — the same discipline tools=/files= follow.
 			"billed but unmeasured",
 			[]PassReport{{Name: "security", Turns: 6, Attempts: 1, CostUSD: 0.51}},
-			"pass=security turns=6 term=success cost_usd=0.5100",
+			"pass=security turns=6 term=success cost_usd=0.5100 model=default",
 		},
 		{
 			// The mirror case, and the one the whole field exists for: a
@@ -308,14 +319,14 @@ func TestCostRendersInTelemetry(t *testing.T) {
 				Name: "logic", Turns: 13, Attempts: 1,
 				TerminationReason: ReasonMaxCost, CostUSD: 1.5732, EstCostUSD: 1.5732,
 			}},
-			"pass=logic turns=13 term=error_max_cost cost_usd=1.5732 cost_est=1.5732",
+			"pass=logic turns=13 term=error_max_cost cost_usd=1.5732 cost_est=1.5732 model=default",
 		},
 		{
 			// No ceiling configured and a provider that reported nothing:
 			// neither field, and no stray separator left behind.
 			"nothing measured",
 			[]PassReport{{Name: "tests-missing", Turns: 4, Attempts: 1}},
-			"pass=tests-missing turns=4 term=success",
+			"pass=tests-missing turns=4 term=success model=default",
 		},
 	}
 	for _, tt := range tests {

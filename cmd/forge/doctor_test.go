@@ -754,12 +754,10 @@ func TestCheckAssayPasses_PerAnvilChainsAndSources(t *testing.T) {
 		if strings.Contains(r.Name, "(off/") {
 			t.Errorf("anvil with Assay disabled must not be reported: %q", r.Name)
 		}
-		wantStatus := "ok"
-		if r.Name == "Assay pass (zeta/conventions)" {
-			wantStatus = "warn" // its chain lists a fallback Assay never spawns
-		}
-		if r.Status != wantStatus {
-			t.Errorf("%s: status %q, want %s (%s)", r.Name, r.Status, wantStatus, r.Detail)
+		// Every binary resolves, so a chain with a fallback is as healthy as
+		// one without: the fallback runs on a rate limit.
+		if r.Status != "ok" {
+			t.Errorf("%s: status %q, want ok (%s)", r.Name, r.Status, r.Detail)
 		}
 	}
 	if len(results) != 12 {
@@ -781,7 +779,7 @@ func TestCheckAssayPasses_PerAnvilChainsAndSources(t *testing.T) {
 	if !ok {
 		t.Fatalf("missing zeta/conventions row; got %v", order)
 	}
-	if want := "provider gemini/gemini-2.5-pro from anvil stage_providers[assay.conventions]; fallbacks [claude] ignored"; !strings.Contains(conv.Detail, want) {
+	if want := "provider gemini/gemini-2.5-pro from anvil stage_providers[assay.conventions]; rate-limit fallbacks [claude]"; !strings.Contains(conv.Detail, want) {
 		t.Errorf("zeta/conventions detail %q does not contain %q", conv.Detail, want)
 	}
 	if !strings.Contains(conv.Detail, "gemini 1.0.0") {
@@ -848,6 +846,81 @@ func TestCheckAssayPasses_PerAnvilMissingHeadNamesChain(t *testing.T) {
 		if !strings.Contains(security.Detail, want) {
 			t.Errorf("munin/security detail %q does not contain %q", security.Detail, want)
 		}
+	}
+}
+
+// A fallback whose binary is missing leaves the pass runnable on its head, so
+// the row is a warn naming the binary — once, however many entries share it —
+// while a missing head is still a fail and is never downgraded to a warn by a
+// fallback that is missing too.
+func TestCheckAssayPasses_MissingFallbackBinary(t *testing.T) {
+	enabled := true
+	cases := []struct {
+		name       string
+		missing    map[string]bool
+		wantStatus string
+		wantDetail []string
+	}{
+		{
+			name:       "head present, fallback missing",
+			missing:    map[string]bool{"gemini": true},
+			wantStatus: "warn",
+			wantDetail: []string{"fallback binaries not found in PATH: gemini", "rate-limit fallbacks [gemini/x, gemini/y]"},
+		},
+		{
+			name:       "head and fallback missing",
+			missing:    map[string]bool{"claude": true, "gemini": true},
+			wantStatus: "fail",
+			wantDetail: []string{"claude not found in PATH", "fallback binaries not found in PATH: gemini"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			origCfg := cfg
+			cfg = &config.Config{
+				Anvils: map[string]config.AnvilConfig{
+					"munin": {
+						Assay: &config.AssayConfig{Enabled: &enabled},
+						StageProviders: map[string][]string{
+							"assay.security": {"claude/a", "gemini/x", "gemini/y"},
+						},
+					},
+				},
+			}
+			defer func() { cfg = origCfg }()
+
+			mockExec(t,
+				func(file string) (string, error) {
+					if tc.missing[file] {
+						return "", errors.New("not found")
+					}
+					return "/usr/local/bin/" + file, nil
+				},
+				func(name string, args ...string) ([]byte, error) { return []byte("claude 1.0.0"), nil },
+			)
+
+			var security *checkResult
+			for _, r := range checkAssayPasses() {
+				if r.Name == "Assay pass (munin/security)" {
+					r := r
+					security = &r
+				}
+			}
+			if security == nil {
+				t.Fatal("missing munin/security row")
+			}
+			if security.Status != tc.wantStatus {
+				t.Errorf("status %q, want %q (%s)", security.Status, tc.wantStatus, security.Detail)
+			}
+			for _, want := range tc.wantDetail {
+				if !strings.Contains(security.Detail, want) {
+					t.Errorf("detail %q does not contain %q", security.Detail, want)
+				}
+			}
+			if strings.Contains(security.Detail, "gemini, gemini") {
+				t.Errorf("detail %q lists the same missing binary twice", security.Detail)
+			}
+		})
 	}
 }
 
