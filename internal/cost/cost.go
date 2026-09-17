@@ -266,7 +266,10 @@ func ModelFamilyKey(model string) string {
 
 // versionAfter reads the major version number directly following family in
 // name, skipping one separator ("sonnet-5", "sonnet 5", "sonnet5"). It reports
-// false when no digit follows.
+// false when no digit follows, and when the digits run past two: legacy ids put
+// the version BEFORE the family and a date after it
+// ("claude-3-7-sonnet-20250219"), and reading that date as a version would
+// price an older Sonnet at the Sonnet 5 row.
 func versionAfter(name, family string) (int, bool) {
 	i := strings.Index(name, family)
 	if i < 0 {
@@ -281,7 +284,10 @@ func versionAfter(name, family string) (int, bool) {
 		n = n*10 + int(rest[digits]-'0')
 		digits++
 	}
-	return n, digits > 0
+	if digits == 0 || digits > 2 {
+		return 0, false
+	}
+	return n, true
 }
 
 // defaultModelKeyForKind returns the default pricing key for a provider kind

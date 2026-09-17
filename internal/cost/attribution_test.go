@@ -773,3 +773,78 @@ func TestOpenWindowBoundsAreAbsentFromJSON(t *testing.T) {
 		t.Error("table does not name the open window bounds")
 	}
 }
+
+// A per-pass run can carry shapes the tidy fixtures above never do: a pass
+// with a recorded cost and no tokens (a failed session on a backend reporting
+// no usage), pass cache sums that disagree with the run totals, and a run whose
+// run-level cache counters are zero while its passes carry cache tokens. The
+// by-model breakdown must still sum to the attributed cache cost, and the
+// token classes must count the same tokens they price.
+func TestPerPassRunWithCostOnlyPassAndDisagreeingTotals(t *testing.T) {
+	SetPricingTable(nil)
+
+	// Run totals claim 5M written; the passes sum to 1M written + 2M read.
+	disagree := run(1, "a", 1, ts(1, 10), 7.00, 5_000_000, 0)
+	disagree.Passes = []PassRecord{
+		{Name: "triage", Model: "claude-sonnet-5", CostUSD: 2, CacheCreationTokens: 1_000_000},
+		{Name: "logic", Model: "claude-sonnet-5", CostUSD: 1, CacheReadTokens: 2_000_000},
+		// Cost-only pass naming no model that resolves: priced at $0 at the
+		// fallback, its recorded cost kept.
+		{Name: "security", Model: "mystery", CostUSD: 4},
+	}
+	// Run-level counters empty, passes carry the cache traffic.
+	passOnly := run(2, "a", 2, ts(1, 11), 3.00, 0, 0)
+	passOnly.Passes = []PassRecord{
+		{Name: "logic", Model: "claude-opus-5", CostUSD: 3, CacheCreationTokens: 1_000_000},
+	}
+
+	report := BuildReport([]RunRecord{disagree, passOnly}, time.Time{}, time.Time{},
+		Options{ByModel: true, ByPass: true, Now: ts(2, 0)})
+
+	if len(report.ByPass) != 4 {
+		t.Fatalf("by-pass rows = %d, want 4 (the cost-only pass included)", len(report.ByPass))
+	}
+	for _, p := range report.ByPass {
+		if p.Pass != "security" {
+			continue
+		}
+		if p.PricedCostUSD != 0 || p.RecordedCostUSD != 4 || p.ModelSource != ModelSourceFallback {
+			t.Errorf("cost-only pass = %+v, want $0 priced, $4 recorded, fallback source", p)
+		}
+	}
+	byKey := map[string]ModelBreakdown{}
+	var cache, recorded float64
+	for _, m := range report.ByModel {
+		byKey[m.Model] = m
+		cache += m.CacheCreationCostUSD + m.CacheReadCostUSD
+		recorded += m.RecordedCostUSD
+	}
+	if s5 := byKey[ModelClaudeSonnet5]; s5.Passes != 3 || s5.FallbackUnits != 1 || s5.Runs != 1 {
+		t.Errorf("sonnet 5 row = %+v, want 3 passes (one cost-only fallback unit) over 1 run", s5)
+	}
+	if !nearly(recorded, 10.00) {
+		t.Errorf("recorded across models = %.4f, want 10.00", recorded)
+	}
+
+	// Sonnet 5: 1M write x 2.50 + 2M read x 0.20; Opus 5: 1M write x 6.25.
+	wantCache := 2.50 + 0.40 + 6.25
+	if attributed := report.FirstRun.AttributedCostUSD + report.RepeatRun.AttributedCostUSD; !nearly(cache, attributed) || !nearly(attributed, wantCache) {
+		t.Errorf("per-model cache cost %.4f, attributed %.4f, want both %.4f", cache, attributed, wantCache)
+	}
+	if report.RunsWithoutCacheAccounting != 0 {
+		t.Errorf("runs without cache accounting = %d, want 0: run 2's passes carry cache tokens", report.RunsWithoutCacheAccounting)
+	}
+
+	classes := map[string]TokenClassBreakdown{}
+	for _, c := range report.ByTokenClass {
+		classes[c.Class] = c
+	}
+	// The class counts the tokens it priced (pass sums, 2M), not the run
+	// row's 5M, so the effective rate is the real blend.
+	if c := classes[TokenClassCacheCreation]; c.Tokens != 2_000_000 || !nearly(c.RatePerM, (2.50+6.25)/2) {
+		t.Errorf("cache_creation = %d tokens at %.4f/M, want 2M at %.4f/M", c.Tokens, c.RatePerM, (2.50+6.25)/2)
+	}
+	if c := classes[TokenClassCacheRead]; c.Tokens != 2_000_000 || !nearly(c.RatePerM, 0.20) {
+		t.Errorf("cache_read = %d tokens at %.4f/M, want 2M at 0.20/M", c.Tokens, c.RatePerM)
+	}
+}

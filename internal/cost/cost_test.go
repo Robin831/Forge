@@ -33,6 +33,11 @@ func TestRatesForModel(t *testing.T) {
 		{"claude-sonnet-5-20260901", sonnet5, ModelClaudeSonnet5},
 		{"claude-sonnet-4-6", sonnet4, ModelClaudeSonnet},
 		{"claude-sonnet-4.5", sonnet4, ModelClaudeSonnet},
+		// Legacy ids carry the version before the family and a DATE after
+		// it; the date is not a Sonnet version.
+		{"claude-3-7-sonnet-20250219", sonnet4, ModelClaudeSonnet},
+		{"claude-3-5-sonnet-20241022", sonnet4, ModelClaudeSonnet},
+		{"sonnet-20250219", sonnet4, ModelClaudeSonnet},
 		{"claude-sonnet", sonnet4, ModelClaudeSonnet},
 		{"claude-haiku-4-5-20251001", haiku45, ModelClaudeHaiku},
 		{"claude-haiku-4-5", haiku45, ModelClaudeHaiku},

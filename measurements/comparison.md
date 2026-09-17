@@ -67,6 +67,19 @@ sonnet pricing rows, all anvils. The second run must not add `--anvil`,
 `--include-skipped` or `--model-tier` — any of them makes the two reports
 incomparable.
 
+> **Pricing basis changed after these captures (Forge-ojer7).** The BEFORE and
+> TRANSITION artifacts price every cache token at the Sonnet 4-class row
+> ($3.75/M write, $0.30/M read) and carry a single `pricing` object. `forge cost
+> assay` now prices each pass at the model recorded on its own row, falls back to
+> `claude-sonnet-5` ($2.50/M write, $0.20/M read) for rows naming none, and
+> replaces `pricing`/`model_tier` with `fallback_model`/`model_rates` in the JSON.
+> A verbatim re-run of the AFTER command therefore prices on a different basis
+> than the committed BEFORE files. RECORDED $ (`cost_usd`), run counts and token
+> counts are unaffected; only the priced cache figures move. Before comparing
+> priced figures, re-run the BEFORE and TRANSITION commands with the same binary
+> as AFTER (into new files — the committed ones stay as captured), so both sides
+> share one rate basis.
+
 ## Artifacts
 
 | File | Window | Runs |

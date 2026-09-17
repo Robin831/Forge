@@ -809,7 +809,18 @@ func (a *groupAccumulator) add(r RunRecord, units []pricedUnit) {
 		a.zeroFindingRuns++
 		a.zeroFindingCost += r.CostUSD
 	}
-	if !r.HasCacheAccounting() {
+	// Token counts and their cost are taken from the SAME priced units, never
+	// the counts from the run row and the cost from the passes: a row whose
+	// pass sums disagree with its run totals would otherwise report an
+	// effective rate that is neither model's, and a row carrying cache tokens
+	// on its passes alone would land in 'unknown' while the by-model breakdown
+	// still priced them — breaking the by-model-sums-to-attributed invariant.
+	var creation, read int64
+	for _, u := range units {
+		creation += u.cacheCreation
+		read += u.cacheRead
+	}
+	if creation == 0 && read == 0 {
 		a.unaccountedRuns++
 		a.unaccountedCost += r.CostUSD
 		return
@@ -818,12 +829,12 @@ func (a *groupAccumulator) add(r RunRecord, units []pricedUnit) {
 		a.creationCost += u.cacheCreationCost()
 		a.readCost += u.cacheReadCost()
 	}
-	if r.CacheCreationTokens > 0 {
-		a.cacheCreation += int64(r.CacheCreationTokens)
+	if creation > 0 {
+		a.cacheCreation += creation
 		a.creationRuns++
 	}
-	if r.CacheReadTokens > 0 {
-		a.cacheRead += int64(r.CacheReadTokens)
+	if read > 0 {
+		a.cacheRead += read
 		a.readRuns++
 	}
 }
@@ -985,10 +996,19 @@ func (m *modelAccumulator) rates() []ModelRate {
 	return out
 }
 
+// pricedTotal sums the per-model priced cost over the keys in sorted order.
+// The order is deliberate: map iteration is random and float addition is not
+// associative, so an unordered sum could differ in the last cent between two
+// runs over the same data.
 func (m *modelAccumulator) pricedTotal() float64 {
+	keys := make([]string, 0, len(m.byKey))
+	for k := range m.byKey {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
 	var total float64
-	for _, b := range m.breakdown() {
-		total += b.PricedCostUSD
+	for _, k := range keys {
+		total += m.byKey[k].PricedCostUSD
 	}
 	return total
 }
@@ -1253,8 +1273,9 @@ func (r *CostReport) WriteTable(w io.Writer) error {
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Notes:")
 	fmt.Fprintln(w, "  - RECORDED $ is the provider's own cost_usd. PRICED CACHE $ is cache tokens x their")
-	fmt.Fprintln(w, "    own rates and is a SUBSET of it: assay_runs stores no plain input/output token")
-	fmt.Fprintln(w, "    counts, so the two cache classes can never sum to the recorded total.")
+	fmt.Fprintln(w, "    own rates and is a SUBSET of it: it leaves out input and output tokens, which only")
+	fmt.Fprintln(w, "    rows with per-pass token counts record (older rows carry cache tokens alone), so the")
+	fmt.Fprintln(w, "    two cache classes can never sum to the recorded total.")
 	if r.RunsWithoutCacheAccounting > 0 {
 		fmt.Fprintf(w, "  - %d of %d run(s) ($%.2f, %s of recorded spend) carry no cache accounting and are\n",
 			r.RunsWithoutCacheAccounting, r.TotalRuns, r.CostWithoutCacheAccountingUSD,
