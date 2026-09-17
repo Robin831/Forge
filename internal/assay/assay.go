@@ -663,7 +663,7 @@ func Review(ctx context.Context, req ReviewRequest, db *state.DB, cfg Config) (*
 		Attempts:            1,
 		CacheCreationTokens: triageRes.usage.CacheWriteTokens,
 		CacheReadTokens:     triageRes.usage.CacheReadTokens,
-		Provider:            string(cfg.providerFor(passTriage.Tier).Kind),
+		Provider:            string(cfg.providerFor(passTriage.Name).Kind),
 	})
 
 	scoped := scopeDiffToFiles(filtered, triage.ReviewFiles)
@@ -742,7 +742,7 @@ func Review(ctx context.Context, req ReviewRequest, db *state.DB, cfg Config) (*
 			CacheCreationTokens: o.usage.CacheWriteTokens,
 			CacheReadTokens:     o.usage.CacheReadTokens,
 			Primer:              i == primerPass,
-			Provider:            string(cfg.providerFor(deepPasses[i].Tier).Kind),
+			Provider:            string(cfg.providerFor(deepPasses[i].Name).Kind),
 		})
 		if o.err != nil {
 			passErrors = append(passErrors, o.err.Error())

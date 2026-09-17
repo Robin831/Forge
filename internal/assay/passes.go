@@ -18,9 +18,10 @@ import (
 	"github.com/Robin831/Forge/internal/textfmt"
 )
 
-// Model tiers. The deep passes use the "review" tier (stronger model hint); the
-// scoping pass uses the cheaper "triage" tier. The concrete model identifier
-// for each tier comes entirely from Config — see Config.providerFor.
+// Tiers label a session as scoping ("triage") or finding ("review") and are
+// passed through to the PassRunner. They do NOT choose a provider or model:
+// both are resolved per pass NAME (Config.providerFor), so changing a pass's
+// tier changes nothing about what it runs on.
 const (
 	tierTriage = "triage"
 	tierReview = "review"
@@ -90,20 +91,20 @@ var deepPasses = []passDef{
 type PassProvider struct {
 	// Pass is the pass identifier ("triage", "logic", "security", …).
 	Pass string
-	// Provider is the resolved provider (Kind/Cmd/Model) for the pass, derived
-	// from the Config's per-tier provider/model hints.
+	// Provider is the resolved provider (Kind/Cmd/Model) the pass spawns: the
+	// head of the chain Config.providersFor resolves for it.
 	Provider provider.Provider
 }
 
 // PassProviders returns the resolved provider for every Assay pass — the cheap
 // triage scoping pass plus the five deep finding passes — given a Config. The
-// concrete provider for each pass comes entirely from the Config's tier hints
-// (never a hard-coded model); an empty hint resolves to the Claude provider.
+// concrete provider for each pass comes entirely from configuration (never a
+// hard-coded model); see Config.providersFor for the precedence.
 func PassProviders(c Config) []PassProvider {
 	out := make([]PassProvider, 0, 1+len(deepPasses))
-	out = append(out, PassProvider{Pass: passTriage.Name, Provider: c.providerFor(passTriage.Tier)})
+	out = append(out, PassProvider{Pass: passTriage.Name, Provider: c.providerFor(passTriage.Name)})
 	for _, p := range deepPasses {
-		out = append(out, PassProvider{Pass: p.Name, Provider: c.providerFor(p.Tier)})
+		out = append(out, PassProvider{Pass: p.Name, Provider: c.providerFor(p.Name)})
 	}
 	return out
 }
@@ -427,12 +428,17 @@ func inferPassReason(err error) string {
 	}
 }
 
+// spawnPassSession is the one call newSmithRunner makes to start a provider
+// session. A variable so a test can observe which provider each pass is handed
+// without spawning a CLI.
+var spawnPassSession = smith.SpawnWithOptions
+
 // newSmithRunner returns the production PassRunner. It spawns a one-shot Smith
-// session in workDir using the provider/model resolved from cfg for the tier.
+// session in workDir using the provider/model resolved from cfg for the pass.
 func newSmithRunner(cfg Config, req ReviewRequest) PassRunner {
 	workDir := req.WorkDir
 	return func(ctx context.Context, pass, tier, prompt string) (PassOutput, error) {
-		pv := cfg.providerFor(tier)
+		pv := cfg.providerFor(pass)
 		// Logs go to the worktree's .forge-logs like every other stage; the
 		// lifecycle teardown preserves them to ~/.forge/logs/<beadID>/ before
 		// the worktree is removed.
@@ -494,7 +500,7 @@ func newSmithRunner(cfg Config, req ReviewRequest) PassRunner {
 			stream(ev)
 		}
 
-		proc, err := smith.SpawnWithOptions(sessionCtx, workDir, prompt, logDir, pv, flags, opts)
+		proc, err := spawnPassSession(sessionCtx, workDir, prompt, logDir, pv, flags, opts)
 		if err != nil {
 			return PassOutput{}, newPassError(pass, ReasonSpawnFailed,
 				fmt.Sprintf("spawning %s: %v", pv.Label(), err), err)

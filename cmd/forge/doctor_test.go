@@ -709,3 +709,168 @@ func TestCheckBdIncludeDependents(t *testing.T) {
 		})
 	}
 }
+
+// Doctor reports Assay per anvil and per pass, naming the chain each pass
+// resolved and the precedence step that supplied it — through assay.ForAnvil,
+// the constructor the daemon reviews with. These pin that the rows are
+// per-anvil, ordered, restricted to Assay-enabled anvils, and that a pass's
+// own stage key is what the row reports rather than the anvil's default.
+func TestCheckAssayPasses_PerAnvilChainsAndSources(t *testing.T) {
+	enabled := true
+	disabled := false
+	origCfg := cfg
+	cfg = &config.Config{
+		Settings: config.SettingsConfig{
+			StageProviders: map[string][]string{"assay": {"claude/global-assay"}},
+		},
+		Anvils: map[string]config.AnvilConfig{
+			"zeta": {
+				Assay: &config.AssayConfig{Enabled: &enabled},
+				StageProviders: map[string][]string{
+					"assay.conventions": {"gemini/gemini-2.5-pro", "claude"},
+				},
+			},
+			"alpha": {Assay: &config.AssayConfig{Enabled: &enabled}},
+			"off":   {Assay: &config.AssayConfig{Enabled: &disabled}},
+		},
+	}
+	defer func() { cfg = origCfg }()
+
+	probes := map[string]int{}
+	mockExec(t,
+		func(file string) (string, error) { return "/usr/local/bin/" + file, nil },
+		func(name string, args ...string) ([]byte, error) {
+			probes[name]++
+			return []byte(filepath.Base(name) + " 1.0.0"), nil
+		},
+	)
+
+	results := checkAssayPasses()
+	byName := map[string]checkResult{}
+	var order []string
+	for _, r := range results {
+		byName[r.Name] = r
+		order = append(order, r.Name)
+		if strings.Contains(r.Name, "(off/") {
+			t.Errorf("anvil with Assay disabled must not be reported: %q", r.Name)
+		}
+		wantStatus := "ok"
+		if r.Name == "Assay pass (zeta/conventions)" {
+			wantStatus = "warn" // its chain lists a fallback Assay never spawns
+		}
+		if r.Status != wantStatus {
+			t.Errorf("%s: status %q, want %s (%s)", r.Name, r.Status, wantStatus, r.Detail)
+		}
+	}
+	if len(results) != 12 {
+		t.Fatalf("expected 6 passes x 2 enabled anvils = 12 rows, got %d: %v", len(results), order)
+	}
+	if !strings.HasPrefix(order[0], "Assay pass (alpha/") || !strings.HasPrefix(order[len(order)-1], "Assay pass (zeta/") {
+		t.Errorf("rows should be grouped by anvil in sorted order, got %v", order)
+	}
+
+	triage, ok := byName["Assay pass (alpha/triage)"]
+	if !ok {
+		t.Fatalf("missing alpha/triage row; got %v", order)
+	}
+	if want := "provider claude/global-assay from settings.stage_providers[assay]"; !strings.Contains(triage.Detail, want) {
+		t.Errorf("alpha/triage detail %q does not contain %q", triage.Detail, want)
+	}
+
+	conv, ok := byName["Assay pass (zeta/conventions)"]
+	if !ok {
+		t.Fatalf("missing zeta/conventions row; got %v", order)
+	}
+	if want := "provider gemini/gemini-2.5-pro from anvil stage_providers[assay.conventions]; fallbacks [claude] ignored"; !strings.Contains(conv.Detail, want) {
+		t.Errorf("zeta/conventions detail %q does not contain %q", conv.Detail, want)
+	}
+	if !strings.Contains(conv.Detail, "gemini 1.0.0") {
+		t.Errorf("zeta/conventions should probe the chain head (gemini), got %q", conv.Detail)
+	}
+
+	logic := byName["Assay pass (zeta/logic)"]
+	if want := "from settings.stage_providers[assay]"; !strings.Contains(logic.Detail, want) {
+		t.Errorf("zeta/logic should fall through to the global assay key, got %q", logic.Detail)
+	}
+
+	for bin, n := range probes {
+		if n != 1 {
+			t.Errorf("binary %s probed %d times, want once", bin, n)
+		}
+	}
+}
+
+// A missing binary is reported against the chain head and names the resolved
+// chain, so the operator can see which config key put that provider there.
+func TestCheckAssayPasses_PerAnvilMissingHeadNamesChain(t *testing.T) {
+	enabled := true
+	origCfg := cfg
+	cfg = &config.Config{
+		Anvils: map[string]config.AnvilConfig{
+			"munin": {
+				Assay: &config.AssayConfig{Enabled: &enabled},
+				StageProviders: map[string][]string{
+					"assay.security": {"gemini"},
+				},
+			},
+		},
+	}
+	defer func() { cfg = origCfg }()
+
+	mockExec(t,
+		func(file string) (string, error) {
+			if file == "gemini" {
+				return "", errors.New("not found")
+			}
+			return "/usr/local/bin/" + file, nil
+		},
+		func(name string, args ...string) ([]byte, error) { return []byte("claude 1.0.0"), nil },
+	)
+
+	var security *checkResult
+	for _, r := range checkAssayPasses() {
+		if r.Name == "Assay pass (munin/security)" {
+			r := r
+			security = &r
+			continue
+		}
+		if r.Status != "ok" {
+			t.Errorf("%s: status %q, want ok (%s)", r.Name, r.Status, r.Detail)
+		}
+	}
+	if security == nil {
+		t.Fatal("missing munin/security row")
+	}
+	if security.Status != "fail" {
+		t.Errorf("munin/security status %q, want fail", security.Status)
+	}
+	for _, want := range []string{"gemini not found in PATH", "provider gemini from anvil stage_providers[assay.security]"} {
+		if !strings.Contains(security.Detail, want) {
+			t.Errorf("munin/security detail %q does not contain %q", security.Detail, want)
+		}
+	}
+}
+
+// Registered anvils that all disable Assay mean no review ever runs, so the
+// global-only fallback (meant for a config with no anvils yet) must not report
+// per-pass rows — and must not fail on a missing binary.
+func TestCheckAssayPasses_AllAnvilsDisabledReportsDisabled(t *testing.T) {
+	enabled := true
+	disabled := false
+	origCfg := cfg
+	cfg = &config.Config{
+		Assay: config.AssayConfig{Enabled: &enabled},
+		Anvils: map[string]config.AnvilConfig{
+			"api": {Assay: &config.AssayConfig{Enabled: &disabled}},
+		},
+	}
+	defer func() { cfg = origCfg }()
+	mockExec(t,
+		func(file string) (string, error) { return "", errors.New("not found") },
+		func(name string, args ...string) ([]byte, error) { return nil, errors.New("unreachable") },
+	)
+	results := checkAssayPasses()
+	if len(results) != 1 || results[0].Status != "ok" || !strings.Contains(results[0].Detail, "assay disabled") {
+		t.Fatalf("results = %+v, want one ok 'assay disabled' row", results)
+	}
+}

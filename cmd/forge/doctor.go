@@ -394,10 +394,20 @@ func checkOpenAIAuth(name string) checkResult {
 }
 
 // checkAssayPasses verifies the CLI binary backing each Assay review pass is
-// available in PATH, reported per-pass. Assay runs a cheap triage scoping pass
-// plus five deep finding passes; each resolves to a provider (the Claude CLI by
-// default, or whatever triage_provider/review_provider configure). A missing
-// binary means that pass cannot run, so it is reported as a failure.
+// available in PATH, reported per anvil and per pass. Assay runs a cheap triage
+// scoping pass plus five deep finding passes, and each resolves its own
+// provider chain (assay.ForAnvil + Config.ResolvedChains — the same derivation
+// the daemon reviews with): anvil stage_providers["assay.<pass>"], then
+// ["assay"], then the global pair, then the legacy triage_/review_ keys, then
+// the provider defaults. Each row names the chain and the step that supplied
+// it. The binary checked is the chain's head, the provider a review session
+// actually spawns; a missing one means that pass cannot run and fails. Assay
+// has no rate-limit fallback, so a chain listing entries after its head is a
+// warn naming them as ignored rather than a row implying a fallback exists.
+//
+// Every anvil with Assay enabled gets its own rows. With no anvils registered
+// at all but the global block enabled, the global resolution is reported
+// alone; anvils that are registered but all disable Assay report it disabled.
 func checkAssayPasses() []checkResult {
 	if cfg == nil {
 		return []checkResult{{
@@ -406,39 +416,74 @@ func checkAssayPasses() []checkResult {
 			Detail: "no config loaded — assay pass checks skipped",
 		}}
 	}
-	if !cfg.Assay.IsEnabled() {
+
+	var anvils []string
+	for name := range cfg.Anvils {
+		if cfg.ResolvedAssay(name).IsEnabled() {
+			anvils = append(anvils, name)
+		}
+	}
+	sort.Strings(anvils)
+	global := len(cfg.Anvils) == 0 && cfg.Assay.IsEnabled()
+	if len(anvils) == 0 && !global {
 		return []checkResult{{
 			Name:   "Assay passes",
 			Status: "ok",
 			Detail: "assay disabled — set assay.enabled to review PRs",
 		}}
 	}
+	if global {
+		anvils = []string{""}
+	}
 
-	engineCfg := assay.FromAssayConfig(cfg.Assay)
+	// One version probe per binary, however many anvils and passes share it.
+	versions := map[string]string{}
 	var results []checkResult
-	for _, pp := range assay.PassProviders(engineCfg) {
-		name := "Assay pass (" + pp.Pass + ")"
-		bin := pp.Provider.Cmd()
-		path, err := execLookPath(bin)
-		if err != nil {
+	for _, anvil := range anvils {
+		for _, rc := range assay.ForAnvil(cfg, anvil).ResolvedChains() {
+			name := "Assay pass (" + rc.Pass + ")"
+			if anvil != "" {
+				name = "Assay pass (" + anvil + "/" + rc.Pass + ")"
+			}
+			head := rc.Providers[0]
+			chain := fmt.Sprintf("provider %s from %s", head.Label(), rc.SourceLabel())
+			var ignored []string
+			for _, pv := range rc.IgnoredFallbacks() {
+				ignored = append(ignored, pv.Label())
+			}
+			if len(ignored) > 0 {
+				chain += fmt.Sprintf("; fallbacks [%s] ignored — Assay spawns only the head of a chain", strings.Join(ignored, ", "))
+			}
+			bin := head.Cmd()
+			path, err := execLookPath(bin)
+			if err != nil {
+				results = append(results, checkResult{
+					Name:   name,
+					Status: "fail",
+					Detail: fmt.Sprintf("%s not found in PATH (provider %s); %s", bin, head.Label(), chain),
+				})
+				continue
+			}
+			// Probe the binary's version for richer detail; fall back to the
+			// resolved path when the probe fails (binary present is enough to pass).
+			version, probed := versions[path]
+			if !probed {
+				version = path
+				if out, verr := execRunCommand(path, "--version"); verr == nil {
+					version = strings.TrimSpace(string(out))
+				}
+				versions[path] = version
+			}
+			status := "ok"
+			if len(ignored) > 0 {
+				status = "warn"
+			}
 			results = append(results, checkResult{
 				Name:   name,
-				Status: "fail",
-				Detail: fmt.Sprintf("%s not found in PATH (provider %s)", bin, pp.Provider.Label()),
+				Status: status,
+				Detail: fmt.Sprintf("%s (%s); %s", version, head.Label(), chain),
 			})
-			continue
 		}
-		// Probe the binary's version for richer detail; fall back to the
-		// resolved path when the probe fails (binary present is enough to pass).
-		detail := fmt.Sprintf("%s (%s)", path, pp.Provider.Label())
-		if out, verr := execRunCommand(path, "--version"); verr == nil {
-			detail = fmt.Sprintf("%s (%s)", strings.TrimSpace(string(out)), pp.Provider.Label())
-		}
-		results = append(results, checkResult{
-			Name:   name,
-			Status: "ok",
-			Detail: detail,
-		})
 	}
 	return results
 }

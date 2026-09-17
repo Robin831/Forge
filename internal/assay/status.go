@@ -113,8 +113,9 @@ func RenderStatusText(status RunStatus, completed, total int, failed []PassFailu
 // printing tools=0 there would be inventing evidence.
 //
 // The grouping is per provider and not per run because a run is not one
-// provider: triage resolves its own from assay.triage_provider (Config.providerFor)
-// and only falls back to the review provider when that is unset. With
+// provider: every pass resolves its own chain (Config.providersFor), and even
+// on the legacy keys triage reads assay.triage_provider and only falls back to
+// the review provider when that is unset. With
 // triage_provider: claude over review_provider: copilot, triage streams
 // tool_use blocks Forge counts while Copilot's plain-text stream carries no
 // tool telemetry at all — read at the level of the run, triage's count would
