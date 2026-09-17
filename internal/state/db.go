@@ -5433,12 +5433,22 @@ type AssayRun struct {
 // both empty, meaning "not recorded", never "ran on no provider". Model is also
 // empty where the provider ran its own default and named none. FailedOver marks
 // a pass that did not run on its chain's head.
+//
+// CostUSD and the four token counts are what the pass was billed for, summed
+// over its sessions — the tokens a per-model report prices at Model's rates.
+// They are absent (zero) on a row written before they were recorded, which a
+// reader must take as "not recorded" and price the run's own totals instead.
 type AssayPassFindings struct {
-	Name       string `json:"name"`
-	Findings   int    `json:"findings"`
-	Provider   string `json:"provider,omitempty"`
-	Model      string `json:"model,omitempty"`
-	FailedOver bool   `json:"failed_over,omitempty"`
+	Name                string  `json:"name"`
+	Findings            int     `json:"findings"`
+	Provider            string  `json:"provider,omitempty"`
+	Model               string  `json:"model,omitempty"`
+	FailedOver          bool    `json:"failed_over,omitempty"`
+	CostUSD             float64 `json:"cost_usd,omitempty"`
+	InputTokens         int     `json:"input_tokens,omitempty"`
+	OutputTokens        int     `json:"output_tokens,omitempty"`
+	CacheCreationTokens int     `json:"cache_creation_tokens,omitempty"`
+	CacheReadTokens     int     `json:"cache_read_tokens,omitempty"`
 }
 
 // EncodeAssayPassFindings marshals a per-pass findings breakdown for the

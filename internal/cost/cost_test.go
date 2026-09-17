@@ -6,34 +6,55 @@ import (
 	"github.com/Robin831/Forge/internal/provider"
 )
 
-func TestPricingForTier(t *testing.T) {
-	tests := []struct {
-		tier       string
-		wantInput  float64
-		wantOutput float64
+// TestRatesForModel pins the one model -> rates resolver the per-model report
+// and the in-flight ceiling share: full ids, versioned ids and the CLI's bare
+// aliases all reach their own row, and a name nothing matches reports false
+// rather than a guess.
+func TestRatesForModel(t *testing.T) {
+	t.Cleanup(func() { SetPricingTable(nil) })
+	SetPricingTable(nil)
+
+	opus5 := Pricing{InputPerM: 5.00, OutputPerM: 25.00, CacheReadPerM: 0.50, CacheWritePerM: 6.25}
+	sonnet5 := Pricing{InputPerM: 2.00, OutputPerM: 10.00, CacheReadPerM: 0.20, CacheWritePerM: 2.50}
+	sonnet4 := Pricing{InputPerM: 3.00, OutputPerM: 15.00, CacheReadPerM: 0.30, CacheWritePerM: 3.75}
+	haiku45 := Pricing{InputPerM: 1.00, OutputPerM: 5.00, CacheReadPerM: 0.10, CacheWritePerM: 1.25}
+
+	for _, tt := range []struct {
+		model   string
+		want    Pricing
+		wantKey string
 	}{
-		{"haiku", 1.00, 5.00},
-		{"HAIKU", 1.00, 5.00},
-		{"  sonnet  ", 3.00, 15.00},
-		{"opus", 5.00, 25.00},
-		{"Opus", 5.00, 25.00},
-		{"fable", 10.00, 50.00},
-	}
-	for _, tt := range tests {
-		got := PricingForTier(tt.tier)
-		if got.InputPerM != tt.wantInput {
-			t.Errorf("PricingForTier(%q).InputPerM = %v, want %v", tt.tier, got.InputPerM, tt.wantInput)
+		{"claude-opus-5", opus5, ModelClaudeOpus},
+		{"opus", opus5, ModelClaudeOpus},
+		{" Opus ", opus5, ModelClaudeOpus},
+		{"claude-opus-4-8", opus5, ModelClaudeOpus},
+		{"claude-sonnet-5", sonnet5, ModelClaudeSonnet5},
+		{"sonnet", sonnet5, ModelClaudeSonnet5},
+		{"claude-sonnet-5-20260901", sonnet5, ModelClaudeSonnet5},
+		{"claude-sonnet-4-6", sonnet4, ModelClaudeSonnet},
+		{"claude-sonnet-4.5", sonnet4, ModelClaudeSonnet},
+		{"claude-sonnet", sonnet4, ModelClaudeSonnet},
+		{"claude-haiku-4-5-20251001", haiku45, ModelClaudeHaiku},
+		{"claude-haiku-4-5", haiku45, ModelClaudeHaiku},
+		{"haiku", haiku45, ModelClaudeHaiku},
+		{"claude-fable-5", Pricing{10.00, 50.00, 1.00, 12.50}, ModelClaudeFable},
+	} {
+		got, key, ok := RatesForModel(tt.model)
+		if !ok || got != tt.want || key != tt.wantKey {
+			t.Errorf("RatesForModel(%q) = %+v, %q, %v; want %+v, %q, true", tt.model, got, key, ok, tt.want, tt.wantKey)
 		}
-		if got.OutputPerM != tt.wantOutput {
-			t.Errorf("PricingForTier(%q).OutputPerM = %v, want %v", tt.tier, got.OutputPerM, tt.wantOutput)
+	}
+	for _, model := range []string{"", "  ", "gpt-5", "unknown"} {
+		if _, key, ok := RatesForModel(model); ok {
+			t.Errorf("RatesForModel(%q) resolved to %q, want no match", model, key)
 		}
 	}
 
-	// Unknown and empty tiers fall back to DefaultPricing.
-	for _, tier := range []string{"", "gpt-5", "unknown"} {
-		if got := PricingForTier(tier); got != DefaultPricing() {
-			t.Errorf("PricingForTier(%q) = %+v, want DefaultPricing() %+v", tier, got, DefaultPricing())
-		}
+	// An operator's settings.pricing entry for an exact id wins over the
+	// family row it would otherwise infer.
+	SetPricingTable(map[string]Pricing{"claude-opus-5": {InputPerM: 1, OutputPerM: 2, CacheReadPerM: 3, CacheWritePerM: 4}})
+	if got, key, _ := RatesForModel("claude-opus-5"); got.CacheWritePerM != 4 || key != "claude-opus-5" {
+		t.Errorf("exact override = %+v under %q, want the override row", got, key)
 	}
 }
 
@@ -53,10 +74,11 @@ func TestDefaultsMatchPreviousConstants(t *testing.T) {
 		{"CopilotPricing", CopilotPricing(), Pricing{3.00, 15.00, 0.30, 3.75}},
 		{"GeminiPricing", GeminiPricing(), Pricing{3.50, 10.50, 0.00, 0.00}},
 		{"OpenAIPricing", OpenAIPricing(), Pricing{2.50, 10.00, 0.00, 0.00}},
-		{"tier haiku", PricingForTier("haiku"), Pricing{1.00, 5.00, 0.10, 1.25}},
-		{"tier opus", PricingForTier("opus"), Pricing{5.00, 25.00, 0.50, 6.25}},
-		{"tier fable", PricingForTier("fable"), Pricing{10.00, 50.00, 1.00, 12.50}},
-		{"tier sonnet", PricingForTier("sonnet"), Pricing{3.00, 15.00, 0.30, 3.75}},
+		{"haiku", lookupPricing(ModelClaudeHaiku), Pricing{1.00, 5.00, 0.10, 1.25}},
+		{"opus", lookupPricing(ModelClaudeOpus), Pricing{5.00, 25.00, 0.50, 6.25}},
+		{"fable", lookupPricing(ModelClaudeFable), Pricing{10.00, 50.00, 1.00, 12.50}},
+		{"sonnet 4", lookupPricing(ModelClaudeSonnet), Pricing{3.00, 15.00, 0.30, 3.75}},
+		{"sonnet 5", lookupPricing(ModelClaudeSonnet5), Pricing{2.00, 10.00, 0.20, 2.50}},
 	}
 	for _, tc := range cases {
 		if tc.got != tc.want {
@@ -110,7 +132,7 @@ func TestFallbackPricingFamilyInference(t *testing.T) {
 		"claude-opus-4-8":  25.00,
 		"claude-fable-5":   50.00,
 		"claude-mythos-5":  50.00,
-		"claude-sonnet-5":  15.00,
+		"claude-sonnet-5":  10.00,
 		"claude-haiku-4-5": 5.00,
 	} {
 		if got := EstimatePricing(provider.Claude, model); got.OutputPerM != wantOut {

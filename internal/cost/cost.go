@@ -47,11 +47,15 @@ import (
 // fallback resolver. Operators reference these keys in settings.pricing.
 const (
 	ModelClaudeSonnet = "claude-sonnet"
-	ModelClaudeHaiku  = "claude-haiku"
-	ModelClaudeOpus   = "claude-opus"
-	ModelClaudeFable  = "claude-fable"
-	ModelGemini       = "gemini"
-	ModelOpenAI       = "openai"
+	// ModelClaudeSonnet5 is Sonnet 5, which is priced below the Sonnet 4-class
+	// row ModelClaudeSonnet keeps: pricing a Sonnet 5 pass at the older row
+	// overstated every one of its tokens by half.
+	ModelClaudeSonnet5 = "claude-sonnet-5"
+	ModelClaudeHaiku   = "claude-haiku"
+	ModelClaudeOpus    = "claude-opus"
+	ModelClaudeFable   = "claude-fable"
+	ModelGemini        = "gemini"
+	ModelOpenAI        = "openai"
 )
 
 // Pricing defines per-token costs in USD per million tokens.
@@ -71,8 +75,10 @@ func DefaultPricingTable() map[string]Pricing {
 	return map[string]Pricing{
 		// Claude Sonnet 4-class (also used as the Copilot fallback, since
 		// Copilot runs Claude models under the hood).
-		ModelClaudeSonnet: {InputPerM: 3.00, OutputPerM: 15.00, CacheReadPerM: 0.30, CacheWritePerM: 3.75},
-		ModelClaudeHaiku:  {InputPerM: 1.00, OutputPerM: 5.00, CacheReadPerM: 0.10, CacheWritePerM: 1.25},
+		ModelClaudeSonnet:  {InputPerM: 3.00, OutputPerM: 15.00, CacheReadPerM: 0.30, CacheWritePerM: 3.75},
+		ModelClaudeSonnet5: {InputPerM: 2.00, OutputPerM: 10.00, CacheReadPerM: 0.20, CacheWritePerM: 2.50},
+		// Haiku 4.5.
+		ModelClaudeHaiku: {InputPerM: 1.00, OutputPerM: 5.00, CacheReadPerM: 0.10, CacheWritePerM: 1.25},
 		// Opus 4.5 and later, Opus 5 included. Opus 4.1 and earlier were
 		// $15/$75 — three times this — and that row survived here long after
 		// every anvil had moved on: a 165K-token cache write on Opus 5 was
@@ -142,26 +148,6 @@ func GeminiPricing() Pricing { return lookupPricing(ModelGemini) }
 // OpenAIPricing returns the active fallback pricing for OpenAI/Codex models.
 func OpenAIPricing() Pricing { return lookupPricing(ModelOpenAI) }
 
-// PricingForTier returns the Assay stage cost classification for a given model
-// tier. Assay estimates its review cost from the model_tier configured in its
-// settings ("haiku", "sonnet", "opus" or "fable"); the tier string is matched
-// case-insensitively after trimming surrounding whitespace. Unknown or empty
-// tiers fall back to the Claude Sonnet defaults.
-func PricingForTier(tier string) Pricing {
-	switch strings.ToLower(strings.TrimSpace(tier)) {
-	case "haiku":
-		return lookupPricing(ModelClaudeHaiku)
-	case "opus":
-		return lookupPricing(ModelClaudeOpus)
-	case "fable":
-		return lookupPricing(ModelClaudeFable)
-	case "sonnet":
-		return lookupPricing(ModelClaudeSonnet)
-	default:
-		return lookupPricing(ModelClaudeSonnet)
-	}
-}
-
 // FallbackPricing returns the estimated pricing for a provider/model pair that
 // did not self-report a cost, consulting the configured pricing table. It is
 // the single entry point used by smith.go's fallback cost computation for
@@ -196,39 +182,106 @@ func resolvePricing(kind provider.Kind, model string) Pricing {
 	pricingMu.RLock()
 	defer pricingMu.RUnlock()
 
-	if model != "" {
-		if p, ok := activePricing[model]; ok {
-			return p
-		}
-		// Family inference from the model name so versioned provider model
-		// ids (e.g. "claude-opus-4.6") resolve to the right row.
-		lower := strings.ToLower(model)
-		switch {
-		// Fable/Mythos first: it shares no substring with the other families
-		// today, but it is the row a miss would misprice by the most.
-		case strings.Contains(lower, "fable"), strings.Contains(lower, "mythos"):
-			if p, ok := activePricing[ModelClaudeFable]; ok {
-				return p
-			}
-		case strings.Contains(lower, "opus"):
-			if p, ok := activePricing[ModelClaudeOpus]; ok {
-				return p
-			}
-		case strings.Contains(lower, "haiku"):
-			if p, ok := activePricing[ModelClaudeHaiku]; ok {
-				return p
-			}
-		case strings.Contains(lower, "sonnet"):
-			if p, ok := activePricing[ModelClaudeSonnet]; ok {
-				return p
-			}
-		}
+	if p, _, ok := ratesForModelLocked(model); ok {
+		return p
 	}
-
 	if p, ok := activePricing[defaultModelKeyForKind(kind)]; ok {
 		return p
 	}
 	return Pricing{InputPerM: 3.00, OutputPerM: 15.00, CacheReadPerM: 0.30, CacheWritePerM: 3.75}
+}
+
+// RatesForModel resolves a model id or alias to the active pricing row it is
+// billed at, returning the rates, the row's key and whether anything matched.
+//
+// It is the one model -> rates resolver: the in-flight estimate a running Assay
+// pass is stopped on (EstimatePricing) and the after-the-fact per-model report
+// (forge cost assay) both go through it, so a pass is never estimated at one
+// model's rates and reported at another's. An exact key in the table wins —
+// which is how an operator's settings.pricing entry for a specific id applies —
+// and otherwise the family is inferred from the name (see ModelFamilyKey). An
+// empty or unrecognised model reports false and leaves the fallback to the
+// caller, since only the caller knows what a missing model should mean.
+func RatesForModel(model string) (Pricing, string, bool) {
+	pricingMu.RLock()
+	defer pricingMu.RUnlock()
+	return ratesForModelLocked(model)
+}
+
+func ratesForModelLocked(model string) (Pricing, string, bool) {
+	model = strings.TrimSpace(model)
+	if model == "" {
+		return Pricing{}, "", false
+	}
+	if p, ok := activePricing[model]; ok {
+		return p, model, true
+	}
+	key := ModelFamilyKey(model)
+	if key == "" {
+		return Pricing{}, "", false
+	}
+	p, ok := activePricing[key]
+	if !ok {
+		return Pricing{}, "", false
+	}
+	return p, key, true
+}
+
+// ModelFamilyKey infers the pricing row for a model id from its name, so
+// versioned provider ids ("claude-opus-4.6", "claude-haiku-4-5-20251001") and
+// the CLI's bare aliases ("opus", "sonnet", "haiku") reach the right row. It
+// returns "" for a name it cannot place.
+//
+// Sonnet is the one family whose generations are priced apart. An explicit
+// version of 5 or later ("claude-sonnet-5", "sonnet5") is Sonnet 5, and so is
+// the bare alias "sonnet", which the CLI resolves to the current Sonnet; any
+// other Sonnet name — an older version, or no version at all — keeps the
+// Sonnet 4-class row it has always been priced at.
+func ModelFamilyKey(model string) string {
+	lower := strings.ToLower(strings.TrimSpace(model))
+	switch {
+	case lower == "":
+		return ""
+	// Fable/Mythos first: it shares no substring with the other families
+	// today, but it is the row a miss would misprice by the most.
+	case strings.Contains(lower, "fable"), strings.Contains(lower, "mythos"):
+		return ModelClaudeFable
+	case strings.Contains(lower, "opus"):
+		return ModelClaudeOpus
+	case strings.Contains(lower, "haiku"):
+		return ModelClaudeHaiku
+	case strings.Contains(lower, "sonnet"):
+		if lower == "sonnet" {
+			return ModelClaudeSonnet5
+		}
+		if v, ok := versionAfter(lower, "sonnet"); ok && v >= 5 {
+			return ModelClaudeSonnet5
+		}
+		return ModelClaudeSonnet
+	case strings.Contains(lower, "gemini"):
+		return ModelGemini
+	}
+	return ""
+}
+
+// versionAfter reads the major version number directly following family in
+// name, skipping one separator ("sonnet-5", "sonnet 5", "sonnet5"). It reports
+// false when no digit follows.
+func versionAfter(name, family string) (int, bool) {
+	i := strings.Index(name, family)
+	if i < 0 {
+		return 0, false
+	}
+	rest := name[i+len(family):]
+	if rest != "" && (rest[0] == '-' || rest[0] == ' ' || rest[0] == '.' || rest[0] == '_') {
+		rest = rest[1:]
+	}
+	n, digits := 0, 0
+	for digits < len(rest) && rest[digits] >= '0' && rest[digits] <= '9' {
+		n = n*10 + int(rest[digits]-'0')
+		digits++
+	}
+	return n, digits > 0
 }
 
 // defaultModelKeyForKind returns the default pricing key for a provider kind

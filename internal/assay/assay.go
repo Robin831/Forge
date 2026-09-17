@@ -308,6 +308,13 @@ type PassReport struct {
 	// visible in the daemon's log line rather than only in a monthly bill.
 	CacheCreationTokens int
 	CacheReadTokens     int
+	// InputTokens / OutputTokens are the pass's plain (uncached) input and
+	// output tokens, summed over its sessions on CacheCreationTokens' terms.
+	// With the cache pair they are the whole of what the pass was billed for,
+	// which is what lets a report price the pass at its own Model's rates
+	// rather than at one rate for the run.
+	InputTokens  int
+	OutputTokens int
 	// Primer reports whether this was the pass run alone ahead of the fan-out
 	// to write the shared prefix. Exactly one deep pass carries it, and it is
 	// the pass whose large CacheCreationTokens is expected rather than a
@@ -698,6 +705,8 @@ func Review(ctx context.Context, req ReviewRequest, db *state.DB, cfg Config) (*
 		Attempts:            1,
 		CacheCreationTokens: triageRes.usage.CacheWriteTokens,
 		CacheReadTokens:     triageRes.usage.CacheReadTokens,
+		InputTokens:         triageRes.usage.InputTokens,
+		OutputTokens:        triageRes.usage.OutputTokens,
 		Provider:            string(triageRes.provider.Kind),
 		Model:               triageRes.model,
 		FailedOver:          triageRes.failedOver,
@@ -779,6 +788,8 @@ func Review(ctx context.Context, req ReviewRequest, db *state.DB, cfg Config) (*
 			RetrySkipped:        o.retrySkipped,
 			CacheCreationTokens: o.usage.CacheWriteTokens,
 			CacheReadTokens:     o.usage.CacheReadTokens,
+			InputTokens:         o.usage.InputTokens,
+			OutputTokens:        o.usage.OutputTokens,
 			Primer:              i == primerPass,
 			Provider:            string(o.provider.Kind),
 			Model:               o.model,

@@ -292,7 +292,10 @@ For Assay specifically, `forge cost assay` reports spend split by whether a run 
 ```bash
 forge cost assay --since 2026-06-01 --until 2026-07-01
 forge cost assay --format json --out before.json
+forge cost assay --by-model          # priced spend per model; --by-pass lists every pass
 ```
+
+Each pass is priced at the rates of the model it actually ran on (a run can mix Opus and Sonnet passes), falling back to the run's model and then to `--fallback-model` for rows that record none.
 
 See [docs/assay-cost-attribution.md](docs/assay-cost-attribution.md) for the methodology (what counts as a repeat run, why recorded and priced figures are never summed, and how rows predating cache instrumentation are reported).
 

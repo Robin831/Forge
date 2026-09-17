@@ -73,6 +73,9 @@ forge cost assay                      # Assay spend split by first-run vs repeat
                                       # to --since/--until, so a repeat whose first review predates
                                       # the window is never counted as a first
 forge cost assay --format json --out before.json   # machine-readable snapshot for a before/after
+forge cost assay --by-model [--by-pass]   # priced spend per model / per pass — each pass is priced
+                                      # at the model recorded on its own row, falling back to the
+                                      # run's model, then --fallback-model (default claude-sonnet-5)
 forge cost zero-findings              # Classify runs that found nothing: first review of a PR vs
                                       # the nth over an unchanged head (assay_runs.head_sha — the only
                                       # substance field there is) vs the nth over a head that moved.

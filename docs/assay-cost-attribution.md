@@ -19,7 +19,8 @@ forge cost assay                                          # everything, human-re
 forge cost assay --since 2026-06-01 --until 2026-07-01    # one window
 forge cost assay --format json --out before.json          # machine-readable snapshot
 forge cost assay --format csv  --out before.csv
-forge cost assay --anvil forge --model-tier opus
+forge cost assay --anvil forge --by-model                 # priced spend per model
+forge cost assay --by-pass                                # every pass, its model and cost
 forge cost assay --expect-repeat-cost 2326.54 --expect-repeat-runs 780
 ```
 
@@ -40,13 +41,36 @@ different kinds of dollar figure:
   first-vs-repeat split is computed from.
 - **Priced** (the `cache_creation` / `cache_read` token classes) is tokens × that
   class's own rate from `internal/cost`'s pricing table. It explains the cache
-  *component* of recorded spend and is a strict subset of it — `assay_runs`
+  *component* of recorded spend and is a strict subset of it — the run row
   persists cache tokens but not plain input/output tokens, so the two cache
   classes can never add up to the recorded total.
 
-A cache write and a cache read differ by more than a factor of ten ($3.75/M vs
-$0.30/M at Sonnet rates), so they are summed and priced separately; collapsing
+A cache write and a cache read differ by more than a factor of ten ($2.50/M vs
+$0.20/M at Sonnet 5 rates), so they are summed and priced separately; collapsing
 them into one input rate would misattribute the bulk of the traffic.
+
+**Every pass is priced at the model that ran it.** A run is not one model: each
+pass resolves its own provider chain and a rate-limited pass fails over down it,
+so one rate for the run misprices every mixed run (an Opus 5 cache write costs
+2.5x a Sonnet 5 one). Each pass row in `assay_runs.pass_findings` records its
+model and what it was billed for (input, output, cache-write and cache-read
+tokens, and cost), and the report prices those tokens through
+`cost.RatesForModel` — the same resolver the in-flight per-pass cost ceiling
+uses, so settings.pricing overrides apply to both. The model is resolved one
+level at a time, and `--by-pass` names the level that answered:
+
+1. `pass` — the model recorded on the pass row;
+2. `run` — the run-level model, i.e. the one model every pass that names a model
+   agrees on (`assay_runs` has no run-model column of its own);
+3. `fallback` — `--fallback-model`, default `claude-sonnet-5`.
+
+A row written before per-pass tokens were recorded carries none, and its
+run-level cache tokens are priced as one unit at its run-level model on the same
+terms. `--by-model` groups the priced units by pricing row (so
+`claude-opus-4-8` and `claude-opus-5` are one row); the rows sum to the priced
+total, and their cache columns to the cache classes above. The token-class
+`EFF RATE $/M` is cost over tokens, which is one model's rate only when a single
+model is involved.
 
 **Run ordinals are derived over each PR's full history, then restricted to the
 window.** Ordinal 1 is a PR's first review, n>1 a re-review. The query returns

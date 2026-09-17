@@ -27,7 +27,8 @@ func TestRunAssayReviewStampsLogKey(t *testing.T) {
 			Status: assay.RunStatusComplete, CompletedPasses: 5, TotalPasses: 5,
 			Passes: []assay.PassReport{
 				{Name: "triage", Provider: "claude", Model: "claude-sonnet-5"},
-				{Name: "logic", Findings: 1, Provider: "claude", Model: "claude-opus-5"},
+				{Name: "logic", Findings: 1, Provider: "claude", Model: "claude-opus-5",
+					CostUSD: 1.25, InputTokens: 100, OutputTokens: 200, CacheCreationTokens: 300, CacheReadTokens: 400},
 				{Name: "security", Provider: "gemini", Model: "gemini-2.5-pro", FailedOver: true},
 			},
 			Findings: make([]assay.Finding, 1),
@@ -48,10 +49,12 @@ func TestRunAssayReviewStampsLogKey(t *testing.T) {
 	// The per-pass findings breakdown rides on the same record, which is what
 	// lets the expanded run row tell the pass that found something from the
 	// ones that did not — and so does the provider and model each pass
-	// actually ran on, the failed-over security pass included.
+	// actually ran on, the failed-over security pass included, and what each
+	// pass was billed for, which the per-model cost report prices.
 	require.Equal(t, []state.AssayPassFindings{
 		{Name: "triage", Findings: 0, Provider: "claude", Model: "claude-sonnet-5"},
-		{Name: "logic", Findings: 1, Provider: "claude", Model: "claude-opus-5"},
+		{Name: "logic", Findings: 1, Provider: "claude", Model: "claude-opus-5",
+			CostUSD: 1.25, InputTokens: 100, OutputTokens: 200, CacheCreationTokens: 300, CacheReadTokens: 400},
 		{Name: "security", Findings: 0, Provider: "gemini", Model: "gemini-2.5-pro", FailedOver: true},
 	}, run.PassFindings)
 }

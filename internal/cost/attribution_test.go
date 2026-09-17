@@ -108,10 +108,11 @@ func TestDeriveRunOrdinalsDoesNotReorderCallerSlice(t *testing.T) {
 // input rate would misattribute the bulk of the traffic, since a write costs
 // more than ten times a read.
 func TestTokenClassesPriceEachClassAtItsOwnRate(t *testing.T) {
-	p := Pricing{InputPerM: 3, OutputPerM: 15, CacheReadPerM: 0.30, CacheWritePerM: 3.75}
+	// A row naming no model is priced at the fallback; the Sonnet 4-class row
+	// has a cache write of $3.75/M and a read of $0.30/M.
 	report := BuildReport([]RunRecord{
 		run(1, "a", 1, ts(1, 10), 5.00, 1_000_000, 2_000_000),
-	}, time.Time{}, time.Time{}, Options{Pricing: p, Now: ts(2, 0)})
+	}, time.Time{}, time.Time{}, Options{FallbackModel: "claude-sonnet", Now: ts(2, 0)})
 
 	classes := map[string]TokenClassBreakdown{}
 	for _, c := range report.ByTokenClass {
@@ -333,16 +334,227 @@ func TestZeroFindingTailIsCounted(t *testing.T) {
 	}
 }
 
-func TestModelTierSelectsThePricingRow(t *testing.T) {
+// The fallback model prices only what names no model of its own.
+func TestFallbackModelPricesRowsNamingNoModel(t *testing.T) {
 	runs := []RunRecord{run(1, "a", 1, ts(1, 10), 1.00, 1_000_000, 0)}
-	sonnet := BuildReport(runs, time.Time{}, time.Time{}, Options{ModelTier: "sonnet", Now: ts(2, 0)})
-	opus := BuildReport(runs, time.Time{}, time.Time{}, Options{ModelTier: "opus", Now: ts(2, 0)})
+	sonnet := BuildReport(runs, time.Time{}, time.Time{}, Options{Now: ts(2, 0)})
+	opus := BuildReport(runs, time.Time{}, time.Time{}, Options{FallbackModel: "opus", Now: ts(2, 0)})
 
-	if !nearly(sonnet.FirstRun.AttributedCostUSD, PricingForTier("sonnet").CacheWritePerM) {
-		t.Errorf("sonnet attributed = %.4f, want the sonnet cache-write rate", sonnet.FirstRun.AttributedCostUSD)
+	if sonnet.FallbackModel != DefaultFallbackModel {
+		t.Errorf("default fallback = %q, want %q", sonnet.FallbackModel, DefaultFallbackModel)
 	}
-	if sonnet.FirstRun.AttributedCostUSD >= opus.FirstRun.AttributedCostUSD {
-		t.Error("opus should price a cache write above sonnet")
+	if !nearly(sonnet.FirstRun.AttributedCostUSD, 2.50) {
+		t.Errorf("default-fallback attributed = %.4f, want the Sonnet 5 cache-write rate 2.50", sonnet.FirstRun.AttributedCostUSD)
+	}
+	if !nearly(opus.FirstRun.AttributedCostUSD, 6.25) {
+		t.Errorf("opus-fallback attributed = %.4f, want the Opus 5 cache-write rate 6.25", opus.FirstRun.AttributedCostUSD)
+	}
+	if sonnet.FallbackPricedUnits != 1 {
+		t.Errorf("fallback-priced units = %d, want 1", sonnet.FallbackPricedUnits)
+	}
+	// A name that resolves to nothing is not priced at a guess: the default
+	// fallback applies.
+	junk := BuildReport(runs, time.Time{}, time.Time{}, Options{FallbackModel: "no-such-model", Now: ts(2, 0)})
+	if junk.FallbackModel != DefaultFallbackModel {
+		t.Errorf("unresolvable fallback = %q, want %q", junk.FallbackModel, DefaultFallbackModel)
+	}
+}
+
+// mixedRun is one run whose triage and logic passes ran on Sonnet 5 and whose
+// security pass failed over to Opus 5.
+func mixedRun(id int, at time.Time) RunRecord {
+	r := run(id, "a", id, at, 9.99, 1_000_000+2_000_000, 4_000_000+1_000_000)
+	r.Passes = []PassRecord{
+		{Name: "triage", Provider: "claude", Model: "claude-sonnet-5", CostUSD: 1,
+			InputTokens: 1_000_000, OutputTokens: 100_000, CacheCreationTokens: 1_000_000, CacheReadTokens: 0},
+		{Name: "logic", Provider: "claude", Model: "sonnet", CostUSD: 2,
+			InputTokens: 0, OutputTokens: 200_000, CacheCreationTokens: 0, CacheReadTokens: 4_000_000},
+		{Name: "security", Provider: "claude", Model: "claude-opus-5", CostUSD: 3,
+			InputTokens: 500_000, OutputTokens: 300_000, CacheCreationTokens: 2_000_000, CacheReadTokens: 1_000_000},
+	}
+	return r
+}
+
+// Each pass of a mixed run is priced at its own model's rates — never at the
+// other model's, and never at one rate for the run.
+func TestMixedRunPricesEachPassAtItsOwnModel(t *testing.T) {
+	SetPricingTable(nil)
+	report := BuildReport([]RunRecord{mixedRun(1, ts(1, 10))}, time.Time{}, time.Time{},
+		Options{ByModel: true, ByPass: true, Now: ts(2, 0)})
+
+	want := map[string]struct {
+		model string
+		cost  float64
+	}{
+		// Sonnet 5: 1M in x $2 + 0.1M out x $10 + 1M cache write x $2.50.
+		"triage": {ModelClaudeSonnet5, 2.00 + 1.00 + 2.50},
+		// Sonnet 5 via the bare alias: 0.2M out x $10 + 4M cache read x $0.20.
+		"logic": {ModelClaudeSonnet5, 2.00 + 0.80},
+		// Opus 5: 0.5M in x $5 + 0.3M out x $25 + 2M write x $6.25 + 1M read x $0.50.
+		"security": {ModelClaudeOpus, 2.50 + 7.50 + 12.50 + 0.50},
+	}
+	if len(report.ByPass) != len(want) {
+		t.Fatalf("by-pass rows = %d, want %d", len(report.ByPass), len(want))
+	}
+	for _, p := range report.ByPass {
+		w, ok := want[p.Pass]
+		if !ok {
+			t.Errorf("unexpected pass row %q", p.Pass)
+			continue
+		}
+		if p.Model != w.model || p.ModelSource != ModelSourcePass {
+			t.Errorf("%s priced at %q (source %s), want %q from the pass", p.Pass, p.Model, p.ModelSource, w.model)
+		}
+		if !nearly(p.PricedCostUSD, w.cost) {
+			t.Errorf("%s priced $%.4f, want $%.4f", p.Pass, p.PricedCostUSD, w.cost)
+		}
+	}
+
+	// The cache classes are the same per-model sums, not the run's tokens at
+	// one rate: writes 1M x 2.50 + 2M x 6.25, reads 4M x 0.20 + 1M x 0.50.
+	classes := map[string]TokenClassBreakdown{}
+	for _, c := range report.ByTokenClass {
+		classes[c.Class] = c
+	}
+	if got := classes[TokenClassCacheCreation].CostUSD; !nearly(got, 15.00) {
+		t.Errorf("cache_creation cost = %.4f, want 15.00", got)
+	}
+	if got := classes[TokenClassCacheRead].CostUSD; !nearly(got, 1.30) {
+		t.Errorf("cache_read cost = %.4f, want 1.30", got)
+	}
+	if got := classes[TokenClassCacheCreation].RatePerM; !nearly(got, 5.00) {
+		t.Errorf("cache_creation effective rate = %.4f, want the 15.00/3M blend 5.00", got)
+	}
+}
+
+// The --by-model breakdown has one row per model, and the rows add up exactly
+// to the priced total and to the cache attribution the split reports.
+func TestByModelBreakdownSumsToTheTotal(t *testing.T) {
+	SetPricingTable(nil)
+	legacy := run(3, "a", 3, ts(1, 12), 4.00, 1_000_000, 0) // no pass rows: fallback
+	report := BuildReport([]RunRecord{mixedRun(1, ts(1, 10)), mixedRun(2, ts(1, 11)), legacy},
+		time.Time{}, time.Time{}, Options{ByModel: true, Now: ts(2, 0)})
+
+	if len(report.ByModel) != 2 {
+		t.Fatalf("by-model rows = %d (%+v), want 2 (opus, sonnet 5)", len(report.ByModel), report.ByModel)
+	}
+	var priced, cache, recorded float64
+	byKey := map[string]ModelBreakdown{}
+	for _, m := range report.ByModel {
+		if _, dup := byKey[m.Model]; dup {
+			t.Errorf("model %q has two rows", m.Model)
+		}
+		byKey[m.Model] = m
+		priced += m.PricedCostUSD
+		cache += m.CacheCreationCostUSD + m.CacheReadCostUSD
+		recorded += m.RecordedCostUSD
+		if got := m.InputCostUSD + m.OutputCostUSD + m.CacheCreationCostUSD + m.CacheReadCostUSD; !nearly(got, m.PricedCostUSD) {
+			t.Errorf("%s: classes sum to %.4f, priced %.4f", m.Model, got, m.PricedCostUSD)
+		}
+	}
+	perRun := (2.00 + 1.00 + 2.50) + (2.00 + 0.80) + (2.50 + 7.50 + 12.50 + 0.50)
+	if want := 2*perRun + 2.50; !nearly(report.PricedCostUSD, want) || !nearly(priced, report.PricedCostUSD) {
+		t.Errorf("priced total = %.4f, rows sum to %.4f, want %.4f", report.PricedCostUSD, priced, want)
+	}
+	if attributed := report.FirstRun.AttributedCostUSD + report.RepeatRun.AttributedCostUSD; !nearly(cache, attributed) {
+		t.Errorf("per-model cache cost %.4f != attributed cache cost %.4f", cache, attributed)
+	}
+	// Recorded spend per model is per pass where recorded, the run's
+	// otherwise: 2 x (1+2+3) + the legacy run's 4.00.
+	if !nearly(recorded, 16.00) {
+		t.Errorf("recorded across models = %.4f, want 16.00", recorded)
+	}
+	if o := byKey[ModelClaudeOpus]; o.Runs != 2 || o.Passes != 2 {
+		t.Errorf("opus row = %d runs / %d passes, want 2 / 2", o.Runs, o.Passes)
+	}
+	if s5 := byKey[ModelClaudeSonnet5]; s5.Runs != 3 || s5.Passes != 4 || s5.RunLevelUnits != 1 || s5.FallbackUnits != 1 {
+		t.Errorf("sonnet 5 row = %+v, want 3 runs, 4 passes, 1 run-level fallback unit", s5)
+	}
+
+	var table bytes.Buffer
+	if err := report.WriteTable(&table); err != nil {
+		t.Fatalf("WriteTable: %v", err)
+	}
+	out := table.String()
+	for _, want := range []string{"MODEL", ModelClaudeOpus, ModelClaudeSonnet5, fmt.Sprintf("%.2f", report.PricedCostUSD)} {
+		if !strings.Contains(out, want) {
+			t.Errorf("by-model table is missing %q", want)
+		}
+	}
+	// No breakdown was asked for per pass, so none is rendered.
+	if report.ByPass != nil || strings.Contains(out, "PROVIDER") {
+		t.Error("by-pass rows rendered without --by-pass")
+	}
+}
+
+// A legacy row whose passes carry no model is priced at the run-level model,
+// and so is a row with no per-pass tokens at all.
+func TestLegacyRowsArePricedAtTheRunLevelModel(t *testing.T) {
+	SetPricingTable(nil)
+	named := run(1, "a", 1, ts(1, 10), 1.00, 0, 0)
+	named.Model = "claude-opus-5"
+	named.Passes = []PassRecord{
+		{Name: "logic", CostUSD: 1, CacheCreationTokens: 1_000_000}, // no model on the pass
+	}
+	whole := run(2, "a", 2, ts(1, 11), 1.00, 1_000_000, 0)
+	whole.Model = "claude-opus-5"
+	whole.Passes = []PassRecord{{Name: "logic", Model: "claude-sonnet-5"}} // no pass tokens
+
+	report := BuildReport([]RunRecord{named, whole}, time.Time{}, time.Time{},
+		Options{ByPass: true, ByModel: true, Now: ts(2, 0)})
+	if len(report.ByPass) != 2 {
+		t.Fatalf("by-pass rows = %d, want 2", len(report.ByPass))
+	}
+	for _, p := range report.ByPass {
+		if p.Model != ModelClaudeOpus || p.ModelSource != ModelSourceRun {
+			t.Errorf("run %d pass %q priced at %q from %s, want %q from the run", p.RunID, p.Pass, p.Model, p.ModelSource, ModelClaudeOpus)
+		}
+		if !nearly(p.PricedCostUSD, 6.25) {
+			t.Errorf("run %d priced $%.4f, want the Opus 5 cache write $6.25", p.RunID, p.PricedCostUSD)
+		}
+	}
+	if report.ByPass[1].Pass != "" {
+		t.Errorf("a row with no pass tokens should be priced whole, got pass %q", report.ByPass[1].Pass)
+	}
+	if len(report.ByModel) != 1 || report.FallbackPricedUnits != 0 {
+		t.Errorf("by-model = %+v with %d fallback units, want one opus row and none", report.ByModel, report.FallbackPricedUnits)
+	}
+}
+
+// The report carries no single-model pricing label: rates are listed per model
+// actually applied.
+func TestReportCarriesNoSingleModelLabel(t *testing.T) {
+	SetPricingTable(nil)
+	report := BuildReport([]RunRecord{mixedRun(1, ts(1, 10))}, time.Time{}, time.Time{},
+		Options{ByModel: true, ByPass: true, Now: ts(2, 0)})
+	var table, js, csvOut bytes.Buffer
+	if err := report.WriteTable(&table); err != nil {
+		t.Fatal(err)
+	}
+	if err := report.WriteJSON(&js); err != nil {
+		t.Fatal(err)
+	}
+	if err := report.WriteCSV(&csvOut); err != nil {
+		t.Fatal(err)
+	}
+	for name, out := range map[string]string{"table": table.String(), "json": js.String(), "csv": csvOut.String()} {
+		for _, banned := range []string{"sonnet (default)", "model_tier", `"pricing"`} {
+			if strings.Contains(out, banned) {
+				t.Errorf("%s output still carries the single-model label %q", name, banned)
+			}
+		}
+	}
+	out := table.String()
+	for _, want := range []string{
+		"claude-opus — input $5.00/M, output $25.00/M, cache write $6.25/M, cache read $0.50/M",
+		"claude-sonnet-5 — input $2.00/M, output $10.00/M, cache write $2.50/M, cache read $0.20/M",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("table is missing the rate line %q", want)
+		}
+	}
+	if len(report.ModelRates) != 2 {
+		t.Errorf("model rates = %+v, want one per model used", report.ModelRates)
 	}
 }
 

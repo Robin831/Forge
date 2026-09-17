@@ -18,7 +18,9 @@ var (
 	costOut             string
 	costAnvil           string
 	costIncludeSkipped  bool
-	costModelTier       string
+	costFallbackModel   string
+	costByModel         bool
+	costByPass          bool
 	costExpectCost      float64
 	costExpectRepeatRun int
 )
@@ -30,7 +32,15 @@ func init() {
 	costAssayCmd.Flags().StringVar(&costOut, "out", "", "Write the report to this file instead of stdout")
 	costAssayCmd.Flags().StringVar(&costAnvil, "anvil", "", "Restrict the report to one anvil")
 	costAssayCmd.Flags().BoolVar(&costIncludeSkipped, "include-skipped", false, "Count runs that dispatched no passes (default: excluded, matching the per-PR run cap)")
-	costAssayCmd.Flags().StringVar(&costModelTier, "model-tier", "", "Pricing row for token classes: haiku, sonnet, opus or fable (default: sonnet)")
+	costAssayCmd.Flags().StringVar(&costFallbackModel, "fallback-model", "", "Model to price a pass at when neither the pass nor its run recorded one (id or alias; default: "+cost.DefaultFallbackModel+")")
+	// --model-tier once chose the one pricing row every token was priced at.
+	// Pricing is per pass now, so the only thing a tier can still mean is the
+	// fallback for rows that name no model; it is kept as that so existing
+	// before/after scripts keep running.
+	costAssayCmd.Flags().StringVar(&costFallbackModel, "model-tier", "", "Deprecated alias for --fallback-model")
+	_ = costAssayCmd.Flags().MarkDeprecated("model-tier", "pricing is per pass at the model that ran it; use --fallback-model for rows that record no model")
+	costAssayCmd.Flags().BoolVar(&costByModel, "by-model", false, "Break priced spend down by the model each pass ran on")
+	costAssayCmd.Flags().BoolVar(&costByPass, "by-pass", false, "List every priced pass with its model, where the model came from, tokens and cost")
 	costAssayCmd.Flags().Float64Var(&costExpectCost, "expect-repeat-cost", 0, "Reconcile the repeat-run total against a published baseline figure (USD)")
 	costAssayCmd.Flags().IntVar(&costExpectRepeatRun, "expect-repeat-runs", 0, "Reconcile the repeat-run count against a published baseline figure")
 
@@ -53,13 +63,22 @@ var costAssayCmd = &cobra.Command{
   - first review of a PR vs every re-review of it (run ordinal 1 vs n>1)
   - cache-write vs cache-read tokens, each priced at its own rate
 
+Tokens are priced pass by pass at the rates of the model that pass ran on
+(Opus 5, Sonnet 5, Haiku 4.5, … — settings.pricing overrides apply), because a
+run is not one model: every pass resolves its own provider chain. A pass that
+recorded no model takes its run's model, and a row naming neither takes
+--fallback-model. Rows written before per-pass tokens were recorded are priced
+whole from their run-level cache tokens. --by-model breaks the priced spend
+down per model (the rows sum to the total) and --by-pass lists every pass.
+
 Run ordinals are derived over each PR's full review history and only then
 restricted to the window, so a PR first reviewed before the window opens does
 not have its second review counted as a first.
 
-Recorded spend (the provider's own cost_usd) and priced cache attribution are
-reported separately and never summed: assay_runs stores no plain input/output
-token counts, so the cache classes are a subset of the recorded total. Runs
+Recorded spend (the provider's own cost_usd) and priced attribution are
+reported separately and never summed: priced figures cover only the tokens a
+row records (older rows carry cache tokens alone), so they are a subset of the
+recorded total. Runs
 predating cache instrumentation report token class 'unknown' rather than a
 misleading zero.
 
@@ -67,6 +86,8 @@ Examples:
   forge cost assay
   forge cost assay --since 2026-06-01 --until 2026-07-01
   forge cost assay --format json --out repeat-cost-before.json
+  forge cost assay --by-model
+  forge cost assay --since 2026-09-01 --by-pass
   forge cost assay --expect-repeat-cost 2326.54 --expect-repeat-runs 780`,
 	RunE: runCostAssay,
 }
@@ -103,7 +124,9 @@ func runCostAssay(cmd *cobra.Command, args []string) error {
 	report, err := cost.ReportRepeatCost(assayRunSource{db: db}, since, until, cost.Options{
 		IncludeSkipped: costIncludeSkipped,
 		Anvil:          costAnvil,
-		ModelTier:      costModelTier,
+		FallbackModel:  costFallbackModel,
+		ByModel:        costByModel,
+		ByPass:         costByPass,
 	})
 	if err != nil {
 		return err
@@ -202,7 +225,50 @@ func (s assayRunSource) AssayRunHistory(since, until time.Time) ([]cost.RunRecor
 			Error:               r.Error,
 			CacheCreationTokens: r.CacheCreationTokens,
 			CacheReadTokens:     r.CacheReadTokens,
+			Model:               runLevelModel(r.PassFindings),
+			Passes:              projectPassRecords(r.PassFindings),
 		})
 	}
 	return out, nil
+}
+
+// projectPassRecords carries the per-pass attribution the pricing reads: the
+// model each pass ran on and what it was billed for.
+func projectPassRecords(passes []state.AssayPassFindings) []cost.PassRecord {
+	if len(passes) == 0 {
+		return nil
+	}
+	out := make([]cost.PassRecord, 0, len(passes))
+	for _, p := range passes {
+		out = append(out, cost.PassRecord{
+			Name:                p.Name,
+			Provider:            p.Provider,
+			Model:               p.Model,
+			CostUSD:             p.CostUSD,
+			InputTokens:         p.InputTokens,
+			OutputTokens:        p.OutputTokens,
+			CacheCreationTokens: p.CacheCreationTokens,
+			CacheReadTokens:     p.CacheReadTokens,
+		})
+	}
+	return out
+}
+
+// runLevelModel is the run's one model where its pass rows establish it: every
+// pass that names a model names the same one. assay_runs has no run-level model
+// column, so a run whose passes disagree — or that names none — has no run
+// model, and its unnamed rows fall through to the report's fallback instead of
+// being priced at whichever pass happened to come first.
+func runLevelModel(passes []state.AssayPassFindings) string {
+	model := ""
+	for _, p := range passes {
+		if p.Model == "" {
+			continue
+		}
+		if model != "" && p.Model != model {
+			return ""
+		}
+		model = p.Model
+	}
+	return model
 }
