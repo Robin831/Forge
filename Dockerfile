@@ -161,8 +161,8 @@ RUN npm install -g @anthropic-ai/claude-code${CLAUDE_CODE_VERSION} \
 # geometry assertion reports a page defect instead of a tooling failure — so
 # the build fails outright if fontconfig finds no font.
 #
-# Pinned via ARG like CLAUDE_CODE_VERSION so the layer caches and a bump is
-# deliberate. The devbox image is FROM this one and inherits it.
+# Pinned to a concrete Playwright release via ARG, so the layer caches and a
+# bump is deliberate. The devbox image is FROM this one and inherits it.
 ARG PLAYWRIGHT_DEPS_VERSION=1.49.1
 RUN set -eux; \
     apt-get update; \
