@@ -1,2 +1,0 @@
-category: Fixed
-- **Playwright chromium launches in the skybert image** - The runtime stage now installs Playwright's chromium shared-library dependencies (via `playwright install-deps chromium`, pinned by the `PLAYWRIGHT_DEPS_VERSION` build arg) plus fontconfig and the Liberation/DejaVu fonts, so Playwright gates run for Smith without hand-built library prefixes, and text no longer renders at zero width for lack of fonts. Browsers themselves stay per-user in `~/.cache/ms-playwright`. (Forge-t86pj)

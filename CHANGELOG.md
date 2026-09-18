@@ -8,6 +8,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Unreleased changes live as fragments in `changelog.d/` and are assembled at
 release time by `scripts/assemble-changelog.sh`.
 
+## [0.31.0] - 2026-09-18
+
+### Added
+
+- **Assay stage_providers keys** - `stage_providers` (global and per-anvil) now accepts `assay` and the per-pass keys `assay.triage`, `assay.logic`, `assay.security`, `assay.conventions`, `assay.tests-missing` and `assay.repo-specific`. These keys are reserved and not yet in effect: Assay still selects its providers through `assay.review_provider` / `assay.triage_provider` until per-pass resolution lands (Forge-iyddo), and the settings page and docs say so. The Hearth settings page lists the pass keys under a collapsed "Assay passes" disclosure, rejects unknown pass names and empty chains, and a test keeps the frontend stage list in sync with the backend. `stage_providers` is now read from the raw YAML, since viper split the dotted keys and made the config fail to load; edits to the keys that are read hot-reload without a restart. (Forge-8x3wp)
+
+### Changed
+
+- **Assay passes fail over down their own provider chain** - Each Assay pass (triage and the five deep passes) now walks the chain it resolves from `stage_providers["assay"]`/`["assay.<pass>"]`: when a provider is rate limited, that pass alone moves to the next entry, after its turn-budget retry and strict-JSON re-prompt have run on the current one. An auth failure is reported as `auth_failed` and never fails over. The provider kind and model each pass actually ran on are recorded on the run's pass rows (`assay_runs.pass_findings`, keys `provider`, `model`, `failed_over`), Assay spend is written to `provider_daily_costs` per provider it ran on rather than attributed whole to one, and the `Assay review completed` log line carries `model=<id>` on every pass plus `provider=<kind>` on a pass that failed over. The daemon no longer warns that entries after an assay chain's head are ignored, and `forge doctor` lists them as fallbacks, warning only when a fallback's binary is missing. (Forge-f177u)
+- **Assay resolves providers per pass** - Each Assay pass (triage and the five deep passes) now resolves its own provider chain: anvil `stage_providers["assay.<pass>"]`, anvil `assay`, global `assay.<pass>`, global `assay`, then the legacy `assay.triage_provider`/`triage_model` and `review_provider`/`review_model` keys, then the provider defaults. It never inherits `smith_providers` or `providers`, and with no assay stage keys every pass runs on exactly the provider it did before. The daemon logs one warning per anvil that sets both a legacy key and an assay stage key, naming which one decides each pass, and `forge doctor` prints the resolved provider and its source for every pass of every Assay-enabled anvil. Assay spawns only the head of an assay chain (it has no rate-limit fallback), so entries after the head are reported as ignored by both doctor and a daemon warning rather than silently dropped. (Forge-iyddo)
+- **Per-model pricing in `forge cost assay`** - Each Assay pass is now priced at the rates of the model it actually ran on (Opus 5, Sonnet 5, Haiku 4.5, …) instead of one hard-coded Sonnet rate for the whole report, falling back to the run's model and then `--fallback-model` for rows that record none. Pass rows now persist their token counts and cost, a Sonnet 5 pricing row ($2/$10, cache $2.50/$0.20) is added and shared with the in-flight per-pass cost ceiling, and the new `--by-model` / `--by-pass` flags break priced spend down per model and per pass. `--model-tier` is kept as a deprecated alias of `--fallback-model`. (Forge-ojer7)
+
+### Fixed
+
+- **Playwright chromium launches in the skybert image** - The runtime stage now installs Playwright's chromium shared-library dependencies (via `playwright install-deps chromium`, pinned by the `PLAYWRIGHT_DEPS_VERSION` build arg) plus fontconfig and the Liberation/DejaVu fonts, so Playwright gates run for Smith without hand-built library prefixes, and text no longer renders at zero width for lack of fonts. Browsers themselves stay per-user in `~/.cache/ms-playwright`. (Forge-t86pj)
+
 ## [0.30.0] - 2026-09-14
 
 ### Added
