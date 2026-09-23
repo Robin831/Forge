@@ -8,6 +8,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Unreleased changes live as fragments in `changelog.d/` and are assembled at
 release time by `scripts/assemble-changelog.sh`.
 
+
+## [0.31.1] - 2026-09-23
+
+### Added
+
+- **Opus 5.5 pricing row** - `claude-opus-5-5` ($4 / $20 per MTok, cache read $0.20, 5-minute cache write $5.00) now has its own entry in the default pricing table, and model-family inference routes `claude-opus-5-5`, Copilot's `claude-opus-5.5` and later Opus versions to it. Priced at the Opus 5 row it was overestimated by 25% (cache reads 2.5x), the direction that stops a healthy Assay pass at its per-pass cost ceiling. A dated id such as `claude-opus-5-20260901` still reads as Opus 5; the bare `opus` alias stays on the Opus row.
+
+### Fixed
+
+- **Auto-merge no longer fires on an uncounted review-thread state** - When the GitHub/GitLab/Gitea query for unresolved review threads failed (a GraphQL TLS timeout), the count was left at zero and Bellows read the PR as thread-free, announced it ready to merge and auto-merged it while Assay's findings were still open — refused by the repository's ruleset twice on Explorer #401. `PRStatus.UnresolvedThreadsUnknown` now records the failure: Bellows carries the last known thread state forward, never treats an uncounted poll as ready, persists it as not ready, and the manual `merge_pr` live check refuses it.
+- **A transiently failed auto-merge is retried instead of stranding the PR** - `doAutoMerge` retries GitHub 5xx and network failures (including GraphQL's "Something went wrong while executing your query") through the shared transient classifier, treats a PR that reads back as merged as a success, and — once the retries are spent — re-arms Bellows' ready-to-merge edge for the next poll, at most three times per PR. Before, the edge fired once and a single GitHub 500 left a green PR unmerged until a human noticed (four hours on Explorer #401). A branch-policy refusal (`base branch policy prohibits the merge`) is classified permanent and never retried.
+
 ## [0.31.0] - 2026-09-18
 
 ### Added
