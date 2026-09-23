@@ -1275,7 +1275,8 @@ of the built-in defaults, so you only need to list the models you want to change
 | `claude-sonnet` (Sonnet 4-class; also the Copilot fallback) | `3.00` | `15.00` | `0.30` | `3.75` |
 | `claude-sonnet-5` (Sonnet 5, and the bare `sonnet` alias) | `2.00` | `10.00` | `0.20` | `2.50` |
 | `claude-haiku` (Haiku 4.5) | `1.00` | `5.00` | `0.10` | `1.25` |
-| `claude-opus` (Opus 4.5 and later, incl. Opus 5) | `5.00` | `25.00` | `0.50` | `6.25` |
+| `claude-opus` (Opus 4.5 through Opus 5, and the bare `opus` alias) | `5.00` | `25.00` | `0.50` | `6.25` |
+| `claude-opus-5-5` (Opus 5.5 and later) | `4.00` | `20.00` | `0.20` | `5.00` |
 | `claude-fable` (Fable 5 / Mythos 5) | `10.00` | `50.00` | `1.00` | `12.50` |
 | `gemini` | `3.50` | `10.50` | `0.00` | `0.00` |
 | `openai` | `2.50` | `10.00` | `0.00` | `0.00` |
@@ -1288,7 +1289,9 @@ for Fable) if you want the estimate to match the bill.
 
 When an estimate runs, Forge first looks for an exact model-key match, then
 infers a family from the model name (`claude-opus-5`, a Copilot
-`claude-opus-4.6` → `claude-opus`; `claude-fable-5`, `claude-mythos-5` →
+`claude-opus-4.6` → `claude-opus`; `claude-opus-5-5`, a Copilot
+`claude-opus-5.5` → `claude-opus-5-5`, while a date after the major version,
+as in `claude-opus-5-20260901`, is not read as a minor one; `claude-fable-5`, `claude-mythos-5` →
 `claude-fable`; `claude-sonnet-5` and the bare `sonnet` alias → `claude-sonnet-5`,
 any older or unversioned Sonnet id → `claude-sonnet`), then falls back to the provider's default key. So you can add
 rows keyed by a specific model id if you need finer control — for example an
