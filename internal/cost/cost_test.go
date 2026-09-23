@@ -15,6 +15,7 @@ func TestRatesForModel(t *testing.T) {
 	SetPricingTable(nil)
 
 	opus5 := Pricing{InputPerM: 5.00, OutputPerM: 25.00, CacheReadPerM: 0.50, CacheWritePerM: 6.25}
+	opus55 := Pricing{InputPerM: 4.00, OutputPerM: 20.00, CacheReadPerM: 0.20, CacheWritePerM: 5.00}
 	sonnet5 := Pricing{InputPerM: 2.00, OutputPerM: 10.00, CacheReadPerM: 0.20, CacheWritePerM: 2.50}
 	sonnet4 := Pricing{InputPerM: 3.00, OutputPerM: 15.00, CacheReadPerM: 0.30, CacheWritePerM: 3.75}
 	haiku45 := Pricing{InputPerM: 1.00, OutputPerM: 5.00, CacheReadPerM: 0.10, CacheWritePerM: 1.25}
@@ -25,6 +26,11 @@ func TestRatesForModel(t *testing.T) {
 		wantKey string
 	}{
 		{"claude-opus-5", opus5, ModelClaudeOpus},
+		{"claude-opus-5-5", opus55, ModelClaudeOpus55},
+		{"claude-opus-5.5", opus55, ModelClaudeOpus55}, // Copilot's dotted form
+		{"claude-opus-5-5-20261001", opus55, ModelClaudeOpus55},
+		// A date after the major version is not a minor version.
+		{"claude-opus-5-20260901", opus5, ModelClaudeOpus},
 		{"opus", opus5, ModelClaudeOpus},
 		{" Opus ", opus5, ModelClaudeOpus},
 		{"claude-opus-4-8", opus5, ModelClaudeOpus},
@@ -134,6 +140,7 @@ func TestFallbackPricingFamilyInference(t *testing.T) {
 	// Mythos id must reach the fable row rather than fall through to Sonnet.
 	for model, wantOut := range map[string]float64{
 		"claude-opus-5":    25.00,
+		"claude-opus-5-5":  20.00,
 		"claude-opus-4-8":  25.00,
 		"claude-fable-5":   50.00,
 		"claude-mythos-5":  50.00,

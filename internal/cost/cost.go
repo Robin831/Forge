@@ -53,9 +53,14 @@ const (
 	ModelClaudeSonnet5 = "claude-sonnet-5"
 	ModelClaudeHaiku   = "claude-haiku"
 	ModelClaudeOpus    = "claude-opus"
-	ModelClaudeFable   = "claude-fable"
-	ModelGemini        = "gemini"
-	ModelOpenAI        = "openai"
+	// ModelClaudeOpus55 is Opus 5.5, priced a fifth below the Opus row
+	// ModelClaudeOpus keeps (and its cache reads at 40% of it). Priced at that
+	// row, every Opus 5.5 token was overstated by a quarter, which is the
+	// direction that stops a healthy Assay pass at its per-pass ceiling.
+	ModelClaudeOpus55 = "claude-opus-5-5"
+	ModelClaudeFable  = "claude-fable"
+	ModelGemini       = "gemini"
+	ModelOpenAI       = "openai"
 )
 
 // Pricing defines per-token costs in USD per million tokens.
@@ -86,6 +91,9 @@ func DefaultPricingTable() map[string]Pricing {
 		// ceiling on the first turn. An anvil still pinned to an old Opus
 		// overrides this row in settings.pricing.
 		ModelClaudeOpus: {InputPerM: 5.00, OutputPerM: 25.00, CacheReadPerM: 0.50, CacheWritePerM: 6.25},
+		// Opus 5.5 — list $4/$20, cache reads $0.20; the cache write is the
+		// same 1.25x-input 5-minute figure every other row uses.
+		ModelClaudeOpus55: {InputPerM: 4.00, OutputPerM: 20.00, CacheReadPerM: 0.20, CacheWritePerM: 5.00},
 		// Claude Fable 5 / Mythos 5 — twice Opus. Before this row existed a
 		// "fable" model matched no family and priced at the Sonnet row, five
 		// times under, which is why the ceiling never fired while Assay was
@@ -247,6 +255,12 @@ func ModelFamilyKey(model string) string {
 	case strings.Contains(lower, "fable"), strings.Contains(lower, "mythos"):
 		return ModelClaudeFable
 	case strings.Contains(lower, "opus"):
+		// Opus 5.5 and later price below the Opus row. The bare `opus` alias
+		// and every id with no readable version stay on the Opus row, which is
+		// the over-estimate and so the safe side of a cost ceiling.
+		if major, minor, ok := versionPairAfter(lower, "opus"); ok && (major > 5 || (major == 5 && minor >= 5)) {
+			return ModelClaudeOpus55
+		}
 		return ModelClaudeOpus
 	case strings.Contains(lower, "haiku"):
 		return ModelClaudeHaiku
@@ -262,6 +276,37 @@ func ModelFamilyKey(model string) string {
 		return ModelGemini
 	}
 	return ""
+}
+
+// versionPairAfter is versionAfter plus the minor version that follows the
+// major one after a single separator ("opus-5-5", "opus-5.5" → 5, 5). The minor
+// is read only when it is a single digit: a longer run is a date
+// ("opus-5-20260901"), and reading it as a minor version would move a dated
+// Opus 5 onto a later row. A missing minor is 0.
+func versionPairAfter(name, family string) (major, minor int, ok bool) {
+	major, ok = versionAfter(name, family)
+	if !ok {
+		return 0, 0, false
+	}
+	rest := name[strings.Index(name, family)+len(family):]
+	if rest != "" && strings.IndexByte("- ._", rest[0]) >= 0 {
+		rest = rest[1:]
+	}
+	for rest != "" && rest[0] >= '0' && rest[0] <= '9' {
+		rest = rest[1:]
+	}
+	if len(rest) < 2 || strings.IndexByte("-._", rest[0]) < 0 {
+		return major, 0, true
+	}
+	rest = rest[1:]
+	digits := 0
+	for digits < len(rest) && rest[digits] >= '0' && rest[digits] <= '9' {
+		digits++
+	}
+	if digits == 1 {
+		minor = int(rest[0] - '0')
+	}
+	return major, minor, true
 }
 
 // versionAfter reads the major version number directly following family in
