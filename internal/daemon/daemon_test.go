@@ -2744,10 +2744,19 @@ type mockVCSProvider struct {
 	// concurrently between the pre-dispatch lookup and the recovery re-check.
 	getPRByHeadBranchFunc func(branch string, call int) (*vcs.OpenPR, error)
 	getPRCalls            atomic.Int32
+	// mergeFunc, when non-nil, overrides mergeErr and is passed the 1-based
+	// call count so tests can script a transient failure followed by success.
+	mergeFunc func(call int) error
+	// lightStatus is what CheckStatusLight returns (nil by default), which is
+	// how auto-merge learns whether a PR it failed to merge is merged anyway.
+	lightStatus *vcs.PRStatus
 }
 
 func (m *mockVCSProvider) MergePR(_ context.Context, _ string, _ int, _ string) error {
-	m.mergeCalls.Add(1)
+	call := int(m.mergeCalls.Add(1))
+	if m.mergeFunc != nil {
+		return m.mergeFunc(call)
+	}
 	return m.mergeErr
 }
 func (m *mockVCSProvider) CreatePR(_ context.Context, params vcs.CreateParams) (*vcs.PR, error) {
@@ -2762,7 +2771,7 @@ func (m *mockVCSProvider) CheckStatus(_ context.Context, _ string, _ int) (*vcs.
 	return nil, nil
 }
 func (m *mockVCSProvider) CheckStatusLight(_ context.Context, _ string, _ int) (*vcs.PRStatus, error) {
-	return nil, nil
+	return m.lightStatus, nil
 }
 func (m *mockVCSProvider) ListOpenPRs(_ context.Context, _ string) ([]vcs.OpenPR, error) {
 	return m.openPRs, nil

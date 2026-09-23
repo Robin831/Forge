@@ -339,7 +339,14 @@ type PRStatus struct {
 	// "MERGEABLE", "CONFLICTING", "UNKNOWN".
 	Mergeable         string
 	UnresolvedThreads int
-	HeadRefName       string
+	// UnresolvedThreadsUnknown is true when the provider could not count the
+	// PR's unresolved review threads (a GraphQL timeout, a 5xx). The count
+	// above is then a zero that measured nothing, and every reader that gates
+	// on it must treat the PR as NOT known to be thread-free: read as "no
+	// threads", a TLS timeout once announced a PR with open review threads as
+	// ready to merge and auto-merge fired against it (Explorer #401).
+	UnresolvedThreadsUnknown bool `json:"-"`
+	HeadRefName              string
 	// HeadSHA is the commit OID at the head of the PR branch. Used by the
 	// Assay review trigger to detect whether the current head has been
 	// reviewed yet (compared against the last reviewed SHA).
@@ -407,6 +414,13 @@ func (s *PRStatus) NeedsChanges() bool {
 		}
 	}
 	return s.UnresolvedThreads > 0
+}
+
+// ThreadsResolved reports whether the PR is KNOWN to have no unresolved review
+// threads. It is false both when threads are open and when they could not be
+// counted, which is the fail-closed reading every merge gate wants.
+func (s *PRStatus) ThreadsResolved() bool {
+	return !s.UnresolvedThreadsUnknown && s.UnresolvedThreads == 0
 }
 
 // HasPendingReviewRequests returns true if there are outstanding review requests.
@@ -597,7 +611,7 @@ type MergeabilityInputs struct {
 func MergeabilityFromStatus(s *PRStatus) MergeabilityInputs {
 	return MergeabilityInputs{
 		HasConflicts:         s.Mergeable == "CONFLICTING",
-		HasUnresolvedThreads: s.UnresolvedThreads > 0,
+		HasUnresolvedThreads: !s.ThreadsResolved(),
 		HasPendingReviews:    s.HasPendingReviewRequests(),
 	}
 }

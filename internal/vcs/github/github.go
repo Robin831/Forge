@@ -222,11 +222,14 @@ func (p *Provider) CheckStatus(ctx context.Context, worktreePath string, prNumbe
 		return nil, fmt.Errorf("parsing pr status: %w", err)
 	}
 
-	// Fetch unresolved thread count via GraphQL
+	// Fetch unresolved thread count via GraphQL. A failure is recorded as
+	// UnresolvedThreadsUnknown rather than left as a zero count, which the
+	// merge gates would read as "no threads".
 	count, err := p.FetchUnresolvedThreadCount(ctx, worktreePath, prNumber)
 	if err == nil {
 		status.UnresolvedThreads = count
 	} else {
+		status.UnresolvedThreadsUnknown = true
 		log.Printf("[vcs/github] Warning: could not fetch unresolved thread count for PR #%d: %v", prNumber, err)
 	}
 

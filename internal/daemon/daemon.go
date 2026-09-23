@@ -129,6 +129,7 @@ type bellowsMonitorIface interface {
 	Refresh()
 	Run(ctx context.Context) error
 	ResetPRState(anvil string, prNumber int)
+	RearmAutoMerge(anvil string, prNumber int)
 }
 
 // temperCacheEntry caches a parsed per-anvil temper.yaml along with the file's
@@ -476,6 +477,14 @@ type Daemon struct {
 	// github.DefaultRetryBackoff(); tests set a zero-delay backoff to avoid
 	// real sleeps.
 	prRetryBackoff *github.RetryBackoff
+
+	// autoMergeRearms counts, per "<anvil>/<pr>", how many times an auto-merge
+	// that exhausted its transient retries has re-armed Bellows' ready edge.
+	// Bounded by maxAutoMergeRearms so a failure misclassified as transient can
+	// never re-fire a merge forever. In memory only: a restart re-seeds the
+	// edge from scratch anyway.
+	autoMergeRearms   map[string]int
+	autoMergeRearmsMu sync.Mutex
 
 	// reqTracker tracks async IPC requests so completions can be correlated
 	// back to the original command. Store it by value so Daemon instances
@@ -3532,18 +3541,46 @@ func (d *Daemon) doAutoMerge(ctx context.Context, anvil, anvilPath string, pr st
 		d.logger.Warn("failed to log auto-merge start event", "error", err)
 	}
 
-	mergeCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
-	defer cancel()
-
-	if err := d.vcsForAnvil(anvil).MergePR(mergeCtx, anvilPath, pr.Number, strategy); err != nil {
+	// Transient failures (a GitHub 5xx such as GraphQL's "Something went wrong
+	// while executing your query", a network blip) are retried through the
+	// shared classifier; permanent ones — a branch policy refusal above all —
+	// return at once. A 5xx does not prove the merge did not land, so every
+	// failure is followed by a state read: a PR that is already merged is a
+	// success, and retrying it would only turn that success into a failure.
+	provider := d.vcsForAnvil(anvil)
+	err := github.RetryTransient(ctx, d.createPRBackoff(),
+		func(attempt int, delay time.Duration, e error) {
+			d.logger.Warn("auto-merge transient failure, retrying",
+				"pr_number", pr.Number, "anvil", anvil, "attempt", attempt, "delay", delay, "error", e)
+		},
+		func() error {
+			mergeCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+			defer cancel()
+			e := provider.MergePR(mergeCtx, anvilPath, pr.Number, strategy)
+			if e != nil && d.prAlreadyMerged(ctx, provider, anvilPath, pr.Number) {
+				d.logger.Info("auto-merge reported an error but the PR is merged",
+					"pr_number", pr.Number, "anvil", anvil, "error", e)
+				return nil
+			}
+			return e
+		})
+	if err != nil {
 		if logErr := d.db.LogEvent(state.EventPRMergeFailed,
 			fmt.Sprintf("PR #%d auto-merge failed: %v", pr.Number, err),
 			pr.BeadID, anvil); logErr != nil {
 			d.logger.Warn("failed to log auto-merge failure event", "error", logErr)
 		}
 		d.logger.Error("auto-merge failed", "pr_number", pr.Number, "anvil", anvil, "error", err)
+		// The ready-to-merge transition is an edge: nothing re-fires it while
+		// the PR stays ready, so a transient failure that outlived the retries
+		// would otherwise strand a green PR until a human merged it. Re-arm the
+		// edge for the next Bellows poll, a bounded number of times.
+		if github.IsTransient(err) {
+			d.rearmAutoMerge(anvil, pr.Number)
+		}
 		return
 	}
+	d.clearAutoMergeRearms(anvil, pr.Number)
 
 	if err := d.db.LogEvent(state.EventPRAutoMerged,
 		fmt.Sprintf("PR #%d auto-merged successfully (strategy: %s)", pr.Number, strategy),
@@ -3551,6 +3588,54 @@ func (d *Daemon) doAutoMerge(ctx context.Context, anvil, anvilPath string, pr st
 		d.logger.Warn("failed to log auto-merge success event", "error", err)
 	}
 	d.logger.Info("PR auto-merged successfully", "pr_number", pr.Number, "anvil", anvil, "bead", pr.BeadID)
+}
+
+// maxAutoMergeRearms bounds how many times one PR's ready-to-merge edge is
+// re-armed after its auto-merge exhausted the transient retry budget. Each
+// re-arm costs one Bellows poll interval, so three spans a GitHub incident of
+// several minutes without letting a misclassified failure loop forever.
+const maxAutoMergeRearms = 3
+
+// prAlreadyMerged reports whether the PR is merged, reading its state with the
+// light status call. Any error reading it is "not known to be merged".
+func (d *Daemon) prAlreadyMerged(ctx context.Context, provider vcs.Provider, anvilPath string, prNumber int) bool {
+	statusCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	status, err := provider.CheckStatusLight(statusCtx, anvilPath, prNumber)
+	return err == nil && status != nil && status.IsMerged()
+}
+
+// rearmAutoMerge asks Bellows to re-announce the PR as ready on its next poll,
+// unless this PR has already been re-armed maxAutoMergeRearms times.
+func (d *Daemon) rearmAutoMerge(anvil string, prNumber int) {
+	key := fmt.Sprintf("%s/%d", anvil, prNumber)
+	d.autoMergeRearmsMu.Lock()
+	if d.autoMergeRearms == nil {
+		d.autoMergeRearms = make(map[string]int)
+	}
+	n := d.autoMergeRearms[key]
+	if n >= maxAutoMergeRearms {
+		d.autoMergeRearmsMu.Unlock()
+		d.logger.Warn("auto-merge not re-armed: re-arm budget spent; merge by hand",
+			"pr_number", prNumber, "anvil", anvil, "rearms", n)
+		return
+	}
+	d.autoMergeRearms[key] = n + 1
+	d.autoMergeRearmsMu.Unlock()
+
+	if d.bellowsMonitor == nil {
+		return
+	}
+	d.bellowsMonitor.RearmAutoMerge(anvil, prNumber)
+	d.logger.Info("auto-merge re-armed for the next Bellows poll",
+		"pr_number", prNumber, "anvil", anvil, "rearm", n+1, "max", maxAutoMergeRearms)
+}
+
+// clearAutoMergeRearms forgets a PR's re-arm count once it has merged.
+func (d *Daemon) clearAutoMergeRearms(anvil string, prNumber int) {
+	d.autoMergeRearmsMu.Lock()
+	delete(d.autoMergeRearms, fmt.Sprintf("%s/%d", anvil, prNumber))
+	d.autoMergeRearmsMu.Unlock()
 }
 
 // drainActionPriority is the order parked lifecycle actions are dispatched when
@@ -7703,8 +7788,10 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 		if liveErr != nil {
 			return errorResponse(fmt.Sprintf("could not verify live PR status: %v", liveErr))
 		}
-		if !liveStatus.CIsPassing() || liveStatus.Mergeable == "CONFLICTING" || liveStatus.UnresolvedThreads > 0 || liveStatus.HasPendingReviewRequests() {
-			return errorResponse("PR failed live readiness check (CI failing, conflicts, unresolved threads, or pending reviews)")
+		// ThreadsResolved is false when the thread count could not be fetched,
+		// so a GraphQL blip refuses the merge instead of reading as "no threads".
+		if !liveStatus.CIsPassing() || liveStatus.Mergeable == "CONFLICTING" || !liveStatus.ThreadsResolved() || liveStatus.HasPendingReviewRequests() {
+			return errorResponse("PR failed live readiness check (CI failing, conflicts, unresolved or uncounted threads, or pending reviews)")
 		}
 		beadID := pr.BeadID
 		strategy := cfgSnapshot.Settings.MergeStrategy

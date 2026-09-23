@@ -181,6 +181,29 @@ type prSnapshot struct {
 	// snapshot so the ready transition fires on the rising edge — once the
 	// assay lands — rather than prematurely on first sighting.
 	AssayUpToDate bool
+	// ThreadsUnknown is true when this poll could not count the PR's
+	// unresolved review threads. HasUnresolvedThreads is then carried forward
+	// from the previous snapshot (so a failed fetch fabricates neither a
+	// "threads resolved" nor a "new threads" transition), and the snapshot is
+	// never ready: a PR is ready to merge only when it is KNOWN to be
+	// thread-free. Tracking it on both sides of the ready edge means the
+	// transition still fires on the first poll that can count again.
+	ThreadsUnknown bool
+	// MergeRetry is set on the LAST snapshot by RearmAutoMerge after an
+	// auto-merge failed transiently. It makes that snapshot read as not ready,
+	// so the next poll that finds the PR still ready re-fires the
+	// ready-to-merge edge — and with it auto-merge. A fresh snapshot never
+	// carries it, so each re-arm is one-shot.
+	MergeRetry bool
+}
+
+// ready reports whether the snapshot satisfies every ready-to-merge
+// condition. It is the one definition both sides of the transition test and
+// the needs_fix → approved restore read, so the three cannot disagree.
+func (s *prSnapshot) ready() bool {
+	return s.CIPassing && !s.CIInProgress && !s.IsConflicting &&
+		!s.HasUnresolvedThreads && !s.ThreadsUnknown && !s.HasPendingReviews &&
+		s.AssayUpToDate && !s.MergeRetry
 }
 
 // New creates a Bellows monitor. The vcsLookup function returns the VCS
@@ -955,6 +978,7 @@ func (m *Monitor) checkPR(ctx context.Context, pr *state.PR, dailyAssayCost *flo
 		HasApproval:          status.HasApproval(),
 		NeedsChanges:         status.NeedsChanges(),
 		HasUnresolvedThreads: status.UnresolvedThreads > 0,
+		ThreadsUnknown:       status.UnresolvedThreadsUnknown,
 		HasPendingReviews:    status.HasPendingReviewRequests(),
 		IsMerged:             status.IsMerged(),
 		IsClosed:             status.IsClosed(),
@@ -1062,6 +1086,15 @@ func (m *Monitor) checkPR(ctx context.Context, pr *state.PR, dailyAssayCost *flo
 	// fire because old.CIPassing is already false.
 	if ciInProgress {
 		newSnap.CIPassing = lastSnap.CIPassing
+	}
+	// When the thread count could not be fetched, the zero in the status
+	// measured nothing: carry the last known thread state forward so a failed
+	// fetch fabricates no transition in either direction. NeedsChanges folds
+	// threads in (PRStatus.NeedsChanges), so it is re-derived from the carried
+	// value to stay in lockstep. ThreadsUnknown keeps the snapshot not-ready.
+	if newSnap.ThreadsUnknown {
+		newSnap.HasUnresolvedThreads = lastSnap.HasUnresolvedThreads
+		newSnap.NeedsChanges = newSnap.NeedsChanges || newSnap.HasUnresolvedThreads
 	}
 	// Update snapshot while holding the lock
 	m.lastStatuses[key] = newSnap
@@ -1366,7 +1399,9 @@ func (m *Monitor) checkPR(ctx context.Context, pr *state.PR, dailyAssayCost *flo
 	// ciInProgress is excluded: a PR is not truly ready while CI is still running.
 	// assayUpToDate is required so the status is not restored to approved while an
 	// Assay review is still pending/in-flight for the current head (Forge-75cx).
-	if newSnap.CIPassing && !ciInProgress && !newSnap.IsConflicting && !newSnap.HasUnresolvedThreads && !newSnap.HasPendingReviews && assayUpToDate {
+	// newSnap.CIInProgress and newSnap.AssayUpToDate carry ciInProgress and
+	// assayUpToDate, so ready() is this condition plus the thread-count gate.
+	if newSnap.ready() {
 		_ = m.db.UpdatePRStatusIfNeedsFix(pr.ID, state.PRApproved)
 	}
 
@@ -1389,8 +1424,13 @@ func (m *Monitor) checkPR(ctx context.Context, pr *state.PR, dailyAssayCost *flo
 	// before its in-flight Assay posts findings — bouncing it back to Burnish a
 	// poll or two later (Forge-75cx). Tracking it per snapshot keeps lastReady
 	// honest so the transition still fires exactly once when the assay lands.
-	newReady := newSnap.CIPassing && !ciInProgress && !newSnap.IsConflicting && !newSnap.HasUnresolvedThreads && !newSnap.HasPendingReviews && newSnap.AssayUpToDate
-	lastReady := lastSnap.CIPassing && !lastSnap.CIInProgress && !lastSnap.IsConflicting && !lastSnap.HasUnresolvedThreads && !lastSnap.HasPendingReviews && lastSnap.AssayUpToDate
+	// ThreadsUnknown gates both sides too: a poll that could not count the
+	// threads is never ready, and the poll after it that can count them sees a
+	// not-ready predecessor and fires the edge. MergeRetry (set only on the
+	// last snapshot, by RearmAutoMerge) is what re-fires it after an
+	// auto-merge failed transiently.
+	newReady := newSnap.ready()
+	lastReady := lastSnap.ready()
 	if newReady && !lastReady {
 		m.emit(ctx, PREvent{
 			PRNumber:  pr.Number,
@@ -1419,7 +1459,10 @@ func (m *Monitor) checkPR(ctx context.Context, pr *state.PR, dailyAssayCost *flo
 	// false in the DB so the Ready-to-Merge panel does not show the PR
 	// prematurely. (newSnap.CIPassing may have been overridden to preserve
 	// the last completed value for transition detection — see above.)
-	_ = m.db.UpdatePRMergeability(pr.ID, newSnap.CIPassing && !ciInProgress, newSnap.IsConflicting, newSnap.HasUnresolvedThreads, newSnap.HasPendingReviews, newSnap.HasApproval, newSnap.AssayUpToDate)
+	// An uncounted thread state is persisted as "has threads" so the Ready to
+	// Merge panel and the manual merge_pr gate (IsPRReadyToMerge) fail closed
+	// for as long as the count is unknown.
+	_ = m.db.UpdatePRMergeability(pr.ID, newSnap.CIPassing && !ciInProgress, newSnap.IsConflicting, newSnap.HasUnresolvedThreads || newSnap.ThreadsUnknown, newSnap.HasPendingReviews, newSnap.HasApproval, newSnap.AssayUpToDate)
 
 }
 
@@ -1432,6 +1475,24 @@ func (m *Monitor) ResetPRState(anvil string, prNumber int) {
 	defer m.mu.Unlock()
 	key := fmt.Sprintf("%s/%d", anvil, prNumber)
 	delete(m.lastStatuses, key)
+}
+
+// RearmAutoMerge makes the next poll that finds the PR ready re-announce it,
+// re-firing the auto-merge handler. The ready-to-merge transition is an edge,
+// so without this an auto-merge that failed transiently (a GitHub 5xx) left the
+// PR ready, green and unmerged until a human noticed — four hours on Explorer
+// #401. It marks the LAST snapshot not-ready rather than deleting it, because
+// ResetPRState's re-seed reads the DB's already-ready mergeability back when
+// Assay is disabled for the anvil and would swallow the edge. With no snapshot
+// cached there is nothing to re-arm: the seed path already starts not-ready.
+// The caller bounds how often it re-arms.
+func (m *Monitor) RearmAutoMerge(anvil string, prNumber int) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	key := fmt.Sprintf("%s/%d", anvil, prNumber)
+	if snap := m.lastStatuses[key]; snap != nil {
+		snap.MergeRetry = true
+	}
 }
 
 // getLearnMu returns the per-anvil mutex used to serialize auto-learn operations,
