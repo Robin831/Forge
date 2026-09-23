@@ -217,6 +217,7 @@ func (g *GitLabProvider) CheckStatus(ctx context.Context, worktreePath string, p
 	// Fetch unresolved thread count
 	threadCount, err := g.FetchUnresolvedThreadCount(ctx, worktreePath, prNumber)
 	if err != nil {
+		status.UnresolvedThreadsUnknown = true
 		log.Printf("[gitlab] Warning: could not fetch unresolved thread count for MR !%d: %v", prNumber, err)
 	} else {
 		status.UnresolvedThreads = threadCount

@@ -68,7 +68,8 @@ func Classify(err error) error {
 //   - any HTTP 5xx
 //   - network failures: dial/timeout/EOF/connection-reset/i/o timeout, plus
 //     net.Error timeouts and io.EOF
-//   - the literal GraphQL "Requires authentication" error
+//   - the literal GraphQL "Requires authentication" error, and GraphQL's
+//     "Something went wrong while executing your query" (a server-side 5xx)
 //
 // Everything else — including unrecognised errors — is treated as PERMANENT so
 // that misclassification can never cause an unbounded retry loop. Permanent
@@ -134,8 +135,13 @@ func isTransient(err error) bool {
 		}
 	}
 
-	// GraphQL literal that surfaces without a numeric status code.
-	if strings.Contains(msg, "requires authentication") {
+	// GraphQL literals that surface without a numeric status code. The second is
+	// how GitHub reports an internal error (a 5xx) on a GraphQL query — `gh pr
+	// merge` failed with it on Explorer #401 and a retry seconds later succeeds.
+	if messageContains(msg,
+		"requires authentication",
+		"something went wrong while executing your query",
+	) {
 		return true
 	}
 
@@ -171,6 +177,8 @@ func isPermanentMessage(msg string) bool {
 		"already exists for branch",
 		"protected branch",
 		"branch protection",
+		"base branch policy prohibits",
+		"is not mergeable",
 		"required status check",
 		"changes must be made through a pull request",
 		"review is required by reviewers with write access",

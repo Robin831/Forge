@@ -203,6 +203,7 @@ func (g *GiteaProvider) CheckStatus(ctx context.Context, worktreePath string, pr
 	// Fetch unresolved review comments (Gitea uses review comments, not threads)
 	threadCount, err := g.fetchUnresolvedThreads(ctx, ri, prNumber)
 	if err != nil {
+		status.UnresolvedThreadsUnknown = true
 		log.Printf("[gitea] Warning: could not fetch unresolved comments for PR #%d: %v", prNumber, err)
 	} else {
 		status.UnresolvedThreads = threadCount
