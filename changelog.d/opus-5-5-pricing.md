@@ -1,2 +1,0 @@
-category: Added
-- **Opus 5.5 pricing row** - `claude-opus-5-5` ($4 / $20 per MTok, cache read $0.20, 5-minute cache write $5.00) now has its own entry in the default pricing table, and model-family inference routes `claude-opus-5-5`, Copilot's `claude-opus-5.5` and later Opus versions to it. Priced at the Opus 5 row it was overestimated by 25% (cache reads 2.5x), the direction that stops a healthy Assay pass at its per-pass cost ceiling. A dated id such as `claude-opus-5-20260901` still reads as Opus 5; the bare `opus` alias stays on the Opus row.
