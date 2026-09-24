@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"os"
@@ -359,7 +360,19 @@ func configureStopDaemon(t *testing.T, forgeID, anvil, dir string) (*Daemon, *st
 	updated := *cfg
 	updated.Anvils = map[string]config.AnvilConfig{anvil: {Path: dir}}
 	d.cfg.Store(&updated)
+	stubBeadStatus(d, "in_progress")
 	return d, db
+}
+
+// stubBeadStatus makes every `bd show` the stop verbs issue report status. An
+// empty status simulates a failed lookup.
+func stubBeadStatus(d *Daemon, status string) {
+	d.beadShower = func(_, beadID string) ([]byte, string, error) {
+		if status == "" {
+			return nil, "connection refused", errors.New("exit status 1")
+		}
+		return []byte(`{"id":"` + beadID + `","status":"` + status + `"}`), "", nil
+	}
 }
 
 func TestHandleIPC_QueueStop(t *testing.T) {
@@ -496,6 +509,52 @@ func TestStopVerbsReleaseClaim(t *testing.T) {
 			assert.Contains(t, logged, "update "+beadID)
 			assert.Contains(t, logged, "--status=open")
 			assert.Contains(t, logged, "--assignee=")
+		})
+	}
+}
+
+// TestStopLeavesUnclaimedBeadUntouched covers Fhi.Metadata-c3d0h: a web-UI
+// stop reopened a bead the bead-closer had closed eleven minutes earlier.
+func TestStopLeavesUnclaimedBeadUntouched(t *testing.T) {
+	cases := []struct {
+		name       string
+		status     string
+		wantState  string
+		wantReopen bool
+	}{
+		{name: "closed bead stays closed", status: "closed", wantState: ipc.RequestStateOK},
+		{name: "open bead is not rewritten", status: "open", wantState: ipc.RequestStateOK},
+		{name: "unreadable status fails closed", status: "", wantState: ipc.RequestStateError},
+		{name: "in_progress bead is reopened", status: "in_progress", wantState: ipc.RequestStateOK, wantReopen: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			bdLog := stubBd(t, tmpDir)
+			d, db := configureStopDaemon(t, "", "anvil-1", tmpDir)
+			stubBeadStatus(d, tc.status)
+
+			payload, _ := json.Marshal(ipc.QueueActionPayload{BeadID: "BD-C3D0H", AnvilName: "anvil-1"})
+			resp := d.handleIPC(ipc.Command{Type: "queue_stop", Payload: payload})
+			require.Equal(t, "queued", resp.Type)
+			waitAsyncDone(t, d)
+
+			outcome, ok := d.reqTracker.Outcome(resp.RequestID)
+			require.True(t, ok, "async outcome should be recorded")
+			assert.Equal(t, tc.wantState, outcome.State, "outcome message: %s", outcome.Message)
+
+			// The rest of the stop happens whatever the bead's status.
+			r, err := db.GetRetry("BD-C3D0H", "anvil-1")
+			require.NoError(t, err)
+			require.NotNil(t, r)
+			assert.True(t, r.ClarificationNeeded)
+
+			logged, _ := os.ReadFile(bdLog)
+			if tc.wantReopen {
+				assert.Contains(t, string(logged), "update BD-C3D0H --status=open --assignee=")
+			} else {
+				assert.NotContains(t, string(logged), "update", "stop must not write a bead the forge no longer holds")
+			}
 		})
 	}
 }
