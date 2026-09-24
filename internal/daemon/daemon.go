@@ -9002,7 +9002,7 @@ type stopBeadParams struct {
 // queue_stop). It terminates any running worker via queueactions.Stop, releases
 // the in-memory bead slot, and — when releaseClaim is set — asynchronously
 // releases the bd claim (`bd update --status=open --assignee=`) so the poller
-// sees the bead again.
+// sees the bead again, but only while the bead is still in_progress.
 //
 // The bd release shells out to bd, so it runs in a goroutine and the method
 // returns a queued acknowledgement the caller polls for completion. When
@@ -9051,6 +9051,19 @@ func (d *Daemon) stopBead(p stopBeadParams) ipc.Response {
 		reason = "manually stopped"
 	}
 	go func() {
+		// Only undo our own claim: a bead closed since dispatch (e.g. by the
+		// bead-closer after its PR merged) must stay closed. See Fhi.Metadata-c3d0h.
+		status := d.fetchBeadStatus(anvilPath, beadID)
+		if status == "" {
+			d.logger.Warn("bead stopped but claim not released: could not read bead status", "bead", beadID, "anvil", anvilName, "reason", reason)
+			d.completeAsync(reqID, errorResponse(fmt.Sprintf("bead %s stopped but claim not released: could not read its status from bd", beadID)))
+			return
+		}
+		if status != "in_progress" {
+			d.logger.Info("bead stopped; reopen skipped because bead is not in_progress", "bead", beadID, "anvil", anvilName, "status", status, "reason", reason)
+			d.completeAsync(reqID, okResponse(map[string]string{"message": fmt.Sprintf("bead %s stopped; left %s", beadID, status)}))
+			return
+		}
 		releaseCmd, releaseCancel := executil.BdCommand(d.runCtx, "update", beadID, "--status=open", "--assignee=", "--json")
 		defer releaseCancel()
 		releaseCmd.Dir = anvilPath
