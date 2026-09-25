@@ -478,10 +478,15 @@ type WardenRerunPayload struct {
 // daemon's resolvePRTarget, which this command shares with pr_action's rebase
 // branch (the other handler that accepts either form). Handlers that only ever
 // take a row id look it up directly and do not go through it.
+//
+// SHA, when set, pins the review to that commit of the PR: the daemon reviews
+// merge-base(SHA, base)..SHA in shadow mode instead of the PR head. Empty keeps
+// the head review, and omitempty keeps that payload unchanged on the wire.
 type AssayRerunPayload struct {
 	Anvil    string `json:"anvil"`
 	PR       int    `json:"pr,omitempty"`
 	PRNumber int    `json:"pr_number,omitempty"`
+	SHA      string `json:"sha,omitempty"`
 }
 
 // ApproveAsIsPayload is the payload for an "approve_as_is" command.

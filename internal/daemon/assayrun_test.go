@@ -44,7 +44,7 @@ func newAssayRunDaemon(t *testing.T) (*Daemon, *state.DB) {
 // empty so no worker row is touched.
 func runTestAssayReview(t *testing.T, d *Daemon) (*state.AssayRun, error) {
 	t.Helper()
-	return d.runAssayReview(context.Background(), "forge", t.TempDir(), "Forge-abc1", 347, "deadbeef", t.TempDir(), "")
+	return d.runAssayReview(context.Background(), "forge", t.TempDir(), "Forge-abc1", 347, "deadbeef", t.TempDir(), "", nil)
 }
 
 // TestRunAssayReviewEmitsExactlyOneTerminalEvent is the invariant this whole

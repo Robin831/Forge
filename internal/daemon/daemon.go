@@ -299,6 +299,13 @@ type Daemon struct {
 	// never mutated afterwards.
 	assayDeltaFetch func(ctx context.Context, worktreePath, sinceSHA, headSHA string) ([]byte, error)
 
+	// assayPinResolve and assayPinnedDiff override the git steps of a pinned
+	// rerun (`forge assay rerun --sha`): validating the commit, and checking it
+	// out and diffing base..sha. nil selects the real ones. Set before Run/IPC
+	// serving begins and never mutated afterwards.
+	assayPinResolve func(pr *state.PR, anvilPath, sha string) (*assayPin, error)
+	assayPinnedDiff func(ctx context.Context, worktreePath string, pin assayPin) ([]byte, error)
+
 	// lifecycleDispatch overrides where a manually triggered lifecycle action
 	// (the pr_action fix verbs) is sent. nil selects the real
 	// handleLifecycleAction; tests replace it so the request a handler builds
@@ -2089,11 +2096,18 @@ func (d *Daemon) reviewAssay(ctx context.Context, req assay.ReviewRequest, db *s
 	return assay.Review(ctx, req, db, cfg)
 }
 
-func (d *Daemon) runAssayReview(ctx context.Context, anvil, anvilPath, beadID string, prNumber int, headSHA, worktreePath, workerID string) (*state.AssayRun, error) {
+// With a non-nil pin (`forge assay rerun --sha`) runAssayReview reviews
+// pin.Base..pin.SHA instead: always in shadow mode, recorded as a pinned run
+// against pin.SHA, and with the engine cut off from the PR's findings.
+func (d *Daemon) runAssayReview(ctx context.Context, anvil, anvilPath, beadID string, prNumber int, headSHA, worktreePath, workerID string, pin *assayPin) (*state.AssayRun, error) {
 	// ForAnvil, not FromAssayConfig: the per-pass provider chains are resolved
 	// from the anvil's and the global stage_providers as well as the assay
 	// block, and doctor builds its report through the same constructor.
 	engineCfg := assay.ForAnvil(d.cfg.Load(), anvil)
+	if pin != nil {
+		headSHA = pin.SHA
+		engineCfg.ShadowMode = true
+	}
 
 	started := time.Now()
 	// The key is minted here, before the engine runs, because both halves need
@@ -2109,6 +2123,7 @@ func (d *Daemon) runAssayReview(ctx context.Context, anvil, anvilPath, beadID st
 		StartedAt:  started,
 		ShadowMode: engineCfg.ShadowMode,
 		LogKey:     logKey,
+		Pinned:     pin != nil,
 	}
 
 	// Hold this review's estimated cost against the Assay daily cap for as
@@ -2136,10 +2151,20 @@ func (d *Daemon) runAssayReview(ctx context.Context, anvil, anvilPath, beadID st
 	// commit (assayIncrementalScope); the full diff is still what the posting
 	// layer anchors inline comments against, since GitHub only accepts
 	// positions present in the net diff.
-	diffBytes, diffErr := d.fetchAssayDiff(ctx, worktreePath, prNumber)
+	var diffBytes []byte
+	var diffErr error
+	if pin != nil {
+		diffBytes, diffErr = d.fetchAssayPinnedDiff(ctx, worktreePath, *pin)
+	} else {
+		diffBytes, diffErr = d.fetchAssayDiff(ctx, worktreePath, prNumber)
+	}
 	var reviewDiff, baselineSHA string
 	incremental, reviewable := false, false
-	if diffErr == nil {
+	if diffErr == nil && pin != nil {
+		// Always the whole base..sha diff: the incremental baseline is the
+		// PR's last reviewed head, which says nothing about this commit.
+		reviewDiff, reviewable = string(diffBytes), true
+	} else if diffErr == nil {
 		reviewDiff, incremental, baselineSHA, reviewable = d.assayIncrementalScope(ctx, anvil, worktreePath, headSHA, prNumber, diffBytes)
 	}
 	if diffErr != nil {
@@ -2165,6 +2190,14 @@ func (d *Daemon) runAssayReview(ctx context.Context, anvil, anvilPath, beadID st
 		// the entire run and read as a missing worker. sync.Once keeps this to
 		// the first pass: the deep passes fan out concurrently, so without it
 		// the panel would flip between logs mid-run.
+		//
+		// A pinned run reviews with no DB: prior findings would suppress the
+		// very finding a recall check looks for, and its own must not land in
+		// the PR's findings, where they would steer later head reviews.
+		engineDB := d.db
+		if pin != nil {
+			engineDB = nil
+		}
 		result, rerr := d.reviewAssay(ctx, assay.ReviewRequest{
 			Anvil:       anvil,
 			AnvilPath:   anvilPath,
@@ -2178,7 +2211,7 @@ func (d *Daemon) runAssayReview(ctx context.Context, anvil, anvilPath, beadID st
 			WorkDir:     worktreePath,
 			LogKey:      logKey,
 			OnPassLog:   d.assayLogPathRecorder(workerID),
-		}, d.db, engineCfg)
+		}, engineDB, engineCfg)
 		if rerr != nil {
 			// A failed run is still a billed run: the sessions it made before
 			// it died are charged, so the cost the error carries is recorded
@@ -2274,7 +2307,11 @@ func (d *Daemon) runAssayReview(ctx context.Context, anvil, anvilPath, beadID st
 				"cache_r", run.CacheReadTokens,
 				"cache_w_redundant", result.RedundantCacheWriteTokens(),
 				"duration_ms", result.Duration.Milliseconds(),
+				"pinned", pin != nil,
 			)
+			if pin != nil {
+				d.logAssayPinnedFindings(prNumber, beadID, *pin, result.Findings)
+			}
 
 			// Live posting. Post() self-guards on shadow mode, so this only
 			// produces public side effects on anvils whose resolved shadow_mode
@@ -2372,7 +2409,7 @@ func (d *Daemon) ensureAssayReviewedHead(ctx context.Context, anvil, anvilPath, 
 	d.logger.Info("Burnish/Assay coordination: running Assay before fix so both reviews land in one pass", "pr", prNumber, "anvil", anvil, "head", st.HeadSHA)
 	// No dedicated Assay worker row on this path — the run piggybacks on the
 	// Burnish worker — so there is nothing to point at a log file.
-	_, _ = d.runAssayReview(ctx, anvil, anvilPath, beadID, prNumber, st.HeadSHA, worktreePath, "")
+	_, _ = d.runAssayReview(ctx, anvil, anvilPath, beadID, prNumber, st.HeadSHA, worktreePath, "", nil)
 }
 
 // dispatchLifecycleAction runs a lifecycle action on its own goroutine, through
@@ -2968,7 +3005,11 @@ func (d *Daemon) handleLifecycleAction(ctx context.Context, req lifecycle.Action
 				break
 			}
 
-			run, recErr := d.runAssayReview(workerCtx, req.Anvil, anvilCfg.Path, req.BeadID, req.PRNumber, req.HeadSHA, wt.Path, workerID)
+			var pin *assayPin
+			if req.PinnedSHA != "" {
+				pin = &assayPin{SHA: req.PinnedSHA, Base: req.PinnedBase}
+			}
+			run, recErr := d.runAssayReview(workerCtx, req.Anvil, anvilCfg.Path, req.BeadID, req.PRNumber, req.HeadSHA, wt.Path, workerID, pin)
 			_ = d.db.UpdateWorkerStatus(workerID, assayWorkerStatus(run, recErr))
 			// Reset the snapshot so subsequent head pushes are re-detected by
 			// the gate on the next poll.
@@ -7554,6 +7595,9 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 		pr, err := resolvePRTarget(d.db, arp.PR, arp.PRNumber, arp.Anvil)
 		if err != nil {
 			return errorResponse(err.Error())
+		}
+		if arp.SHA != "" {
+			return d.startPinnedAssayRerun(pr, anvilCfg, arp.SHA)
 		}
 		_ = d.db.LogEvent(state.EventPRReviewNeeded, fmt.Sprintf("Assay re-review requested for PR #%d (manual)", pr.Number), pr.BeadID, arp.Anvil)
 		d.logger.Info("Assay re-review requested", "pr", pr.Number, "anvil", arp.Anvil, "bead", pr.BeadID)

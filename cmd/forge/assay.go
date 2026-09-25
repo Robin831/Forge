@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -18,6 +19,7 @@ func init() {
 	assayCmd.AddCommand(assayRunCmd)
 
 	assayRerunCmd.Flags().StringP("anvil", "a", "", "Anvil the PR belongs to")
+	assayRerunCmd.Flags().String("sha", "", "Review merge-base(<sha>, base)..<sha> in shadow mode instead of the PR head")
 	_ = assayRerunCmd.MarkFlagRequired("anvil")
 	assayCmd.AddCommand(assayRerunCmd)
 
@@ -64,18 +66,52 @@ var assayRerunCmd = &cobra.Command{
 
 <pr> is the GitHub pull request number — what the PR page shows — scoped by
 --anvil, since PR numbers are per-repository. To address the PR by its state.db
-row id instead, run 'forge assay run --pr <id> --anvil <a>'.`,
-	Example: "  forge assay rerun 431 --anvil heimdall",
-	Args:    cobra.ExactArgs(1),
+row id instead, run 'forge assay run --pr <id> --anvil <a>'.
+
+--sha <commit> reviews a past commit of the PR instead of its head, so a change
+to REVIEW.md or the prompts can be measured against a defect a later commit
+fixed. The commit must be reachable from the PR head and not already on the
+base branch. The diff reviewed is base..<commit>, where base is
+'git merge-base <commit> origin/<base branch>' — the same fork point the PR's
+own diff starts from, taken at that commit. The run is always shadow mode
+whatever the anvil's shadow_mode says: nothing is posted to the PR, prior
+findings are neither read nor added to, and the run is recorded against
+<commit> as a pinned run, which the trigger gate ignores. Its findings are in
+the daemon log ("Assay pinned finding") and the run's pass logs.`,
+	Example: `  forge assay rerun 431 --anvil heimdall
+  forge assay rerun 5391 --anvil munin --sha 46e0f72`,
+	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		prNumber, err := parsePRNumberArg(args[0])
 		if err != nil {
 			return err
 		}
 		anvil, _ := cmd.Flags().GetString("anvil")
-		return sendAssayRerun(ipc.AssayRerunPayload{Anvil: anvil, PRNumber: prNumber})
+		sha, _ := cmd.Flags().GetString("sha")
+		p, err := assayRerunPayload(anvil, prNumber, sha, cmd.Flags().Changed("sha"))
+		if err != nil {
+			return err
+		}
+		return sendAssayRerun(p)
 	},
 }
+
+// assayRerunPayload builds the rerun payload. An explicitly empty --sha is an
+// error rather than a silent head review, since the operator asked for a pin.
+func assayRerunPayload(anvil string, prNumber int, sha string, shaSet bool) (ipc.AssayRerunPayload, error) {
+	p := ipc.AssayRerunPayload{Anvil: anvil, PRNumber: prNumber}
+	if !shaSet {
+		return p, nil
+	}
+	sha = strings.TrimSpace(sha)
+	if !assayShaPattern.MatchString(sha) {
+		return p, fmt.Errorf("invalid --sha %q: expected a commit id of 4-40 hex characters", sha)
+	}
+	p.SHA = sha
+	return p, nil
+}
+
+var assayShaPattern = regexp.MustCompile(`^[0-9a-fA-F]{4,40}$`)
 
 // parsePRNumberArg reads a positional GitHub PR number, accepting the leading
 // "#" an operator copies off a PR page. Zero and negatives are rejected here
@@ -101,10 +137,12 @@ func sendAssayRerun(p ipc.AssayRerunPayload) error {
 
 	payload, _ := json.Marshal(p)
 
-	resp, err := client.Send(ipc.Command{
-		Type:    "assay_rerun",
-		Payload: payload,
-	})
+	cmd := ipc.Command{Type: "assay_rerun", Payload: payload}
+	if p.SHA != "" {
+		// A pinned rerun fetches and validates the commit before replying.
+		cmd.ReadTimeout = ipc.BdBackedReadTimeout
+	}
+	resp, err := client.Send(cmd)
 	if err != nil {
 		return fmt.Errorf("sending command: %w", err)
 	}

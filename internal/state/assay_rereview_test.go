@@ -127,3 +127,37 @@ func TestResolvedFindingHashes(t *testing.T) {
 		t.Errorf("expected exactly {res-1}, got %v", got)
 	}
 }
+
+// A pinned run (`forge assay rerun --sha`) reviewed some past commit, not the
+// head, so none of the trigger gate's queries may see it.
+func TestPinnedRunsAreInvisibleToTheTriggerGate(t *testing.T) {
+	db := openRereviewTestDB(t)
+	headAt := time.Now().Add(-time.Hour).UTC().Truncate(time.Second)
+	if err := db.RecordAssayRun(&AssayRun{
+		Anvil: "a", PRNumber: 7, HeadSHA: "head", StartedAt: headAt,
+		Status: AssayStatusComplete,
+	}); err != nil {
+		t.Fatalf("record head run: %v", err)
+	}
+	pinned := &AssayRun{
+		Anvil: "a", PRNumber: 7, HeadSHA: "oldcommit", StartedAt: time.Now(),
+		Status: AssayStatusComplete, ShadowMode: true, Pinned: true, CostUSD: 1.5,
+	}
+	if err := db.RecordAssayRun(pinned); err != nil {
+		t.Fatalf("record pinned run: %v", err)
+	}
+
+	if sha, err := db.LastReviewedSHA("a", 7); err != nil || sha != "head" {
+		t.Errorf("LastReviewedSHA = %q, %v; want \"head\"", sha, err)
+	}
+	if n, err := db.CountAssayRuns("a", 7); err != nil || n != 1 {
+		t.Errorf("CountAssayRuns = %d, %v; want 1", n, err)
+	}
+	if at, err := db.LastAssayRunAt("a", 7); err != nil || !at.Equal(headAt) {
+		t.Errorf("LastAssayRunAt = %v, %v; want the head run's %v", at, err, headAt)
+	}
+	// Its spend still counts against the daily cap.
+	if spent, err := db.AssayCostUSDSince(headAt.Add(-time.Minute)); err != nil || spent != 1.5 {
+		t.Errorf("AssayCostUSDSince = %v, %v; want 1.5", spent, err)
+	}
+}

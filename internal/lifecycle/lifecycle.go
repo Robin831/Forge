@@ -64,6 +64,11 @@ type ActionRequest struct {
 	BaseBranch string // Target branch for the PR (empty = main)
 	IsManual   bool   // true when triggered by a user IPC action (not auto-detected by Bellows)
 	HeadSHA    string // PR head commit OID, set for ActionAssayReview so the run is recorded against the reviewed head
+	// PinnedSHA / PinnedBase aim a manual ActionAssayReview at one commit of the
+	// PR (`forge assay rerun --sha`): it reviews PinnedBase..PinnedSHA in shadow
+	// mode. Both empty for every other action and for a head review.
+	PinnedSHA  string
+	PinnedBase string
 }
 
 // ActionHandler processes lifecycle actions. Implementations should be async-safe.

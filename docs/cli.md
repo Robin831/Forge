@@ -450,7 +450,26 @@ scoped by `--anvil`.
 ```bash
 forge assay run --pr 12 --anvil my-api
 forge assay rerun 431 --anvil my-api
+forge assay rerun 431 --anvil my-api --sha 46e0f72   # review a past commit of the PR
 ```
+
+`rerun --sha <commit>` reviews one commit of the PR instead of its head, so a
+change to `REVIEW.md` or the prompts can be measured against a defect that a
+later commit fixed. The commit must be reachable from the PR head and must not
+already be on the base branch; the daemon fetches the PR (including
+`refs/pull/<n>/head`, which survives a deleted branch) and refuses anything else
+before it replies. The diff reviewed is `base..<commit>`, where `base` is
+`git merge-base <commit> origin/<base branch>`: the fork point the PR's own diff
+would have started from had that commit been its head.
+
+A pinned run is always shadow mode, whatever the anvil's `shadow_mode` says:
+nothing is posted to the PR. It runs with no prior findings (they would suppress
+the finding a recall check looks for) and writes none to the PR's findings. It is
+recorded in `assay_runs` against the commit with `pinned = 1`, which the Bellows
+trigger gate and the PR findings panel ignore, and its spend counts towards the
+Assay daily cap as usual. Its findings are logged as `Assay pinned finding`
+lines in the daemon log, and the feed row reads
+`Assay PR #431 at 46e0f72f946a: complete — …`.
 
 ## History
 

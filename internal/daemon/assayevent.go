@@ -80,6 +80,10 @@ func assayRunReason(run *state.AssayRun) string {
 // already logs, so the two cannot report different numbers.
 func assayRunEventMessage(run *state.AssayRun) string {
 	reason := assayRunReason(run)
+	pinnedSHA := ""
+	if run.Pinned {
+		pinnedSHA = run.HeadSHA
+	}
 	return assay.RunEvent{
 		PRNumber:        run.PRNumber,
 		Status:          assayEventStatus(run.Status),
@@ -95,6 +99,7 @@ func assayRunEventMessage(run *state.AssayRun) string {
 		// failed run: a skipped run is complete, and without this its row would
 		// close out the review as "0 findings".
 		SkippedReason: run.SkippedReason,
+		PinnedSHA:     pinnedSHA,
 	}.Message()
 }
 
