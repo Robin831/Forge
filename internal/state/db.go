@@ -226,6 +226,9 @@ func (db *DB) migrate() error {
 		// and no per-pass breakdown — and their logs stay ungrouped.
 		{"assay_runs", "log_key", `ALTER TABLE assay_runs ADD COLUMN log_key TEXT NOT NULL DEFAULT ''`},
 		{"assay_runs", "pass_findings", `ALTER TABLE assay_runs ADD COLUMN pass_findings TEXT NOT NULL DEFAULT ''`},
+		// pinned marks a run an operator aimed at a chosen commit with
+		// `forge assay rerun --sha`; the gate queries skip it (see AssayRun.Pinned).
+		{"assay_runs", "pinned", `ALTER TABLE assay_runs ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0`},
 		// bellows_detached mutes Bellows for one PR ("managed but muted"). It is
 		// deliberately separate from bellows_managed / bellows_manually_assigned:
 		// reconcile rewrites those on every cycle, so a detach recorded there
@@ -647,7 +650,8 @@ CREATE TABLE IF NOT EXISTS assay_runs (
     cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
     cache_read_tokens     INTEGER NOT NULL DEFAULT 0,
     log_key          TEXT NOT NULL DEFAULT '',
-    pass_findings    TEXT NOT NULL DEFAULT ''
+    pass_findings    TEXT NOT NULL DEFAULT '',
+    pinned           INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE INDEX IF NOT EXISTS idx_assay_runs_anvil_pr ON assay_runs(anvil, pr_number);
@@ -5415,6 +5419,10 @@ type AssayRun struct {
 	// the six sessions actually mattered. Nil on rows written before it was
 	// recorded.
 	PassFindings []AssayPassFindings
+	// Pinned marks a shadow run over an operator-chosen commit (`forge assay
+	// rerun --sha`), whose HeadSHA is that commit rather than the PR head. The
+	// trigger gate's queries skip it, so it neither reviews nor debounces the head.
+	Pinned bool
 }
 
 // AssayPassFindings is one pass row of a run: its name, the number of findings
@@ -5558,7 +5566,7 @@ func (db *DB) LastReviewedSHA(anvil string, prNumber int) (string, error) {
 	var headSHA string
 	err := db.conn.QueryRow(
 		`SELECT head_sha FROM assay_runs
-		 WHERE anvil = ? AND pr_number = ? AND status != ?
+		 WHERE anvil = ? AND pr_number = ? AND status != ? AND pinned = 0
 		 ORDER BY id DESC LIMIT 1`,
 		anvil, prNumber, AssayStatusFailed,
 	).Scan(&headSHA)
@@ -5856,8 +5864,8 @@ func (db *DB) RecordAssayRun(r *AssayRun) error {
 		     (anvil, pr_number, head_sha, started_at, finished_at, duration_ms,
 		      cost_usd, findings_count, skipped_reason, shadow_mode, posted_count, error,
 		      status, completed_passes, total_passes, failed_passes,
-		      cache_creation_tokens, cache_read_tokens, log_key, pass_findings)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		      cache_creation_tokens, cache_read_tokens, log_key, pass_findings, pinned)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		r.Anvil,
 		r.PRNumber,
 		r.HeadSHA,
@@ -5878,6 +5886,7 @@ func (db *DB) RecordAssayRun(r *AssayRun) error {
 		r.CacheReadTokens,
 		r.LogKey,
 		EncodeAssayPassFindings(r.PassFindings),
+		boolToInt(r.Pinned),
 	)
 	if err != nil {
 		return err
@@ -5989,7 +5998,7 @@ func (db *DB) LastAssayRunAt(anvil string, prNumber int) (time.Time, error) {
 	var startedAt string
 	err := db.conn.QueryRow(
 		`SELECT started_at FROM assay_runs
-		 WHERE anvil = ? AND pr_number = ?
+		 WHERE anvil = ? AND pr_number = ? AND pinned = 0
 		 ORDER BY id DESC LIMIT 1`,
 		anvil, prNumber,
 	).Scan(&startedAt)
@@ -6011,7 +6020,7 @@ func (db *DB) CountAssayRuns(anvil string, prNumber int) (int, error) {
 	var n int
 	err := db.conn.QueryRow(
 		`SELECT COUNT(*) FROM assay_runs
-		 WHERE anvil = ? AND pr_number = ? AND COALESCE(skipped_reason, '') = ''`,
+		 WHERE anvil = ? AND pr_number = ? AND COALESCE(skipped_reason, '') = '' AND pinned = 0`,
 		anvil, prNumber,
 	).Scan(&n)
 	if err != nil {

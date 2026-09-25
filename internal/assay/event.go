@@ -49,6 +49,10 @@ type RunEvent struct {
 	// delta. It is rendered in place of the findings count, because "0
 	// findings" is precisely how a skip would otherwise read.
 	SkippedReason string
+	// PinnedSHA is the commit a pinned run (`forge assay rerun --sha`)
+	// reviewed instead of the PR head; empty for a head review. Its findings go
+	// to the daemon log rather than the panel, and the message says so.
+	PinnedSHA string
 }
 
 // Message renders the one-line terminal event message for a finished run:
@@ -68,7 +72,11 @@ type RunEvent struct {
 // so the row is safe to render whatever a producer put in those fields.
 func (e RunEvent) Message() string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "Assay PR #%d: %s", e.PRNumber, e.Status)
+	fmt.Fprintf(&b, "Assay PR #%d", e.PRNumber)
+	if e.PinnedSHA != "" {
+		fmt.Fprintf(&b, " at %s", shortPinnedSHA(e.PinnedSHA))
+	}
+	fmt.Fprintf(&b, ": %s", e.Status)
 
 	details := make([]string, 0, 3)
 	if e.TotalPasses > 0 {
@@ -100,9 +108,20 @@ func (e RunEvent) Message() string {
 	// coverage. A skipped run produced none, so the clause would only offer a
 	// second explanation for the same silence.
 	if e.ShadowMode && e.Status != RunStatusFailed && e.SkippedReason == "" {
-		b.WriteString(" (shadow — findings in panel only)")
+		if e.PinnedSHA != "" {
+			b.WriteString(" (pinned shadow run — findings in daemon log only)")
+		} else {
+			b.WriteString(" (shadow — findings in panel only)")
+		}
 	}
 	return b.String()
+}
+
+func shortPinnedSHA(sha string) string {
+	if len(sha) > 12 {
+		return sha[:12]
+	}
+	return sha
 }
 
 // trimEventReason reduces a failure cause to one bounded, printable line.

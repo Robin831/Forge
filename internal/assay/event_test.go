@@ -37,6 +37,16 @@ func TestRunEventMessage(t *testing.T) {
 			"Assay PR #4767: complete — 5/5 passes, 0 findings ($1.00, 90s)",
 		},
 		{
+			"pinned shadow run names its commit",
+			RunEvent{
+				PRNumber: 5391, Status: RunStatusComplete,
+				CompletedPasses: 5, TotalPasses: 5,
+				Findings: 2, CostUSD: 2.8, Duration: 152 * time.Second,
+				ShadowMode: true, PinnedSHA: "46e0f72f946a1234567890abcdef1234567890ab",
+			},
+			"Assay PR #5391 at 46e0f72f946a: complete — 5/5 passes, 2 findings ($2.80, 152s) (pinned shadow run — findings in daemon log only)",
+		},
+		{
 			"complete in shadow mode",
 			RunEvent{
 				PRNumber: 347, Status: RunStatusComplete,

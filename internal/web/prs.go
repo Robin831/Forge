@@ -376,7 +376,9 @@ func (s *Server) collectPRFindings(anvil string, prNumber int) (prFindingsRespon
 }
 
 // latestAssayRun returns the most recent assay_runs row for the anvil/PR as a
-// wire object, or (nil, nil) when no run has been recorded yet.
+// wire object, or (nil, nil) when no run has been recorded yet. Pinned runs
+// (`forge assay rerun --sha`) are skipped: the panel pairs this run with the
+// PR's findings, and a pinned run writes none there.
 func (s *Server) latestAssayRun(anvil string, prNumber int) (*assayRunJSON, error) {
 	conn := s.db.Conn()
 	if conn == nil {
@@ -396,7 +398,7 @@ func (s *Server) latestAssayRun(anvil string, prNumber int) (*assayRunJSON, erro
 		cost_usd, findings_count, posted_count, shadow_mode, skipped_reason, error,
 		status, completed_passes, total_passes, failed_passes
 		FROM assay_runs
-		WHERE anvil = ? AND pr_number = ?
+		WHERE anvil = ? AND pr_number = ? AND pinned = 0
 		ORDER BY id DESC LIMIT 1`, anvil, prNumber).Scan(
 		&headSHA, &startedAt, &finishedAt, &durationMs, &costUSD,
 		&findingsCount, &postedCount, &shadow, &skipped, &errMsg,
