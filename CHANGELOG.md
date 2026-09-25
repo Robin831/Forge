@@ -9,6 +9,16 @@ Unreleased changes live as fragments in `changelog.d/` and are assembled at
 release time by `scripts/assemble-changelog.sh`.
 
 
+## [0.32.0] - 2026-09-25
+
+### Added
+
+- **Assay rerun of a past PR commit** - `forge assay rerun <pr> --anvil <a> --sha <commit>` reviews `merge-base(<commit>, origin/<base>)..<commit>` instead of the PR head, always in shadow mode and without the PR's prior findings, so a REVIEW.md or prompt change can be measured against a defect a later commit fixed. The run is recorded against that commit as a pinned run, which the trigger gate and the findings panel ignore. (Fhi.Metadata-vq7bw)
+
+### Fixed
+
+- **Stop no longer reopens a closed bead** - Stopping a bead from the web UI, Hearth or CLI now reopens it and clears the assignee only while the bead is still in_progress. A bead closed in the meantime (for example by the bead-closer after its PR merged) is left closed, and the skip is logged with the status found. (Fhi.Metadata-c3d0h)
+
 ## [0.31.1] - 2026-09-23
 
 ### Added

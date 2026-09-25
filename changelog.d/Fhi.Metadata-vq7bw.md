@@ -1,2 +1,0 @@
-category: Added
-- **Assay rerun of a past PR commit** - `forge assay rerun <pr> --anvil <a> --sha <commit>` reviews `merge-base(<commit>, origin/<base>)..<commit>` instead of the PR head, always in shadow mode and without the PR's prior findings, so a REVIEW.md or prompt change can be measured against a defect a later commit fixed. The run is recorded against that commit as a pinned run, which the trigger gate and the findings panel ignore. (Fhi.Metadata-vq7bw)
