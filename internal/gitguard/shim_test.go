@@ -272,10 +272,7 @@ func (f anvilFixture) run(t *testing.T, dir string, extraEnv []string, args ...s
 	t.Helper()
 	cmd := exec.Command(shPath(t), append([]string{f.script}, args...)...)
 	cmd.Dir = dir
-	// CleanGitEnv, not os.Environ: this test binary is itself routinely run
-	// inside a Forge worker, whose inherited GIT_DIR would retarget every
-	// fixture command at the anvil under test.
-	cmd.Env = append(executil.CleanGitEnv(), extraEnv...)
+	cmd.Env = append(testEnv(), extraEnv...)
 	out, err := cmd.CombinedOutput()
 	return string(out), err
 }
@@ -334,9 +331,14 @@ func anvilOrigin(t *testing.T, anvil string) string {
 
 func runGit(t *testing.T, dir string, args ...string) string {
 	t.Helper()
+	// The real git by absolute path, never `git` off PATH: this test binary is
+	// itself routinely run inside a Forge worker, where `git` resolves to the
+	// installed guard — which refuses the very write TestTheFaultTheGuardExistsFor
+	// makes to show the guard is needed. An absolute path walks past the guard,
+	// which is the documented depth it stands at.
 	cmd := exec.Command(realGit(t), args...)
 	cmd.Dir = dir
-	cmd.Env = executil.CleanGitEnv()
+	cmd.Env = testEnv()
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("git %s in %s: %v\n%s", strings.Join(args, " "), dir, err, out)
@@ -394,6 +396,45 @@ func isGuardScript(path string) bool {
 	return strings.Contains(string(head[:n]), guardMarker)
 }
 
+// TestGuardMarkerIsInTheShim keeps isGuardScript honest: a reworded header
+// would make every guard look like a real git, and the fixtures would go back
+// to being refused by the guard whenever this package is tested inside a worker.
+func TestGuardMarkerIsInTheShim(t *testing.T) {
+	if !strings.Contains(shimSource, guardMarker) {
+		t.Fatalf("shim.sh no longer carries %q; update guardMarker", guardMarker)
+	}
+}
+
+// testEnv is the environment every fixture command runs under. CleanGitEnv, not
+// os.Environ: inside a Forge worker an inherited GIT_DIR would retarget every
+// fixture command at the anvil under test. The worker's FORGE_GUARDED_GIT_DIR
+// names the real anvil rather than the fixture's, so it is dropped (a test that
+// wants it passes it explicitly), and so are the guard directories on PATH, so
+// nothing git spawns resolves `git` back to the worker's guard.
+func testEnv() []string {
+	env := executil.CleanGitEnv()
+	out := make([]string, 0, len(env))
+	for _, e := range env {
+		key, value, _ := strings.Cut(e, "=")
+		switch {
+		case key == GuardedGitDirEnv:
+			continue
+		case isPathKey(key):
+			var kept []string
+			for _, dir := range filepath.SplitList(value) {
+				if dir != "" && isGuardScript(filepath.Join(dir, "git")) {
+					continue
+				}
+				kept = append(kept, dir)
+			}
+			out = append(out, key+"="+strings.Join(kept, string(os.PathListSeparator)))
+		default:
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
 // shPath finds the POSIX shell the guard runs under. On Windows that is Git
 // Bash's, which ships with the git the guard wraps.
 func shPath(t *testing.T) string {
@@ -401,8 +442,7 @@ func shPath(t *testing.T) string {
 	if path, err := exec.LookPath("sh"); err == nil {
 		return path
 	}
-	gitPath, err := exec.LookPath("git")
-	if err == nil {
+	if gitPath := realGit(t); gitPath != "" {
 		// <install>/cmd/git.exe → <install>/usr/bin/sh.exe
 		candidate := filepath.Join(filepath.Dir(filepath.Dir(gitPath)), "usr", "bin", "sh.exe")
 		if _, err := os.Stat(candidate); err == nil {
