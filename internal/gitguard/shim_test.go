@@ -362,6 +362,16 @@ const guardMarker = "# The Forge git guard."
 // write to happen, while every other fixture nests one guard inside another.
 func realGit(t *testing.T) string {
 	t.Helper()
+	path, ok := lookRealGit()
+	if !ok {
+		t.Skip("git is not available (no git on PATH other than the Forge guard)")
+	}
+	return path
+}
+
+// lookRealGit is realGit without the skip, for a caller whose missing
+// dependency is something other than git.
+func lookRealGit() (string, bool) {
 	for _, dir := range filepath.SplitList(os.Getenv("PATH")) {
 		if dir == "" {
 			continue
@@ -376,10 +386,9 @@ func realGit(t *testing.T) string {
 		if abs, err := filepath.Abs(candidate); err == nil {
 			candidate = abs
 		}
-		return candidate
+		return candidate, true
 	}
-	t.Skip("git is not available (no git on PATH other than the Forge guard)")
-	return ""
+	return "", false
 }
 
 // isGuardScript reports whether path is a rendered guard. The marker sits in
@@ -402,6 +411,37 @@ func isGuardScript(path string) bool {
 func TestGuardMarkerIsInTheShim(t *testing.T) {
 	if !strings.Contains(shimSource, guardMarker) {
 		t.Fatalf("shim.sh no longer carries %q; update guardMarker", guardMarker)
+	}
+}
+
+// TestFixturesWalkPastAGuardOnPath reproduces the worker environment the
+// fixtures have to survive — a rendered guard first on PATH and
+// FORGE_GUARDED_GIT_DIR naming some other anvil — which CI never has on its own.
+func TestFixturesWalkPastAGuardOnPath(t *testing.T) {
+	requireGit(t)
+	guard := installTestScript(t)
+	guardDir := filepath.Dir(guard)
+	t.Setenv("PATH", guardDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv(GuardedGitDirEnv, filepath.Join(t.TempDir(), "anvil", ".git"))
+
+	if !isGuardScript(guard) {
+		t.Fatalf("isGuardScript(%s) = false for a rendered guard", guard)
+	}
+	if got := realGit(t); got == guard || filepath.Dir(got) == guardDir {
+		t.Errorf("realGit resolved the guard: %s", got)
+	}
+	for _, e := range testEnv() {
+		key, value, _ := strings.Cut(e, "=")
+		if key == GuardedGitDirEnv {
+			t.Errorf("testEnv kept %s", e)
+		}
+		if isPathKey(key) {
+			for _, dir := range filepath.SplitList(value) {
+				if dir == guardDir {
+					t.Errorf("testEnv kept the guard directory on %s: %s", key, value)
+				}
+			}
+		}
 	}
 }
 
@@ -442,7 +482,7 @@ func shPath(t *testing.T) string {
 	if path, err := exec.LookPath("sh"); err == nil {
 		return path
 	}
-	if gitPath := realGit(t); gitPath != "" {
+	if gitPath, ok := lookRealGit(); ok {
 		// <install>/cmd/git.exe → <install>/usr/bin/sh.exe
 		candidate := filepath.Join(filepath.Dir(filepath.Dir(gitPath)), "usr", "bin", "sh.exe")
 		if _, err := os.Stat(candidate); err == nil {
