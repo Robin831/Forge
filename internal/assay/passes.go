@@ -31,24 +31,32 @@ const (
 // turnCounter). Every file a pass opens costs a turn, and passes like
 // tests-missing and repo-specific legitimately want to read a handful of
 // supporting files before emitting JSON — which is why this number has only
-// ever moved upward: 6 starved them, then 12 did.
+// ever moved upward: 6 starved them, then 12 did, then 16 did.
 //
-// 16 is the value the logged sessions support, and the argument for it is the
-// shape of the distribution rather than a percentile of it (the numbers, and
-// why the tail cannot be read off the log directly, are in
+// 16 was the value the first logged sessions supported, and the argument for
+// it was the shape of the distribution rather than a percentile of it (the
+// numbers, and why the tail cannot be read off the log directly, are in
 // docs/assay-turn-budget.md). Across 451 sessions under the 12 cap the
-// per-session message counts decay smoothly from 4 to 11 (38, 33, 25, 23, 19,
-// 11, 14, 8) and then spike to 39 at exactly 12, of which 32 died there. That
-// spike is not demand for 12 turns; it is every session that wanted more,
-// piled up against the cap — so the distribution is right-censored and its own
-// p95/p99 (both 12) are artefacts of the cap, not evidence about it. 16 clears
-// the censoring point by four turns, which covers the sessions that were a
-// couple of reads short without pretending to know how far the true tail runs.
+// per-session message counts decayed smoothly from 4 to 11 and then spiked to
+// 39 at exactly 12, of which 32 died there: right-censored, so its own p95/p99
+// were artefacts of the cap. 16 cleared that censoring point by four turns.
+//
+// 24 is the same argument one step on (Forge-cikv's re-measurement, applied by
+// Forge-55eq). Under the reading prompts 21% of deep pass sessions (16/76)
+// reached the 16-turn cap — twice the rate under the old prompts — and the
+// reason Forge-sra6 had declined to move it is measured gone: turn-killed
+// sessions held $1.15 mean / $1.84 max against the $3.00
+// max_cost_per_pass_usd ceiling, with no error_max_cost in the sample, so more
+// turns no longer convert a recoverable error_max_turns into a terminal spend
+// stop. The caveat the 12 -> 16 move earned carries forward: passes expand into
+// the budget they are given, so the expected win is a lower RETRY rate, not a
+// lower cap-hit rate. The retry this halves to (reducedTurnBudget: 12) is
+// scoped by openedDiffFiles since Forge-72oy, which is why the raise waited on it.
 //
 // Raising it is close to free where it does not bind: a turn budget is a clip
 // point, not an allowance, so a pass that answers in 5 turns costs exactly what
 // it did before. Where it does bind, the alternative it replaces is more
-// expensive, not less — a clipped pass pays for its full 12 turns AND a retry
+// expensive, not less — a clipped pass pays for its full budget AND a retry
 // session (buildRetryMods), and still reports partial coverage when the retry
 // misses. The runaway this cap used to stand in for is now bounded in the unit
 // that actually matters by assay.max_cost_per_pass_usd, which stops a looping
@@ -57,7 +65,7 @@ const (
 // Repos whose rules file and layout need more reading still can raise it per
 // config via assay.max_turns_per_pass, globally or per anvil (Config.
 // MaxTurnsPerPass); this constant is only the fallback default.
-const assayMaxTurns = 16
+const assayMaxTurns = 24
 
 //go:embed prompts/*.md
 var promptFS embed.FS

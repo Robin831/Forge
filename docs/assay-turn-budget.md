@@ -892,3 +892,41 @@ whether a scoped retry recovers on fewer turns and less money than the
 unscoped one did. The 16 retries in the sample above all recovered without
 scoping, so the raise's expected win — fewer retries, not fewer cap hits — is
 what the new window has to show.
+
+## Applied — 2026-10-06 (Forge-55eq)
+
+`assayMaxTurns` is now **24** (was 16). The $3.00 `max_cost_per_pass_usd`
+ceiling is unchanged, and so is the per-config override
+(`assay.max_turns_per_pass`), which still wins wherever it is set.
+
+The ordering the 2026-08-29 re-measurement asked for was kept: Forge-72oy landed
+first, so a turn-budget retry now carries all three of `buildRetryMods`'
+modifications — the halved budget (`reducedTurnBudget(24)` = 12, still well
+above `minRetryTurns` and still strictly below the first attempt), the appended
+`answerNowInstruction`, and the diff scoped to the files the failed session
+opened (`openedDiffFiles`).
+
+What was **not** done first is the fresh window the Forge-72oy section asked
+for. No re-measurement section has been written since, so the raise rests on
+the Forge-cikv evidence: 13 runs, 76 deep sessions, short of the ~20 runs that
+section said it wanted. The session-level case is the firm part of that
+evidence (21.1% of deep sessions at the cap; turn-killed sessions at $1.15 mean
+/ $1.84 max against $3.00; zero `error_max_cost`), and the change is cheap to
+reverse. The run-level cost figures are still not settled.
+
+The caveat from the 12 → 16 move still applies. Passes expand into the budget
+they are given, so the expected outcome is a lower **retry** rate, not a lower
+cap-hit rate. The next re-measurement, at n ≥ 20 runs under this cap and the
+scoped retry, should report:
+
+- **retry rate**, i.e. turn-budget retries per deep pass. This is the number
+  the raise is meant to move.
+- **cap-hit rate** over deep sessions (21.1% at 16). It is not expected to fall
+  much, and a flat reading here is not evidence against the raise.
+- **`error_max_cost` count**, which should stay at 0. A non-zero count means the
+  two bounds have become adjacent again at 24 turns: the argument Forge-sra6
+  made at 16 would then be back, and the cap should come down or the ceiling go
+  up.
+- **turn-killed session cost relative to $3.00**. At 16 the mean was 38% and
+  the max 61%. At 24 these figures should rise, and the margin above them is
+  what tells you whether the next raise is safe.
