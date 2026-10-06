@@ -784,6 +784,11 @@ func runStep(ctx context.Context, worktreePath string, step Step, defaultTimeout
 		timeout = defaultTimeout
 	}
 
+	// Before the deadline starts: queueing behind another worker's dotnet build is not this
+	// step's time. Released after the process tree is reaped, when the deferred calls run.
+	releaseHeavyLock, heavyLockHeld := acquireHeavyLock(ctx, step)
+	defer releaseHeavyLock()
+
 	stepCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
@@ -807,6 +812,9 @@ func runStep(ctx context.Context, worktreePath string, step Step, defaultTimeout
 	// worktree recreation for the same bead.
 	executil.SetProcessGroup(cmd)
 	cmd.Dir = dir
+	if heavyLockHeld {
+		cmd.Env = append(os.Environ(), heavyLockHeldEnv+"=1")
+	}
 
 	// Cancel the whole GROUP, not just the direct child. exec.CommandContext's
 	// default cancellation is cmd.Process.Kill(), which reaches the process the
