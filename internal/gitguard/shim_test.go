@@ -1,6 +1,7 @@
 package gitguard
 
 import (
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -313,10 +314,7 @@ func newAnvil(t *testing.T) anvilFixture {
 // Install does, without writing into the developer's home directory.
 func installTestScript(t *testing.T) string {
 	t.Helper()
-	gitPath, err := exec.LookPath("git")
-	if err != nil {
-		t.Skipf("git is not available: %v", err)
-	}
+	gitPath := realGit(t)
 	script, err := render(gitPath)
 	if err != nil {
 		t.Fatalf("render: %v", err)
@@ -336,7 +334,7 @@ func anvilOrigin(t *testing.T, anvil string) string {
 
 func runGit(t *testing.T, dir string, args ...string) string {
 	t.Helper()
-	cmd := exec.Command("git", args...)
+	cmd := exec.Command(realGit(t), args...)
 	cmd.Dir = dir
 	cmd.Env = executil.CleanGitEnv()
 	out, err := cmd.CombinedOutput()
@@ -348,9 +346,52 @@ func runGit(t *testing.T, dir string, args ...string) string {
 
 func requireGit(t *testing.T) {
 	t.Helper()
-	if _, err := exec.LookPath("git"); err != nil {
-		t.Skipf("git is not available: %v", err)
+	realGit(t)
+}
+
+// guardMarker is a line only the guard script carries, which is how realGit
+// tells it apart from the git it wraps.
+const guardMarker = "# The Forge git guard."
+
+// realGit resolves the git the fixtures are built with, skipping any copy of
+// the guard on PATH. This test binary is routinely run inside a Forge worker,
+// whose PATH puts the INSTALLED guard first — and a fixture set up through it
+// is refused exactly where TestTheFaultTheGuardExistsFor needs the unguarded
+// write to happen, while every other fixture nests one guard inside another.
+func realGit(t *testing.T) string {
+	t.Helper()
+	for _, dir := range filepath.SplitList(os.Getenv("PATH")) {
+		if dir == "" {
+			continue
+		}
+		candidate, err := exec.LookPath(filepath.Join(dir, "git"))
+		if err != nil {
+			continue
+		}
+		if isGuardScript(candidate) {
+			continue
+		}
+		if abs, err := filepath.Abs(candidate); err == nil {
+			candidate = abs
+		}
+		return candidate
 	}
+	t.Skip("git is not available (no git on PATH other than the Forge guard)")
+	return ""
+}
+
+// isGuardScript reports whether path is a rendered guard. The marker sits in
+// the script's opening comment, so only the head of the file is read — the
+// real git is a binary of several megabytes.
+func isGuardScript(path string) bool {
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	head := make([]byte, 1024)
+	n, _ := io.ReadFull(f, head)
+	return strings.Contains(string(head[:n]), guardMarker)
 }
 
 // shPath finds the POSIX shell the guard runs under. On Windows that is Git
