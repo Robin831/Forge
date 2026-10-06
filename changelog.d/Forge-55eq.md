@@ -1,2 +1,0 @@
-category: Changed
-- **Assay default turn budget raised from 16 to 24** - Under the reading prompts, 21% of deep review pass sessions hit the 16-turn cap and needed a full-price retry. Sessions stopped by the turn cap used $1.15 on average and $1.84 at most, against the $3.00 per-pass cost ceiling, and no pass hit the cost ceiling. So more turns no longer risk turning a recoverable turn stop into a terminal cost stop. The expected effect is fewer retries, not fewer cap hits. `assay.max_turns_per_pass` still overrides the default. (Forge-55eq)

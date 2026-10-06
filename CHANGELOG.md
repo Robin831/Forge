@@ -9,6 +9,22 @@ Unreleased changes live as fragments in `changelog.d/` and are assembled at
 release time by `scripts/assemble-changelog.sh`.
 
 
+## [0.32.1] - 2026-10-06
+
+### Changed
+
+- **Assay default turn budget raised from 16 to 24** - Under the reading prompts, 21% of deep review pass sessions hit the 16-turn cap and needed a full-price retry. Sessions stopped by the turn cap used $1.15 on average and $1.84 at most, against the $3.00 per-pass cost ceiling, and no pass hit the cost ceiling. So more turns no longer risk turning a recoverable turn stop into a terminal cost stop. The expected effect is fewer retries, not fewer cap hits. `assay.max_turns_per_pass` still overrides the default. (Forge-55eq)
+- **Dependency updates (06.10.2026)** - Bumped the Hearth 2.0 frontend's @vitejs/plugin-react 6.1.1→6.1.2; the committed `internal/web/dist` bundle rebuilds byte-identically. (Forge-tj5nl)
+- **Dependency updates (28.08.2026)** - Bumped Go modules golang.org/x/crypto v0.55.0→v0.57.0, golang.org/x/net v0.58.0→v0.59.0, golang.org/x/sys v0.47.0→v0.48.0, modernc.org/sqlite v1.57.0→v1.60.1, github.com/bmatcuk/doublestar/v4 v4.10.0→v4.10.2 and github.com/mattn/go-runewidth v0.0.28→v0.0.30; indirect golang.org/x/term, golang.org/x/text, modernc.org/libc and modernc.org/memory move with them. Frontend npm packages: @types/node 26.4.0→26.6.4, @types/react 19.2.18→19.3.0, @types/react-dom 19.2.5→19.3.0, jsdom 30.0.1→30.1.2, lucide-react 1.35.0→1.52.0, react and react-dom 19.2.8→19.3.0, react-router 8.3.0→8.4.0, vite 8.2.2→8.3.3 and @testing-library/user-event 14.6.6→14.6.7 (jsdom, lucide-react and vite resolved to a newer patch/minor than the batch listed). The two flagged majors were not applied: @types/node 26.4.0→22.20.3 is a downgrade, and vitest 4→5 needs a manual migration. (Forge-2d3d)
+- **Hearth 2.0 frontend test runner on Vitest 5** - Bumped the web dashboard's `vitest` dev dependency from 4.1.11 to 5.0.3 (major). The existing config (`vitest/config`, jsdom environment, `vitest/globals` types) and `@testing-library/jest-dom/vitest` setup are compatible as-is; no runtime or bundle change. (Forge-o6mmb)
+- **Rebuilt Hearth 2.0 bundle** - Regenerated the committed `internal/web/dist` output so it matches a fresh build of the frontend under the updated dependencies. (Forge-2d3d)
+- **Temper serialises heavy dotnet steps with the deployment's dotnet lock** - When `FORGE_DOTNET_LOCK` is set (the skybert chart sets it), a `dotnet build/test/format/publish/pack/msbuild/vstest` step takes that file lock before its timeout starts, so waiting behind another worker's build no longer eats the step's own deadline, and the step's child is told the lock is held so the chart's dotnet wrapper does not wait again. Unset, nothing changes. (Fhi.Metadata-8py4x)
+
+### Fixed
+
+- **Dashboard 'Active workers' counts reviewing, paused and stalled workers** - The headline stat now uses the same live-worker predicate as the worker panel grid (every slot status, minus bellows PR monitors) instead of counting only pending/running, so a worker in Warden review, parked, or marked stalled no longer reads as finished on the summary. (Forge-ypsa)
+- **gitguard tests pass inside a Forge worker** - The `internal/gitguard` test fixtures now resolve the real `git` by skipping any copy of the installed guard on `PATH`, so `TestTheFaultTheGuardExistsFor` no longer has its deliberately unguarded setup step refused by the guard it is testing when `go test` runs in a worker worktree. (Forge-0k2ws)
+
 ## [0.32.0] - 2026-09-25
 
 ### Added
