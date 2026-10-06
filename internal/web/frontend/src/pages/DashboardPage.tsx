@@ -11,7 +11,7 @@ import type {
 import AppHeader from '../components/AppHeader'
 import DispatchToggle, { describePauseCause } from '../components/DispatchToggle'
 import QueuePane from '../components/QueuePane'
-import WorkerPanelGrid from '../components/WorkerPanelGrid'
+import WorkerPanelGrid, { isSlotWorker } from '../components/WorkerPanelGrid'
 import NeedsAttentionPane from '../components/NeedsAttentionPane'
 import WedgedAnvilsBanner from '../components/WedgedAnvilsBanner'
 import LiveActivity from '../components/LiveActivity'
@@ -43,11 +43,13 @@ export default function DashboardPage() {
     )
   }, [logWorker, workers.data])
 
+  // The headline count is the live-panel predicate the WorkerPanelGrid below
+  // renders from (SLOT_STATUSES minus bellows PR monitors), so the stat and the
+  // wall of panels under it always name the same workers. A worker in Warden
+  // review, parked by an operator or marked stalled by the watchdog is still
+  // active — reading only pending/running made it look finished here.
   const activeWorkers = useMemo(
-    () =>
-      (workers.data?.workers ?? []).filter(
-        (w) => w.status === 'pending' || w.status === 'running',
-      ),
+    () => (workers.data?.workers ?? []).filter(isSlotWorker),
     [workers.data],
   )
 
