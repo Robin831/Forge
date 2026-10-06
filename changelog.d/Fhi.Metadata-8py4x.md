@@ -1,0 +1,2 @@
+category: Changed
+- **Temper serialises heavy dotnet steps with the deployment's dotnet lock** - When `FORGE_DOTNET_LOCK` is set (the skybert chart sets it), a `dotnet build/test/format/publish/pack/msbuild/vstest` step takes that file lock before its timeout starts, so waiting behind another worker's build no longer eats the step's own deadline, and the step's child is told the lock is held so the chart's dotnet wrapper does not wait again. Unset, nothing changes. (Fhi.Metadata-8py4x)
