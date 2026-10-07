@@ -1,0 +1,2 @@
+category: Changed
+- **Bellows polls only this forge's own PRs, in one GitHub request per repo** - Humans' and sibling forges' PRs are no longer sent to GitHub every cycle (reconcile records their merge/close when they leave the open list), the owned PRs of a repo are fetched with a single GraphQL query instead of three requests per PR, and a GitHub rate-limit refusal pauses polling for the server's Retry-After instead of being retried four times. (bellows-traffic-cut)

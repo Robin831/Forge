@@ -2615,14 +2615,6 @@ func TestCheckPR_Suppressed_TerminalPRDropsMarker(t *testing.T) {
 			},
 			marker: func(m *Monitor) map[string]bool { return m.wasDetached },
 		},
-		{
-			// InsertPR gives an ext- PR bellows_managed=0, so it is suppressed
-			// by the unmanaged branch without further setup.
-			name:   "external and unmanaged",
-			beadID: "ext-gone",
-			detach: func(t *testing.T, db *state.DB, prID int) {},
-			marker: func(m *Monitor) map[string]bool { return m.wasUnmanaged },
-		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			db, cleanup := openTempDB(t)
@@ -2663,14 +2655,11 @@ func TestCheckPR_Suppressed_TerminalPRDropsMarker(t *testing.T) {
 	}
 }
 
-// TestCheckPR_Suppressed_HandoffLeavesNoStaleMarker covers the case that makes
-// the terminal cleanup drop BOTH markers rather than only the one the
-// suppressing branch wrote. An ext- PR that is managed and detached is marked
-// in wasDetached; unassigning it from bellows while it is still detached moves
-// every later poll onto the ext-unmanaged branch, which precedes the detached
-// one — so the wasDetached entry is never read again and its owner never gets
-// to clean it up. The merge is the one moment both are certainly dead.
-func TestCheckPR_Suppressed_HandoffLeavesNoStaleMarker(t *testing.T) {
+// TestCheckAll_UnassignedPRIsForgottenNotPolled: a PR taken off bellows stops
+// being sent to GitHub at once, and everything the monitor held for it goes —
+// both suppression markers and the snapshot — so a later re-assignment
+// re-seeds from the DB instead of reading state from before the hand-off.
+func TestCheckAll_UnassignedPRIsForgottenNotPolled(t *testing.T) {
 	db, cleanup := openTempDB(t)
 	defer cleanup()
 
@@ -2690,28 +2679,25 @@ func TestCheckPR_Suppressed_HandoffLeavesNoStaleMarker(t *testing.T) {
 	fake := &fakeVCSProvider{status: &vcs.PRStatus{State: "OPEN"}}
 	m := newDetachTestMonitor(db, fake, &events)
 
-	// Managed + detached: the detached branch suppresses it.
+	// Managed + detached: polled, and the detached branch suppresses it.
 	m.checkAll(context.Background())
+	require.Equal(t, 1, fake.checkStatusCalls)
 	require.Len(t, m.wasDetached, 1)
-	require.Empty(t, m.wasUnmanaged)
 
-	// The operator unassigns it from bellows while it is still detached. Every
-	// later poll now takes the ext-unmanaged branch instead.
+	// The operator unassigns it from bellows: no longer this forge's PR.
 	require.NoError(t, db.UpdatePRBellowsManaged(pr.ID, false))
-	m.checkAll(context.Background())
-	require.Len(t, m.wasUnmanaged, 1)
-	require.Len(t, m.wasDetached, 1, "the detached-era marker is now stranded — nothing reads it again")
-
 	fake.status = &vcs.PRStatus{State: "MERGED"}
 	m.checkAll(context.Background())
 
+	assert.Equal(t, 1, fake.checkStatusCalls, "an unowned PR must not be sent to GitHub")
+	assert.Empty(t, m.wasUnmanaged)
+	assert.Empty(t, m.wasDetached, "the detached-era marker must not outlive the hand-off")
+	assert.Empty(t, m.lastStatuses)
+	assert.Empty(t, events)
 	updated, err := db.GetPRByID(pr.ID)
 	require.NoError(t, err)
-	require.Equal(t, state.PRMerged, updated.Status)
-	assert.Empty(t, m.wasUnmanaged)
-	assert.Empty(t, m.wasDetached, "the stranded marker must go with the PR, not outlive it")
-	assert.Empty(t, m.lastStatuses)
-	assert.Empty(t, events, "a suppressed PR must stay silent through its merge")
+	assert.Equal(t, state.PROpen, updated.Status,
+		"bellows no longer settles an unowned PR's terminal state; reconcileOpenPRs does")
 }
 
 // TestCheckPR_ReopenedPR_ReseedsStandingProblems is the reason the terminal

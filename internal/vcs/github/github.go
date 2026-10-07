@@ -22,12 +22,23 @@ import (
 // Provider implements vcs.Provider for GitHub using the gh CLI.
 type Provider struct {
 	db *state.DB
+	// runner executes gh/git for the status-polling paths; nil means exec.
+	// It is the seam the batch and rate-limit tests drive without a network.
+	runner Runner
+	// now is the clock rate-limit reset epochs are measured against.
+	now func() time.Time
 }
 
 // New creates a GitHub VCS provider. The state DB is optional (may be nil);
 // when non-nil, CreatePR records the PR and runs an initial mergeability check.
 func New(db *state.DB) *Provider {
 	return &Provider{db: db}
+}
+
+// NewWithRunner is New with the gh/git executor and clock replaced, for tests.
+// A nil now uses time.Now.
+func NewWithRunner(db *state.DB, runner Runner, now func() time.Time) *Provider {
+	return &Provider{db: db, runner: runner, now: now}
 }
 
 func init() {
@@ -201,24 +212,16 @@ func (p *Provider) MergePR(ctx context.Context, worktreePath string, prNumber in
 
 // CheckStatus gets the full status of a PR via gh pr view and GraphQL.
 func (p *Provider) CheckStatus(ctx context.Context, worktreePath string, prNumber int) (*vcs.PRStatus, error) {
-	args := []string{
+	stdout, stderr, err := p.run(ctx, worktreePath, "gh",
 		"pr", "view", fmt.Sprintf("%d", prNumber),
 		"--json", "state,statusCheckRollup,reviews,reviewRequests,mergeable,headRefName,headRefOid,isDraft,url,title",
-	}
-
-	cmd := executil.HideWindow(exec.CommandContext(ctx, "gh", args...))
-	cmd.Dir = worktreePath
-
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-
-	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("gh pr view failed: %w\nstderr: %s", err, stderr.String())
+	)
+	if err != nil {
+		return nil, fmt.Errorf("gh pr view failed: %w\nstderr: %s", err, stderr)
 	}
 
 	var status vcs.PRStatus
-	if err := json.Unmarshal(stdout.Bytes(), &status); err != nil {
+	if err := json.Unmarshal(stdout, &status); err != nil {
 		return nil, fmt.Errorf("parsing pr status: %w", err)
 	}
 
@@ -252,24 +255,16 @@ func (p *Provider) CheckStatus(ctx context.Context, worktreePath string, prNumbe
 // assay_rerun handler) can record the run against the actual head; omitting
 // it left HeadSHA empty and Assay re-runs spawned workers with head="".
 func (p *Provider) CheckStatusLight(ctx context.Context, worktreePath string, prNumber int) (*vcs.PRStatus, error) {
-	args := []string{
+	stdout, stderr, err := p.run(ctx, worktreePath, "gh",
 		"pr", "view", fmt.Sprintf("%d", prNumber),
 		"--json", "state,reviewRequests,mergeable,headRefOid",
-	}
-
-	cmd := executil.HideWindow(exec.CommandContext(ctx, "gh", args...))
-	cmd.Dir = worktreePath
-
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-
-	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("gh pr view failed: %w\nstderr: %s", err, stderr.String())
+	)
+	if err != nil {
+		return nil, fmt.Errorf("gh pr view failed: %w\nstderr: %s", err, stderr)
 	}
 
 	var status vcs.PRStatus
-	if err := json.Unmarshal(stdout.Bytes(), &status); err != nil {
+	if err := json.Unmarshal(stdout, &status); err != nil {
 		return nil, fmt.Errorf("parsing pr status: %w", err)
 	}
 
@@ -343,15 +338,11 @@ func (p *Provider) GetPRByHeadBranch(ctx context.Context, worktreePath, branch s
 
 // GetRepoOwnerAndName extracts the owner and repository name from git remote origin.
 func (p *Provider) GetRepoOwnerAndName(ctx context.Context, worktreePath string) (owner, repo string, err error) {
-	cmd := executil.HideWindow(exec.CommandContext(ctx, "git", "remote", "get-url", "origin"))
-	cmd.Dir = worktreePath
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		return "", "", fmt.Errorf("git remote get-url origin: %w\nstderr: %s", err, stderr.String())
+	stdout, stderr, err := p.run(ctx, worktreePath, "git", "remote", "get-url", "origin")
+	if err != nil {
+		return "", "", fmt.Errorf("git remote get-url origin: %w\nstderr: %s", err, stderr)
 	}
-	url := strings.TrimSpace(stdout.String())
+	url := strings.TrimSpace(string(stdout))
 	return ParseRepoURL(url)
 }
 
@@ -361,7 +352,13 @@ func (p *Provider) FetchUnresolvedThreadCount(ctx context.Context, worktreePath 
 	if err != nil {
 		return 0, err
 	}
+	return p.countUnresolvedThreads(ctx, worktreePath, owner, repo, prNumber, "", 0)
+}
 
+// countUnresolvedThreads pages through a PR's review threads from cursor
+// ("" = the first page), adding the unresolved ones to count. The batch poll
+// resumes here when a PR has more than one page of threads.
+func (p *Provider) countUnresolvedThreads(ctx context.Context, worktreePath, owner, repo string, prNumber int, cursor string, count int) (int, error) {
 	query := `
 	query($owner:String!, $repo:String!, $pr:Int!, $cursor:String) {
 		repository(owner:$owner, name:$repo) {
@@ -374,8 +371,6 @@ func (p *Provider) FetchUnresolvedThreadCount(ctx context.Context, worktreePath 
 		}
 	}`
 
-	count := 0
-	cursor := ""
 	for {
 		args := []string{
 			"api", "graphql",
@@ -390,51 +385,56 @@ func (p *Provider) FetchUnresolvedThreadCount(ctx context.Context, worktreePath 
 			args = append(args, "-F", "cursor=null")
 		}
 
-		cmd := executil.HideWindow(exec.CommandContext(ctx, "gh", args...))
-		cmd.Dir = worktreePath
-
-		var stdout, stderr bytes.Buffer
-		cmd.Stdout = &stdout
-		cmd.Stderr = &stderr
-
-		if err := cmd.Run(); err != nil {
-			return 0, fmt.Errorf("gh api graphql: %w\nstderr: %s", err, stderr.String())
+		stdout, stderr, err := p.run(ctx, worktreePath, "gh", args...)
+		if err != nil {
+			return 0, fmt.Errorf("gh api graphql: %w\nstderr: %s", err, stderr)
 		}
 
 		var gqlData struct {
 			Data struct {
 				Repository struct {
 					PullRequest struct {
-						ReviewThreads struct {
-							PageInfo struct {
-								HasNextPage bool   `json:"hasNextPage"`
-								EndCursor   string `json:"endCursor"`
-							} `json:"pageInfo"`
-							Nodes []struct {
-								IsResolved bool `json:"isResolved"`
-							} `json:"nodes"`
-						} `json:"reviewThreads"`
+						ReviewThreads threadPage `json:"reviewThreads"`
 					} `json:"pullRequest"`
 				} `json:"repository"`
 			} `json:"data"`
 		}
 
-		if err := json.Unmarshal(stdout.Bytes(), &gqlData); err != nil {
+		if err := json.Unmarshal(stdout, &gqlData); err != nil {
 			return 0, fmt.Errorf("parsing graphql response: %w", err)
 		}
 
-		for _, node := range gqlData.Data.Repository.PullRequest.ReviewThreads.Nodes {
-			if !node.IsResolved {
-				count++
-			}
-		}
-
-		if !gqlData.Data.Repository.PullRequest.ReviewThreads.PageInfo.HasNextPage {
+		page := gqlData.Data.Repository.PullRequest.ReviewThreads
+		count += page.unresolved()
+		if !page.PageInfo.HasNextPage {
 			break
 		}
-		cursor = gqlData.Data.Repository.PullRequest.ReviewThreads.PageInfo.EndCursor
+		cursor = page.PageInfo.EndCursor
 	}
 	return count, nil
+}
+
+// threadPage is one page of a PR's reviewThreads connection.
+type threadPage struct {
+	PageInfo pageInfo `json:"pageInfo"`
+	Nodes    []struct {
+		IsResolved bool `json:"isResolved"`
+	} `json:"nodes"`
+}
+
+func (t threadPage) unresolved() int {
+	n := 0
+	for _, node := range t.Nodes {
+		if !node.IsResolved {
+			n++
+		}
+	}
+	return n
+}
+
+type pageInfo struct {
+	HasNextPage bool   `json:"hasNextPage"`
+	EndCursor   string `json:"endCursor"`
 }
 
 // FetchPendingReviewRequests uses GraphQL to check for pending review requests,
@@ -450,7 +450,41 @@ func (p *Provider) FetchPendingReviewRequests(ctx context.Context, worktreePath 
 	query($owner:String!, $repo:String!, $pr:Int!) {
 		repository(owner:$owner, name:$repo) {
 			pullRequest(number:$pr) {
-				reviewRequests(first:25) {
+				` + reviewRequestsSelection + `
+			}
+		}
+	}`
+
+	stdout, stderr, err := p.run(ctx, worktreePath, "gh",
+		"api", "graphql",
+		"-f", "query="+query,
+		"-f", "owner="+owner,
+		"-f", "repo="+repo,
+		"-F", fmt.Sprintf("pr=%d", prNumber),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("gh api graphql: %w\nstderr: %s", err, stderr)
+	}
+
+	var gqlData struct {
+		Data struct {
+			Repository struct {
+				PullRequest struct {
+					ReviewRequests reviewRequestConn `json:"reviewRequests"`
+				} `json:"pullRequest"`
+			} `json:"repository"`
+		} `json:"data"`
+	}
+
+	if err := json.Unmarshal(stdout, &gqlData); err != nil {
+		return nil, fmt.Errorf("parsing graphql response: %w", err)
+	}
+	return gqlData.Data.Repository.PullRequest.ReviewRequests.requests(), nil
+}
+
+// reviewRequestsSelection is the reviewRequests field both the per-PR and the
+// batch query select, so the two can never disagree on which reviewers count.
+const reviewRequestsSelection = `reviewRequests(first:25) {
 					nodes {
 						requestedReviewer {
 							__typename
@@ -460,53 +494,22 @@ func (p *Provider) FetchPendingReviewRequests(ctx context.Context, worktreePath 
 							... on Mannequin { login }
 						}
 					}
-				}
-			}
-		}
-	}`
+				}`
 
-	cmd := executil.HideWindow(exec.CommandContext(ctx, "gh",
-		"api", "graphql",
-		"-f", "query="+query,
-		"-f", "owner="+owner,
-		"-f", "repo="+repo,
-		"-F", fmt.Sprintf("pr=%d", prNumber),
-	))
-	cmd.Dir = worktreePath
+type reviewRequestConn struct {
+	Nodes []struct {
+		RequestedReviewer struct {
+			TypeName string `json:"__typename"`
+			Login    string `json:"login"`
+			Slug     string `json:"slug"`
+			Name     string `json:"name"`
+		} `json:"requestedReviewer"`
+	} `json:"nodes"`
+}
 
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-
-	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("gh api graphql: %w\nstderr: %s", err, stderr.String())
-	}
-
-	var gqlData struct {
-		Data struct {
-			Repository struct {
-				PullRequest struct {
-					ReviewRequests struct {
-						Nodes []struct {
-							RequestedReviewer struct {
-								TypeName string `json:"__typename"`
-								Login    string `json:"login"`
-								Slug     string `json:"slug"`
-								Name     string `json:"name"`
-							} `json:"requestedReviewer"`
-						} `json:"nodes"`
-					} `json:"reviewRequests"`
-				} `json:"pullRequest"`
-			} `json:"repository"`
-		} `json:"data"`
-	}
-
-	if err := json.Unmarshal(stdout.Bytes(), &gqlData); err != nil {
-		return nil, fmt.Errorf("parsing graphql response: %w", err)
-	}
-
+func (c reviewRequestConn) requests() []vcs.ReviewRequest {
 	var requests []vcs.ReviewRequest
-	for _, node := range gqlData.Data.Repository.PullRequest.ReviewRequests.Nodes {
+	for _, node := range c.Nodes {
 		r := node.RequestedReviewer
 		requests = append(requests, vcs.ReviewRequest{
 			Login: r.Login,
@@ -514,7 +517,7 @@ func (p *Provider) FetchPendingReviewRequests(ctx context.Context, worktreePath 
 			Name:  r.Name,
 		})
 	}
-	return requests, nil
+	return requests
 }
 
 // FetchPRChecks returns the raw output of `gh pr checks` and the parsed

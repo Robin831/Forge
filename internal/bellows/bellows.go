@@ -161,6 +161,28 @@ type Monitor struct {
 	// github.DefaultRetryBackoff(); tests set a zero-delay backoff to avoid
 	// real sleeps.
 	retryBackoff *github.RetryBackoff
+
+	// rateLimitedUntil pauses every status poll after GitHub refused one on
+	// rate-limit grounds; rateLimitStreak grows the wait when the refusal named
+	// none. Guarded by rateLimitMu: retryTransient also runs off the poll loop.
+	rateLimitMu      sync.Mutex
+	rateLimitedUntil time.Time
+	rateLimitStreak  int
+}
+
+// maxRateLimitCooldown caps how long a rate-limit refusal pauses polling, so
+// an hour-away primary reset still gets re-probed (once) every 15 minutes.
+const maxRateLimitCooldown = 15 * time.Minute
+
+// OwnsPR reports whether this forge polls the PR. Ownership is the existing
+// per-instance one: reconcileOpenPRs sets bellows_managed only on PRs carrying
+// THIS forge's marker (vcs.IsForgeManagedBy), PRs the forge opened itself are
+// inserted managed, and an operator's assign_bellows pins an ext-* row. The
+// branch prefix cannot serve: every forge names its branches forge/<bead>.
+// Humans' and sibling forges' PRs are unmanaged here and are never sent to
+// GitHub by this monitor; reconcileOpenPRs settles their terminal state.
+func OwnsPR(pr *state.PR) bool {
+	return pr.BellowsManaged
 }
 
 // prSnapshot tracks the last seen state of a PR.
@@ -661,6 +683,9 @@ func (m *Monitor) reconcileTerminalStates(ctx context.Context) {
 			return
 		}
 		pr := &prs[i]
+		if !OwnsPR(pr) {
+			continue
+		}
 		anvilVCS := m.vcsLookup(pr.Anvil)
 		if anvilVCS == nil {
 			continue
@@ -761,7 +786,7 @@ func (m *Monitor) checkAll(ctx context.Context) {
 	// in the PR panel and intentionally excluded from the Workers panel.
 	for i := range prs {
 		pr := &prs[i]
-		if strings.HasPrefix(pr.BeadID, "ext-") && !pr.BellowsManaged {
+		if !OwnsPR(pr) {
 			continue
 		}
 		workerID := fmt.Sprintf("bellows-%s-%d", pr.Anvil, pr.Number)
@@ -828,12 +853,92 @@ func (m *Monitor) checkAll(ctx context.Context) {
 		}
 	}
 
+	// Only this forge's PRs are polled. Dropping what the monitor holds for the
+	// rest means one later assigned to bellows re-seeds from the DB, as the
+	// wasUnmanaged resume did when these rows were still polled.
+	owned := make([]state.PR, 0, len(prs))
 	for i := range prs {
+		if OwnsPR(&prs[i]) {
+			owned = append(owned, prs[i])
+		} else {
+			m.forgetPR(prKey(&prs[i]))
+		}
+	}
+	if len(owned) < len(prs) {
+		log.Printf("[bellows] Skipping %d PR(s) not owned by this forge (human or sibling-forge)", len(prs)-len(owned))
+	}
+
+	if wait, limited := m.rateLimitCooldown(); limited {
+		log.Printf("[bellows] GitHub rate limit cooldown: skipping status polls for another %s", wait.Round(time.Second))
+		return
+	}
+
+	statuses := m.prefetchStatuses(ctx, owned)
+	for i := range owned {
 		if ctx.Err() != nil {
 			return
 		}
-		m.checkPR(ctx, &prs[i], dailyAssayCost)
+		if wait, limited := m.rateLimitCooldown(); limited {
+			log.Printf("[bellows] GitHub rate limit hit mid-cycle: deferring %d PR(s) by %s", len(owned)-i, wait.Round(time.Second))
+			return
+		}
+		m.checkPRWithStatus(ctx, &owned[i], dailyAssayCost, statuses[prKey(&owned[i])])
 	}
+}
+
+func prKey(pr *state.PR) string {
+	return fmt.Sprintf("%s/%d", pr.Anvil, pr.Number)
+}
+
+// prefetchStatuses fetches the status of prs with one batched request per
+// anvil when the anvil's provider supports it (vcs.BatchStatusChecker). A PR
+// absent from the result is fetched by checkPR's own CheckStatus call.
+func (m *Monitor) prefetchStatuses(ctx context.Context, prs []state.PR) map[string]*vcs.PRStatus {
+	out := make(map[string]*vcs.PRStatus, len(prs))
+	if m.vcsLookup == nil || len(prs) == 0 {
+		return out
+	}
+	byAnvil := make(map[string][]int)
+	var anvils []string
+	for i := range prs {
+		a := prs[i].Anvil
+		if _, seen := byAnvil[a]; !seen {
+			anvils = append(anvils, a)
+		}
+		byAnvil[a] = append(byAnvil[a], prs[i].Number)
+	}
+	for _, anvil := range anvils {
+		if ctx.Err() != nil {
+			return out
+		}
+		m.pathsMu.RLock()
+		anvilPath, ok := m.anvilPaths[anvil]
+		m.pathsMu.RUnlock()
+		if !ok {
+			continue
+		}
+		batcher, ok := m.vcsLookup(anvil).(vcs.BatchStatusChecker)
+		if !ok {
+			continue
+		}
+		nums := byAnvil[anvil]
+		var res map[int]*vcs.PRStatus
+		err := m.retryTransient(ctx, fmt.Sprintf("CheckStatusBatch %s (%d PRs)", anvil, len(nums)), func() error {
+			var e error
+			res, e = batcher.CheckStatusBatch(ctx, anvilPath, nums)
+			return e
+		})
+		for n, st := range res {
+			out[fmt.Sprintf("%s/%d", anvil, n)] = st
+		}
+		if err != nil {
+			log.Printf("[bellows] Batched status fetch for %s failed: %v", anvil, err)
+			if _, limited := m.rateLimitCooldown(); limited {
+				return out
+			}
+		}
+	}
+	return out
 }
 
 // suppress records that this PR is being passed over — external-and-unmanaged,
@@ -926,6 +1031,12 @@ func (m *Monitor) resumeFromSuppression(seen map[string]bool, key string) bool {
 // queried once per checkAll cycle to avoid redundant per-PR queries. A nil
 // value means the query failed and the Assay gate should be skipped.
 func (m *Monitor) checkPR(ctx context.Context, pr *state.PR, dailyAssayCost *float64) {
+	m.checkPRWithStatus(ctx, pr, dailyAssayCost, nil)
+}
+
+// checkPRWithStatus is checkPR with the PR's status already fetched (by the
+// batched prefetch); a nil status is fetched here with CheckStatus.
+func (m *Monitor) checkPRWithStatus(ctx context.Context, pr *state.PR, dailyAssayCost *float64, status *vcs.PRStatus) {
 	m.pathsMu.RLock()
 	anvilPath, ok := m.anvilPaths[pr.Anvil]
 	m.pathsMu.RUnlock()
@@ -943,15 +1054,16 @@ func (m *Monitor) checkPR(ctx context.Context, pr *state.PR, dailyAssayCost *flo
 		log.Printf("[bellows] No VCS provider for anvil %s; skipping status check for PR #%d", pr.Anvil, pr.Number)
 		return
 	}
-	var status *vcs.PRStatus
-	err := m.retryTransient(ctx, fmt.Sprintf("CheckStatus PR #%d", pr.Number), func() error {
-		var e error
-		status, e = anvilVCS.CheckStatus(ctx, anvilPath, pr.Number)
-		return e
-	})
-	if err != nil {
-		log.Printf("[bellows] Error checking PR #%d: %v", pr.Number, err)
-		return
+	if status == nil {
+		err := m.retryTransient(ctx, fmt.Sprintf("CheckStatus PR #%d", pr.Number), func() error {
+			var e error
+			status, e = anvilVCS.CheckStatus(ctx, anvilPath, pr.Number)
+			return e
+		})
+		if err != nil {
+			log.Printf("[bellows] Error checking PR #%d: %v", pr.Number, err)
+			return
+		}
 	}
 
 	// Persist title if it was missing or has changed (e.g. PRs created before this
@@ -1105,8 +1217,9 @@ func (m *Monitor) checkPR(ctx context.Context, pr *state.PR, dailyAssayCost *flo
 	// issues (unresolved threads, CI failures, conflicts) as transitions.
 	if strings.HasPrefix(pr.BeadID, "ext-") && pr.BellowsManaged {
 		if m.resumeFromSuppression(m.wasUnmanaged, key) {
-			// Re-enter checkPR so the nil-snapshot seeding path runs.
-			m.checkPR(ctx, pr, dailyAssayCost)
+			// Re-enter checkPR so the nil-snapshot seeding path runs. The
+			// status just fetched is reused: re-asking GitHub buys nothing.
+			m.checkPRWithStatus(ctx, pr, dailyAssayCost, status)
 			return
 		}
 	}
@@ -1119,8 +1232,9 @@ func (m *Monitor) checkPR(ctx context.Context, pr *state.PR, dailyAssayCost *flo
 	// the problems that outlived the mute are re-detected as fresh transitions.
 	if !pr.BellowsDetached {
 		if m.resumeFromSuppression(m.wasDetached, key) {
-			// Re-enter checkPR so the nil-snapshot seeding path runs.
-			m.checkPR(ctx, pr, dailyAssayCost)
+			// Re-enter checkPR so the nil-snapshot seeding path runs. The
+			// status just fetched is reused: re-asking GitHub buys nothing.
+			m.checkPRWithStatus(ctx, pr, dailyAssayCost, status)
 			return
 		}
 	}
@@ -1745,11 +1859,59 @@ func (m *Monitor) retryBackoffOrDefault() github.RetryBackoff {
 // with bounded exponential backoff instead of surfacing immediately and
 // flapping the PR through needs_fix/needs_human; permanent errors return at
 // once so the caller's existing error handling runs unchanged.
+//
+// A rate-limit refusal is never retried in-line here: it starts a cooldown
+// (rateLimitCooldown) that pauses every status poll until the server's
+// Retry-After / x-ratelimit-reset, instead of replaying the call.
 func (m *Monitor) retryTransient(ctx context.Context, what string, fn func() error) error {
-	return github.RetryTransient(ctx, m.retryBackoffOrDefault(),
+	b := m.retryBackoffOrDefault()
+	b.MaxRateLimitWait = 0
+	err := github.RetryTransient(ctx, b,
 		func(attempt int, delay time.Duration, err error) {
 			log.Printf("[bellows] %s transient failure (retry %d in %s): %v", what, attempt, delay, err)
 		}, fn)
+	m.noteRateLimit(what, err)
+	return err
+}
+
+// noteRateLimit starts (or extends) the poll cooldown when err is a rate-limit
+// refusal, and resets the escalation once a call gets through. The wait is
+// the server's hint, else one minute doubling per consecutive refusal, capped
+// at maxRateLimitCooldown either way.
+func (m *Monitor) noteRateLimit(what string, err error) {
+	m.rateLimitMu.Lock()
+	defer m.rateLimitMu.Unlock()
+	if err == nil {
+		m.rateLimitStreak = 0
+		return
+	}
+	rl, ok := github.AsRateLimit(err)
+	if !ok {
+		return
+	}
+	wait := rl.RetryAfter
+	if wait <= 0 {
+		wait = github.DefaultRateLimitWait << min(m.rateLimitStreak, 4)
+	}
+	wait = min(wait, maxRateLimitCooldown)
+	m.rateLimitStreak++
+	if until := m.nowFn().Add(wait); until.After(m.rateLimitedUntil) {
+		m.rateLimitedUntil = until
+	}
+	kind := "primary"
+	if rl.Secondary {
+		kind = "secondary"
+	}
+	log.Printf("[bellows] %s: GitHub %s rate limit; pausing status polls for %s", what, kind, wait)
+}
+
+// rateLimitCooldown returns how long status polls stay paused, and whether
+// they are paused at all.
+func (m *Monitor) rateLimitCooldown() (time.Duration, bool) {
+	m.rateLimitMu.Lock()
+	defer m.rateLimitMu.Unlock()
+	left := m.rateLimitedUntil.Sub(m.nowFn())
+	return left, left > 0
 }
 
 // reviewGateInputs bundles every signal the Assay trigger gate evaluates.

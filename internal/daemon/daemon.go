@@ -1180,12 +1180,68 @@ func (d *Daemon) reconcileOpenPRs(ctx context.Context) {
 			}
 		}
 
+		d.settleClosedUnownedPRs(ctx, anvilName, anvilCfg.Path, prs)
+
 		// The anvil's open PRs were listed and every one of them reconciled. An
 		// anvil with no open PRs completes here too — it was reached, and there
 		// was nothing to do.
 		if err := d.db.RecordCheckSuccess(anvilName, state.CheckerPRReconcile); err != nil {
 			d.logger.Warn("reconcile: could not record the completed check", "anvil", anvilName, "err", err)
 		}
+	}
+}
+
+// openPRListLimit is the --limit ListOpenPRs passes to gh; a listing that
+// long may be truncated, so absence from it proves nothing.
+const openPRListLimit = 100
+
+// settleClosedUnownedPRs records the terminal state of tracked PRs this forge
+// does not own (humans', sibling forges') once they leave the open-PR listing.
+// Bellows no longer polls those rows, so without this they would stay open in
+// state.db forever. A PR is asked about once, when it disappears — not every
+// bellows cycle — and only MERGED/CLOSED answers are written.
+func (d *Daemon) settleClosedUnownedPRs(ctx context.Context, anvilName, anvilPath string, open []vcs.OpenPR) {
+	if len(open) >= openPRListLimit {
+		return
+	}
+	listed := make(map[int]bool, len(open))
+	for _, pr := range open {
+		listed[pr.Number] = true
+	}
+	tracked, err := d.db.OpenPRs()
+	if err != nil {
+		d.logger.Warn("reconcile: could not list tracked PRs", "anvil", anvilName, "err", err)
+		return
+	}
+	for i := range tracked {
+		pr := &tracked[i]
+		if pr.Anvil != anvilName || pr.BellowsManaged || listed[pr.Number] {
+			continue
+		}
+		if ctx.Err() != nil {
+			return
+		}
+		status, err := d.vcsForAnvil(anvilName).CheckStatusLight(ctx, anvilPath, pr.Number)
+		if err != nil || status == nil {
+			if err != nil {
+				d.logger.Warn("reconcile: could not read state of a closed unowned PR", "pr", pr.Number, "anvil", anvilName, "err", err)
+			}
+			continue
+		}
+		var terminal state.PRStatus
+		switch {
+		case status.IsMerged():
+			terminal = state.PRMerged
+		case status.IsClosed():
+			terminal = state.PRClosed
+		default:
+			continue
+		}
+		if err := d.db.UpdatePRStatus(pr.ID, terminal); err != nil {
+			d.logger.Warn("reconcile: could not record terminal state of an unowned PR", "pr", pr.Number, "anvil", anvilName, "err", err)
+			continue
+		}
+		d.logger.Info("reconcile: unowned PR left the open listing", "pr", pr.Number, "anvil", anvilName, "bead", pr.BeadID, "status", terminal)
 	}
 }
 
