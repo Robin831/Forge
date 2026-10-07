@@ -6595,11 +6595,13 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 				})
 			}
 		}
+		busy, _ := d.activeWorkerIDs()
 		payload := ipc.StatusPayload{
 			Running:        true,
 			PID:            os.Getpid(),
 			Uptime:         time.Since(d.startTime).Round(time.Second).String(),
 			Workers:        len(workers),
+			BusyWorkers:    len(busy),
 			QueueSize:      queueCount,
 			OpenPRs:        len(prs),
 			LastPoll:       lastPoll,

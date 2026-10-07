@@ -68,6 +68,7 @@ var statusCmd = &cobra.Command{
 						fmt.Fprintf(tw, "Daemon\tRunning (PID %d)\n", s.PID)
 						fmt.Fprintf(tw, "Uptime\t%s\n", s.Uptime)
 						fmt.Fprintf(tw, "Workers\t%d active\n", s.Workers)
+						fmt.Fprintf(tw, "Busy\t%d (PR monitors excluded)\n", s.BusyWorkers)
 						fmt.Fprintf(tw, "Queue\t%d beads\n", s.QueueSize)
 						fmt.Fprintf(tw, "Open PRs\t%d\n", s.OpenPRs)
 						fmt.Fprintf(tw, "Last Poll\t%s\n", s.LastPoll)

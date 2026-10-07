@@ -136,6 +136,10 @@ type StatusPayload struct {
 	// Hearth 2.0 uses this to size the "Idle" placeholder slots in the
 	// Workers pane (max_total_smiths - active_workers).
 	MaxTotalSmiths int `json:"max_total_smiths,omitempty"`
+	// BusyWorkers counts what a restart would kill: the workers self-deploy
+	// drains (activeWorkerIDs), so bellows PR monitors with no bead in flight
+	// are left out of it, unlike Workers.
+	BusyWorkers int `json:"busy_workers"`
 }
 
 // AnvilPollItem reports the most recent poll outcome for a single anvil.
