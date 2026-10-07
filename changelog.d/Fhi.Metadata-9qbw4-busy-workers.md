@@ -1,2 +1,0 @@
-category: Added
-- **`forge status` reports busy workers separately from PR monitors** - The status payload has a new `busy_workers` count: the workers a restart would kill, the same set self-deploy drains, so bellows PR-monitor rows with no bead in flight are left out. `forge status` prints it as a `Busy` line under `Workers`. If the count cannot be read it is flagged as `busy_workers_unknown` and falls back to `workers`, so a roll script never reads a working forge as idle. Roll scripts can now tell an idle forge with open PRs from one that is working. (Fhi.Metadata-9qbw4)

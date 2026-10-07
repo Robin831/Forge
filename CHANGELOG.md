@@ -9,6 +9,21 @@ Unreleased changes live as fragments in `changelog.d/` and are assembled at
 release time by `scripts/assemble-changelog.sh`.
 
 
+## [0.33.0] - 2026-10-07
+
+### Added
+
+- **`forge status` reports busy workers separately from PR monitors** - The status payload has a new `busy_workers` count: the workers a restart would kill, the same set self-deploy drains, so bellows PR-monitor rows with no bead in flight are left out. `forge status` prints it as a `Busy` line under `Workers`. If the count cannot be read it is flagged as `busy_workers_unknown` and falls back to `workers`, so a roll script never reads a working forge as idle. Roll scripts can now tell an idle forge with open PRs from one that is working. (Fhi.Metadata-9qbw4)
+
+### Changed
+
+- **Bellows polls only this forge's own PRs, in one GitHub request per repo** - Humans' and sibling forges' PRs are no longer sent to GitHub every cycle (reconcile records their merge/close when they leave the open list), the owned PRs of a repo are fetched with a single GraphQL query instead of three requests per PR, and a GitHub rate-limit refusal pauses polling for the server's Retry-After instead of being retried four times. (Fhi.Metadata-zegyj)
+- **Merges are merge-queue aware** - At merge time the Forge asks GitHub whether the PR's base branch has a merge queue (GraphQL `repository.mergeQueue(branch:)`, cached per repo and branch for 10 minutes). Branches without one are merged exactly as before (`gh pr merge N --squash --delete-branch=false`). On a queue branch the PR is enqueued with `gh pr merge N --auto` and recorded as queued, not merged: no bead close and no merged event until Bellows sees the PR MERGED, and a PR the queue removes is a failed merge (`pr_merge_failed`, with the failed merge_group run when one is found) whose bead stays open. The queued state lives in `prs.merge_queued_at`, so a restart resumes the wait. `--admin` is never passed. (Fhi.Metadata-zegyj)
+
+### Fixed
+
+- **Burnish's review-fix verification no longer times out while queued for the dotnet lock** - Time Temper spends waiting for another worker's dotnet build or test now moves burnish's overall verification deadline out by the same amount, as #929 already did for each step's own timeout; genuinely slow work still times out on schedule. (Fhi.Metadata-8py4x)
+
 ## [0.32.1] - 2026-10-06
 
 ### Changed
