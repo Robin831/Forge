@@ -6621,11 +6621,22 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 				})
 			}
 		}
+		// A failed lookup must never read as idle to a roll script: report the
+		// conservative count and flag it, so the caller refuses to roll.
+		busyCount, busyUnknown := len(workers), false
+		if busy, err := d.activeWorkerIDs(); err != nil {
+			d.logger.Warn("status: could not count busy workers; reporting all workers as busy", "error", err)
+			busyUnknown = true
+		} else {
+			busyCount = len(busy)
+		}
 		payload := ipc.StatusPayload{
 			Running:        true,
 			PID:            os.Getpid(),
 			Uptime:         time.Since(d.startTime).Round(time.Second).String(),
 			Workers:        len(workers),
+			BusyWorkers:    busyCount,
+			BusyUnknown:    busyUnknown,
 			QueueSize:      queueCount,
 			OpenPRs:        len(prs),
 			LastPoll:       lastPoll,

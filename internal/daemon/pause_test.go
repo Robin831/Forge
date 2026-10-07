@@ -160,3 +160,42 @@ func TestPauseDispatch_PersistsReason(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, reason, "resume clears the persisted reason")
 }
+
+// TestStatus_BusyWorkersLeavesOutBellowsMonitors pins what update-skybert.ps1's
+// pre-roll idle check reads: PR monitor rows count in workers but not in
+// busy_workers, while a fix worker on the same PR counts in both (Fhi.Metadata-9qbw4).
+func TestStatus_BusyWorkersLeavesOutBellowsMonitors(t *testing.T) {
+	d, db := newPauseDaemon(t)
+
+	require.NoError(t, db.InsertWorker(&state.Worker{
+		ID: "bellows-munin-6382", BeadID: "b-mon", Anvil: "munin", Status: state.WorkerMonitoring,
+		Phase: "bellows", PRNumber: 6382, StartedAt: time.Now(),
+	}))
+	require.NoError(t, db.InsertWorker(&state.Worker{
+		ID: "bellows-munin-6384", BeadID: "b-mon2", Anvil: "munin", Status: state.WorkerMonitoring,
+		Phase: "bellows", PRNumber: 6384, StartedAt: time.Now(),
+	}))
+
+	s := statusPayload(t, d)
+	assert.Equal(t, 2, s.Workers, "monitor rows are still listed as workers")
+	assert.Equal(t, 0, s.BusyWorkers, "a forge with only open PRs is idle for a roll")
+
+	require.NoError(t, db.InsertWorker(&state.Worker{
+		ID: "quench-munin-6382", BeadID: "b-fix", Anvil: "munin", Status: state.WorkerRunning,
+		Phase: "quench", PID: 4242, PRNumber: 6382, StartedAt: time.Now(),
+	}))
+	s = statusPayload(t, d)
+	assert.Equal(t, 3, s.Workers)
+	assert.Equal(t, 1, s.BusyWorkers, "a running fix worker holds the roll")
+}
+
+// TestStatus_BusyWorkersLookupFailureNeverReadsIdle: with the state DB gone the
+// busy count cannot be read, so status flags it instead of reporting 0.
+func TestStatus_BusyWorkersLookupFailureNeverReadsIdle(t *testing.T) {
+	d, db := newPauseDaemon(t)
+	require.NoError(t, db.Close())
+
+	s := statusPayload(t, d)
+	assert.True(t, s.BusyUnknown, "a failed lookup must be flagged, never read as idle")
+	assert.Equal(t, s.Workers, s.BusyWorkers, "falls back to the conservative count")
+}
