@@ -24,8 +24,12 @@ import (
 	"github.com/Robin831/Forge/internal/worktree"
 )
 
-// Default poll interval when waiting for child PR merges.
-const defaultMergePollInterval = 30 * time.Second
+// Default poll interval when waiting for child PR merges. A var so tests can
+// shorten it; mergeClock likewise drives the merge-queue settle grace.
+var (
+	defaultMergePollInterval = 30 * time.Second
+	mergeClock               = time.Now
+)
 
 // Maximum time to wait for a single child PR merge before giving up.
 const defaultMergeTimeout = 15 * time.Minute
@@ -961,14 +965,30 @@ func (p *Params) mergePR(ctx context.Context, prNumber int, dir string) error {
 
 // MergePRWithProvider merges a PR by number using the VCS provider. It retries
 // with polling if the initial merge attempt fails (e.g. checks still running).
+// A PR that went into a merge queue is waited on until it merges, and a PR the
+// queue removes is a failed merge.
 func MergePRWithProvider(ctx context.Context, prov vcs.Provider, prNumber int, dir string) error {
 	// Establish timeout for all merge attempts upfront so the initial attempt
 	// and retry loop both respect the same deadline.
 	mergeCtx, cancel := context.WithTimeout(ctx, defaultMergeTimeout)
 	defer cancel()
 
+	req := vcs.MergeRequest{WorktreePath: dir, PRNumber: prNumber, Strategy: "squash"}
+	var queuedAt time.Time
+	attempt := func() (bool, error) {
+		outcome, err := vcs.Merge(mergeCtx, prov, req)
+		if err != nil {
+			return false, nil
+		}
+		if outcome == vcs.MergeOutcomeQueued {
+			queuedAt = mergeClock()
+			return false, nil
+		}
+		return true, nil
+	}
+
 	// Try immediate merge first.
-	if err := prov.MergePR(mergeCtx, dir, prNumber, "squash"); err == nil {
+	if done, _ := attempt(); done {
 		return nil
 	}
 
@@ -979,9 +999,18 @@ func MergePRWithProvider(ctx context.Context, prov vcs.Provider, prNumber int, d
 	for {
 		select {
 		case <-mergeCtx.Done():
+			if !queuedAt.IsZero() {
+				return fmt.Errorf("timed out waiting for PR #%d to leave the merge queue", prNumber)
+			}
 			return fmt.Errorf("timed out waiting to merge PR #%d", prNumber)
 		case <-ticker.C:
-			if err := prov.MergePR(mergeCtx, dir, prNumber, "squash"); err == nil {
+			if !queuedAt.IsZero() {
+				if done, err := waitQueued(mergeCtx, prov, prNumber, dir, queuedAt); done || err != nil {
+					return err
+				}
+				continue
+			}
+			if done, _ := attempt(); done {
 				return nil
 			}
 			// Check if PR was already merged.
@@ -990,6 +1019,29 @@ func MergePRWithProvider(ctx context.Context, prov vcs.Provider, prNumber int, d
 			}
 		}
 	}
+}
+
+// waitQueued reads a queued PR once: done when merged, an error when the queue
+// removed it or it was closed, neither while it waits.
+func waitQueued(ctx context.Context, prov vcs.Provider, prNumber int, dir string, queuedAt time.Time) (bool, error) {
+	q, ok := prov.(vcs.QueueAwareMerger)
+	if !ok {
+		status, err := prov.CheckStatusLight(ctx, dir, prNumber)
+		return err == nil && status.IsMerged(), nil
+	}
+	st, info, err := q.MergeQueueStatus(ctx, dir, prNumber)
+	if err != nil {
+		return false, nil
+	}
+	switch vcs.ResolveQueued(st, info, queuedAt, mergeClock()) {
+	case vcs.QueueMerged:
+		return true, nil
+	case vcs.QueueDequeued:
+		return false, fmt.Errorf("PR #%d was removed from the merge queue without merging", prNumber)
+	case vcs.QueueClosed:
+		return false, fmt.Errorf("PR #%d was closed while in the merge queue", prNumber)
+	}
+	return false, nil
 }
 
 // claimBead marks a bead as in_progress.
