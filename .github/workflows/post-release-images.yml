@@ -139,8 +139,8 @@ jobs:
       # here rather than in release.yml because the devbox image is
       # `FROM forge:<tag>-skybert` — dispatching it before the step above has
       # pushed that tag would just build against a missing/stale image. Needs a
-      # PAT secret DEVBOX_DISPATCH_PAT with repo access to Robin831/forgeBench;
-      # skips gracefully if unset.
+      # PAT secret DEVBOX_DISPATCH_PAT with repo access to FHIDev/Fhi.Munin.DevInfra
+      # (forgeBench's home since its transfer); skips gracefully if unset.
       - name: Trigger devbox image build (forgeBench)
         env:
           GH_TOKEN: ${{ secrets.DEVBOX_DISPATCH_PAT }}
@@ -150,5 +150,5 @@ jobs:
             echo "DEVBOX_DISPATCH_PAT not set - skipping devbox auto-build. Add the PAT secret to enable it."
             exit 0
           fi
-          gh api repos/Robin831/forgeBench/dispatches -f event_type=forge-released -f "client_payload[forge_tag]=${TAG}"
+          gh api repos/FHIDev/Fhi.Munin.DevInfra/dispatches -f event_type=forge-released -f "client_payload[forge_tag]=${TAG}"
           echo "Dispatched forge-released to forgeBench for ${TAG}"
