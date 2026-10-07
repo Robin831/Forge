@@ -38,6 +38,12 @@ func acquireHeavyLock(ctx context.Context, step Step) (release func(), held bool
 
 	start := time.Now()
 	waiting := false
+	meter := lockWaitMeterFrom(ctx)
+	defer func() {
+		if waiting {
+			meter.endWait()
+		}
+	}()
 	for {
 		if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err == nil {
 			break
@@ -45,6 +51,7 @@ func acquireHeavyLock(ctx context.Context, step Step) (release func(), held bool
 		if !waiting {
 			log.Printf("[temper] step %q is waiting for another worker's dotnet build/test (lock %s)", step.Name, path)
 			waiting = true
+			meter.beginWait()
 		}
 		if time.Since(start) >= heavyLockMaxWait {
 			log.Printf("[temper] step %q gave up on the dotnet lock after %s and runs unserialised", step.Name, heavyLockMaxWait)
