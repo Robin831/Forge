@@ -140,6 +140,9 @@ type StatusPayload struct {
 	// drains (activeWorkerIDs), so bellows PR monitors with no bead in flight
 	// are left out of it, unlike Workers.
 	BusyWorkers int `json:"busy_workers"`
+	// BusyUnknown is set when that count could not be read; BusyWorkers then
+	// falls back to Workers, and a roll script must treat the forge as busy.
+	BusyUnknown bool `json:"busy_workers_unknown,omitempty"`
 }
 
 // AnvilPollItem reports the most recent poll outcome for a single anvil.

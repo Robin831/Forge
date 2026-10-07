@@ -188,3 +188,14 @@ func TestStatus_BusyWorkersLeavesOutBellowsMonitors(t *testing.T) {
 	assert.Equal(t, 3, s.Workers)
 	assert.Equal(t, 1, s.BusyWorkers, "a running fix worker holds the roll")
 }
+
+// TestStatus_BusyWorkersLookupFailureNeverReadsIdle: with the state DB gone the
+// busy count cannot be read, so status flags it instead of reporting 0.
+func TestStatus_BusyWorkersLookupFailureNeverReadsIdle(t *testing.T) {
+	d, db := newPauseDaemon(t)
+	require.NoError(t, db.Close())
+
+	s := statusPayload(t, d)
+	assert.True(t, s.BusyUnknown, "a failed lookup must be flagged, never read as idle")
+	assert.Equal(t, s.Workers, s.BusyWorkers, "falls back to the conservative count")
+}
