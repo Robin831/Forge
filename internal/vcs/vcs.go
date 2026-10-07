@@ -356,6 +356,10 @@ type PRStatus struct {
 	IsDraft bool `json:"isDraft"`
 	URL     string
 	Title   string
+	// MergeQueue is the PR's merge-queue state when the fetch selected it
+	// (GitHub's batched poll does; `gh pr view` cannot). nil means unknown,
+	// never "not queued".
+	MergeQueue *MergeQueueInfo `json:"-"`
 }
 
 // IsMerged returns true if the PR has been merged.

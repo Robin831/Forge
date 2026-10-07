@@ -36,6 +36,9 @@ const (
 	EventPRClosed       = "pr_closed"
 	EventPRConflicting  = "pr_conflicting"
 	EventPRReadyToMerge = "pr_ready_to_merge"
+	// EventPRMergeDequeued: a PR the Forge enqueued left the merge queue
+	// without merging. The merge failed; the bead stays open.
+	EventPRMergeDequeued = "pr_merge_dequeued"
 	// EventPRReviewNeeded signals that a PR's current head should be reviewed
 	// by Assay. It is emitted by the Assay trigger gate in checkPR when the
 	// head SHA differs from the last reviewed SHA and all gating conditions
@@ -1343,6 +1346,14 @@ func (m *Monitor) checkPRWithStatus(ctx context.Context, pr *state.PR, dailyAssa
 		return
 	}
 
+	// A queued PR is already merging; announcing it ready again would enqueue
+	// it again. Captured before resolving, so a dequeue is not re-enqueued
+	// by the same poll either.
+	mergeQueued := pr.MergeQueuedAt != nil
+	if mergeQueued {
+		m.resolveMergeQueue(ctx, pr, anvilVCS, anvilPath, status)
+	}
+
 	if newSnap.CIPassing && !lastSnap.CIPassing {
 		m.emit(ctx, PREvent{
 			PRNumber:  pr.Number,
@@ -1545,7 +1556,7 @@ func (m *Monitor) checkPRWithStatus(ctx context.Context, pr *state.PR, dailyAssa
 	// auto-merge failed transiently.
 	newReady := newSnap.ready()
 	lastReady := lastSnap.ready()
-	if newReady && !lastReady {
+	if newReady && !lastReady && !mergeQueued {
 		m.emit(ctx, PREvent{
 			PRNumber:  pr.Number,
 			BeadID:    pr.BeadID,
@@ -2170,4 +2181,51 @@ func (m *Monitor) emit(ctx context.Context, event PREvent) {
 	for _, h := range handlers {
 		h(ctx, event)
 	}
+}
+
+// resolveMergeQueue settles an open PR the Forge enqueued. MERGED is handled
+// by the terminal path above (bead close included); here only "still queued"
+// and "dequeued" remain. The batched poll carries the queue fields; a status
+// from the per-PR fallback does not, and costs one extra read.
+func (m *Monitor) resolveMergeQueue(ctx context.Context, pr *state.PR, prov vcs.Provider, anvilPath string, status *vcs.PRStatus) {
+	stateStr, info := status.State, status.MergeQueue
+	if info == nil {
+		q, ok := prov.(vcs.QueueAwareMerger)
+		if !ok {
+			return
+		}
+		st, i, err := q.MergeQueueStatus(ctx, anvilPath, pr.Number)
+		if err != nil {
+			log.Printf("[bellows] PR #%d (%s): could not read merge queue state: %v", pr.Number, pr.Anvil, err)
+			return
+		}
+		stateStr, info = st, &i
+	}
+	if vcs.ResolveQueued(stateStr, *info, *pr.MergeQueuedAt, m.nowFn()) != vcs.QueueDequeued {
+		return
+	}
+	reason := "removed from merge queue"
+	if r, ok := prov.(vcs.MergeGroupFailureReporter); ok {
+		if why, err := r.MergeGroupFailure(ctx, anvilPath, pr.Number); err != nil {
+			log.Printf("[bellows] PR #%d (%s): could not fetch merge_group run: %v", pr.Number, pr.Anvil, err)
+		} else if why != "" {
+			reason += ": " + why
+		}
+	}
+	log.Printf("[bellows] PR #%d (%s): %s; merge failed, bead %s stays open", pr.Number, pr.Anvil, reason, pr.BeadID)
+	if err := m.db.ClearPRMergeQueued(pr.ID); err != nil {
+		log.Printf("[bellows] PR #%d (%s): failed to clear merge_queued_at: %v", pr.Number, pr.Anvil, err)
+	}
+	pr.MergeQueuedAt = nil
+	_ = m.db.LogEvent(state.EventPRMergeFailed, fmt.Sprintf("PR #%d %s", pr.Number, reason), pr.BeadID, pr.Anvil)
+	m.emit(ctx, PREvent{
+		PRNumber:  pr.Number,
+		BeadID:    pr.BeadID,
+		Anvil:     pr.Anvil,
+		Branch:    status.HeadRefName,
+		EventType: EventPRMergeDequeued,
+		Details:   reason,
+		Timestamp: time.Now(),
+		PRURL:     status.URL,
+	})
 }

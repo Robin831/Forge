@@ -3645,6 +3645,7 @@ func (d *Daemon) doAutoMerge(ctx context.Context, anvil, anvilPath string, pr st
 	// failure is followed by a state read: a PR that is already merged is a
 	// success, and retrying it would only turn that success into a failure.
 	provider := d.vcsForAnvil(anvil)
+	outcome := vcs.MergeOutcomeMerged
 	err := github.RetryTransient(ctx, d.createPRBackoff(),
 		func(attempt int, delay time.Duration, e error) {
 			d.logger.Warn("auto-merge transient failure, retrying",
@@ -3653,10 +3654,14 @@ func (d *Daemon) doAutoMerge(ctx context.Context, anvil, anvilPath string, pr st
 		func() error {
 			mergeCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
 			defer cancel()
-			e := provider.MergePR(mergeCtx, anvilPath, pr.Number, strategy)
+			var e error
+			outcome, e = vcs.Merge(mergeCtx, provider, vcs.MergeRequest{
+				WorktreePath: anvilPath, PRNumber: pr.Number, Base: pr.BaseBranch, Strategy: strategy,
+			})
 			if e != nil && d.prAlreadyMerged(ctx, provider, anvilPath, pr.Number) {
 				d.logger.Info("auto-merge reported an error but the PR is merged",
 					"pr_number", pr.Number, "anvil", anvil, "error", e)
+				outcome = vcs.MergeOutcomeMerged
 				return nil
 			}
 			return e
@@ -3678,6 +3683,10 @@ func (d *Daemon) doAutoMerge(ctx context.Context, anvil, anvilPath string, pr st
 		return
 	}
 	d.clearAutoMergeRearms(anvil, pr.Number)
+	if outcome == vcs.MergeOutcomeQueued {
+		d.recordMergeQueued(pr.ID, pr.Number, pr.BeadID, anvil)
+		return
+	}
 
 	if err := d.db.LogEvent(state.EventPRAutoMerged,
 		fmt.Sprintf("PR #%d auto-merged successfully (strategy: %s)", pr.Number, strategy),
@@ -3685,6 +3694,23 @@ func (d *Daemon) doAutoMerge(ctx context.Context, anvil, anvilPath string, pr st
 		d.logger.Warn("failed to log auto-merge success event", "error", err)
 	}
 	d.logger.Info("PR auto-merged successfully", "pr_number", pr.Number, "anvil", anvil, "bead", pr.BeadID)
+}
+
+// recordMergeQueued persists that a PR was enqueued, not merged: no bead close
+// and no merged event. Bellows resolves it to merged or dequeued, from this row
+// after a restart too.
+func (d *Daemon) recordMergeQueued(prID, prNumber int, beadID, anvil string) {
+	if prID > 0 {
+		if err := d.db.SetPRMergeQueued(prID, time.Now()); err != nil {
+			d.logger.Warn("failed to persist merge-queue state", "pr_number", prNumber, "anvil", anvil, "error", err)
+		}
+	}
+	if err := d.db.LogEvent(state.EventPRMergeQueued,
+		fmt.Sprintf("PR #%d added to the merge queue (not merged yet)", prNumber),
+		beadID, anvil); err != nil {
+		d.logger.Warn("failed to log merge-queued event", "error", err)
+	}
+	d.logger.Info("PR added to the merge queue; waiting for it to merge", "pr_number", prNumber, "anvil", anvil, "bead", beadID)
 }
 
 // maxAutoMergeRearms bounds how many times one PR's ready-to-merge edge is
@@ -7905,7 +7931,10 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 		d.logger.Info("PR merge requested", "pr_number", mergeNumber, "anvil", mergeAnvil, "strategy", strategy)
 		mergeCtx, mergeCancel := context.WithTimeout(d.runCtx, 60*time.Second)
 		defer mergeCancel()
-		if err := d.vcsForAnvil(mergeAnvil).MergePR(mergeCtx, anvilCfg.Path, mergeNumber, strategy); err != nil {
+		outcome, err := vcs.Merge(mergeCtx, d.vcsForAnvil(mergeAnvil), vcs.MergeRequest{
+			WorktreePath: anvilCfg.Path, PRNumber: mergeNumber, Base: pr.BaseBranch, Strategy: strategy,
+		})
+		if err != nil {
 			_ = d.db.LogEvent(state.EventPRMergeFailed,
 				fmt.Sprintf("PR #%d merge failed: %v", mergeNumber, err),
 				beadID, mergeAnvil)
@@ -7913,6 +7942,10 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 			// Sanitize error message for IPC: use only the first line to avoid multi-line/huge payloads.
 			errSummary := strings.SplitN(err.Error(), "\n", 2)[0]
 			return errorResponse(fmt.Sprintf("merge failed: %s", errSummary))
+		}
+		if outcome == vcs.MergeOutcomeQueued {
+			d.recordMergeQueued(pr.ID, mergeNumber, beadID, mergeAnvil)
+			return okResponse(map[string]string{"message": fmt.Sprintf("PR #%d added to the merge queue", mergeNumber)})
 		}
 		_ = d.db.LogEvent(state.EventPRMerged,
 			fmt.Sprintf("PR #%d merged successfully (strategy: %s)", mergeNumber, strategy),
@@ -8069,8 +8102,22 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 				mergeCtx, mergeCancel := context.WithTimeout(d.runCtx, 60*time.Second)
 				defer mergeCancel()
 				strategy := d.cfg.Load().Settings.MergeStrategy
-				if err := d.vcsForAnvil(pa.Anvil).MergePR(mergeCtx, anvilCfg.Path, pa.PRNumber, strategy); err != nil {
+				base := ""
+				if pa.PRID > 0 {
+					if row, err := d.db.GetPRByID(pa.PRID); err == nil && row != nil {
+						base = row.BaseBranch
+					}
+				}
+				outcome, err := vcs.Merge(mergeCtx, d.vcsForAnvil(pa.Anvil), vcs.MergeRequest{
+					WorktreePath: anvilCfg.Path, PRNumber: pa.PRNumber, Base: base, Strategy: strategy,
+				})
+				if err != nil {
 					d.completeAsync(reqID, errorResponse(fmt.Sprintf("merge failed: %v", err)))
+					return
+				}
+				if outcome == vcs.MergeOutcomeQueued {
+					d.recordMergeQueued(pa.PRID, pa.PRNumber, pa.BeadID, pa.Anvil)
+					d.completeAsync(reqID, okResponse(map[string]string{"message": fmt.Sprintf("PR #%d added to the merge queue", pa.PRNumber)}))
 					return
 				}
 				if pa.PRID > 0 {

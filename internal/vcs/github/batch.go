@@ -18,8 +18,9 @@ const batchChunkSize = 25
 // state,statusCheckRollup,reviews,reviewRequests,mergeable,headRefName,
 // headRefOid,isDraft,url,title` plus the thread and review-request queries.
 // The statusCheckRollup and reviews selections mirror gh's own, including
-// gh's export of a StatusContext's createdAt as startedAt.
-const batchPRFields = `number state mergeable headRefName headRefOid isDraft url title
+// gh's export of a StatusContext's createdAt as startedAt. The merge-queue
+// fields let a queued PR resolve on the regular poll at no extra request.
+const batchPRFields = `number state mergeable headRefName headRefOid isDraft url title ` + mergeQueueFields + `
 	statusCheckRollup: commits(last: 1) { nodes { commit { statusCheckRollup { contexts(first: 100) {
 		pageInfo { hasNextPage endCursor }
 		nodes { __typename
@@ -57,6 +58,7 @@ type batchPR struct {
 	} `json:"reviews"`
 	ReviewThreads  threadPage        `json:"reviewThreads"`
 	ReviewRequests reviewRequestConn `json:"reviewRequests"`
+	mergeQueueNode
 }
 
 // CheckStatusBatch fetches the status of every PR in prNumbers with one
@@ -178,5 +180,6 @@ func (b *batchPR) status() (*vcs.PRStatus, bool) {
 		IsDraft:           b.IsDraft,
 		URL:               b.URL,
 		Title:             b.Title,
+		MergeQueue:        b.info(),
 	}, true
 }

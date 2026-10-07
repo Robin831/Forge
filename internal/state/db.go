@@ -234,6 +234,10 @@ func (db *DB) migrate() error {
 		// reconcile rewrites those on every cycle, so a detach recorded there
 		// would not survive the next pass.
 		{"prs", "bellows_detached", `ALTER TABLE prs ADD COLUMN bellows_detached INTEGER NOT NULL DEFAULT 0`},
+		// merge_queued_at is when the Forge put the PR in its base branch's
+		// merge queue; '' = not queued. Bellows resolves it to merged or
+		// dequeued, so a restart resumes the wait (Fhi.Metadata-zegyj).
+		{"prs", "merge_queued_at", `ALTER TABLE prs ADD COLUMN merge_queued_at TEXT NOT NULL DEFAULT ''`},
 		// daemon_generation / heartbeat_at are the leaked-worker reaper's
 		// evidence that the goroutine which owned a row is gone (see
 		// internal/state/leakedworkers.go and internal/daemon/reaper.go).
@@ -2174,9 +2178,10 @@ type PR struct {
 	HasPendingReviews       bool
 	HasApproval             bool
 	Title                   string
-	BellowsManaged          bool // true = bellows runs lifecycle workers (quench, burnish, rebase)
-	BellowsManuallyAssigned bool // true = a user explicitly assigned bellows via IPC; reconcile must not clobber
-	BellowsDetached         bool // true = bellows is muted for this PR; independent of the managed flags, reconcile never touches it
+	BellowsManaged          bool       // true = bellows runs lifecycle workers (quench, burnish, rebase)
+	BellowsManuallyAssigned bool       // true = a user explicitly assigned bellows via IPC; reconcile must not clobber
+	BellowsDetached         bool       // true = bellows is muted for this PR; independent of the managed flags, reconcile never touches it
+	MergeQueuedAt           *time.Time // non-nil = enqueued in a merge queue by the Forge, not yet merged or dequeued
 }
 
 // IsExternal returns true if this PR was discovered via GitHub reconciliation
@@ -2223,7 +2228,7 @@ func (db *DB) InsertPR(pr *PR) error {
 
 // PRByNumber returns the PR record for a given GitHub PR number, or nil if not found.
 func (db *DB) PRByNumber(number int) (*PR, error) {
-	prs, err := db.queryPRs(`SELECT id, number, anvil, bead_id, branch, base_branch, status, created_at, last_checked, ci_fix_count, review_fix_count, rebase_count, ci_passing, is_conflicting, has_unresolved_threads, has_pending_reviews, has_approval, title, bellows_managed, bellows_manually_assigned, bellows_detached
+	prs, err := db.queryPRs(`SELECT id, number, anvil, bead_id, branch, base_branch, status, created_at, last_checked, ci_fix_count, review_fix_count, rebase_count, ci_passing, is_conflicting, has_unresolved_threads, has_pending_reviews, has_approval, title, bellows_managed, bellows_manually_assigned, bellows_detached, merge_queued_at
 		FROM prs WHERE number = ? ORDER BY id DESC LIMIT 1`, number)
 	if err != nil {
 		return nil, err
@@ -2269,19 +2274,19 @@ func (db *DB) UpdatePRLifecycle(id int, ciFixCount, reviewFixCount, rebaseCount 
 
 // GetPRByID returns a PR by its primary key id, or nil if not found.
 func (db *DB) GetPRByID(id int) (*PR, error) {
-	return db.queryPR(`SELECT id, number, anvil, bead_id, branch, base_branch, status, created_at, last_checked, ci_fix_count, review_fix_count, rebase_count, ci_passing, is_conflicting, has_unresolved_threads, has_pending_reviews, has_approval, title, bellows_managed, bellows_manually_assigned, bellows_detached
+	return db.queryPR(`SELECT id, number, anvil, bead_id, branch, base_branch, status, created_at, last_checked, ci_fix_count, review_fix_count, rebase_count, ci_passing, is_conflicting, has_unresolved_threads, has_pending_reviews, has_approval, title, bellows_managed, bellows_manually_assigned, bellows_detached, merge_queued_at
 		FROM prs WHERE id = ?`, id)
 }
 
 // GetPRByNumber returns a PR by its anvil and number.
 func (db *DB) GetPRByNumber(anvil string, number int) (*PR, error) {
-	return db.queryPR(`SELECT id, number, anvil, bead_id, branch, base_branch, status, created_at, last_checked, ci_fix_count, review_fix_count, rebase_count, ci_passing, is_conflicting, has_unresolved_threads, has_pending_reviews, has_approval, title, bellows_managed, bellows_manually_assigned, bellows_detached
+	return db.queryPR(`SELECT id, number, anvil, bead_id, branch, base_branch, status, created_at, last_checked, ci_fix_count, review_fix_count, rebase_count, ci_passing, is_conflicting, has_unresolved_threads, has_pending_reviews, has_approval, title, bellows_managed, bellows_manually_assigned, bellows_detached, merge_queued_at
 		FROM prs WHERE anvil = ? AND number = ? ORDER BY id DESC LIMIT 1`, anvil, number)
 }
 
 // OpenPRs returns all PRs with non-terminal status.
 func (db *DB) OpenPRs() ([]PR, error) {
-	return db.queryPRs(`SELECT id, number, anvil, bead_id, branch, base_branch, status, created_at, last_checked, ci_fix_count, review_fix_count, rebase_count, ci_passing, is_conflicting, has_unresolved_threads, has_pending_reviews, has_approval, title, bellows_managed, bellows_manually_assigned, bellows_detached
+	return db.queryPRs(`SELECT id, number, anvil, bead_id, branch, base_branch, status, created_at, last_checked, ci_fix_count, review_fix_count, rebase_count, ci_passing, is_conflicting, has_unresolved_threads, has_pending_reviews, has_approval, title, bellows_managed, bellows_manually_assigned, bellows_detached, merge_queued_at
 		FROM prs WHERE status IN ` + nonTerminalPRStatusSQL() + `
 		ORDER BY created_at`)
 }
@@ -2310,10 +2315,15 @@ func (db *DB) queryPRs(query string, args ...any) ([]PR, error) {
 		var status string
 		var createdAt string
 		var lastChecked sql.NullString
+		var mergeQueuedAt string
 		var ciPassing, isConflicting, hasThreads, hasPendingReviews, hasApproval, bellowsManaged, bellowsManuallyAssigned, bellowsDetached int
 		if err := rows.Scan(&p.ID, &p.Number, &p.Anvil, &p.BeadID, &p.Branch, &p.BaseBranch,
-			&status, &createdAt, &lastChecked, &p.CIFixCount, &p.ReviewFixCount, &p.RebaseCount, &ciPassing, &isConflicting, &hasThreads, &hasPendingReviews, &hasApproval, &p.Title, &bellowsManaged, &bellowsManuallyAssigned, &bellowsDetached); err != nil {
+			&status, &createdAt, &lastChecked, &p.CIFixCount, &p.ReviewFixCount, &p.RebaseCount, &ciPassing, &isConflicting, &hasThreads, &hasPendingReviews, &hasApproval, &p.Title, &bellowsManaged, &bellowsManuallyAssigned, &bellowsDetached, &mergeQueuedAt); err != nil {
 			return nil, err
+		}
+		if mergeQueuedAt != "" {
+			t := parseTime(mergeQueuedAt)
+			p.MergeQueuedAt = &t
 		}
 		p.Status = PRStatus(status)
 		p.CIPassing = ciPassing != 0
@@ -2338,7 +2348,7 @@ func (db *DB) queryPRs(query string, args ...any) ([]PR, error) {
 // MergedPRs returns all PRs with status=merged that have a non-empty,
 // non-external bead_id (i.e. beads that Forge can attempt to close).
 func (db *DB) MergedPRs() ([]PR, error) {
-	return db.queryPRs(`SELECT id, number, anvil, bead_id, branch, base_branch, status, created_at, last_checked, ci_fix_count, review_fix_count, rebase_count, ci_passing, is_conflicting, has_unresolved_threads, has_pending_reviews, has_approval, title, bellows_managed, bellows_manually_assigned, bellows_detached
+	return db.queryPRs(`SELECT id, number, anvil, bead_id, branch, base_branch, status, created_at, last_checked, ci_fix_count, review_fix_count, rebase_count, ci_passing, is_conflicting, has_unresolved_threads, has_pending_reviews, has_approval, title, bellows_managed, bellows_manually_assigned, bellows_detached, merge_queued_at
 		FROM prs WHERE status = 'merged' AND bead_id != '' AND bead_id NOT LIKE 'ext-%'
 		ORDER BY created_at, id`)
 }
@@ -2479,6 +2489,18 @@ func (db *DB) UpdatePRBellowsAssignment(id int, managed, manuallyAssigned bool) 
 		`UPDATE prs SET bellows_managed = ?, bellows_manually_assigned = ? WHERE id = ?`,
 		boolToInt(managed), boolToInt(manuallyAssigned), id,
 	)
+	return err
+}
+
+// SetPRMergeQueued records that the Forge enqueued the PR at at.
+func (db *DB) SetPRMergeQueued(id int, at time.Time) error {
+	_, err := db.conn.Exec(`UPDATE prs SET merge_queued_at = ? WHERE id = ?`, at.Format(dbTimeLayout), id)
+	return err
+}
+
+// ClearPRMergeQueued forgets a merge-queue entry once it merged or was dequeued.
+func (db *DB) ClearPRMergeQueued(id int) error {
+	_, err := db.conn.Exec(`UPDATE prs SET merge_queued_at = '' WHERE id = ?`, id)
 	return err
 }
 
@@ -2854,10 +2876,13 @@ const (
 	// EventAssayFailed fires when no pass reviewed the head (triage died, the
 	// diff was unfetchable, or every deep pass failed). The message carries
 	// the cause, which otherwise surfaced only as the worker row's state.
-	EventAssayFailed         EventType = "assay_failed"
-	EventPRMergeRequested    EventType = "pr_merge_requested"
-	EventPRMergeFailed       EventType = "pr_merge_failed"
-	EventPRAutoMerged        EventType = "pr_auto_merged"
+	EventAssayFailed      EventType = "assay_failed"
+	EventPRMergeRequested EventType = "pr_merge_requested"
+	EventPRMergeFailed    EventType = "pr_merge_failed"
+	EventPRAutoMerged     EventType = "pr_auto_merged"
+	// EventPRMergeQueued: the Forge put the PR in its base branch's merge
+	// queue. It is not merged; Bellows later logs pr_merged or pr_merge_failed.
+	EventPRMergeQueued       EventType = "pr_merge_queued"
 	EventError               EventType = "error"
 	EventBeadRecovered       EventType = "bead_recovered"
 	EventBeadStopped         EventType = "bead_stopped"

@@ -25,8 +25,11 @@ type Provider struct {
 	// runner executes gh/git for the status-polling paths; nil means exec.
 	// It is the seam the batch and rate-limit tests drive without a network.
 	runner Runner
-	// now is the clock rate-limit reset epochs are measured against.
+	// now is the clock rate-limit reset epochs and the merge-queue cache TTL
+	// are measured against.
 	now func() time.Time
+	// mq caches merge-queue detection; nil uses the process-wide cache.
+	mq *mergeQueueCache
 }
 
 // New creates a GitHub VCS provider. The state DB is optional (may be nil);
@@ -38,7 +41,7 @@ func New(db *state.DB) *Provider {
 // NewWithRunner is New with the gh/git executor and clock replaced, for tests.
 // A nil now uses time.Now.
 func NewWithRunner(db *state.DB, runner Runner, now func() time.Time) *Provider {
-	return &Provider{db: db, runner: runner, now: now}
+	return &Provider{db: db, runner: runner, now: now, mq: newMergeQueueCache()}
 }
 
 func init() {
@@ -173,40 +176,16 @@ func (p *Provider) CreatePR(ctx context.Context, params vcs.CreateParams) (*vcs.
 
 // MergePR merges a PR using the gh CLI with the specified strategy.
 // Valid strategies: "squash", "merge", "rebase". Defaults to "squash" if empty.
+// On a merge-queue branch it enqueues and returns vcs.ErrMergeQueued, so nil
+// keeps meaning merged; queue-aware callers use MergePRWithOutcome instead.
 func (p *Provider) MergePR(ctx context.Context, worktreePath string, prNumber int, strategy string) error {
-	if strategy == "" {
-		strategy = "squash"
+	outcome, err := p.MergePRWithOutcome(ctx, vcs.MergeRequest{WorktreePath: worktreePath, PRNumber: prNumber, Strategy: strategy})
+	if err != nil {
+		return err
 	}
-
-	allowedStrategies := map[string]bool{
-		"squash": true,
-		"merge":  true,
-		"rebase": true,
+	if outcome == vcs.MergeOutcomeQueued {
+		return vcs.ErrMergeQueued
 	}
-	if !allowedStrategies[strategy] {
-		log.Printf("[vcs/github] Invalid merge strategy %q, defaulting to squash", strategy)
-		strategy = "squash"
-	}
-
-	args := []string{
-		"pr", "merge", fmt.Sprintf("%d", prNumber),
-		"--" + strategy,
-		"--delete-branch=false",
-	}
-
-	log.Printf("[vcs/github] Merging PR #%d with strategy %s", prNumber, strategy)
-
-	cmd := executil.HideWindow(exec.CommandContext(ctx, "gh", args...))
-	cmd.Dir = worktreePath
-
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("gh pr merge failed: %w\nstderr: %s", err, stderr.String())
-	}
-
-	log.Printf("[vcs/github] Merged PR #%d", prNumber)
 	return nil
 }
 
