@@ -1,9 +1,71 @@
 package temper
 
 import (
+	"context"
 	"path/filepath"
 	"strings"
+	"sync"
+	"time"
 )
+
+// LockWaitMeter adds up the time steps run under one context spent waiting for the dotnet lock, so a
+// caller with its own overall deadline (burnish's verification) can leave that queueing out of it.
+// The zero value is ready to use; a nil meter records nothing.
+type LockWaitMeter struct {
+	mu      sync.Mutex
+	total   time.Duration
+	waiting int
+	since   time.Time
+}
+
+// Waited is the total lock wait so far, including a wait still in progress.
+func (m *LockWaitMeter) Waited() time.Duration {
+	if m == nil {
+		return 0
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.waiting > 0 {
+		return m.total + time.Since(m.since)
+	}
+	return m.total
+}
+
+func (m *LockWaitMeter) beginWait() {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.waiting == 0 {
+		m.since = time.Now()
+	}
+	m.waiting++
+}
+
+func (m *LockWaitMeter) endWait() {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.waiting--
+	if m.waiting == 0 {
+		m.total += time.Since(m.since)
+	}
+}
+
+type lockWaitMeterKey struct{}
+
+// WithLockWaitMeter returns a context whose Temper steps record their dotnet-lock waits on m.
+func WithLockWaitMeter(ctx context.Context, m *LockWaitMeter) context.Context {
+	return context.WithValue(ctx, lockWaitMeterKey{}, m)
+}
+
+func lockWaitMeterFrom(ctx context.Context) *LockWaitMeter {
+	m, _ := ctx.Value(lockWaitMeterKey{}).(*LockWaitMeter)
+	return m
+}
 
 // heavyLockEnv names the lock file Temper shares with the deployment's dotnet wrapper. Unset, as
 // on a laptop, Temper takes no lock at all.

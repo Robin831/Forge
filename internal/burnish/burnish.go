@@ -1210,29 +1210,39 @@ type verifyOutcome struct {
 // over a deadline-fired ctx.Done().
 func runVerifyWithTimeout(ctx context.Context, prNumber int, beadID, anvilName, worktreePath string,
 	cfg temper.Config, db *state.DB, timeout time.Duration) verifyOutcome {
-	verifyCtx, cancel := context.WithCancel(ctx)
+	// Time temper spends queueing for the dotnet lock behind another worker is not this
+	// verification's: the deadline moves out by it, as if the timer paused. (Fhi.Metadata-8py4x)
+	meter := &temper.LockWaitMeter{}
+	verifyCtx, cancel := context.WithCancel(temper.WithLockWaitMeter(ctx, meter))
 	resCh := make(chan *temper.Result, 1)
 	go func() {
 		// temper observes verifyCtx cancellation and aborts running steps.
 		resCh <- temperRunFn(verifyCtx, worktreePath, cfg, db, beadID, anvilName)
 	}()
+	start := time.Now()
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()
-	select {
-	case r := <-resCh:
-		cancel()
-		return verifyOutcome{result: r}
-	case <-timer.C:
-		log.Printf("[burnish] PR #%d bead=%s: WARN verification timeout after %s (reason=%s)",
-			prNumber, beadID, timeout, ErrVerifyTimeoutReason)
-		cancel()
-		return verifyOutcome{timedOut: true}
-	case <-ctx.Done():
-		// Outer cancellation: wait for temper to observe it and return so we
-		// don't leak the goroutine after the daemon proceeds.
-		cancel()
-		r := <-resCh
-		return verifyOutcome{result: r}
+	for {
+		select {
+		case r := <-resCh:
+			cancel()
+			return verifyOutcome{result: r}
+		case <-timer.C:
+			if remaining := timeout + meter.Waited() - time.Since(start); remaining > 0 {
+				timer.Reset(remaining)
+				continue
+			}
+			log.Printf("[burnish] PR #%d bead=%s: WARN verification timeout after %s plus %s waiting for the dotnet lock (reason=%s)",
+				prNumber, beadID, timeout, meter.Waited().Round(time.Second), ErrVerifyTimeoutReason)
+			cancel()
+			return verifyOutcome{timedOut: true}
+		case <-ctx.Done():
+			// Outer cancellation: wait for temper to observe it and return so we
+			// don't leak the goroutine after the daemon proceeds.
+			cancel()
+			r := <-resCh
+			return verifyOutcome{result: r}
+		}
 	}
 }
 
