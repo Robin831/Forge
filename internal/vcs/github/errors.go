@@ -103,7 +103,11 @@ func isTransient(err error) bool {
 		return false
 	}
 
-	// Typed network errors first — these are unambiguous.
+	// Typed errors first — these are unambiguous.
+	var rl *RateLimitError
+	if errors.As(err, &rl) {
+		return true
+	}
 	if errors.Is(err, io.EOF) {
 		return true
 	}
@@ -124,7 +128,7 @@ func isTransient(err error) bool {
 	// HTTP status code driven classification.
 	if code, ok := statusCode(msg); ok {
 		switch {
-		case code == 401:
+		case code == 401, code == 429:
 			return true
 		case code == 403:
 			return messageContains(msg, "rate limit", "secondary rate limit", "abuse")
@@ -133,6 +137,12 @@ func isTransient(err error) bool {
 		case code == 404 || code == 422:
 			return false
 		}
+	}
+
+	// GraphQL reports an exhausted primary budget as HTTP 200 + RATE_LIMITED,
+	// which gh surfaces as "GraphQL: API rate limit exceeded" with no code.
+	if messageContains(msg, "api rate limit exceeded", "secondary rate limit") {
+		return true
 	}
 
 	// GraphQL literals that surface without a numeric status code. The second is

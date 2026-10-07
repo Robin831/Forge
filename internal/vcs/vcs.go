@@ -555,6 +555,15 @@ type ReviewRequest struct {
 	Name  string
 }
 
+// BatchStatusChecker is implemented by providers that can fetch the full
+// status of several PRs of one repository in a single request. A PR missing
+// from the result (not found, or more checks/reviews than one request pages)
+// must be fetched with CheckStatus; the statuses returned carry the same
+// fields CheckStatus would.
+type BatchStatusChecker interface {
+	CheckStatusBatch(ctx context.Context, worktreePath string, prNumbers []int) (map[int]*PRStatus, error)
+}
+
 // OpenPR is a lightweight view of a PR used for reconciliation.
 type OpenPR struct {
 	Number int

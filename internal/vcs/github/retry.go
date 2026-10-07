@@ -16,6 +16,12 @@ type RetryBackoff struct {
 	// Multiplier grows the delay between successive retries. Values <= 1 keep
 	// the delay constant at BaseDelay.
 	Multiplier float64
+	// MaxRateLimitWait caps how long a rate-limited call may wait in-line for
+	// its single retry. A hint above it — and any hint when it is zero — returns
+	// the refusal at once so the caller backs off instead of replaying it.
+	MaxRateLimitWait time.Duration
+	// Sleep replaces the real wait when non-nil (tests).
+	Sleep func(ctx context.Context, d time.Duration) error
 }
 
 // DefaultRetryBackoff returns the production backoff schedule: a one-second
@@ -24,8 +30,9 @@ type RetryBackoff struct {
 // to its stranded/needs_human path.
 func DefaultRetryBackoff() RetryBackoff {
 	return RetryBackoff{
-		BaseDelay:  1 * time.Second,
-		Multiplier: 2.0,
+		BaseDelay:        1 * time.Second,
+		Multiplier:       2.0,
+		MaxRateLimitWait: DefaultRateLimitWait,
 	}
 }
 
@@ -49,12 +56,31 @@ type RetryLogFunc func(attempt int, delay time.Duration, err error)
 func RetryTransient(ctx context.Context, b RetryBackoff, logFn RetryLogFunc, fn func() error) error {
 	var err error
 	delay := b.BaseDelay
+	rateLimitRetries := 0
 	// retries is the zero-based count of retries already performed, matching the
 	// contract of ShouldRetry (pass 0 before the first retry).
 	for retries := 0; ; retries++ {
 		err = fn()
 		if err == nil {
 			return nil
+		}
+		// A rate-limit refusal is not a blip: the server names the wait, and
+		// replaying the call on the 1s/2s/4s schedule is what escalates a
+		// secondary limit. One retry, after the named wait, and only when that
+		// wait fits the cap.
+		if rl, ok := AsRateLimit(err); ok {
+			wait := rl.Wait()
+			if rateLimitRetries >= MaxRateLimitRetries || wait > b.MaxRateLimitWait {
+				return err
+			}
+			rateLimitRetries++
+			if logFn != nil {
+				logFn(retries+1, wait, err)
+			}
+			if serr := b.sleep(ctx, wait); serr != nil {
+				return serr
+			}
+			continue
 		}
 		// ShouldRetry returns false for permanent errors AND once the transient
 		// retry budget is exhausted; both cases surface the error to the caller.
@@ -64,22 +90,33 @@ func RetryTransient(ctx context.Context, b RetryBackoff, logFn RetryLogFunc, fn 
 		if logFn != nil {
 			logFn(retries+1, delay, err)
 		}
-		// Always honour context cancellation between attempts, even when
-		// delay is zero (e.g. in tests with immediate retries).
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
-		if delay > 0 {
-			t := time.NewTimer(delay)
-			select {
-			case <-ctx.Done():
-				t.Stop()
-				return ctx.Err()
-			case <-t.C:
-			}
+		if serr := b.sleep(ctx, delay); serr != nil {
+			return serr
 		}
 		if b.Multiplier > 1 {
 			delay = time.Duration(float64(delay) * b.Multiplier)
 		}
+	}
+}
+
+// sleep waits d, returning early with ctx's error on cancellation. Context is
+// checked even for a zero delay, so a cancelled caller never retries.
+func (b RetryBackoff) sleep(ctx context.Context, d time.Duration) error {
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	if b.Sleep != nil {
+		return b.Sleep(ctx, d)
+	}
+	if d <= 0 {
+		return nil
+	}
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-t.C:
+		return nil
 	}
 }
