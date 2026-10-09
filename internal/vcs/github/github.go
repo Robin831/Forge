@@ -193,7 +193,7 @@ func (p *Provider) MergePR(ctx context.Context, worktreePath string, prNumber in
 func (p *Provider) CheckStatus(ctx context.Context, worktreePath string, prNumber int) (*vcs.PRStatus, error) {
 	stdout, stderr, err := p.run(ctx, worktreePath, "gh",
 		"pr", "view", fmt.Sprintf("%d", prNumber),
-		"--json", "state,statusCheckRollup,reviews,reviewRequests,mergeable,headRefName,headRefOid,isDraft,url,title",
+		"--json", "state,statusCheckRollup,reviews,reviewRequests,mergeable,reviewDecision,mergeStateStatus,headRefName,headRefOid,isDraft,url,title",
 	)
 	if err != nil {
 		return nil, fmt.Errorf("gh pr view failed: %w\nstderr: %s", err, stderr)
@@ -236,7 +236,7 @@ func (p *Provider) CheckStatus(ctx context.Context, worktreePath string, prNumbe
 func (p *Provider) CheckStatusLight(ctx context.Context, worktreePath string, prNumber int) (*vcs.PRStatus, error) {
 	stdout, stderr, err := p.run(ctx, worktreePath, "gh",
 		"pr", "view", fmt.Sprintf("%d", prNumber),
-		"--json", "state,reviewRequests,mergeable,headRefOid",
+		"--json", "state,reviewRequests,mergeable,reviewDecision,mergeStateStatus,headRefOid",
 	)
 	if err != nil {
 		return nil, fmt.Errorf("gh pr view failed: %w\nstderr: %s", err, stderr)

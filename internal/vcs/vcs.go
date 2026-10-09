@@ -337,7 +337,12 @@ type PRStatus struct {
 	ReviewRequests    []ReviewRequest
 	// Mergeable indicates conflict state. Canonical values:
 	// "MERGEABLE", "CONFLICTING", "UNKNOWN".
-	Mergeable         string
+	Mergeable string
+	// ReviewDecision and MergeStateStatus are GitHub's own verdicts on review
+	// requirements and mergeability. Empty means the platform (or the fetch)
+	// did not report them, which BlockingReviewRequests reads fail-closed.
+	ReviewDecision    string `json:"reviewDecision"`
+	MergeStateStatus  string `json:"mergeStateStatus"`
 	UnresolvedThreads int
 	// UnresolvedThreadsUnknown is true when the provider could not count the
 	// PR's unresolved review threads (a GraphQL timeout, a 5xx). The count
@@ -427,9 +432,39 @@ func (s *PRStatus) ThreadsResolved() bool {
 	return !s.UnresolvedThreadsUnknown && s.UnresolvedThreads == 0
 }
 
-// HasPendingReviewRequests returns true if there are outstanding review requests.
+// HasPendingReviewRequests returns true if there are outstanding review
+// requests that hold the merge. See BlockingReviewRequests.
 func (s *PRStatus) HasPendingReviewRequests() bool {
-	return len(s.ReviewRequests) > 0
+	return len(s.BlockingReviewRequests()) > 0
+}
+
+// BlockingReviewRequests returns the pending review requests that hold the
+// merge. User and bot requests always do (Copilot answers them). A team request
+// does not when GitHub says no review is required and the PR is mergeable: a
+// CODEOWNERS team nobody picks up stalled Explorer #522 for good otherwise.
+func (s *PRStatus) BlockingReviewRequests() []ReviewRequest {
+	var blocking []ReviewRequest
+	for _, r := range s.ReviewRequests {
+		if r.IsTeam() && s.reviewNotRequired() {
+			continue
+		}
+		blocking = append(blocking, r)
+	}
+	return blocking
+}
+
+// reviewNotRequired reports whether GitHub positively says branch protection
+// and rulesets need no further review. Unknown fields read as "required".
+func (s *PRStatus) reviewNotRequired() bool {
+	if strings.EqualFold(s.ReviewDecision, "REVIEW_REQUIRED") {
+		return false
+	}
+	switch strings.ToUpper(s.MergeStateStatus) {
+	case "CLEAN", "HAS_HOOKS", "UNSTABLE":
+		return true
+	default:
+		return false
+	}
 }
 
 // CheckRun represents a CI check on a PR.
@@ -493,6 +528,9 @@ func (c CheckRun) InProgress() bool {
 		return st == "PENDING" || st == "EXPECTED"
 	}
 
+	if c.finishedDespiteStatus() {
+		return false
+	}
 	st := strings.ToUpper(c.Status)
 	if st == "IN_PROGRESS" || st == "QUEUED" || st == "PENDING" || st == "WAITING" || st == "REQUESTED" {
 		return true
@@ -504,6 +542,14 @@ func (c CheckRun) InProgress() bool {
 	}
 	// Unknown/empty status with no conclusion is likely in progress.
 	return st != "COMPLETED" && c.Conclusion == ""
+}
+
+// finishedDespiteStatus reports a check run that carries a conclusion and a
+// completion time while its status still lags (IN_PROGRESS): GitHub served one
+// for 9 hours on Munin #6534. Both are required so a GitLab manual job (QUEUED,
+// NEUTRAL, no completion time) still counts as not run.
+func (c CheckRun) finishedDespiteStatus() bool {
+	return c.Conclusion != "" && !c.CompletedAt.IsZero()
 }
 
 // Queued reports whether this check is waiting to start rather than actively
@@ -518,6 +564,9 @@ func (c CheckRun) Queued() bool {
 		return st == "PENDING" || st == "EXPECTED"
 	}
 
+	if c.finishedDespiteStatus() {
+		return false
+	}
 	switch strings.ToUpper(c.Status) {
 	case "QUEUED", "WAITING", "PENDING", "REQUESTED":
 		return true
@@ -557,6 +606,19 @@ type ReviewRequest struct {
 	Login string
 	Slug  string
 	Name  string
+}
+
+// IsTeam reports whether the request names a team rather than a user or bot.
+func (r ReviewRequest) IsTeam() bool {
+	return r.Slug != ""
+}
+
+// DisplayName returns the reviewer for log lines: login, or "team <slug>".
+func (r ReviewRequest) DisplayName() string {
+	if r.IsTeam() {
+		return "team " + r.Slug
+	}
+	return r.Login
 }
 
 // BatchStatusChecker is implemented by providers that can fetch the full

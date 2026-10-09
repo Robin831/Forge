@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -2948,5 +2949,143 @@ func TestCheckAll_RevivesTerminalMonitorRow(t *testing.T) {
 		w, err := db.GetWorker(id)
 		require.NoError(t, err)
 		assert.Nil(t, w.CompletedAt, "%s: reviving must clear completed_at", id)
+	}
+}
+
+// captureLog redirects the standard logger for the duration of the test.
+func captureLog(t *testing.T) *strings.Builder {
+	t.Helper()
+	var buf strings.Builder
+	var mu sync.Mutex
+	log.SetOutput(writerFunc(func(p []byte) (int, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		return buf.Write(p)
+	}))
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+	return &buf
+}
+
+type writerFunc func(p []byte) (int, error)
+
+func (f writerFunc) Write(p []byte) (int, error) { return f(p) }
+
+// runReviewGatePoll runs one checkAll against status with Assay disabled and
+// returns the events emitted, the PR row and the captured log.
+func runReviewGatePoll(t *testing.T, number int, status *vcs.PRStatus) ([]string, *state.DB, *state.PR, string) {
+	t.Helper()
+	db, cleanup := openTempDB(t)
+	t.Cleanup(cleanup)
+	pr := &state.PR{
+		Number:    number,
+		Anvil:     "test-anvil",
+		BeadID:    fmt.Sprintf("forge-reviewgate-%d", number),
+		Branch:    fmt.Sprintf("forge/forge-reviewgate-%d", number),
+		Status:    state.PROpen,
+		CreatedAt: time.Now(),
+	}
+	require.NoError(t, db.InsertPR(pr))
+	logs := captureLog(t)
+	var events []string
+	m := New(db, func(_ string) vcs.Provider { return &fakeVCSProvider{status: status} }, time.Minute,
+		map[string]string{"test-anvil": "/fake"}, nil, nil, func() int { return 5 }, nil)
+	m.OnEvent(func(_ context.Context, e PREvent) { events = append(events, e.EventType) })
+	m.checkAll(context.Background())
+	return events, db, pr, logs.String()
+}
+
+// TestCheckPR_GhostInProgressCheckIsReady is Munin #6534: a check run stuck at
+// status IN_PROGRESS but carrying conclusion SUCCESS and completedAt held the
+// PR at "CI pending — 1 of 26 checks unfinished" for 9 hours.
+func TestCheckPR_GhostInProgressCheckIsReady(t *testing.T) {
+	head := "adea8799aaaa"
+	events, _, _, logs := runReviewGatePoll(t, 6534, &vcs.PRStatus{
+		State: "OPEN", HeadSHA: head, Mergeable: "MERGEABLE", MergeStateStatus: "CLEAN",
+		StatusCheckRollup: []vcs.CheckRun{
+			{Name: "build", Status: "COMPLETED", Conclusion: "SUCCESS", CompletedAt: time.Now()},
+			{Name: "Comment budget", Status: "IN_PROGRESS", Conclusion: "SUCCESS",
+				StartedAt: time.Now().Add(-10 * time.Hour), CompletedAt: time.Now().Add(-9 * time.Hour)},
+		},
+	})
+	assert.Contains(t, events, EventPRReadyToMerge)
+	assert.NotContains(t, logs, "CI pending")
+}
+
+// TestCheckPR_UnrequiredTeamReviewDoesNotBlock is Explorer #522: a CODEOWNERS
+// team request on a CLEAN PR with no review required must not hold the merge.
+func TestCheckPR_UnrequiredTeamReviewDoesNotBlock(t *testing.T) {
+	for _, decision := range []string{"", "APPROVED"} {
+		t.Run("reviewDecision="+decision, func(t *testing.T) {
+			events, db, pr, _ := runReviewGatePoll(t, 522, &vcs.PRStatus{
+				State: "OPEN", HeadSHA: "cafe522", Mergeable: "MERGEABLE",
+				ReviewDecision: decision, MergeStateStatus: "CLEAN",
+				ReviewRequests: []vcs.ReviewRequest{{Slug: "fhi-munin-maintainer", Name: "fhi-munin-maintainer"}},
+			})
+			assert.Contains(t, events, EventPRReadyToMerge)
+			r, err := db.GetRetry(pr.BeadID, pr.Anvil)
+			require.NoError(t, err)
+			if r != nil {
+				assert.False(t, r.NeedsHuman, "an unrequired team request is no reason for attention: %s", r.LastError)
+			}
+		})
+	}
+}
+
+// TestCheckPR_RequiredTeamReviewBlocksLoudly: a team review branch protection
+// does require keeps blocking, but says so in the log and in Needs Attention,
+// and the note is retracted once the request is gone.
+func TestCheckPR_RequiredTeamReviewBlocksLoudly(t *testing.T) {
+	status := &vcs.PRStatus{
+		State: "OPEN", HeadSHA: "cafe523", Mergeable: "MERGEABLE",
+		ReviewDecision: "REVIEW_REQUIRED", MergeStateStatus: "BLOCKED",
+		ReviewRequests: []vcs.ReviewRequest{{Slug: "fhi-munin-maintainer", Name: "fhi-munin-maintainer"}},
+	}
+	db, cleanup := openTempDB(t)
+	defer cleanup()
+	pr := &state.PR{Number: 523, Anvil: "test-anvil", BeadID: "forge-reviewhold", Branch: "forge/forge-reviewhold",
+		Status: state.PROpen, CreatedAt: time.Now()}
+	require.NoError(t, db.InsertPR(pr))
+	logs := captureLog(t)
+	fake := &fakeVCSProvider{status: status}
+	var events []string
+	m := New(db, func(_ string) vcs.Provider { return fake }, time.Minute,
+		map[string]string{"test-anvil": "/fake"}, nil, nil, func() int { return 5 }, nil)
+	m.OnEvent(func(_ context.Context, e PREvent) { events = append(events, e.EventType) })
+
+	m.checkAll(context.Background())
+
+	assert.NotContains(t, events, EventPRReadyToMerge)
+	assert.Contains(t, logs.String(), "pending review request(s) from team fhi-munin-maintainer")
+	assert.Contains(t, logs.String(), `reviewDecision="REVIEW_REQUIRED"`)
+	r, err := db.GetRetry(pr.BeadID, pr.Anvil)
+	require.NoError(t, err)
+	require.NotNil(t, r)
+	assert.True(t, r.NeedsHuman)
+	assert.True(t, strings.HasPrefix(r.LastError, reviewHoldAttentionPrefix), r.LastError)
+
+	fake.status = &vcs.PRStatus{State: "OPEN", HeadSHA: "cafe523", Mergeable: "MERGEABLE",
+		ReviewDecision: "APPROVED", MergeStateStatus: "CLEAN"}
+	m.checkAll(context.Background())
+
+	assert.Contains(t, events, EventPRReadyToMerge)
+	r, err = db.GetRetry(pr.BeadID, pr.Anvil)
+	require.NoError(t, err)
+	require.NotNil(t, r)
+	assert.False(t, r.NeedsHuman, "the review-hold note must be retracted once the request is answered")
+}
+
+// TestCheckPR_PendingCopilotReviewLogsOnly: Copilot answers its own request,
+// so waiting on it is logged but never raised as needs-attention.
+func TestCheckPR_PendingCopilotReviewLogsOnly(t *testing.T) {
+	events, db, pr, logs := runReviewGatePoll(t, 524, &vcs.PRStatus{
+		State: "OPEN", HeadSHA: "cafe524", Mergeable: "MERGEABLE", MergeStateStatus: "CLEAN",
+		ReviewRequests: []vcs.ReviewRequest{{Login: "copilot-pull-request-reviewer"}},
+	})
+	assert.NotContains(t, events, EventPRReadyToMerge)
+	assert.Contains(t, logs, "pending review request(s) from copilot-pull-request-reviewer")
+	r, err := db.GetRetry(pr.BeadID, pr.Anvil)
+	require.NoError(t, err)
+	if r != nil {
+		assert.False(t, r.NeedsHuman)
 	}
 }

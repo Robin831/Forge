@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -584,4 +585,66 @@ func TestMergeabilityFromStatus(t *testing.T) {
 	assert.False(t, m2.HasConflicts)
 	assert.False(t, m2.HasUnresolvedThreads)
 	assert.False(t, m2.HasPendingReviews)
+}
+
+// TestCheckRun_ConclusionBeatsLaggingStatus is Munin #6534: GitHub kept a job
+// at status IN_PROGRESS for 9 hours after it reported conclusion SUCCESS and a
+// completedAt, and Bellows waited on it the whole time.
+func TestCheckRun_ConclusionBeatsLaggingStatus(t *testing.T) {
+	ghost := CheckRun{Name: "Comment budget", Status: "IN_PROGRESS", Conclusion: "SUCCESS",
+		CompletedAt: time.Date(2026, 10, 9, 6, 0, 0, 0, time.UTC)}
+	assert.False(t, ghost.InProgress(), "a conclusion plus completedAt is finished whatever the status says")
+	assert.False(t, ghost.Queued())
+	assert.True(t, ghost.Passing())
+
+	status := &PRStatus{StatusCheckRollup: []CheckRun{
+		{Name: "build", Status: "COMPLETED", Conclusion: "SUCCESS"},
+		ghost,
+	}}
+	assert.False(t, status.CIsInProgress())
+	assert.True(t, status.CIsPassing())
+
+	failed := ghost
+	failed.Conclusion = "FAILURE"
+	assert.False(t, failed.InProgress())
+	assert.False(t, failed.Passing(), "a ghost failure is still a failure")
+
+	// A GitLab manual job maps to QUEUED/NEUTRAL with no completion time and
+	// has never run; it must stay unfinished.
+	manual := CheckRun{Name: "deploy", Status: "QUEUED", Conclusion: "NEUTRAL"}
+	assert.True(t, manual.InProgress())
+	assert.True(t, manual.Queued())
+
+	// Status lagging with no conclusion yet is still running.
+	running := CheckRun{Name: "test", Status: "IN_PROGRESS"}
+	assert.True(t, running.InProgress())
+}
+
+// TestPRStatus_BlockingReviewRequests is Explorer #522: a CODEOWNERS team
+// request nobody answered held a CLEAN PR forever.
+func TestPRStatus_BlockingReviewRequests(t *testing.T) {
+	team := ReviewRequest{Slug: "fhi-munin-maintainer", Name: "fhi-munin-maintainer"}
+	copilot := ReviewRequest{Login: "copilot-pull-request-reviewer"}
+
+	tests := []struct {
+		name        string
+		status      PRStatus
+		wantBlocked []ReviewRequest
+	}{
+		{"no requests", PRStatus{MergeStateStatus: "CLEAN"}, nil},
+		{"team, no review required, CLEAN", PRStatus{ReviewRequests: []ReviewRequest{team}, MergeStateStatus: "CLEAN"}, nil},
+		{"team, APPROVED, CLEAN", PRStatus{ReviewRequests: []ReviewRequest{team}, ReviewDecision: "APPROVED", MergeStateStatus: "CLEAN"}, nil},
+		{"team, HAS_HOOKS", PRStatus{ReviewRequests: []ReviewRequest{team}, MergeStateStatus: "HAS_HOOKS"}, nil},
+		{"team, REVIEW_REQUIRED", PRStatus{ReviewRequests: []ReviewRequest{team}, ReviewDecision: "REVIEW_REQUIRED", MergeStateStatus: "BLOCKED"}, []ReviewRequest{team}},
+		{"team, REVIEW_REQUIRED even if CLEAN", PRStatus{ReviewRequests: []ReviewRequest{team}, ReviewDecision: "REVIEW_REQUIRED", MergeStateStatus: "CLEAN"}, []ReviewRequest{team}},
+		{"team, BLOCKED", PRStatus{ReviewRequests: []ReviewRequest{team}, MergeStateStatus: "BLOCKED"}, []ReviewRequest{team}},
+		{"team, merge state unknown", PRStatus{ReviewRequests: []ReviewRequest{team}}, []ReviewRequest{team}},
+		{"Copilot always waits", PRStatus{ReviewRequests: []ReviewRequest{copilot, team}, MergeStateStatus: "CLEAN"}, []ReviewRequest{copilot}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.wantBlocked, tt.status.BlockingReviewRequests())
+			assert.Equal(t, len(tt.wantBlocked) > 0, tt.status.HasPendingReviewRequests())
+		})
+	}
 }

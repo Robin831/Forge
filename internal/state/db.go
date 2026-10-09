@@ -2748,6 +2748,7 @@ const (
 	EventBellowsStarted       EventType = "bellows_started"
 	EventCIFailed             EventType = "ci_failed"
 	EventCIStuck              EventType = "ci_stuck"
+	EventReviewHold           EventType = "review_hold"
 	EventQuenchStarted        EventType = "ci_fix_started"
 	EventQuenchSuccess        EventType = "ci_fix_success"
 	EventQuenchFailed         EventType = "ci_fix_failed"
