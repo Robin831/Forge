@@ -3089,3 +3089,72 @@ func TestCheckPR_PendingCopilotReviewLogsOnly(t *testing.T) {
 		assert.False(t, r.NeedsHuman)
 	}
 }
+
+// TestCheckPR_TeamHoldClearedWhenReviewersChange: a team-only hold that turns
+// into a user/bot hold no longer qualifies, so its note is withdrawn.
+func TestCheckPR_TeamHoldClearedWhenReviewersChange(t *testing.T) {
+	team := vcs.ReviewRequest{Slug: "fhi-munin-maintainer", Name: "fhi-munin-maintainer"}
+	copilot := vcs.ReviewRequest{Login: "copilot-pull-request-reviewer"}
+	held := func(reqs ...vcs.ReviewRequest) *vcs.PRStatus {
+		return &vcs.PRStatus{State: "OPEN", HeadSHA: "cafe525", Mergeable: "MERGEABLE",
+			ReviewDecision: "REVIEW_REQUIRED", MergeStateStatus: "BLOCKED", ReviewRequests: reqs}
+	}
+	for name, next := range map[string]*vcs.PRStatus{
+		"user/bot only": held(copilot),
+		"mixed":         held(copilot, team),
+	} {
+		t.Run(name, func(t *testing.T) {
+			db, cleanup := openTempDB(t)
+			defer cleanup()
+			pr := &state.PR{Number: 525, Anvil: "test-anvil", BeadID: "forge-holdswitch", Branch: "forge/forge-holdswitch",
+				Status: state.PROpen, CreatedAt: time.Now()}
+			require.NoError(t, db.InsertPR(pr))
+			fake := &fakeVCSProvider{status: held(team)}
+			m := New(db, func(_ string) vcs.Provider { return fake }, time.Minute,
+				map[string]string{"test-anvil": "/fake"}, nil, nil, func() int { return 5 }, nil)
+
+			m.checkAll(context.Background())
+			r, err := db.GetRetry(pr.BeadID, pr.Anvil)
+			require.NoError(t, err)
+			require.NotNil(t, r)
+			require.True(t, r.NeedsHuman, "team-only hold must be raised")
+
+			fake.status = next
+			m.checkAll(context.Background())
+			r, err = db.GetRetry(pr.BeadID, pr.Anvil)
+			require.NoError(t, err)
+			assert.False(t, r.NeedsHuman, "a hold that is no longer team-only must withdraw the note: %s", r.LastError)
+		})
+	}
+}
+
+// TestCheckPR_TeamHoldLeavesOtherEscalationAlone: an unrelated escalation
+// already in Needs Attention survives both raising and clearing the hold.
+func TestCheckPR_TeamHoldLeavesOtherEscalationAlone(t *testing.T) {
+	const other = "burnish push could not be verified"
+	db, cleanup := openTempDB(t)
+	defer cleanup()
+	pr := &state.PR{Number: 526, Anvil: "test-anvil", BeadID: "forge-holdother", Branch: "forge/forge-holdother",
+		Status: state.PROpen, CreatedAt: time.Now()}
+	require.NoError(t, db.InsertPR(pr))
+	require.NoError(t, db.MarkNeedsHuman(pr.BeadID, pr.Anvil, other))
+	fake := &fakeVCSProvider{status: &vcs.PRStatus{State: "OPEN", HeadSHA: "cafe526", Mergeable: "MERGEABLE",
+		ReviewDecision: "REVIEW_REQUIRED", MergeStateStatus: "BLOCKED",
+		ReviewRequests: []vcs.ReviewRequest{{Slug: "fhi-munin-maintainer"}}}}
+	m := New(db, func(_ string) vcs.Provider { return fake }, time.Minute,
+		map[string]string{"test-anvil": "/fake"}, nil, nil, func() int { return 5 }, nil)
+
+	m.checkAll(context.Background())
+	r, err := db.GetRetry(pr.BeadID, pr.Anvil)
+	require.NoError(t, err)
+	assert.True(t, r.NeedsHuman)
+	assert.Equal(t, other, r.LastError, "raising the hold must not overwrite another escalation")
+
+	fake.status = &vcs.PRStatus{State: "OPEN", HeadSHA: "cafe526", Mergeable: "MERGEABLE",
+		ReviewDecision: "APPROVED", MergeStateStatus: "CLEAN"}
+	m.checkAll(context.Background())
+	r, err = db.GetRetry(pr.BeadID, pr.Anvil)
+	require.NoError(t, err)
+	assert.True(t, r.NeedsHuman, "clearing the hold must not clear another escalation")
+	assert.Equal(t, other, r.LastError)
+}

@@ -442,7 +442,11 @@ func (m *Monitor) noteReviewHold(pr *state.PR, status *vcs.PRStatus, blocking []
 	detail := fmt.Sprintf("PR #%d: ready except pending review request(s) from %s (reviewDecision=%q, mergeStateStatus=%q)",
 		pr.Number, reviewers, status.ReviewDecision, status.MergeStateStatus)
 	log.Printf("[bellows] %s; not merging", detail)
-	if !allTeams || pr.BellowsDetached || m.db == nil {
+	if m.db == nil {
+		return
+	}
+	if !allTeams || pr.BellowsDetached {
+		m.clearReviewHold(pr)
 		return
 	}
 	key := fmt.Sprintf("%s/%d", pr.Anvil, pr.Number)
@@ -454,8 +458,13 @@ func (m *Monitor) noteReviewHold(pr *state.PR, status *vcs.PRStatus, blocking []
 	m.reviewHoldNotified[key] = reviewers
 	m.mu.Unlock()
 
-	if err := m.db.MarkNeedsHuman(pr.BeadID, pr.Anvil, reviewHoldAttentionPrefix+detail); err != nil {
-		log.Printf("[bellows] PR #%d: failed to raise needs-attention for a team review hold: %v", pr.Number, err)
+	raised, err := m.db.MarkNeedsHumanIfFree(pr.BeadID, pr.Anvil, reviewHoldAttentionPrefix, reviewHoldAttentionPrefix+detail)
+	if err != nil || !raised {
+		if err != nil {
+			log.Printf("[bellows] PR #%d: failed to raise needs-attention for a team review hold: %v", pr.Number, err)
+		}
+		// Another escalation is active (or the write failed): leave it alone
+		// and try again on a later poll.
 		m.mu.Lock()
 		delete(m.reviewHoldNotified, key)
 		m.mu.Unlock()
@@ -464,9 +473,9 @@ func (m *Monitor) noteReviewHold(pr *state.PR, status *vcs.PRStatus, blocking []
 	_ = m.db.LogEvent(state.EventReviewHold, detail, pr.BeadID, pr.Anvil)
 }
 
-// clearReviewHold retracts noteReviewHold's note once review requests no longer
-// hold the PR, leaving any other needs-attention reason in place. It reads the
-// DB every time so a note left by a previous daemon lifetime is cleared too.
+// clearReviewHold retracts noteReviewHold's note once the PR no longer qualifies
+// for it. The prefix-conditional clear leaves any other escalation untouched,
+// and runs every time so a note from a previous daemon lifetime is cleared too.
 func (m *Monitor) clearReviewHold(pr *state.PR) {
 	if m.db == nil {
 		return
@@ -475,11 +484,7 @@ func (m *Monitor) clearReviewHold(pr *state.PR) {
 	m.mu.Lock()
 	delete(m.reviewHoldNotified, key)
 	m.mu.Unlock()
-	r, err := m.db.GetRetry(pr.BeadID, pr.Anvil)
-	if err != nil || r == nil || !r.NeedsHuman || !strings.HasPrefix(r.LastError, reviewHoldAttentionPrefix) {
-		return
-	}
-	if err := m.db.ClearNeedsAttention(pr.BeadID, pr.Anvil); err != nil {
+	if _, err := m.db.ClearNeedsHumanIfReasonPrefix(pr.BeadID, pr.Anvil, reviewHoldAttentionPrefix); err != nil {
 		log.Printf("[bellows] PR #%d: failed to clear team-review-hold needs-attention: %v", pr.Number, err)
 	}
 }
