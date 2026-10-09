@@ -39,9 +39,6 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Install UPX
-        run: sudo apt-get update && sudo apt-get install -y upx-ucl
-
       - name: Run GoReleaser
         uses: goreleaser/goreleaser-action@v7
         with:
