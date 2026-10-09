@@ -242,6 +242,44 @@ RUN set -eux; \
     chmod 0755 /usr/local/bin/ttyd; \
     ttyd --version
 
+# helm, actionlint and shellcheck for the DevInfra anvil's temper (FHIDev/Fhi.Munin.DevInfra scripts/forge-checks.sh),
+# which mirrors that repo's CI. Versions and SHA-256 sums are exactly the ones its .github/workflows/pr-checks.yml
+# pins, so the anvil checks what CI checks. Those sums are for linux-amd64 (the only platform this image is built
+# for); on any other architecture the tools are skipped with a message and forge-checks.sh reports them SKIPPED.
+# xz-utils is needed only to unpack shellcheck's .tar.xz.
+ARG HELM_VERSION=3.19.0
+ARG HELM_SHA256=a7f81ce08007091b86d8bd696eb4d86b8d0f2e1b9f6c714be62f82f96a594496
+ARG ACTIONLINT_VERSION=1.7.12
+ARG ACTIONLINT_SHA256=8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+ARG SHELLCHECK_VERSION=0.11.0
+ARG SHELLCHECK_SHA256=8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198
+RUN set -eux; \
+    arch=$(dpkg --print-architecture); \
+    if [ "$arch" != amd64 ]; then \
+        echo "helm/actionlint/shellcheck: no pinned checksums for $arch; skipped"; \
+    else \
+        apt-get update; \
+        apt-get install -y --no-install-recommends xz-utils; \
+        tmp=$(mktemp -d); \
+        curl -fsSL -o "$tmp/helm.tar.gz" "https://get.helm.sh/helm-v${HELM_VERSION}-linux-amd64.tar.gz"; \
+        echo "${HELM_SHA256}  $tmp/helm.tar.gz" | sha256sum -c -; \
+        tar -xzf "$tmp/helm.tar.gz" -C "$tmp" --strip-components=1 linux-amd64/helm; \
+        install -m 0755 "$tmp/helm" /usr/local/bin/helm; \
+        curl -fsSL -o "$tmp/actionlint.tar.gz" \
+            "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"; \
+        echo "${ACTIONLINT_SHA256}  $tmp/actionlint.tar.gz" | sha256sum -c -; \
+        tar -xzf "$tmp/actionlint.tar.gz" -C "$tmp" actionlint; \
+        install -m 0755 "$tmp/actionlint" /usr/local/bin/actionlint; \
+        curl -fsSL -o "$tmp/shellcheck.tar.xz" \
+            "https://github.com/koalaman/shellcheck/releases/download/v${SHELLCHECK_VERSION}/shellcheck-v${SHELLCHECK_VERSION}.linux.x86_64.tar.xz"; \
+        echo "${SHELLCHECK_SHA256}  $tmp/shellcheck.tar.xz" | sha256sum -c -; \
+        tar -xJf "$tmp/shellcheck.tar.xz" -C "$tmp" --strip-components=1 "shellcheck-v${SHELLCHECK_VERSION}/shellcheck"; \
+        install -m 0755 "$tmp/shellcheck" /usr/local/bin/shellcheck; \
+        rm -rf "$tmp"; \
+        helm version --short; actionlint -version; shellcheck --version; \
+        apt-get clean; rm -rf /var/lib/apt/lists/*; \
+    fi
+
 # Copy the freshly-built forge binary from the Go builder stage.
 COPY --from=forge-builder --chmod=0755 /out/forge /usr/local/bin/forge
 
