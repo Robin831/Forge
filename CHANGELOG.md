@@ -9,6 +9,13 @@ Unreleased changes live as fragments in `changelog.d/` and are assembled at
 release time by `scripts/assemble-changelog.sh`.
 
 
+## [0.33.1] - 2026-10-09
+
+### Fixed
+
+- **An unanswered team review request no longer stalls a mergeable PR silently** - Bellows now reads GitHub's `reviewDecision` and `mergeStateStatus`. A pending team request (a CODEOWNERS team, say) no longer blocks the merge when GitHub reports no required review and a clean merge state. User and bot requests, Copilot's included, still block, and so does any review GitHub reports as `REVIEW_REQUIRED`. A PR held by review requests alone now gets a log line on every poll. When only team requests hold it, it is also raised once in Needs Attention, and the note is withdrawn when the hold clears. (Fhi.Munin.Explorer #522)
+- **Bellows no longer waits on a check run whose status lags its conclusion** - A GitHub check run that reports a conclusion and a completion time is now finished even while its status still reads `IN_PROGRESS`. One such run held Munin #6534 at "CI pending — 1 of 26 checks unfinished" for 9 hours while GitHub showed it green. (Munin #6534)
+
 ## [0.33.0] - 2026-10-07
 
 ### Added
