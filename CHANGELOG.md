@@ -9,6 +9,12 @@ Unreleased changes live as fragments in `changelog.d/` and are assembled at
 release time by `scripts/assemble-changelog.sh`.
 
 
+## [0.35.0] - 2026-10-09
+
+### Added
+
+- **The skybert image ships helm, actionlint and shellcheck** - The DevInfra anvil's temper (FHIDev/Fhi.Munin.DevInfra `scripts/forge-checks.sh`) mirrors that repo's CI and, until now, reported its helm, workflow-lint and shell-script checks as "SKIPPED: <tool> not in image". The full image now installs helm 3.19.0, actionlint 1.7.12 and shellcheck 0.11.0, pinned and checksum-verified with the same SHA-256 sums DevInfra's CI uses, so those checks run in the Forge before the PR. amd64 only, the only platform the image is built for. (DevInfra-hd6)
+
 ## [0.34.0] - 2026-10-09
 
 ### Removed
