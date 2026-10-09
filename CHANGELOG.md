@@ -9,6 +9,12 @@ Unreleased changes live as fragments in `changelog.d/` and are assembled at
 release time by `scripts/assemble-changelog.sh`.
 
 
+## [0.34.0] - 2026-10-09
+
+### Removed
+
+- **Release binaries are no longer UPX-compressed** - GoReleaser's `upx` step (`compress: best`, `brute: true`) and the workflow's UPX install are gone. Packed executables plus minutes of maximum CPU on a hosted runner match patterns GitHub's abuse checks flag. Binaries are still built with `-s -w`; the linux/amd64 archive grows from about 11.4 MB to about 14.3 MB and the unpacked binary from about 11 MB to about 37 MB. (Fhi.Metadata-5wfmn)
+
 ## [0.33.1] - 2026-10-09
 
 ### Fixed
