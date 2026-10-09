@@ -136,6 +136,10 @@ type Monitor struct {
 	// head instead of on every poll. Guarded by mu.
 	ciStuckNotified map[string]string
 
+	// reviewHoldNotified records the reviewer set a "waiting on a team review"
+	// note was last raised for, keyed by "anvil/number". Guarded by mu.
+	reviewHoldNotified map[string]string
+
 	// assaySuppressNotified records "headSHA|reason" per "anvil/number" so a
 	// budget-suppressed Assay review (daily cost cap, per-PR run cap) is
 	// surfaced once per head instead of on every poll. Guarded by mu.
@@ -268,6 +272,7 @@ func New(db *state.DB, vcsLookup func(anvil string) vcs.Provider, interval time.
 		wasUnmanaged:          make(map[string]bool),
 		wasDetached:           make(map[string]bool),
 		ciStuckNotified:       make(map[string]string),
+		reviewHoldNotified:    make(map[string]string),
 		assaySuppressNotified: make(map[string]string),
 	}
 }
@@ -415,6 +420,72 @@ func (m *Monitor) clearCIStuck(pr *state.PR) {
 	}
 	if err := m.db.ClearNeedsAttention(pr.BeadID, pr.Anvil); err != nil {
 		log.Printf("[bellows] PR #%d: failed to clear stuck-CI needs-attention: %v", pr.Number, err)
+	}
+}
+
+// reviewHoldAttentionPrefix marks the needs-attention entries raised by
+// noteReviewHold, so clearReviewHold retracts only its own note.
+const reviewHoldAttentionPrefix = "Waiting on a team review request: "
+
+// noteReviewHold explains a PR that is ready in every respect but pending
+// review requests, which used to hold it without a log line (Explorer #522).
+// Requests that are all teams wait on humans the Forge cannot summon, so they
+// are raised once per reviewer set as needs-attention; Copilot and users only log.
+func (m *Monitor) noteReviewHold(pr *state.PR, status *vcs.PRStatus, blocking []vcs.ReviewRequest) {
+	names := make([]string, 0, len(blocking))
+	allTeams := true
+	for _, r := range blocking {
+		names = append(names, r.DisplayName())
+		allTeams = allTeams && r.IsTeam()
+	}
+	reviewers := strings.Join(names, ", ")
+	detail := fmt.Sprintf("PR #%d: ready except pending review request(s) from %s (reviewDecision=%q, mergeStateStatus=%q)",
+		pr.Number, reviewers, status.ReviewDecision, status.MergeStateStatus)
+	log.Printf("[bellows] %s; not merging", detail)
+	if m.db == nil {
+		return
+	}
+	if !allTeams || pr.BellowsDetached {
+		m.clearReviewHold(pr)
+		return
+	}
+	key := fmt.Sprintf("%s/%d", pr.Anvil, pr.Number)
+	m.mu.Lock()
+	if seen, ok := m.reviewHoldNotified[key]; ok && seen == reviewers {
+		m.mu.Unlock()
+		return
+	}
+	m.reviewHoldNotified[key] = reviewers
+	m.mu.Unlock()
+
+	raised, err := m.db.MarkNeedsHumanIfFree(pr.BeadID, pr.Anvil, reviewHoldAttentionPrefix, reviewHoldAttentionPrefix+detail)
+	if err != nil || !raised {
+		if err != nil {
+			log.Printf("[bellows] PR #%d: failed to raise needs-attention for a team review hold: %v", pr.Number, err)
+		}
+		// Another escalation is active (or the write failed): leave it alone
+		// and try again on a later poll.
+		m.mu.Lock()
+		delete(m.reviewHoldNotified, key)
+		m.mu.Unlock()
+		return
+	}
+	_ = m.db.LogEvent(state.EventReviewHold, detail, pr.BeadID, pr.Anvil)
+}
+
+// clearReviewHold retracts noteReviewHold's note once the PR no longer qualifies
+// for it. The prefix-conditional clear leaves any other escalation untouched,
+// and runs every time so a note from a previous daemon lifetime is cleared too.
+func (m *Monitor) clearReviewHold(pr *state.PR) {
+	if m.db == nil {
+		return
+	}
+	key := fmt.Sprintf("%s/%d", pr.Anvil, pr.Number)
+	m.mu.Lock()
+	delete(m.reviewHoldNotified, key)
+	m.mu.Unlock()
+	if _, err := m.db.ClearNeedsHumanIfReasonPrefix(pr.BeadID, pr.Anvil, reviewHoldAttentionPrefix); err != nil {
+		log.Printf("[bellows] PR #%d: failed to clear team-review-hold needs-attention: %v", pr.Number, err)
 	}
 }
 
@@ -1112,6 +1183,14 @@ func (m *Monitor) checkPRWithStatus(ctx context.Context, pr *state.PR, dailyAssa
 		assayUpToDate = true
 	}
 	newSnap.AssayUpToDate = assayUpToDate
+
+	if blocking := status.BlockingReviewRequests(); len(blocking) > 0 &&
+		ci.passing() && !newSnap.IsConflicting && !newSnap.HasUnresolvedThreads &&
+		!newSnap.ThreadsUnknown && assayUpToDate && !newSnap.IsMerged && !newSnap.IsClosed {
+		m.noteReviewHold(pr, status, blocking)
+	} else if len(blocking) == 0 {
+		m.clearReviewHold(pr)
+	}
 
 	switch ci.State {
 	case ciStuck:

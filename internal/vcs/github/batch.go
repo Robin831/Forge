@@ -15,12 +15,12 @@ import (
 const batchChunkSize = 25
 
 // batchPRFields selects what CheckStatus gets from `gh pr view --json
-// state,statusCheckRollup,reviews,reviewRequests,mergeable,headRefName,
-// headRefOid,isDraft,url,title` plus the thread and review-request queries.
+// state,statusCheckRollup,reviews,reviewRequests,mergeable,reviewDecision,
+// mergeStateStatus,headRefName,headRefOid,isDraft,url,title` plus the thread and review-request queries.
 // The statusCheckRollup and reviews selections mirror gh's own, including
 // gh's export of a StatusContext's createdAt as startedAt. The merge-queue
 // fields let a queued PR resolve on the regular poll at no extra request.
-const batchPRFields = `number state mergeable headRefName headRefOid isDraft url title ` + mergeQueueFields + `
+const batchPRFields = `number state mergeable reviewDecision mergeStateStatus headRefName headRefOid isDraft url title ` + mergeQueueFields + `
 	statusCheckRollup: commits(last: 1) { nodes { commit { statusCheckRollup { contexts(first: 100) {
 		pageInfo { hasNextPage endCursor }
 		nodes { __typename
@@ -32,15 +32,18 @@ const batchPRFields = `number state mergeable headRefName headRefOid isDraft url
 	` + reviewRequestsSelection
 
 type batchPR struct {
-	Number      int    `json:"number"`
-	State       string `json:"state"`
-	Mergeable   string `json:"mergeable"`
-	HeadRefName string `json:"headRefName"`
-	HeadRefOid  string `json:"headRefOid"`
-	IsDraft     bool   `json:"isDraft"`
-	URL         string `json:"url"`
-	Title       string `json:"title"`
-	Rollup      struct {
+	Number    int    `json:"number"`
+	State     string `json:"state"`
+	Mergeable string `json:"mergeable"`
+	// ReviewDecision is null when no review is required; that decodes to "".
+	ReviewDecision   string `json:"reviewDecision"`
+	MergeStateStatus string `json:"mergeStateStatus"`
+	HeadRefName      string `json:"headRefName"`
+	HeadRefOid       string `json:"headRefOid"`
+	IsDraft          bool   `json:"isDraft"`
+	URL              string `json:"url"`
+	Title            string `json:"title"`
+	Rollup           struct {
 		Nodes []struct {
 			Commit struct {
 				StatusCheckRollup *struct {
@@ -174,6 +177,8 @@ func (b *batchPR) status() (*vcs.PRStatus, bool) {
 		Reviews:           b.Reviews.Nodes,
 		ReviewRequests:    b.ReviewRequests.requests(),
 		Mergeable:         b.Mergeable,
+		ReviewDecision:    b.ReviewDecision,
+		MergeStateStatus:  b.MergeStateStatus,
 		UnresolvedThreads: b.ReviewThreads.unresolved(),
 		HeadRefName:       b.HeadRefName,
 		HeadSHA:           b.HeadRefOid,

@@ -2748,6 +2748,7 @@ const (
 	EventBellowsStarted       EventType = "bellows_started"
 	EventCIFailed             EventType = "ci_failed"
 	EventCIStuck              EventType = "ci_stuck"
+	EventReviewHold           EventType = "review_hold"
 	EventQuenchStarted        EventType = "ci_fix_started"
 	EventQuenchSuccess        EventType = "ci_fix_success"
 	EventQuenchFailed         EventType = "ci_fix_failed"
@@ -3971,6 +3972,37 @@ func (db *DB) ClearNeedsAttention(beadID, anvil string) error {
 		now, beadID, anvil,
 	)
 	return err
+}
+
+// MarkNeedsHumanIfFree raises needs_human with reason unless the bead already
+// carries another active escalation (needs_human or clarification_needed with a
+// reason not starting with prefix), which it never overwrites. Reports whether
+// the flag was written. Atomic, so it cannot race another writer's escalation.
+func (db *DB) MarkNeedsHumanIfFree(beadID, anvil, prefix, reason string) (bool, error) {
+	if prefix == "" {
+		return false, fmt.Errorf("empty reason prefix would overwrite any needs_human flag")
+	}
+	escaped := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(prefix)
+	now := time.Now().Format(dbTimeLayout)
+	res, err := db.conn.Exec(
+		`INSERT INTO retries (bead_id, anvil, retry_count, needs_human, clarification_needed, dispatch_failures, last_error, updated_at)
+		 VALUES (?, ?, 0, 1, 0, 0, ?, ?)
+		 ON CONFLICT(bead_id, anvil) DO UPDATE SET
+			needs_human = 1,
+			last_error = excluded.last_error,
+			updated_at = excluded.updated_at
+		 WHERE (retries.needs_human = 0 AND retries.clarification_needed = 0)
+		    OR retries.last_error LIKE ? ESCAPE '\'`,
+		beadID, anvil, reason, now, escaped+"%",
+	)
+	if err != nil {
+		return false, err
+	}
+	rows, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return rows > 0, nil
 }
 
 // ClearNeedsHumanIfReasonPrefix clears the needs-attention flags on a bead only

@@ -5345,3 +5345,40 @@ func TestDB_SilentStalledWorkers(t *testing.T) {
 		t.Errorf("a non-positive threshold must return nothing, got %v", off)
 	}
 }
+
+// TestDB_MarkNeedsHumanIfFree: a condition-style escalation never overwrites
+// an escalation it did not raise, but may refresh its own.
+func TestDB_MarkNeedsHumanIfFree(t *testing.T) {
+	db := openTestDB(t)
+	const prefix = "hold: "
+
+	raised, err := db.MarkNeedsHumanIfFree("BD-1", "a", prefix, prefix+"first")
+	if err != nil || !raised {
+		t.Fatalf("fresh bead: raised=%v err=%v", raised, err)
+	}
+	raised, err = db.MarkNeedsHumanIfFree("BD-1", "a", prefix, prefix+"second")
+	if err != nil || !raised {
+		t.Fatalf("own escalation must refresh: raised=%v err=%v", raised, err)
+	}
+	if r, _ := db.GetRetry("BD-1", "a"); r == nil || r.LastError != prefix+"second" {
+		t.Fatalf("own reason not refreshed: %+v", r)
+	}
+
+	if err := db.MarkNeedsHuman("BD-2", "a", "burnish push unverified"); err != nil {
+		t.Fatal(err)
+	}
+	raised, err = db.MarkNeedsHumanIfFree("BD-2", "a", prefix, prefix+"x")
+	if err != nil || raised {
+		t.Fatalf("unrelated escalation must block the write: raised=%v err=%v", raised, err)
+	}
+	if r, _ := db.GetRetry("BD-2", "a"); r == nil || !r.NeedsHuman || r.LastError != "burnish push unverified" {
+		t.Fatalf("unrelated escalation was touched: %+v", r)
+	}
+
+	if err := db.SetClarificationNeeded("BD-3", "a", true, "which library?"); err != nil {
+		t.Fatal(err)
+	}
+	if raised, _ = db.MarkNeedsHumanIfFree("BD-3", "a", prefix, prefix+"x"); raised {
+		t.Fatal("a pending clarification must block the write")
+	}
+}
