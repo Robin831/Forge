@@ -58,6 +58,20 @@ extractors printed in
 where the regime boundaries that partition them live. The analysis reads
 those, not the logs.
 
+## Per-pass turn sample under the 24-turn cap (Forge-8we9m, 2026-10-14)
+
+The n ≥ 20 re-measurement that Forge-55eq asked for, plus the 16-turn-cap
+baseline that is still on disk. The analysis and the regime boundaries are in
+[../docs/assay-turn-budget.md](../docs/assay-turn-budget.md) ("Re-measurement —
+2026-10-14"). The extractor is printed there too. It cuts on run *start*, not
+log time, and it keeps each run's `pr`/`bead`/`status`/`cost_usd`/`duration_ms`
+on every row beside the `passes=` fields.
+
+| File | What |
+|---|---|
+| `assay-passes-20261006T170032Z-20261014T072600Z.json` | R4: 32 runs / 192 pass observations, from the deploy of `79838adf` (24 turns). Each observation is one session, since nothing retried |
+| `assay-passes-20260831T220000Z-20261006T170032Z.json` | 53 runs / 318 pass observations under the 16-turn cap. The doc splits them at 2026-09-17 into windows A and B |
+
 ## Conventions
 
 - **Filenames encode the window**: `<phase>-<since>-<until>.<ext>`, with `open`

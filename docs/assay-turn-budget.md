@@ -930,3 +930,192 @@ scoped retry, should report:
 - **turn-killed session cost relative to $3.00**. At 16 the mean was 38% and
   the max 61%. At 24 these figures should rise, and the margin above them is
   what tells you whether the next raise is safe.
+
+## Re-measurement — 2026-10-14 (Forge-8we9m)
+
+The window the Forge-55eq section asked for: n ≥ 20 runs under the 24-turn cap
+and the scoped retry. It exists, and all four figures are clean. They also
+**cannot be credited to the raise**, because the pressure on the cap had already
+gone before it shipped. That needs saying before the numbers.
+
+### The window
+
+R4 opens at the deploy of `79838adf` (Forge-55eq, PR #930):
+**2026-10-06 19:00:32 +02:00**, the `self-deploy: restarting unit` line for that
+build. A run counts only if it *started* after that instant (completion time
+minus `duration_ms`). Nothing in `~/.forge/config.yaml` overrides
+`assay.max_turns_per_pass`, so every session in the window ran with 24 turns,
+and `max_cost_per_pass_usd` is the $3.00 default.
+
+**32 runs, 192 pass observations, 192 pass sessions**, from
+2026-10-06 19:02:02 to 2026-10-14 09:25:10 +02:00. 31 runs are on the `hytte`
+anvil (18 distinct PRs, most reviewed twice: first review and re-review after
+the fix). One is on `forge` (PR #931). All passes ran `claude-opus-5-5`. All 32
+runs are `complete: 5 of 5`.
+
+Observations equal sessions, and that is a finding: no pass needed a second
+session. The preserved session logs agree. Exactly 192 `assay-<runKey>-*.log`
+files have a run key past the boundary, and each one ends in a `result` event
+with subtype `success`. So no session was killed without a trace. Retention did
+not bite either. The window starts inside
+`daemon-2026-10-08T20-49-56.563.log.gz` and runs into the live `daemon.log`.
+
+### The four figures
+
+| figure | R3 (16 turns, 2026-08-29) | **R4 (24 turns, this window)** |
+|---|---|---|
+| retry rate (turn-budget retries per deep pass) | 16 of 60 (26.7%) | **0 of 160 (0%)** |
+| deep-session cap-hit rate | 16 of 76 (21.1%) | **0 of 160 (0%)** |
+| `error_max_cost` | 0 | **0** |
+| turn-killed session cost vs $3.00 | mean $1.15 (38%), max $1.84 (61%) | **none to measure (n = 0)** |
+
+No `passes=` segment in the window has a `retry=` field or a `term=` other than
+`success`. The longest deep session ran **9** turns (repo-specific). That is 15
+short of the cap and 3 short of the halved retry budget (12). So the scoped
+retry, `openedDiffFiles` included, was never built in this window. Whether a
+scoped retry recovers more cheaply than an unscoped one is **still
+unmeasured**.
+
+The fourth figure is undefined, not zero, because no session was killed on
+turns. The nearest thing it can be replaced with is the cost of the most
+expensive deep session of *any* outcome, in `cost_est`, the ceiling's own unit:
+
+| pass | n | mean turns | max turns | mean tools | mean `cost_est` | max `cost_est` | max as % of $3.00 |
+|---|---|---|---|---|---|---|---|
+| triage | 32 | 1.0 | 2 | 0.0 | $0.14 | $0.48 | 16% |
+| logic | 32 | 3.8 | 7 | 2.9 | $0.19 | $0.57 | 19% |
+| security | 32 | 2.5 | 6 | 1.5 | $0.16 | $0.51 | 17% |
+| conventions | 32 | 3.4 | 5 | 2.4 | $0.18 | $0.57 | 19% |
+| tests-missing | 32 | 3.0 | 6 | 2.0 | $0.17 | $0.56 | 19% |
+| repo-specific | 32 | 4.3 | 9 | 3.3 | $0.19 | $0.58 | 19% |
+| **all deep** | **160** | **3.4** | **9** | **2.4** | **$0.18** | **$0.58** | **19%** |
+
+The six maxima are all from the single `forge` run (PR #931). Its large diff
+put about 95–100k cache-write tokens into every session; the `hytte` runs put
+about 25k. Deep p90 is $0.23, which is 8% of the ceiling. Billed `cost_usd`
+runs 1.63x `cost_est` over the deep sessions, which matches the structural
+1.61x recorded above, so the estimator has not drifted. Run level: mean $1.69,
+median $1.50, max $5.14 (the `forge` run), mean duration 38s. The `hytte` runs
+alone average $1.58.
+
+### Why the raise cannot take the credit
+
+The same extractor run over the logs still on disk *before* the boundary
+splits the 16-turn era in two. The split is not at the raise:
+
+| window (cap) | runs | anvils | deep passes | retries | mean turns | max turns | mean tools | mean `cost_est` | mean run cost |
+|---|---|---|---|---|---|---|---|---|---|
+| A: 2026-09-02 – 09-08 (16) | 32 | 21 forge / 11 hytte | 160 | **38 (23.8%)** | 7.3 | 16 | 13.5 | $1.15 | $9.51 |
+| B: 2026-09-17 – 10-06 (16) | 21 | 18 forge / 3 hytte | 105 | **0** | 3.1 | 8 | 2.4 | $0.66 | $5.98 |
+| R4: 2026-10-06 – 10-14 (24) | 32 | 1 forge / 31 hytte | 160 | **0** | 3.4 | 9 | 2.4 | $0.18 | $1.69 |
+
+Window A reproduces R3. 38 retries over 160 deep passes is 23.8%, against
+R3's 26.7%. Every one of those retries was earned by an `error_max_turns`
+session, so the session-level cap-hit rate there is at least 38 of 198 (19.2%),
+against R3's 21.1%. Window B ran under the **old** 16-turn cap and already
+shows what R4 shows. Zero retries over 105 deep passes, nothing longer than 8
+turns, and a pass makes about a sixth of the tool calls it made in A. B is
+mostly `forge` PRs, so the change is not just a switch from Forge's larger
+diffs to Hytte's smaller ones. B's own per-run cost ($5.98 against A's $9.51)
+says the same.
+
+So the pressure that justified the raise was gone by 2026-09-17 11:50, the
+first run in B. That was three weeks before the raise deployed. The cause is
+**not established** by anything this file can read:
+
+- No Assay code was deployed between A's last run (2026-09-08 16:29) and B's
+  first. The only commit in that gap is the v0.30.0 release. The per-pass
+  provider work (Forge-iyddo, Forge-f177u) deployed at 12:49 and 13:29 on
+  09-17, *after* B's first runs, which already show short sessions.
+- The `opus-5` → `opus-5-5` switch in `~/.forge/config.yaml` (the
+  `config.yaml.bak-pre-opus55` snapshot is dated 2026-09-23) is later still.
+- The `claude` CLI version is not recorded anywhere. The session logs' `system`
+  events carry no `claude_code_version`, so a CLI upgrade in that gap can be
+  neither confirmed nor excluded.
+
+The tool count matters more than the turn count. The reading prompts
+(Forge-q2qz) existed to make passes open the code, and R3 measured that working
+at ~11.8 tool calls per reading session. In B and R4 a deep pass averages 2.4.
+Security makes **no tool call at all on 6 of 32** R4 runs, which is the
+diff-text-only review the prompts were written against. `files=` is non-zero on
+most passes here, so the Forge-72oy fix is working. But a pass that names 1–5
+files in 2–3 tool calls is reading much less than R3 measured. Filed as
+**Forge-es0gx**, because explaining that is out of scope for a
+turn-budget measurement.
+
+### The decision
+
+**No setting is changed by this bead.**
+
+- **`assayMaxTurns` stays at 24.** Under the current behaviour it costs nothing:
+  no session gets within 15 turns of it, and nothing here argues for lowering
+  it. Lowering it back to 16 would also bind on nothing, since B ran at 16 with
+  no hits. The raise is now **untested, not confirmed**. Its expected effect
+  (fewer retries, not fewer cap hits) needs a population that presses the cap,
+  and this window does not have one.
+- **`max_cost_per_pass_usd` stays at $3.00.** Zero `error_max_cost`, and the
+  most expensive deep session in the window is 19% of the ceiling. The two
+  bounds are as far apart as they have ever been measured. The re-adjacency
+  that the Forge-55eq section named as the reason to back the raise out has not
+  happened.
+
+### What is still owed
+
+- **The cap re-measurement itself, at the first sign of pressure.** The trigger
+  is mechanical: any `passes=` segment carrying `retry=` or
+  `term=error_max_turns` after 2026-10-06 19:00:32 +02:00. Until one appears,
+  every figure the Forge-55eq section asked for will read zero, for the reason
+  above and not because of the raise. When it does appear, report the four
+  figures over the window from the first such run, not from this boundary.
+  Otherwise ~20 low-pressure runs will dilute them.
+- **The scoped retry** (Forge-72oy's `openedDiffFiles`) has still never been
+  observed running. Nothing in R4 can say whether it recovers on fewer turns or
+  less money than the unscoped retries in R3 and A.
+- **The 2026-09-17 behaviour shift** (Forge-es0gx), above. If it reverses (for example after a
+  `claude` CLI or model change), window A's ~24% retry rate is the expected
+  baseline at 16 turns, and the cap question becomes live again.
+
+The artifacts, extracted 2026-10-14:
+
+| File | What |
+|---|---|
+| `measurements/assay-passes-20261006T170032Z-20261014T072600Z.json` | R4: 192 pass observations, with each run's start, status, cost and duration on every row |
+| `measurements/assay-passes-20260831T220000Z-20261006T170032Z.json` | windows A and B: 318 pass observations under the 16-turn cap, kept because the logs behind them rotate off first |
+
+The extractor differs from the printed one above in two ways. It cuts on run
+**start**, not on log time. And it keeps the run-level fields (`pr`, `bead`,
+`status`, `cost_usd`, `duration_ms`) beside the `passes=` fields, which it parses
+with the same two regexes:
+
+```bash
+python3 - <<'PY'
+import re, gzip, glob, os, json
+from datetime import datetime, timedelta
+LINE  = re.compile(r'time=(\S+).*?msg="Assay review completed"(.*)')
+FIELD = re.compile(r'\b(\w+)=([^\s,]+)')
+op = lambda p: gzip.open(p, 'rt', errors='replace') if p.endswith('.gz') else open(p, errors='replace')
+LO = datetime.fromisoformat('2026-10-06T19:00:32.789+02:00')    # 79838adf live
+runs = []
+for p in sorted(glob.glob(os.path.expanduser('~/.forge/logs/daemon*.log*'))):
+    for ln in op(p):
+        m = LINE.search(ln)
+        if not m:
+            continue
+        rest = m.group(2)
+        top = dict(FIELD.findall(re.sub(r'(passes|status)="[^"]*"', '', rest)))
+        start = datetime.fromisoformat(m.group(1)) - timedelta(milliseconds=int(top.get('duration_ms', 0)))
+        if start < LO:
+            continue
+        pm = re.search(r'passes="([^"]*)"', rest)
+        passes = [dict(FIELD.findall(s if s.startswith('pass=') else 'pass=' + s))
+                  for s in (pm.group(1).split(', pass=') if pm else [])]
+        runs.append(dict(ts=m.group(1), pr=top.get('pr'), bead=top.get('bead'),
+                         cost=float(top.get('cost_usd', 0)), passes=passes))
+deep = [p for r in runs for p in r['passes'] if p['pass'] != 'triage']
+print(len(runs), 'runs', len(deep), 'deep passes',
+      sum(1 for p in deep if 'retry' in p), 'retried',
+      sum(1 for p in deep if p.get('term') == 'error_max_turns'), 'turn-terminal',
+      sum(1 for p in deep if p.get('term') == 'error_max_cost'), 'cost-terminal',
+      'max turns', max(int(p['turns']) for p in deep))
+PY
+```
