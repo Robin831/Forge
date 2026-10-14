@@ -58,6 +58,22 @@ extractors printed in
 where the regime boundaries that partition them live. The analysis reads
 those, not the logs.
 
+## Per-pass turn sample under the 24-turn cap (Forge-8we9m, 2026-10-14)
+
+The n ≥ 20 re-measurement that Forge-55eq asked for, plus the 16-turn-cap
+baseline that is still on disk. The analysis and the regime boundaries are in
+[../docs/assay-turn-budget.md](../docs/assay-turn-budget.md) ("Re-measurement —
+2026-10-14"). Both files were written by
+[`extract-assay-passes.py`](extract-assay-passes.py) in this directory, not by
+the extractor printed in that doc. It cuts on run *start*, not log time, and it
+keeps each run's `ts`/`run_start`/`pr`/`bead`/`run_status`/`run_cost_usd`/`run_duration_ms`
+on every row beside the `passes=` fields.
+
+| File | What |
+|---|---|
+| `assay-passes-20261006T170032Z-20261014T072600Z.json` | R4: 32 runs / 192 pass observations, from the deploy of `79838adf` (24 turns). Each observation is one session, since nothing retried |
+| `assay-passes-20260831T220000Z-20261006T170032Z.json` | 53 runs / 318 pass observations under the 16-turn cap. The doc splits them at 2026-09-17 into windows A and B |
+
 ## Conventions
 
 - **Filenames encode the window**: `<phase>-<since>-<until>.<ext>`, with `open`
@@ -66,7 +82,13 @@ those, not the logs.
 - **`.txt`/`.json`/`.csv` are raw tool output, committed verbatim.** Never
   hand-edit them: an artifact that has been touched is no longer evidence of
   what the tool reported. Re-run the invocation instead.
-- **`comparison.md` and this file are the only hand-written ones.**
+- **Every `.md` file here is a hand-written document** — this file,
+  `comparison.md` and `warden-paths-narrowing-20260902.md` — and the raw-output
+  rule above does not apply to them.
+  The one hand-written tool is `extract-assay-passes.py`, an extractor kept
+  beside the artifacts it produced because it is too long to print in the doc
+  that reads them. Its logic is never changed once its output is committed: an
+  extractor that would parse differently writes new files under a new name.
 - **Empty is a result.** A report showing zero runs is committed as-is rather
   than omitted — an absent file reads as "not done yet", a zero-run report says
   "measured, and there was nothing there".
