@@ -4681,6 +4681,7 @@ func (d *Daemon) pollAndDispatch(ctx context.Context, fullPoll bool) {
 
 		thisCycleAnvil[bead.Anvil]++
 		thisCycleTotal++
+		anvilHolders[bead.Anvil] = append(anvilHolders[bead.Anvil], fmt.Sprintf("%s (%s, dispatched this cycle)", claimWorkerID, bead.ID))
 		// Reserve this worker's estimated in-flight spend so the next iteration's
 		// gate re-check (and future polls) account for it. Released in
 		// dispatchBead once the worker completes (Forge-s3w7).

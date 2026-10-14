@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"fmt"
 	"log/slog"
 	"strings"
 	"testing"
@@ -132,4 +133,48 @@ func TestFlagAttrs_LongErrorIsCutOnARuneAndFlattened(t *testing.T) {
 	assert.True(t, utf8.ValidString(lastError), "never cut inside a character")
 	assert.NotContains(t, lastError, "\n", "one line")
 	assert.Equal(t, 201, utf8.RuneCountInString(lastError), "200 characters and the ellipsis")
+}
+
+func TestSkipLog_ASlotTakenEarlierInTheCycleIsNamed(t *testing.T) {
+	e := newSkipEnv(t)
+	second := "Forge-tagged-2"
+	stubBdOnPath(t, e.dir,
+		`[{"id": "`+taggedBead+`", "title": "first", "status": "ready", "priority": 1, "labels": ["`+skipTag+`"]},`+
+			` {"id": "`+second+`", "title": "second", "status": "ready", "priority": 2, "labels": ["`+skipTag+`"]}]`)
+	e.d.pollAndDispatch(e.ctx, false)
+	require.True(t, dispatched(t, e, taggedBead), "the first takes the anvil's one slot")
+	require.False(t, dispatched(t, e, second))
+	lines := skipLines(e, second)
+	require.Len(t, lines, 1)
+	assert.Equal(t, "the anvil's max_smiths is reached", lines[0].Attrs["reason"])
+	assert.Contains(t, fmt.Sprint(lines[0].Attrs["held_by"]), taggedBead+", dispatched this cycle", "named, not an empty list")
+}
+
+func TestSkipLog_InFlightWedgedAndOpenPRAreSaid(t *testing.T) {
+	cases := []struct {
+		name, reason string
+		setup        func(e *testEnv)
+	}{
+		{"in flight", "already in flight in this daemon", func(e *testEnv) { e.d.activeBeads.Store(taggedBead, true) }},
+		{"wedged", "the anvil's beads database is wedged", func(e *testEnv) {
+			_, _, err := e.db.MarkAnvilWedged(state.AnvilHealth{Anvil: testAnvil, Wedged: true, Detail: "mid-merge"})
+			require.NoError(t, err)
+		}},
+		{"open PR", "the forge's state has an open PR for it", func(e *testEnv) {
+			require.NoError(t, e.db.InsertPR(&state.PR{Number: 7, Anvil: testAnvil, BeadID: taggedBead, Branch: "forge/" + taggedBead,
+				BaseBranch: "main", Status: state.PROpen, CreatedAt: time.Now()}))
+		}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			e := newSkipEnv(t)
+			c.setup(e)
+			e.d.pollAndDispatch(e.ctx, false)
+			e.d.pollAndDispatch(e.ctx, false)
+			require.False(t, dispatched(t, e, taggedBead))
+			lines := skipLines(e, taggedBead)
+			require.Len(t, lines, 1, "said once over two polls")
+			assert.Equal(t, c.reason, lines[0].Attrs["reason"])
+		})
+	}
 }
