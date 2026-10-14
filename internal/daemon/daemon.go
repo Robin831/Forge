@@ -10329,7 +10329,6 @@ func (d *Daemon) firstAuthFailureToday(providerLabel string) bool {
 	return true
 }
 
-// shouldDispatch determines if a bead should be automatically dispatched based on anvil configuration.
 // noteSkip logs at INFO why a ready bead that its anvil would auto-dispatch was not dispatched, once per reason:
 // a bead counted as ready on every poll and never dispatched said nothing (DevInfra-jh9). Beads the anvil would
 // not auto-dispatch anyway (untagged, below the priority) are not logged.
@@ -10350,18 +10349,18 @@ func (d *Daemon) noteSkipWith(bead poller.Bead, cfg *config.Config, reason strin
 	d.logger.Info("ready bead not dispatched", append([]any{"bead", bead.ID, "anvil", bead.Anvil, "reason", reason}, attrs()...)...)
 }
 
-// flagAttrs says since when a needs_human or clarification flag has stood, and the error that set it, so a
-// bead held back for a human says how long it has waited (ndfp4.8 waited eleven hours, unseen).
+// flagAttrs says when the bead's retry record (which holds the needs_human or clarification flag) was last
+// updated, how long ago, and its last error, so a bead held back for a human says how long it has waited.
 func (d *Daemon) flagAttrs(bead poller.Bead) []any {
 	r, err := d.db.GetRetry(bead.ID, bead.Anvil)
 	if err != nil || r == nil {
 		return nil
 	}
-	lastError := r.LastError
-	if len(lastError) > 200 {
-		lastError = lastError[:200] + "…"
+	lastError := strings.Join(strings.Fields(r.LastError), " ")
+	if runes := []rune(lastError); len(runes) > 200 {
+		lastError = string(runes[:200]) + "…"
 	}
-	return []any{"since", r.UpdatedAt.UTC().Format(time.RFC3339), "age", time.Since(r.UpdatedAt).Round(time.Minute).String(), "last_error", lastError}
+	return []any{"updated", r.UpdatedAt.UTC().Format(time.RFC3339), "age", time.Since(r.UpdatedAt).Round(time.Minute).String(), "last_error", lastError}
 }
 
 // workerHolders names the workers holding an anvil's dispatch slots, for the skip line: "id (bead, status)".
@@ -10373,6 +10372,7 @@ func workerHolders(rows []state.Worker) []string {
 	return out
 }
 
+// shouldDispatch determines if a bead should be automatically dispatched based on anvil configuration.
 func shouldDispatch(bead poller.Bead, anvilCfg config.AnvilConfig) bool {
 	switch anvilCfg.AutoDispatch {
 	case "off":
