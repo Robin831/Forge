@@ -167,6 +167,9 @@ type Daemon struct {
 
 	// Dispatch state
 	activeBeads sync.Map // beadID -> true, currently in-flight
+	// skipNoted remembers, per bead and anvil, the reason last logged for not dispatching a ready bead the anvil
+	// would auto-dispatch, so the line is written when the reason changes rather than on every poll (DevInfra-jh9).
+	skipNoted sync.Map // beadID + "\x00" + anvil -> reason
 	// controlHandles is the in-memory registry of active pipeline control
 	// handles keyed by beadID (beadID string -> *controlHandle). A handle is
 	// created with an immutable workerID and registered after a successful
@@ -4514,6 +4517,7 @@ func (d *Daemon) pollAndDispatch(ctx context.Context, fullPoll bool) {
 	// Snapshot per-anvil active counts so we don't re-query the DB each
 	// iteration (avoids double-counting with the thisCycleAnvil counter).
 	anvilActive := make(map[string]int)
+	anvilHolders := make(map[string][]string) // who holds each anvil's slots, for the skip line
 	thisCycleTotal := 0
 	thisCycleAnvil := make(map[string]int)
 
@@ -4534,17 +4538,20 @@ func (d *Daemon) pollAndDispatch(ctx context.Context, fullPoll bool) {
 		// LoadOrStore closes the race that existed between Load and the later
 		// Store: a concurrent run_bead could slip in between those two calls.
 		if _, alreadyInFlight := d.activeBeads.LoadOrStore(bead.ID, true); alreadyInFlight {
+			d.noteSkip(bead, cfg, "already in flight in this daemon")
 			continue
 		}
 
 		// Skip beads that need clarification (analogous to needs_human)
 		if _, needed := clarSet[bead.ID+"\x00"+bead.Anvil]; needed {
+			d.noteSkipWith(bead, cfg, "clarification_needed is set in the forge's state", func() []any { return d.flagAttrs(bead) })
 			d.releaseBeadSlot(bead.ID)
 			continue
 		}
 
 		// Skip beads that need human attention (needs_human=1)
 		if _, broken := needsHumanSet[bead.ID+"\x00"+bead.Anvil]; broken {
+			d.noteSkipWith(bead, cfg, "needs_human is set in the forge's state", func() []any { return d.flagAttrs(bead) })
 			d.releaseBeadSlot(bead.ID)
 			continue
 		}
@@ -4571,6 +4578,7 @@ func (d *Daemon) pollAndDispatch(ctx context.Context, fullPoll bool) {
 		// avoid one line per queued bead per poll.
 		if _, wedged := wedgedAnvils[bead.Anvil]; wedged {
 			d.logger.Debug("skipping bead in wedged anvil", "bead", bead.ID, "anvil", bead.Anvil)
+			d.noteSkip(bead, cfg, "the anvil's beads database is wedged")
 			d.releaseBeadSlot(bead.ID)
 			continue
 		}
@@ -4578,6 +4586,7 @@ func (d *Daemon) pollAndDispatch(ctx context.Context, fullPoll bool) {
 		// Skip beads that already have an open PR (bellows should handle them)
 		if hasPR, err := d.db.HasOpenPRForBead(bead.ID, bead.Anvil); err == nil && hasPR {
 			d.logger.Debug("skipping bead with open PR", "bead", bead.ID)
+			d.noteSkip(bead, cfg, "the forge's state has an open PR for it")
 			d.releaseBeadSlot(bead.ID)
 			continue
 		}
@@ -4601,22 +4610,25 @@ func (d *Daemon) pollAndDispatch(ctx context.Context, fullPoll bool) {
 
 		// Check per-anvil capacity using snapshot + in-cycle count
 		if _, ok := anvilActive[bead.Anvil]; !ok {
-			cnt, err := worker.DispatchActiveCount(d.db, bead.Anvil)
+			rows, err := d.db.ActiveDispatchWorkersByAnvil(bead.Anvil)
 			if err != nil {
 				d.logger.Error("checking per-anvil capacity", "anvil", bead.Anvil, "error", err)
 				d.releaseBeadSlot(bead.ID)
 				anvilActive[bead.Anvil] = maxSmiths // treat as at-capacity for this cycle
 				continue
 			}
-			anvilActive[bead.Anvil] = cnt
+			anvilActive[bead.Anvil] = len(rows)
+			anvilHolders[bead.Anvil] = workerHolders(rows)
 		}
 		if anvilActive[bead.Anvil]+thisCycleAnvil[bead.Anvil] >= maxSmiths {
+			d.noteSkip(bead, cfg, "the anvil's max_smiths is reached", "max_smiths", maxSmiths, "held_by", anvilHolders[bead.Anvil])
 			d.releaseBeadSlot(bead.ID)
 			continue
 		}
 
 		// Check global capacity using snapshot + in-cycle count
 		if globalActive+thisCycleTotal >= maxTotal {
+			d.noteSkip(bead, cfg, "max_total_smiths is reached", "max_total_smiths", maxTotal)
 			d.releaseBeadSlot(bead.ID)
 			break
 		}
@@ -4651,6 +4663,7 @@ func (d *Daemon) pollAndDispatch(ctx context.Context, fullPoll bool) {
 		// (Forge-au4z). This also covers the known claim→worktree crash window.
 		// The pipeline overwrites this row via INSERT OR REPLACE when it starts.
 		claimWorkerID := d.insertPendingWorker(bead.ID, bead.Anvil, bead.Title)
+		d.skipNoted.Delete(bead.ID + "\x00" + bead.Anvil)
 
 		// Claim the bead before dispatching.
 		if err := d.claimBead(ctx, bead.ID, anvilCfg.Path); err != nil {
@@ -4668,6 +4681,7 @@ func (d *Daemon) pollAndDispatch(ctx context.Context, fullPoll bool) {
 
 		thisCycleAnvil[bead.Anvil]++
 		thisCycleTotal++
+		anvilHolders[bead.Anvil] = append(anvilHolders[bead.Anvil], fmt.Sprintf("%s (%s, dispatched this cycle)", claimWorkerID, bead.ID))
 		// Reserve this worker's estimated in-flight spend so the next iteration's
 		// gate re-check (and future polls) account for it. Released in
 		// dispatchBead once the worker completes (Forge-s3w7).
@@ -10314,6 +10328,49 @@ func (d *Daemon) firstAuthFailureToday(providerLabel string) bool {
 	}
 	d.authEscalated[key] = true
 	return true
+}
+
+// noteSkip logs at INFO why a ready bead that its anvil would auto-dispatch was not dispatched, once per reason:
+// a bead counted as ready on every poll and never dispatched said nothing (DevInfra-jh9). Beads the anvil would
+// not auto-dispatch anyway (untagged, below the priority) are not logged.
+func (d *Daemon) noteSkip(bead poller.Bead, cfg *config.Config, reason string, attrs ...any) {
+	d.noteSkipWith(bead, cfg, reason, func() []any { return attrs })
+}
+
+// noteSkipWith is noteSkip with attributes worked out only when the line is actually written.
+func (d *Daemon) noteSkipWith(bead poller.Bead, cfg *config.Config, reason string, attrs func() []any) {
+	anvilCfg, ok := cfg.Anvils[bead.Anvil]
+	if !ok || !shouldDispatch(bead, anvilCfg) {
+		return
+	}
+	key := bead.ID + "\x00" + bead.Anvil
+	if prev, seen := d.skipNoted.Swap(key, reason); seen && prev == reason {
+		return
+	}
+	d.logger.Info("ready bead not dispatched", append([]any{"bead", bead.ID, "anvil", bead.Anvil, "reason", reason}, attrs()...)...)
+}
+
+// flagAttrs says when the bead's retry record (which holds the needs_human or clarification flag) was last
+// updated, how long ago, and its last error, so a bead held back for a human says how long it has waited.
+func (d *Daemon) flagAttrs(bead poller.Bead) []any {
+	r, err := d.db.GetRetry(bead.ID, bead.Anvil)
+	if err != nil || r == nil {
+		return nil
+	}
+	lastError := strings.Join(strings.Fields(r.LastError), " ")
+	if runes := []rune(lastError); len(runes) > 200 {
+		lastError = string(runes[:200]) + "…"
+	}
+	return []any{"updated", r.UpdatedAt.UTC().Format(time.RFC3339), "age", time.Since(r.UpdatedAt).Round(time.Minute).String(), "last_error", lastError}
+}
+
+// workerHolders names the workers holding an anvil's dispatch slots, for the skip line: "id (bead, status)".
+func workerHolders(rows []state.Worker) []string {
+	out := make([]string, 0, len(rows))
+	for _, w := range rows {
+		out = append(out, fmt.Sprintf("%s (%s, %s)", w.ID, w.BeadID, w.Status))
+	}
+	return out
 }
 
 // shouldDispatch determines if a bead should be automatically dispatched based on anvil configuration.
