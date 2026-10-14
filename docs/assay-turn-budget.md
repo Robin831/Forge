@@ -1082,40 +1082,23 @@ The artifacts, extracted 2026-10-14:
 | `measurements/assay-passes-20261006T170032Z-20261014T072600Z.json` | R4: 192 pass observations, with each run's start, status, cost and duration on every row |
 | `measurements/assay-passes-20260831T220000Z-20261006T170032Z.json` | windows A and B: 318 pass observations under the 16-turn cap, kept because the logs behind them rotate off first |
 
-The extractor differs from the printed one above in two ways. It cuts on run
-**start**, not on log time. And it keeps the run-level fields (`pr`, `bead`,
-`status`, `cost_usd`, `duration_ms`) beside the `passes=` fields, which it parses
-with the same two regexes:
+Both are written by `measurements/extract-assay-passes.py`, which differs from
+the printed extractor above in two ways. It cuts on run **start** (completion
+time minus `duration_ms`), not on log time. And it keeps the run-level fields
+(`pr`, `bead`, `status`, `cost_usd`, `duration_ms`) beside the `passes=` fields,
+which it parses with the same two regexes. Run against the logs on this host on
+2026-10-14, these two commands reproduce both files byte for byte:
 
 ```bash
-python3 - <<'PY'
-import re, gzip, glob, os, json
-from datetime import datetime, timedelta
-LINE  = re.compile(r'time=(\S+).*?msg="Assay review completed"(.*)')
-FIELD = re.compile(r'\b(\w+)=([^\s,]+)')
-op = lambda p: gzip.open(p, 'rt', errors='replace') if p.endswith('.gz') else open(p, errors='replace')
-LO = datetime.fromisoformat('2026-10-06T19:00:32.789+02:00')    # 79838adf live
-runs = []
-for p in sorted(glob.glob(os.path.expanduser('~/.forge/logs/daemon*.log*'))):
-    for ln in op(p):
-        m = LINE.search(ln)
-        if not m:
-            continue
-        rest = m.group(2)
-        top = dict(FIELD.findall(re.sub(r'(passes|status)="[^"]*"', '', rest)))
-        start = datetime.fromisoformat(m.group(1)) - timedelta(milliseconds=int(top.get('duration_ms', 0)))
-        if start < LO:
-            continue
-        pm = re.search(r'passes="([^"]*)"', rest)
-        passes = [dict(FIELD.findall(s if s.startswith('pass=') else 'pass=' + s))
-                  for s in (pm.group(1).split(', pass=') if pm else [])]
-        runs.append(dict(ts=m.group(1), pr=top.get('pr'), bead=top.get('bead'),
-                         cost=float(top.get('cost_usd', 0)), passes=passes))
-deep = [p for r in runs for p in r['passes'] if p['pass'] != 'triage']
-print(len(runs), 'runs', len(deep), 'deep passes',
-      sum(1 for p in deep if 'retry' in p), 'retried',
-      sum(1 for p in deep if p.get('term') == 'error_max_turns'), 'turn-terminal',
-      sum(1 for p in deep if p.get('term') == 'error_max_cost'), 'cost-terminal',
-      'max turns', max(int(p['turns']) for p in deep))
-PY
+python3 -I measurements/extract-assay-passes.py \
+    --from 2026-10-06T17:00:32Z --to 2026-10-14T07:26:00Z \
+    --out measurements/assay-passes-20261006T170032Z-20261014T072600Z.json
+python3 -I measurements/extract-assay-passes.py \
+    --from 2026-08-31T22:00:00Z --to 2026-10-06T17:00:32Z \
+    --out measurements/assay-passes-20260831T220000Z-20261006T170032Z.json
 ```
+
+Windows A and B are cut from the second file by `run_start` (A before
+2026-09-17, B from it). Once `daemon-2026-09-07T17-02-32.693.log.gz` rotates
+off, the second command can no longer rebuild window A, which is why the file
+is committed.
