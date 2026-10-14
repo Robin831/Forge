@@ -63,8 +63,10 @@ those, not the logs.
 The n ≥ 20 re-measurement that Forge-55eq asked for, plus the 16-turn-cap
 baseline that is still on disk. The analysis and the regime boundaries are in
 [../docs/assay-turn-budget.md](../docs/assay-turn-budget.md) ("Re-measurement —
-2026-10-14"). The extractor is printed there too. It cuts on run *start*, not
-log time, and it keeps each run's `pr`/`bead`/`status`/`cost_usd`/`duration_ms`
+2026-10-14"). Both files were written by
+[`extract-assay-passes.py`](extract-assay-passes.py) in this directory, not by
+the extractor printed in that doc. It cuts on run *start*, not log time, and it
+keeps each run's `ts`/`run_start`/`pr`/`bead`/`run_status`/`run_cost_usd`/`run_duration_ms`
 on every row beside the `passes=` fields.
 
 | File | What |
@@ -80,7 +82,11 @@ on every row beside the `passes=` fields.
 - **`.txt`/`.json`/`.csv` are raw tool output, committed verbatim.** Never
   hand-edit them: an artifact that has been touched is no longer evidence of
   what the tool reported. Re-run the invocation instead.
-- **`comparison.md` and this file are the only hand-written ones.**
+- **`comparison.md` and this file are the only hand-written documents.**
+  The one hand-written tool is `extract-assay-passes.py`, an extractor kept
+  beside the artifacts it produced because it is too long to print in the doc
+  that reads them. Its logic is never changed once its output is committed: an
+  extractor that would parse differently writes new files under a new name.
 - **Empty is a result.** A report showing zero runs is committed as-is rather
   than omitted — an absent file reads as "not done yet", a zero-run report says
   "measured, and there was nothing there".

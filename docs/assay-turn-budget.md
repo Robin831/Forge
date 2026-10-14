@@ -1083,10 +1083,15 @@ The artifacts, extracted 2026-10-14:
 | `measurements/assay-passes-20260831T220000Z-20261006T170032Z.json` | windows A and B: 318 pass observations under the 16-turn cap, kept because the logs behind them rotate off first |
 
 Both are written by `measurements/extract-assay-passes.py`, which differs from
-the printed extractor above in two ways. It cuts on run **start** (completion
-time minus `duration_ms`), not on log time. And it keeps the run-level fields
-(`pr`, `bead`, `status`, `cost_usd`, `duration_ms`) beside the `passes=` fields,
-which it parses with the same two regexes. Run against the logs on this host on
+the printed extractor above in three ways. It cuts on run **start** (completion
+time minus `duration_ms`), not on log time. It keeps the run-level fields beside
+the `passes=` fields on every row, under the keys `ts`, `run_start`, `pr`,
+`bead`, `run_status`, `run_cost_usd` and `run_duration_ms` (the `run_` prefix
+keeps the run's status, cost and duration apart from per-pass fields such as
+`cost_usd`). And only `FIELD` is shared verbatim: its `LINE` is widened to
+capture the whole tail of the line rather than just `passes="…"`, after which
+`passes=` and `status=` are pulled out by separate `re.search` calls and
+stripped before the top-level fields are read. Run against the logs on this host on
 2026-10-14, these two commands reproduce both files byte for byte:
 
 ```bash

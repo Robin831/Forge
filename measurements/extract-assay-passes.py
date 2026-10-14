@@ -3,7 +3,8 @@
 
 One row per `passes=` segment of every `Assay review completed` line whose run
 STARTED (completion time minus duration_ms) in [--from, --to). Each row carries
-the run-level fields (pr, bead, status, cost, duration) beside the pass fields.
+the run-level fields (ts, run_start, pr, bead, run_status, run_cost_usd,
+run_duration_ms) beside the pass fields.
 
     python3 -I measurements/extract-assay-passes.py \
         --from 2026-10-06T17:00:32Z --to 2026-10-14T07:26:00Z \
