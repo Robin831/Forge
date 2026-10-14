@@ -82,7 +82,9 @@ on every row beside the `passes=` fields.
 - **`.txt`/`.json`/`.csv` are raw tool output, committed verbatim.** Never
   hand-edit them: an artifact that has been touched is no longer evidence of
   what the tool reported. Re-run the invocation instead.
-- **`comparison.md` and this file are the only hand-written documents.**
+- **Every `.md` file here is a hand-written document** — this file,
+  `comparison.md` and `warden-paths-narrowing-20260902.md` — and the raw-output
+  rule above does not apply to them.
   The one hand-written tool is `extract-assay-passes.py`, an extractor kept
   beside the artifacts it produced because it is too long to print in the doc
   that reads them. Its logic is never changed once its output is committed: an
