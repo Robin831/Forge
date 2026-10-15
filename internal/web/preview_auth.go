@@ -82,8 +82,13 @@ func (s *Server) authorizePreviewRequest(w http.ResponseWriter, r *http.Request,
 	// idle clock is bumped by the resolve instead.
 	// A read-only user's session does not open previews: a preview is
 	// unreviewed branch code that takes any method, so it would be a way to act.
-	if sess := s.loadSession(r); sess != nil && !s.isReadOnly(sess) {
-		return true
+	// A plain 403, since the login page would send them straight back here.
+	if sess := s.loadSession(r); sess != nil {
+		if !s.isReadOnly(sess) {
+			return true
+		}
+		writePreviewProxyError(w, http.StatusForbidden, "read-only users cannot open previews")
+		return false
 	}
 
 	// A link minted by the dashboard. Verify, exchange for a cookie, and

@@ -35,13 +35,14 @@ func (s *Server) requireAuth(next http.Handler) http.Handler {
 	})
 }
 
-// isReadOnly reports whether the session belongs to a FORGE_READ_USERS user.
+// isReadOnly reports whether a session may only read. Fails closed: only a
+// name in Users is full, whatever ReadOnlyUsers holds.
 func (s *Server) isReadOnly(sess *state.WebSession) bool {
 	if sess == nil {
 		return false
 	}
-	_, ok := s.cfg.ReadOnlyUsers[sess.Username]
-	return ok
+	_, full := s.cfg.Users[sess.Username]
+	return !full
 }
 
 // optionalAuth attaches the session to the request context when one is

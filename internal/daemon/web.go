@@ -44,11 +44,6 @@ func (d *Daemon) startWebServer(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("FORGE_READ_USERS: %w", err)
 	}
-	for name := range readOnlyUsers {
-		if _, both := users[name]; both {
-			return fmt.Errorf("FORGE_READ_USERS: %q is also in FORGE_USERS; a user is either full or read-only", name)
-		}
-	}
 
 	sessionTTL := d.sessionDurationEnv("FORGE_WEB_SESSION_TTL")
 	if sessionTTL < 0 {

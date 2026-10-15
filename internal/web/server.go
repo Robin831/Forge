@@ -320,6 +320,11 @@ func New(cfg Config, db *state.DB, handler CommandHandler, logger *slog.Logger) 
 	if logger == nil {
 		logger = slog.Default()
 	}
+	for name := range cfg.ReadOnlyUsers {
+		if _, both := cfg.Users[name]; both {
+			return nil, fmt.Errorf("web: %q is in both Users and ReadOnlyUsers; a user is either full or read-only", name)
+		}
+	}
 	if cfg.SessionTTL == 0 {
 		cfg.SessionTTL = 30 * 24 * time.Hour
 	}
