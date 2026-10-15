@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/Robin831/Forge/internal/state"
 )
 
 // requireAuth is middleware that rejects requests without a valid session
@@ -18,12 +20,28 @@ func (s *Server) requireAuth(next http.Handler) http.Handler {
 			writeError(w, http.StatusUnauthorized, "unauthorized")
 			return
 		}
+		// A read-only user reads: anything but GET or HEAD is refused before
+		// it reaches a handler, so no action can run in their name. Signing
+		// out is the one POST they keep.
+		if s.isReadOnly(sess) && r.Method != http.MethodGet && r.Method != http.MethodHead && r.URL.Path != "/logout" {
+			writeError(w, http.StatusForbidden, "read-only user")
+			return
+		}
 		// Slide the expiry forward so active users keep their session.
 		s.touchSession(sess)
 		// Refresh the cookie so the browser sees the updated expiry.
 		s.refreshSessionCookie(w, r, sess)
 		next.ServeHTTP(w, r.WithContext(withSession(r.Context(), sess)))
 	})
+}
+
+// isReadOnly reports whether the session belongs to a FORGE_READ_USERS user.
+func (s *Server) isReadOnly(sess *state.WebSession) bool {
+	if sess == nil {
+		return false
+	}
+	_, ok := s.cfg.ReadOnlyUsers[sess.Username]
+	return ok
 }
 
 // optionalAuth attaches the session to the request context when one is

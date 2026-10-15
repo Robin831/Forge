@@ -334,7 +334,10 @@ func (s *Server) previewEntryURL(r *http.Request, p ipc.PreviewInfo, publicHost 
 				opts.ProxyPort = port
 			}
 		}
-		opts.Token = s.previewAccessToken(kiln.PreviewLabel(p.BeadID), hearthHost, base)
+		// No preview grant is handed to a read-only user (see authorizePreviewRequest).
+		if r == nil || !s.isReadOnly(SessionFromContext(r.Context())) {
+			opts.Token = s.previewAccessToken(kiln.PreviewLabel(p.BeadID), hearthHost, base)
+		}
 		opts.TokenParam = previewTokenParam
 	}
 	return kiln.EntryURL(opts)

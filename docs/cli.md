@@ -137,6 +137,7 @@ The Hearth web UI itself is gated by these environment variables:
 | `FORGE_WEB_ENABLED` | off | Enable the web UI when truthy (`1`/`true`/`yes`/`on`). |
 | `FORGE_WEB_ADDR` | `:8080` | TCP listen address. |
 | `FORGE_USERS` | — | `user:bcrypt-hash` pairs, comma-separated. |
+| `FORGE_READ_USERS` | — | Read-only users, in `FORGE_USERS`' format: they may read the dashboard and `/api`, but any request other than GET or HEAD is refused (403), and they cannot open previews. A name must not be in both lists. |
 | `FORGE_WEB_COOKIE_SECURE` | off | Force the `Secure` cookie attribute (set behind HTTPS). |
 | `FORGE_WEB_SESSION_TTL` | `720h` (30d) | Sliding session lifetime (Go duration). |
 | `FORGE_WEB_SESSION_ABSOLUTE_TTL` | `168h` (7d) | Absolute session lifetime cap, measured from creation, regardless of activity. |

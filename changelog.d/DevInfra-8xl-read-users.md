@@ -1,0 +1,2 @@
+category: Added
+- **Read-only web users** - `FORGE_READ_USERS`, in `FORGE_USERS`' format, lists users who may sign in and read the dashboard and `/api`, but never act: every request other than GET or HEAD under their session is refused with 403 before it reaches a handler (signing out excepted), and their session neither opens preview environments nor receives a preview link token. A name in both lists stops the web server from starting. Meant for a reader such as Varde's MCP, which needs the Forge's state without the power to merge, kill, close or dispatch. (DevInfra-8xl)

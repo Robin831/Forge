@@ -80,7 +80,9 @@ func (s *Server) authorizePreviewRequest(w http.ResponseWriter, r *http.Request,
 	// shared-cookie deployment. It is read without sliding the expiry:
 	// browsing a preview is not using the dashboard, and the preview's own
 	// idle clock is bumped by the resolve instead.
-	if sess := s.loadSession(r); sess != nil {
+	// A read-only user's session does not open previews: a preview is
+	// unreviewed branch code that takes any method, so it would be a way to act.
+	if sess := s.loadSession(r); sess != nil && !s.isReadOnly(sess) {
 		return true
 	}
 

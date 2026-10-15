@@ -27,6 +27,12 @@ func ParseUsersFromEnv() (map[string]string, error) {
 	return ParseUsers(os.Getenv("FORGE_USERS"))
 }
 
+// ParseReadOnlyUsersFromEnv parses FORGE_READ_USERS, in FORGE_USERS' format:
+// users who may sign in and read, but never change anything.
+func ParseReadOnlyUsersFromEnv() (map[string]string, error) {
+	return ParseUsers(os.Getenv("FORGE_READ_USERS"))
+}
+
 // ParseUsers parses a FORGE_USERS-formatted string. Exposed separately from
 // ParseUsersFromEnv to make testing simpler.
 func ParseUsers(raw string) (map[string]string, error) {
