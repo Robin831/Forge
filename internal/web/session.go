@@ -96,6 +96,16 @@ func (s *Server) loadSession(r *http.Request) *state.WebSession {
 		}
 		return nil
 	}
+	// A session whose user is in neither list was revoked: removing a name
+	// must end its sessions, or a dropped read-only user would act as full.
+	_, full := s.cfg.Users[sess.Username]
+	_, readOnly := s.cfg.ReadOnlyUsers[sess.Username]
+	if !full && !readOnly {
+		if err := s.db.DeleteWebSession(sess.TokenHash); err != nil {
+			s.logger.Warn("delete revoked web session failed", "error", err)
+		}
+		return nil
+	}
 	return sess
 }
 

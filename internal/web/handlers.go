@@ -102,7 +102,13 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if err := VerifyCredentials(s.cfg.Users, username, password); err != nil {
+	// A read-only user is checked against their own list; every other name
+	// against Users, as before.
+	users := s.cfg.Users
+	if _, readOnly := s.cfg.ReadOnlyUsers[username]; readOnly {
+		users = s.cfg.ReadOnlyUsers
+	}
+	if err := VerifyCredentials(users, username, password); err != nil {
 		s.throttle.recordFailure(username, ip)
 		s.logger.Info("web login failed", "user", username, "remote", ip)
 		writeError(w, http.StatusUnauthorized, "invalid credentials")

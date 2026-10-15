@@ -27,9 +27,20 @@ func ParseUsersFromEnv() (map[string]string, error) {
 	return ParseUsers(os.Getenv("FORGE_USERS"))
 }
 
+// ParseReadOnlyUsersFromEnv parses FORGE_READ_USERS, in FORGE_USERS' format:
+// users who may sign in and read, but never change anything.
+func ParseReadOnlyUsersFromEnv() (map[string]string, error) {
+	return parseUsersNamed(os.Getenv("FORGE_READ_USERS"), "FORGE_READ_USERS")
+}
+
 // ParseUsers parses a FORGE_USERS-formatted string. Exposed separately from
 // ParseUsersFromEnv to make testing simpler.
 func ParseUsers(raw string) (map[string]string, error) {
+	return parseUsersNamed(raw, "FORGE_USERS")
+}
+
+// parseUsersNamed is ParseUsers with the variable's name for its errors.
+func parseUsersNamed(raw, name string) (map[string]string, error) {
 	out := make(map[string]string)
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
@@ -42,15 +53,15 @@ func ParseUsers(raw string) (map[string]string, error) {
 		}
 		idx := strings.Index(entry, ":")
 		if idx <= 0 {
-			return nil, fmt.Errorf("web: malformed FORGE_USERS entry %q (expected user:hash)", entry)
+			return nil, fmt.Errorf("web: malformed %s entry %q (expected user:hash)", name, entry)
 		}
 		user := strings.TrimSpace(entry[:idx])
 		hash := strings.TrimSpace(entry[idx+1:])
 		if user == "" || hash == "" {
-			return nil, fmt.Errorf("web: empty user or hash in FORGE_USERS entry %q", entry)
+			return nil, fmt.Errorf("web: empty user or hash in %s entry %q", name, entry)
 		}
 		if _, dup := out[user]; dup {
-			return nil, fmt.Errorf("web: duplicate user %q in FORGE_USERS", user)
+			return nil, fmt.Errorf("web: duplicate user %q in %s", user, name)
 		}
 		out[user] = hash
 	}

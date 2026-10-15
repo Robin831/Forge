@@ -40,6 +40,13 @@ type Config struct {
 	// /login endpoint always rejects.
 	Users map[string]string
 
+	// ReadOnlyUsers maps username -> bcrypt hash for users who may only read:
+	// a session of theirs is refused (403) on every /api request that is not
+	// GET or HEAD. For a reader such as Varde's MCP, so it can see the Forge
+	// without being able to merge, kill, close or dispatch. A name must not
+	// also be in Users.
+	ReadOnlyUsers map[string]string
+
 	// SessionTTL is the sliding session lifetime. Defaults to 30 days when
 	// zero.
 	SessionTTL time.Duration
@@ -312,6 +319,11 @@ func New(cfg Config, db *state.DB, handler CommandHandler, logger *slog.Logger) 
 	}
 	if logger == nil {
 		logger = slog.Default()
+	}
+	for name := range cfg.ReadOnlyUsers {
+		if _, both := cfg.Users[name]; both {
+			return nil, fmt.Errorf("web: %q is in both Users and ReadOnlyUsers; a user is either full or read-only", name)
+		}
 	}
 	if cfg.SessionTTL == 0 {
 		cfg.SessionTTL = 30 * 24 * time.Hour
