@@ -42,13 +42,13 @@ type ArchiveSummary struct {
 	// activity", "folded into another rule" and "lost a slot to the ceiling"
 	// are different claims about a rule.
 	//
-	// A reason none of the three recognises counts toward Archived and toward
-	// none of the buckets, so a reason added later cannot be silently reported
-	// as an existing one — the price is that the buckets need not sum to
-	// Archived, which is the safe direction.
+	// A reason none of the three recognises is counted in Other under its own
+	// name, never in an existing bucket, so a restore's "lost-in-force-push"
+	// is reported as what it is rather than vanishing from every count.
 	Stale     int
 	Duplicate int
 	OverCap   int
+	Other     map[string]int
 	// UnrepresentedClasses names the supersession termini this run archived
 	// while leaving no rule of their chain on the active file. Sorted and
 	// deduplicated, so the rendered line is stable however the archive
@@ -78,6 +78,14 @@ func (s ArchiveSummary) String() string {
 	fmt.Fprintf(&sb, "archived %d rule(s) (%d stale, %d duplicate", s.Archived, s.Stale, s.Duplicate)
 	if s.OverCap > 0 {
 		fmt.Fprintf(&sb, ", %d over-cap", s.OverCap)
+	}
+	reasons := make([]string, 0, len(s.Other))
+	for reason := range s.Other {
+		reasons = append(reasons, reason)
+	}
+	sort.Strings(reasons)
+	for _, reason := range reasons {
+		fmt.Fprintf(&sb, ", %d %s", s.Other[reason], reason)
 	}
 	sb.WriteString("), classes now unrepresented: ")
 	if len(s.UnrepresentedClasses) == 0 {
@@ -171,6 +179,11 @@ func SummarizeArchiveRunWithIndex(before, after []Rule, archived []ArchivedRule,
 			summary.Duplicate++
 		case ArchiveReasonOverCap:
 			summary.OverCap++
+		default:
+			if summary.Other == nil {
+				summary.Other = make(map[string]int)
+			}
+			summary.Other[reasonLabel(ar.ArchiveReason)]++
 		}
 	}
 
@@ -314,4 +327,20 @@ func ruleIDSet(rules []Rule) map[string]struct{} {
 		set[r.ID] = struct{}{}
 	}
 	return set
+}
+
+// reasonLabel renders an archive reason it does not know for the one-line
+// summary. The reason is file content, written by hand or by another tool, so
+// it is held to lowercase kebab-case and a bounded length; anything else is
+// "other".
+func reasonLabel(reason string) string {
+	if reason == "" || len(reason) > 40 {
+		return "other"
+	}
+	for _, r := range reason {
+		if !(r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '-') {
+			return "other"
+		}
+	}
+	return reason
 }
