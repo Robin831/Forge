@@ -362,6 +362,7 @@ func BatchFix(ctx context.Context, p BatchFixParams) *FixResult {
 		db:           p.DB,
 		timeout:      resolveVerifyTimeout(p.VerifyTimeout),
 		retries:      resolveVerifyRetries(p.VerifyRetries),
+		stopped:      p.Stopped,
 	}
 	log.Printf("[burnish] PR #%d bead=%s: verification starting (timeout=%s, retries=%d)",
 		p.PRNumber, p.BeadID, vp.timeout, vp.retries)
@@ -752,6 +753,7 @@ func Fix(ctx context.Context, p FixParams) *FixResult {
 			db:           p.DB,
 			timeout:      resolveVerifyTimeout(p.VerifyTimeout),
 			retries:      resolveVerifyRetries(p.VerifyRetries),
+			stopped:      p.Stopped,
 		}
 		log.Printf("[burnish] PR #%d bead=%s: verification starting (attempt=%d, timeout=%s, retries=%d)",
 			p.PRNumber, p.BeadID, attempt, vp.timeout, vp.retries)
@@ -1051,6 +1053,7 @@ type verifyParams struct {
 	db           *state.DB
 	timeout      time.Duration
 	retries      int
+	stopped      func() bool
 }
 
 // runVerifyRetrying runs verification, re-running it after a timeout up to
@@ -1158,6 +1161,12 @@ func resolveVerifyTimeoutOutcome(ctx context.Context, vp verifyParams, runs int,
 		return
 	}
 
+	if err := checkNotStopped(vp.stopped); err != nil {
+		result.UnpushedHead = localHead
+		result.Error = err
+		preserveWork(vp, result, err.Error())
+		return
+	}
 	log.Printf("[burnish] PR #%d bead=%s: %s — pushing %s unverified (burnish verification is advisory; the PR is re-reviewed)",
 		vp.prNumber, vp.beadID, timeoutDetail, shortSHA(localHead))
 	if err := gitPushFn(ctx, vp.worktreePath, vp.branch); err != nil {

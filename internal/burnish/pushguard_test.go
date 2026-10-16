@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // pushRepo is a bare origin with a PR branch, and a worktree cloned from it on
@@ -157,5 +158,66 @@ func TestFix_StoppedBellowsSkipsThePush(t *testing.T) {
 		if result.UnpushedHead != "local-fix" {
 			t.Errorf("batch=%t: UnpushedHead = %q, want the kept fix named", batch, result.UnpushedHead)
 		}
+	}
+}
+
+// The timeout path pushes the fix unverified; a stop that landed meanwhile
+// keeps it instead, on both entry points.
+func TestVerifyTimeout_StoppedBellowsSkipsTheUnverifiedPush(t *testing.T) {
+	for _, batch := range []bool{false, true} {
+		h := newTestHarness()
+		db := openTestDB(t)
+		smithSpawnFn = makeSmithStub(0)
+		temperCalls := 0
+		temperRunFn = blockingTemper(&temperCalls)
+		gitRevParseFn = fixedRevParse("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
+		pushed := false
+		gitPushFn = func(context.Context, string, string) error { pushed = true; return nil }
+		stopped := func() bool { return true }
+
+		var result *FixResult
+		v := changesRequested()
+		if batch {
+			result = BatchFix(context.Background(), BatchFixParams{
+				WorktreePath: os.TempDir(), BeadID: "test-1", AnvilName: "test-anvil", PRNumber: 42, Branch: "forge/test",
+				DB: db, Providers: defaultFixParams(db, v).Providers, Comments: v.comments, VCS: v, Stopped: stopped,
+				VerifyTimeout: 50 * time.Millisecond, VerifyRetries: -1,
+			})
+		} else {
+			params := defaultFixParams(db, v)
+			params.Stopped = stopped
+			params.VerifyTimeout = 50 * time.Millisecond
+			params.VerifyRetries = -1
+			result = Fix(context.Background(), params)
+		}
+		h.restore()
+
+		if pushed {
+			t.Errorf("batch=%t: pushed unverified after bellows was stopped", batch)
+		}
+		if !errors.Is(result.Error, ErrBellowsStopped) {
+			t.Errorf("batch=%t: error = %v, want ErrBellowsStopped", batch, result.Error)
+		}
+		if result.UnpushedHead == "" {
+			t.Errorf("batch=%t: the kept fix is not named", batch)
+		}
+	}
+}
+
+// A fix Smith already pushed is on the PR: a stop after that changes nothing
+// and the run is not reported as unpushed.
+func TestFix_StoppedAfterSmithPushedIsNotUnpushed(t *testing.T) {
+	h := newTestHarness()
+	defer h.restore()
+	db := openTestDB(t)
+	smithSpawnFn = makeSmithStub(0)
+	recordTemperConfigs(true)
+	gitRevParseFn = fixedRevParse("same-head", "same-head")
+	gitPushFn = func(context.Context, string, string) error { t.Error("no push expected"); return nil }
+	params := defaultFixParams(db, changesRequested())
+	params.Stopped = func() bool { return true }
+	result := Fix(context.Background(), params)
+	if errors.Is(result.Error, ErrBellowsStopped) || result.UnpushedHead != "" {
+		t.Errorf("error = %v, UnpushedHead = %q; want neither for a fix already on the PR", result.Error, result.UnpushedHead)
 	}
 }
