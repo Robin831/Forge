@@ -1,0 +1,2 @@
+category: Fixed
+- **The warden archive summary counts every archive reason** - it counted only stale, duplicate and over-cap entries, so rules restored with another reason (such as `lost-in-force-push`, used to put back rules the Smelter dropped before its open-batch fix) were in no count. A reason the Forge does not write is now counted and named in the summary line (anything that is not short lowercase kebab-case is shown as `other`). Archived rules can carry an optional `source_pr`, naming the batch PR a rule was lost from or learned in.
