@@ -69,8 +69,17 @@ func newBatchRepo(t *testing.T, withBatch bool) batchRepo {
 }
 
 func smelterWithPR(t *testing.T, anvil, state string, err error) *Smelter {
+	return smelterWithPRHead(t, anvil, state, "", err)
+}
+
+func smelterWithPRHead(t *testing.T, anvil, state, head string, err error) *Smelter {
 	s := New(openTestDB(t), time.Hour, map[string]string{"test-anvil": anvil})
-	s.findPR = func(context.Context, string, string) (int, string, error) { return 7, state, err }
+	s.findPR = func(context.Context, string, string) (batchPR, error) {
+		if state == "" {
+			return batchPR{}, err
+		}
+		return batchPR{Number: 7, State: state, HeadOID: head}, err
+	}
 	return s
 }
 
@@ -96,9 +105,43 @@ func TestPrepareBatchBase_NoBranchOrMergedPRReplaces(t *testing.T) {
 	assert.Equal(t, batchBase{mode: replaceBatch}, base)
 
 	merged := newBatchRepo(t, true)
-	base, err = smelterWithPR(t, merged.anvil, "MERGED", nil).prepareBatchBase(context.Background(), merged.anvil, merged.branch)
+	head := merged.git(merged.origin, "rev-parse", "refs/heads/"+merged.branch)
+	base, err = smelterWithPRHead(t, merged.anvil, "MERGED", head, nil).prepareBatchBase(context.Background(), merged.anvil, merged.branch)
 	require.NoError(t, err)
-	assert.Equal(t, batchBase{mode: replaceBatch}, base, "a merged batch is in main; nothing to keep")
+	assert.Equal(t, batchBase{mode: replaceBatch, head: head}, base, "merged with this very head: in main, nothing to keep")
+}
+
+// An old merged PR says nothing about a later batch pushed to the reused
+// branch: its head is kept before the replace (Copilot on #944).
+func TestPrepareBatchBase_MergedPRWithAnotherHeadStillKeepsTheBranch(t *testing.T) {
+	r := newBatchRepo(t, true)
+	head := r.git(r.origin, "rev-parse", "refs/heads/"+r.branch)
+	base, err := smelterWithPRHead(t, r.anvil, "MERGED", "0123456789abcdef0123456789abcdef01234567", nil).prepareBatchBase(context.Background(), r.anvil, r.branch)
+	require.NoError(t, err)
+	assert.Equal(t, r.branch+"-replaced-"+head[:12], base.archivedAs)
+	assert.Equal(t, head, base.head)
+}
+
+// The replace is leased to the head that was inspected and kept: a push made
+// after the inspection is never overwritten (Copilot on #944).
+func TestCommitAndPush_ReplaceIsLeasedToTheInspectedHead(t *testing.T) {
+	r := newBatchRepo(t, true)
+	ctx := context.Background()
+	s := smelterWithPR(t, r.anvil, "CLOSED", nil)
+	base, err := s.prepareBatchBase(ctx, r.anvil, r.branch)
+	require.NoError(t, err)
+
+	other := t.TempDir()
+	r.git(other, "clone", "--branch", r.branch, r.origin, ".")
+	r.git(other, "-c", "user.email=l@example.com", "-c", "user.name=Lane", "commit", "--allow-empty", "-m", "pushed after the inspection")
+	r.git(other, "push", "origin", r.branch)
+	theirs := r.git(r.origin, "rev-parse", "refs/heads/"+r.branch)
+
+	r.git(r.anvil, "checkout", "-b", r.branch, "origin/main")
+	r.git(r.anvil, "fetch", "origin")
+	require.NoError(t, os.WriteFile(filepath.Join(r.anvil, warden.RulesFileName), []byte("rules:\n  - id: x\n    category: style\n    pattern: p\n    check: c\n"), 0o644))
+	require.Error(t, s.commitAndPush(ctx, r.anvil, r.branch, PassResults{Added: []string{"x"}}, false, base.head))
+	assert.Equal(t, theirs, r.git(r.origin, "rev-parse", "refs/heads/"+r.branch))
 }
 
 // A closed, unmerged batch (or a branch with no PR) is replaced, but its head
@@ -139,7 +182,7 @@ func TestFlushBase_AppendKeepsEarlierRulesAndForeignCommits(t *testing.T) {
 
 	rf.Rules = append(rf.Rules, warden.Rule{ID: "new-rule", Category: "style", Pattern: "p", Check: "c"})
 	require.NoError(t, warden.SaveRules(wt.Path, rf))
-	require.NoError(t, s.commitAndPush(ctx, wt.Path, r.branch, PassResults{Added: []string{"new-rule"}}, base.mode == appendToBatch))
+	require.NoError(t, s.commitAndPush(ctx, wt.Path, r.branch, PassResults{Added: []string{"new-rule"}}, base.mode == appendToBatch, base.head))
 
 	r.git(r.origin, "merge-base", "--is-ancestor", before, "refs/heads/"+r.branch)
 	assert.Contains(t, r.git(r.origin, "show", "refs/heads/"+r.branch+":"+warden.RulesFileName), "earlier-rule")
@@ -161,7 +204,7 @@ func TestCommitAndPush_AppendRefusesToOverwriteANewerPush(t *testing.T) {
 	theirs := r.git(r.origin, "rev-parse", "refs/heads/"+r.branch)
 
 	require.NoError(t, os.WriteFile(filepath.Join(r.anvil, warden.RulesFileName), []byte("rules: []\n"), 0o644))
-	err := s.commitAndPush(ctx, r.anvil, r.branch, PassResults{Added: []string{"x"}}, true)
+	err := s.commitAndPush(ctx, r.anvil, r.branch, PassResults{Added: []string{"x"}}, true, "")
 	require.Error(t, err)
 	assert.Equal(t, theirs, r.git(r.origin, "rev-parse", "refs/heads/"+r.branch), "their commit is still the head")
 }

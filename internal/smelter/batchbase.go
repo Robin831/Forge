@@ -33,6 +33,9 @@ type batchBase struct {
 	// replace, when that head carried commits main does not have and no
 	// merged PR accounts for them. Empty when nothing needed keeping.
 	archivedAs string
+	// head is the branch head on origin when it was inspected, "" when there
+	// was no branch. A replace is leased to it, and a backup is pushed from it.
+	head string
 }
 
 // prepareBatchBase decides, before the worktree exists, whether this flush may
@@ -47,7 +50,7 @@ type batchBase struct {
 // branch so it can be recovered. When the PR lookup fails the flush stops
 // rather than guess: the pending queue is kept for the next cycle.
 func (s *Smelter) prepareBatchBase(ctx context.Context, anvilPath, branch string) (batchBase, error) {
-	_, prState, err := s.findPR(ctx, anvilPath, branch)
+	pr, err := s.findPR(ctx, anvilPath, branch)
 	if err != nil {
 		return batchBase{}, fmt.Errorf("cannot tell whether %s has an open PR, so it is not replaced: %w", branch, err)
 	}
@@ -59,26 +62,26 @@ func (s *Smelter) prepareBatchBase(ctx context.Context, anvilPath, branch string
 	if !exists {
 		return batchBase{mode: replaceBatch}, nil
 	}
-	if prState == "OPEN" {
+	if pr.State == "OPEN" {
 		return batchBase{mode: appendToBatch}, nil
-	}
-	if prState == "MERGED" {
-		return batchBase{mode: replaceBatch}, nil
 	}
 
 	ahead, head, err := commitsAheadOfMain(ctx, anvilPath, branch)
 	if err != nil {
 		return batchBase{}, err
 	}
-	if ahead == 0 {
-		return batchBase{mode: replaceBatch}, nil
+	// A merged PR accounts for the branch only when it was merged with this
+	// very head: a later batch pushed to the reused branch (whose PR was never
+	// opened, say) is still unmerged work.
+	if ahead == 0 || (pr.State == "MERGED" && pr.HeadOID != "" && pr.HeadOID == head) {
+		return batchBase{mode: replaceBatch, head: head}, nil
 	}
 	archive := fmt.Sprintf("%s-replaced-%s", branch, head[:min(len(head), 12)])
-	if _, err := runGit(ctx, anvilPath, "push", "origin", "refs/remotes/origin/"+branch+":refs/heads/"+archive); err != nil {
+	if _, err := runGit(ctx, anvilPath, "push", "origin", head+":refs/heads/"+archive); err != nil {
 		return batchBase{}, fmt.Errorf("keeping the unmerged head of %s as %s before replacing it: %w", branch, archive, err)
 	}
-	log.Printf("[smelter] %s had %d commit(s) main does not have and no merged PR; kept them as %s before starting a new batch", branch, ahead, archive)
-	return batchBase{mode: replaceBatch, archivedAs: archive}, nil
+	log.Printf("[smelter] %s had %d commit(s) main does not have and no merged PR for that head; kept them as %s before starting a new batch", branch, ahead, archive)
+	return batchBase{mode: replaceBatch, archivedAs: archive, head: head}, nil
 }
 
 // fetchRemoteBranch updates refs/remotes/origin/<branch> and reports whether
