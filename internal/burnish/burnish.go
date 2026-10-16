@@ -7,6 +7,7 @@ package burnish
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"os/exec"
@@ -118,6 +119,10 @@ type FixParams struct {
 	// When 0 the package default (DefaultVerifyRetries) is applied; a negative
 	// value disables the retry.
 	VerifyRetries int
+	// Stopped reports whether `forge bellows stop` has detached this PR since
+	// the job started; checked just before the push, which is then skipped.
+	// Nil never stops.
+	Stopped func() bool
 }
 
 // FixResult captures the outcome of addressing review comments.
@@ -200,6 +205,10 @@ type BatchFixParams struct {
 	// When 0 the package default (DefaultVerifyRetries) is applied; a negative
 	// value disables the retry.
 	VerifyRetries int
+	// Stopped reports whether `forge bellows stop` has detached this PR since
+	// the job started; checked just before the push, which is then skipped.
+	// Nil never stops.
+	Stopped func() bool
 }
 
 // BatchFix combines multiple review comments into one Smith prompt.
@@ -229,6 +238,7 @@ func BatchFix(ctx context.Context, p BatchFixParams) *FixResult {
 
 	providers := p.Providers
 
+	syncToRemoteFn(ctx, p.WorktreePath, p.Branch, p.PRNumber)
 	prompt := buildBatchReviewPrompt(p.PRNumber, p.Branch, p.BeadID, actionable)
 
 	if p.DB != nil {
@@ -394,6 +404,14 @@ func BatchFix(ctx context.Context, p BatchFixParams) *FixResult {
 
 		// Temper passed — push the verified commits (unless Smith already pushed).
 		localHead, _ := gitRevParseFn(ctx, p.WorktreePath, "HEAD")
+		if err := checkNotStopped(p.Stopped); err != nil && (localHead == "" || localHead != remoteHeadOf(ctx, p.WorktreePath, p.Branch)) {
+			result.HeadSHA = localHead
+			result.UnpushedHead = localHead
+			preserveWork(vp, result, err.Error())
+			result.Error = err
+			result.Duration = time.Since(start)
+			return result
+		}
 		remoteHead, _ := gitRevParseFn(ctx, p.WorktreePath, "origin/"+p.Branch)
 		if localHead == "" || localHead != remoteHead {
 			log.Printf("[burnish] PR #%d bead=%s: push attempt starting (branch=%s)", p.PRNumber, p.BeadID, p.Branch)
@@ -538,6 +556,8 @@ func Fix(ctx context.Context, p FixParams) *FixResult {
 		result.Duration = time.Since(start)
 		return result
 	}
+
+	syncToRemoteFn(ctx, p.WorktreePath, p.Branch, p.PRNumber)
 
 	// Step 1: Fetch review comments via VCS provider
 	comments, err := p.VCS.FetchReviewComments(ctx, p.WorktreePath, p.PRNumber)
@@ -780,6 +800,14 @@ func Fix(ctx context.Context, p FixParams) *FixResult {
 			}
 
 			// Temper passed — push the verified commits.
+			if err := checkNotStopped(p.Stopped); err != nil && !smithAlreadyPushed {
+				result.HeadSHA = localHead
+				result.UnpushedHead = localHead
+				preserveWork(vp, result, err.Error())
+				result.Error = err
+				result.Duration = time.Since(start)
+				return result
+			}
 			if !smithAlreadyPushed {
 				log.Printf("[burnish] PR #%d bead=%s: push attempt starting (attempt=%d, branch=%s)",
 					p.PRNumber, p.BeadID, attempt, p.Branch)
@@ -1267,45 +1295,84 @@ var gitPushFn = gitPush
 // gitRevParseFn is the function used to resolve git refs. Package-level for test stubbing.
 var gitRevParseFn = gitRevParse
 
-// gitPush pushes the current branch to origin with --force-with-lease.
+// syncToRemoteFn brings a reused worktree up to origin before a fix starts.
+// Package-level for test stubbing.
+var syncToRemoteFn = syncToRemote
+
+// ErrBellowsStopped is the error of a fix whose PR was detached with
+// `forge bellows stop` while it ran: the commit is kept, never pushed.
+var ErrBellowsStopped = errors.New("bellows was stopped for this PR while the fix ran; the fix was not pushed")
+
+func checkNotStopped(stopped func() bool) error {
+	if stopped != nil && stopped() {
+		return ErrBellowsStopped
+	}
+	return nil
+}
+
+func remoteHeadOf(ctx context.Context, worktreePath, branch string) string {
+	head, _ := gitRevParseFn(ctx, worktreePath, "origin/"+branch)
+	return head
+}
+
+// gitPush pushes the current branch to origin as a fast-forward only.
 //
-// Burnish reuses a per-bead worktree across review-fix runs. If that worktree
-// survived a prior run (a pod restart skipped the deferred worktree Remove, or
-// Remove failed on a file lock) its local base can lag the remote tip — which is
-// Forge's OWN earlier push for this branch — and a plain `git push` is then
-// rejected non-fast-forward, losing the just-temper-verified fix. So fetch the
-// branch first to refresh refs/remotes/origin/<branch>, then push with
-// --force-with-lease: the lease verifies against the true remote tip (so a
-// genuine concurrent third-party push is never clobbered) while still letting the
-// newly verified commits replace Forge's prior attempt. Mirrors smelter's push
-// path (internal/smelter/smelter.go).
+// It used to fetch and then push --force-with-lease. The fetch made the lease
+// whatever origin held at push time, so a commit a person or a lane pushed
+// while the fix ran was overwritten (PR 6723, 2026-10-16). Now the branch on
+// origin must be an ancestor of HEAD: the fix was built on everything origin
+// has, so the push replaces nothing. Otherwise it is refused, and the commit
+// is kept in the worktree for a person. syncToRemote brings a reused worktree
+// up to origin before the fix starts, so Forge's own earlier push is no reason
+// to refuse.
 func gitPush(ctx context.Context, worktreePath, branch string) error {
-	// Refresh the remote-tracking ref so --force-with-lease leases against the
-	// actual remote tip rather than a stale local ref.
 	fetchCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
-	fetchCmd := exec.CommandContext(fetchCtx, "git", "-C", worktreePath, "fetch", "origin", branch)
+	fetchCmd := exec.CommandContext(fetchCtx, "git", "-C", worktreePath, "fetch", "origin", "+refs/heads/"+branch+":refs/remotes/origin/"+branch)
 	executil.HideWindow(fetchCmd)
 	if fout, ferr := fetchCmd.CombinedOutput(); ferr != nil {
-		if strings.Contains(string(fout), "couldn't find remote ref") {
-			// Branch not on origin yet (first push) or auto-deleted after merge.
-			// Clear any stale tracking ref so --force-with-lease doesn't reject
-			// with "(stale info)".
-			pruneCmd := exec.CommandContext(fetchCtx, "git", "-C", worktreePath, "update-ref", "-d", "refs/remotes/origin/"+branch)
-			executil.HideWindow(pruneCmd)
-			_ = pruneCmd.Run() // best effort
-		} else {
+		if !strings.Contains(string(fout), "couldn't find remote ref") {
 			return fmt.Errorf("git fetch origin %s: %w (output: %s)", branch, ferr, strings.TrimSpace(string(fout)))
+		}
+		// Not on origin (first push, or deleted after merge): nothing to overwrite.
+		pruneCmd := exec.CommandContext(fetchCtx, "git", "-C", worktreePath, "update-ref", "-d", "refs/remotes/origin/"+branch)
+		executil.HideWindow(pruneCmd)
+		_ = pruneCmd.Run()
+	} else {
+		ancestorCmd := exec.CommandContext(fetchCtx, "git", "-C", worktreePath, "merge-base", "--is-ancestor", "refs/remotes/origin/"+branch, "HEAD")
+		executil.HideWindow(ancestorCmd)
+		if err := ancestorCmd.Run(); err != nil {
+			return fmt.Errorf("origin/%s has commits this fix is not built on (pushed by someone else, or after the fix started); not pushing over them", branch)
 		}
 	}
 
-	cmd := exec.CommandContext(ctx, "git", "-C", worktreePath, "push", "--force-with-lease", "origin", branch)
+	cmd := exec.CommandContext(ctx, "git", "-C", worktreePath, "push", "origin", "HEAD:refs/heads/"+branch)
 	executil.HideWindow(cmd)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("git push --force-with-lease origin %s: %w (output: %s)", branch, err, strings.TrimSpace(string(out)))
+		return fmt.Errorf("git push origin %s: %w (output: %s)", branch, err, strings.TrimSpace(string(out)))
 	}
 	return nil
+}
+
+// syncToRemote fast-forwards a reused worktree to origin/<branch> before a fix
+// starts, so the fix is built on the branch as it is. Fast-forward only: a
+// worktree holding commits origin lacks is left alone, and gitPush refuses it.
+// Best effort; a failure is logged and the fix goes on.
+func syncToRemote(ctx context.Context, worktreePath, branch string, prNumber int) {
+	fetchCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	defer cancel()
+	for _, args := range [][]string{
+		{"fetch", "origin", "+refs/heads/" + branch + ":refs/remotes/origin/" + branch},
+		{"merge", "--ff-only", "refs/remotes/origin/" + branch},
+	} {
+		cmd := exec.CommandContext(fetchCtx, "git", append([]string{"-C", worktreePath}, args...)...)
+		executil.HideWindow(cmd)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			log.Printf("[burnish] PR #%d: worktree not brought up to origin/%s (%s): %s", prNumber, branch, args[0], strings.TrimSpace(string(out)))
+			return
+		}
+	}
 }
 
 // gitRevParse resolves a git ref to its commit hash.
