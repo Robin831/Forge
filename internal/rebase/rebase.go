@@ -7,6 +7,7 @@ package rebase
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"os/exec"
@@ -43,6 +44,10 @@ type Params struct {
 	// Providers is the ordered list of AI providers to try.
 	// If empty, provider.Defaults() is used.
 	Providers []provider.Provider
+	// Stopped reports whether `forge bellows stop` has detached this PR since
+	// the job started; checked just before the push, which is then skipped.
+	// Nil never stops.
+	Stopped func() bool
 }
 
 // Result holds the outcome of a rebase attempt.
@@ -58,8 +63,12 @@ var smithSpawnFn = func(ctx context.Context, worktreePath, prompt, logDir string
 	return smith.SpawnWithOptions(ctx, worktreePath, prompt, logDir, pv, extraFlags, smith.SpawnOptions{LogPrefix: "rebase"})
 }
 
-// Rebase fetches origin and rebases the branch onto BaseBranch, then force-pushes.
+// Rebase fetches origin and rebases the branch onto BaseBranch, then pushes.
 // If git cannot auto-resolve conflicts it invokes Smith (Claude/Gemini) to fix them.
+//
+// The push is Forge's, not Smith's: it is leased to the head the PR branch had
+// when the job started, so a commit pushed meanwhile is never overwritten, and
+// it is skipped when bellows was stopped for the PR.
 func Rebase(ctx context.Context, p Params) Result {
 	if p.BaseBranch == "" {
 		p.BaseBranch = "main"
@@ -84,10 +93,22 @@ func Rebase(ctx context.Context, p Params) Result {
 	// Step 2: abort any in-progress rebase so the tree is clean.
 	_ = runGit(p.WorktreePath, "rebase", "--abort")
 
+	// Step 2b: the branch as it is on origin, which the rebase must carry and
+	// the push leases against.
+	startHead, err := p.startFromRemote()
+	if err != nil {
+		return p.fail(err.Error(), err)
+	}
+
 	// Step 3: hand the entire rebase (including conflict resolution) to Smith
 	// in a single call. Smith runs the rebase, resolves every conflict round,
 	// and pushes the result — no round-tripping between us and the AI.
 	if err := p.rebaseWithSmith(ctx, providers); err != nil {
+		return p.fail(firstLine(err.Error()), err)
+	}
+
+	// Step 4: push, unless bellows was stopped or someone pushed meanwhile.
+	if err := p.pushRebased(startHead); err != nil {
 		return p.fail(firstLine(err.Error()), err)
 	}
 
@@ -182,17 +203,60 @@ func buildRebasePrompt(worktreePath, branch, baseBranch string) string {
 	sb.WriteString("   - If it exits 0 → rebase complete, go to step 6.\n")
 	sb.WriteString("   - If it exits non-zero → more conflicts; go back to step 3.\n")
 	sb.WriteString("   Repeat until `git rebase --continue` exits 0.\n")
-	sb.WriteString("6. Run: `git push --force-with-lease origin " + branch + "`\n\n")
+	sb.WriteString("6. Stop there. Do NOT push: Forge pushes the rebased branch itself.\n\n")
 
 	sb.WriteString("## Rules\n\n")
 	sb.WriteString("- Always use `GIT_EDITOR=true GIT_SEQUENCE_EDITOR=true` before every git rebase command\n")
 	sb.WriteString("  to prevent interactive editor prompts.\n")
 	sb.WriteString("- Do NOT open a PR, do NOT commit individually — the rebase handles commits.\n")
-	sb.WriteString("- If `git push --force-with-lease` fails, try once with `git push --force origin " + branch + "`.\n")
+	sb.WriteString("- Never run `git push` in any form.\n")
 	sb.WriteString("- If the rebase cannot be completed (e.g. a file was deleted upstream),\n")
 	sb.WriteString("  run `git rebase --abort` and report the error clearly.\n")
 
 	return sb.String()
+}
+
+// ErrBellowsStopped is the error of a rebase whose PR was detached with
+// `forge bellows stop` while it ran: the rebased branch is not pushed.
+var ErrBellowsStopped = errors.New("bellows was stopped for this PR while the rebase ran; it was not pushed")
+
+// startFromRemote brings the worktree up to origin/<branch> (fast-forward only)
+// and returns that head. A worktree holding commits origin lacks while origin
+// also has commits it lacks is refused: a rebase of it would drop one side.
+func (p *Params) startFromRemote() (string, error) {
+	remote := "refs/remotes/origin/" + p.Branch
+	head := runGit(p.WorktreePath, "rev-parse", remote)
+	if head.err != nil {
+		return "", fmt.Errorf("origin/%s not found after fetch: %w", p.Branch, head.err)
+	}
+	if res := runGit(p.WorktreePath, "merge-base", "--is-ancestor", remote, "HEAD"); res.err == nil {
+		return head.output, nil
+	}
+	if res := runGit(p.WorktreePath, "merge", "--ff-only", remote); res.err != nil {
+		return "", fmt.Errorf("the worktree and origin/%s have both moved; not rebasing over either: %s", p.Branch, firstLine(res.output))
+	}
+	return head.output, nil
+}
+
+// pushRebased pushes the rebased HEAD, leased to the head origin had when the
+// job started: a push someone made meanwhile makes it fail instead of being
+// overwritten.
+func (p *Params) pushRebased(startHead string) error {
+	if p.Stopped != nil && p.Stopped() {
+		return ErrBellowsStopped
+	}
+	// Smith was told not to push; if it did anyway and origin already holds
+	// this HEAD, there is nothing left to push.
+	if runGit(p.WorktreePath, "fetch", "origin", "+refs/heads/"+p.Branch+":refs/remotes/origin/"+p.Branch).err == nil {
+		if remote, local := runGit(p.WorktreePath, "rev-parse", "refs/remotes/origin/"+p.Branch), runGit(p.WorktreePath, "rev-parse", "HEAD"); remote.err == nil && remote.output == local.output {
+			return nil
+		}
+	}
+	lease := fmt.Sprintf("--force-with-lease=refs/heads/%s:%s", p.Branch, startHead)
+	if res := runGit(p.WorktreePath, "push", lease, "origin", "HEAD:refs/heads/"+p.Branch); res.err != nil {
+		return fmt.Errorf("push refused (origin/%s moved since the rebase started, or the push failed): %s", p.Branch, firstLine(res.output))
+	}
+	return nil
 }
 
 // fail logs a failure and returns a Result.

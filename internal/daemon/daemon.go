@@ -3012,6 +3012,10 @@ func (d *Daemon) handleLifecycleAction(ctx context.Context, req lifecycle.Action
 				WorkerID:     workerID,
 				ExtraFlags:   d.cfg.Load().Settings.ClaudeFlags,
 				Providers:    d.filterCopilotIfLimited(provider.FromConfig(d.cfg.Load().Settings.Providers)),
+				Stopped: func() bool {
+					pr, err := d.db.GetPRByNumber(req.Anvil, req.PRNumber)
+					return err == nil && pr != nil && pr.BellowsDetached
+				},
 			})
 			status := state.WorkerDone
 			if !res.Success {
