@@ -1239,13 +1239,25 @@ func (s *Smelter) ensurePR(ctx context.Context, wtPath, anvilName, branch string
 
 // findBatchPR looks for an existing PR on the batch branch and returns its
 // number and state ("OPEN", "MERGED", "CLOSED"). Returns (0, "", nil) if
-// no PR exists for the branch.
+// no PR exists for the branch. An open PR wins over a newer closed one: the
+// newest PR alone could hide an older one still under review, and replacing
+// the branch under it is what this lookup guards against.
 func (s *Smelter) findBatchPR(ctx context.Context, wtPath, branch string) (int, string, error) {
+	for _, state := range []string{"open", "all"} {
+		number, prState, err := listBatchPR(ctx, wtPath, branch, state)
+		if err != nil || number != 0 {
+			return number, prState, err
+		}
+	}
+	return 0, "", nil
+}
+
+func listBatchPR(ctx context.Context, wtPath, branch, state string) (int, string, error) {
 	ghCtx, ghCancel := context.WithTimeout(ctx, 60*time.Second)
 	defer ghCancel()
 	cmd := executil.HideWindow(exec.CommandContext(ghCtx, "gh", "pr", "list",
 		"--head", branch,
-		"--state", "all",
+		"--state", state,
 		"--json", "number,state",
 		"--limit", "1",
 	))
