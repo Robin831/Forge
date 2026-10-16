@@ -184,3 +184,49 @@ func TestPushRebased_SmithAlreadyPushedIsDone(t *testing.T) {
 		t.Fatalf("origin already holds HEAD; want nil, got %v", err)
 	}
 }
+
+// Smith exited 0 with the rebase half done, or after aborting it: nothing is
+// pushed (pre-PR review).
+func TestCheckRebased_RefusesAnUnfinishedOrAbortedRebase(t *testing.T) {
+	r := newPushRepo(t)
+	p := r.params()
+	start, err := p.startFromRemote()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := p.checkRebased(start); err == nil {
+		t.Error("an aborted (never started) rebase must be refused")
+	}
+	// A conflict leaves the rebase in progress.
+	seed := t.TempDir()
+	r.git(seed, "clone", r.origin, ".")
+	if err := os.WriteFile(filepath.Join(seed, "pr.txt"), []byte("main changed it too\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	r.git(seed, "add", "pr.txt")
+	r.git(seed, "commit", "-m", "conflicting change on main")
+	r.git(seed, "push", "origin", "main")
+	r.git(r.worktree, "fetch", "origin")
+	cmd := exec.Command("git", "rebase", "origin/main")
+	cmd.Dir = r.worktree
+	cmd.Env = append(os.Environ(), "GIT_AUTHOR_NAME=T", "GIT_AUTHOR_EMAIL=t@example.com", "GIT_COMMITTER_NAME=T", "GIT_COMMITTER_EMAIL=t@example.com", "GIT_EDITOR=true")
+	if out, err := cmd.CombinedOutput(); err == nil {
+		t.Fatalf("expected a conflict, got a clean rebase: %s", out)
+	}
+	if err := p.checkRebased(start); err == nil || !strings.Contains(err.Error(), "unfinished") {
+		t.Errorf("error = %v, want an unfinished rebase refused", err)
+	}
+}
+
+func TestCheckRebased_AcceptsAFinishedRebase(t *testing.T) {
+	r := newPushRepo(t)
+	p := r.params()
+	start, err := p.startFromRemote()
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.rebase()
+	if err := p.checkRebased(start); err != nil {
+		t.Errorf("a finished rebase must pass: %v", err)
+	}
+}

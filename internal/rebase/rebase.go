@@ -10,7 +10,9 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 
 	"github.com/Robin831/Forge/internal/cost"
@@ -108,6 +110,10 @@ func Rebase(ctx context.Context, p Params) Result {
 	}
 
 	// Step 4: push, unless bellows was stopped or someone pushed meanwhile.
+	// Only a finished rebase: Smith can exit 0 mid-way or after an abort.
+	if err := p.checkRebased(startHead); err != nil {
+		return p.fail(firstLine(err.Error()), err)
+	}
 	if err := p.pushRebased(startHead); err != nil {
 		return p.fail(firstLine(err.Error()), err)
 	}
@@ -238,6 +244,33 @@ func (p *Params) startFromRemote() (string, error) {
 	return head.output, nil
 }
 
+// checkRebased refuses to push anything but a finished rebase onto the base:
+// no rebase still in progress, and origin/<base> an ancestor of HEAD. Without
+// it a rebase Smith left half done would push a branch missing its later
+// commits, and an aborted one would be reported as rebased.
+func (p *Params) checkRebased(startHead string) error {
+	for _, dir := range []string{"rebase-merge", "rebase-apply"} {
+		res := runGit(p.WorktreePath, "rev-parse", "--git-path", dir)
+		if res.err != nil {
+			return fmt.Errorf("could not tell whether a rebase is in progress: %w", res.err)
+		}
+		path := res.output
+		if !filepath.IsAbs(path) {
+			path = filepath.Join(p.WorktreePath, path)
+		}
+		if _, err := os.Stat(path); err == nil {
+			return fmt.Errorf("the rebase was left unfinished (%s exists); not pushing", dir)
+		}
+	}
+	if res := runGit(p.WorktreePath, "merge-base", "--is-ancestor", "refs/remotes/origin/"+p.BaseBranch, "HEAD"); res.err != nil {
+		if head := runGit(p.WorktreePath, "rev-parse", "HEAD"); head.output == startHead {
+			return fmt.Errorf("the branch was not rebased (HEAD is still the start head; aborted?)")
+		}
+		return fmt.Errorf("HEAD is not on origin/%s; not pushing", p.BaseBranch)
+	}
+	return nil
+}
+
 // pushRebased pushes the rebased HEAD, leased to the head origin had when the
 // job started: a push someone made meanwhile makes it fail instead of being
 // overwritten.
@@ -246,9 +279,13 @@ func (p *Params) pushRebased(startHead string) error {
 		return ErrBellowsStopped
 	}
 	// Smith was told not to push; if it did anyway and origin already holds
-	// this HEAD, there is nothing left to push.
+	// this HEAD, there is nothing left to push. Said loudly: that push was a
+	// force Forge did not lease, the one thing this guard cannot prevent.
 	if runGit(p.WorktreePath, "fetch", "origin", "+refs/heads/"+p.Branch+":refs/remotes/origin/"+p.Branch).err == nil {
-		if remote, local := runGit(p.WorktreePath, "rev-parse", "refs/remotes/origin/"+p.Branch), runGit(p.WorktreePath, "rev-parse", "HEAD"); remote.err == nil && remote.output == local.output {
+		if remote, local := runGit(p.WorktreePath, "rev-parse", "refs/remotes/origin/"+p.Branch), runGit(p.WorktreePath, "rev-parse", "HEAD"); remote.err == nil && remote.output == local.output && local.output != startHead {
+			msg := fmt.Sprintf("PR #%d: Smith pushed the rebase itself despite being told not to; origin/%s was %s when the job started", p.PRNumber, p.Branch, startHead)
+			log.Printf("[rebase] WARN %s", msg)
+			logEvent(p.DB, state.EventRebaseFailed, msg, p.BeadID, p.AnvilName)
 			return nil
 		}
 	}
