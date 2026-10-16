@@ -2894,6 +2894,13 @@ func (d *Daemon) handleLifecycleAction(ctx context.Context, req lifecycle.Action
 				StartedAt:    time.Now(),
 				StaleTimeout: workerTimeout / 2,
 			})
+			// `forge bellows stop` on this PR while the fix runs: checked just
+			// before the push. A lookup that fails does not stop it; the push
+			// still never overwrites a commit the fix is not built on.
+			bellowsStopped := func() bool {
+				pr, err := d.db.GetPRByNumber(req.Anvil, req.PRNumber)
+				return err == nil && pr != nil && pr.BellowsDetached
+			}
 			burnishCfg := d.cfg.Load()
 			burnishProviders := d.filterCopilotIfLimited(provider.FromConfig(config.ProvidersForStageWithAnvil(burnishCfg.Settings, &anvilCfg, "reviewfix")))
 			// Use batch mode when copilot_batch_review_fixes is enabled and the primary provider is Copilot.
@@ -2927,6 +2934,7 @@ func (d *Daemon) handleLifecycleAction(ctx context.Context, req lifecycle.Action
 						Hooks:           anvilCfg.Hooks,
 						VerifyTimeout:   burnishCfg.Settings.BurnishVerifyTimeout,
 						VerifyRetries:   burnishCfg.Settings.BurnishVerifyRetries,
+						Stopped:         bellowsStopped,
 					})
 				}
 			}
@@ -2952,6 +2960,7 @@ func (d *Daemon) handleLifecycleAction(ctx context.Context, req lifecycle.Action
 					Hooks:           anvilCfg.Hooks,
 					VerifyTimeout:   burnishCfg.Settings.BurnishVerifyTimeout,
 					VerifyRetries:   burnishCfg.Settings.BurnishVerifyRetries,
+					Stopped:         bellowsStopped,
 				})
 			}
 			status := state.WorkerDone
