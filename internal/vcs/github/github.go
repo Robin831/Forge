@@ -315,6 +315,21 @@ func (p *Provider) GetPRByHeadBranch(ctx context.Context, worktreePath, branch s
 	return &vcs.OpenPR{Number: r.Number, Title: r.Title, Branch: r.HeadRefName, BaseBranch: r.BaseRefName, Body: r.Body}, nil
 }
 
+// PRBody returns the body of PR prNumber, as assay's review context.
+func (p *Provider) PRBody(ctx context.Context, worktreePath string, prNumber int) (string, error) {
+	stdout, stderr, err := p.run(ctx, worktreePath, "gh", "pr", "view", fmt.Sprint(prNumber), "--json", "body")
+	if err != nil {
+		return "", fmt.Errorf("gh pr view %d --json body: %w\nstderr: %s", prNumber, err, stderr)
+	}
+	var raw struct {
+		Body string `json:"body"`
+	}
+	if err := json.Unmarshal(stdout, &raw); err != nil {
+		return "", fmt.Errorf("parsing pr view: %w", err)
+	}
+	return raw.Body, nil
+}
+
 // GetRepoOwnerAndName extracts the owner and repository name from git remote origin.
 func (p *Provider) GetRepoOwnerAndName(ctx context.Context, worktreePath string) (owner, repo string, err error) {
 	stdout, stderr, err := p.run(ctx, worktreePath, "git", "remote", "get-url", "origin")

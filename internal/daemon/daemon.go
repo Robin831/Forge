@@ -869,6 +869,26 @@ func (d *Daemon) anvilPollSnapshots() map[string]anvilPollSnapshot {
 	return out
 }
 
+// assayPRBody is the PR's body for assay's change context, so rules about the
+// PR description have the description to check. Only the anvil's registered
+// provider is asked (no fallback); none, one that cannot read bodies, or a
+// failed read gives "" and the review runs without it.
+func (d *Daemon) assayPRBody(ctx context.Context, anvil, worktreePath string, prNumber int) string {
+	d.vcsProvidersMu.RLock()
+	provider := d.vcsProviders[anvil]
+	d.vcsProvidersMu.RUnlock()
+	reader, ok := provider.(vcs.PRBodyReader)
+	if !ok {
+		return ""
+	}
+	body, err := reader.PRBody(ctx, worktreePath, prNumber)
+	if err != nil {
+		d.logger.Warn("assay: could not read the PR body; reviewing without it", "anvil", anvil, "pr", prNumber, "error", err)
+		return ""
+	}
+	return body
+}
+
 // vcsForAnvil returns the VCS provider for the given anvil name.
 // Falls back to a GitHub provider if no per-anvil provider is found.
 func (d *Daemon) vcsForAnvil(anvil string) vcs.Provider {
@@ -2267,6 +2287,7 @@ func (d *Daemon) runAssayReview(ctx context.Context, anvil, anvilPath, beadID st
 			BaselineSHA: baselineSHA,
 			BeadID:      beadID,
 			Title:       d.db.BeadTitle(beadID, anvil),
+			Description: d.assayPRBody(ctx, anvil, worktreePath, prNumber),
 			WorkDir:     worktreePath,
 			LogKey:      logKey,
 			OnPassLog:   d.assayLogPathRecorder(workerID),

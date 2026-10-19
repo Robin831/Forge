@@ -1003,7 +1003,9 @@ func shortSHA(sha string) string {
 func contextSection(req ReviewRequest) string {
 	title := sanitize(req.Title)
 	desc := strings.TrimSpace(req.Description)
-	const maxDesc = 2000
+	// The PR body carries the change summary and the bead's spec; rules check
+	// claims in it, so it is kept long enough to hold both.
+	const maxDesc = 6000
 	if len(desc) > maxDesc {
 		desc = textfmt.TruncateRunes(desc, maxDesc) + "\n...[truncated]..."
 	}
@@ -1013,7 +1015,7 @@ func contextSection(req ReviewRequest) string {
 		fmt.Fprintf(&b, "**Title**: %s\n", title)
 	}
 	if desc != "" {
-		fmt.Fprintf(&b, "\n```text\n%s\n```\n", sanitize(desc))
+		fmt.Fprintf(&b, "\n**PR body**:\n```text\n%s\n```\n", sanitize(desc))
 	}
 	return b.String()
 }
