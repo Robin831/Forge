@@ -116,7 +116,7 @@ func categoriesForFile(path string) map[string]bool {
 		if isBlazorUICSharp(lower) {
 			cats["ui"] = true
 		}
-		if inTestProject(lower) {
+		if inTestProject(path) {
 			cats["testing"] = true
 		}
 		return cats
@@ -155,12 +155,13 @@ func isBlazorUICSharp(lower string) bool {
 	return false
 }
 
-// inTestProject reports whether a lower-cased path lies in a test project: a
-// folder named test or tests, or one ending in .tests or tests (Foo.Tests,
-// FooTests), which is how .NET solutions name them.
-func inTestProject(lower string) bool {
-	for _, seg := range strings.Split(filepath.ToSlash(filepath.Dir(lower)), "/") {
-		if seg == "test" || seg == "tests" || strings.HasSuffix(seg, ".tests") || strings.HasSuffix(seg, "tests") {
+// inTestProject reports whether a path lies in a test project: a folder named
+// test or tests in any case, or one named the .NET way, Foo.Tests or FooTests.
+// The suffix is matched in its own case so that Contests or Latests is not one.
+func inTestProject(path string) bool {
+	for _, seg := range strings.Split(filepath.ToSlash(filepath.Dir(path)), "/") {
+		lower := strings.ToLower(seg)
+		if lower == "test" || lower == "tests" || strings.HasSuffix(lower, ".tests") || (strings.HasSuffix(seg, "Tests") && len(seg) > len("Tests")) {
 			return true
 		}
 	}

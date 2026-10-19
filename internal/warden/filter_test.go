@@ -90,6 +90,11 @@ func TestCategoriesForFile(t *testing.T) {
 		assert.True(t, got["concurrency"], "%s keeps the C# categories", path)
 	}
 	assert.False(t, categoriesForFile("api/Fhi.Metadata.Api/Testing/Clock.cs")["testing"], "a folder named Testing is not a test project")
+	for _, path := range []string{"src/Contests/Entry.cs", "src/Latests/A.cs", "A.cs"} {
+		assert.False(t, categoriesForFile(path)["testing"], "%s is not in a test project", path)
+	}
+	both := categoriesForFile("src/Explorer.Tests/Components/PanelHarness.cs")
+	assert.True(t, both["ui"] && both["testing"], "a component helper in a test project admits both")
 
 	test := categoriesForFile("src/FooTests.cs")
 	assert.True(t, test["testing"])
