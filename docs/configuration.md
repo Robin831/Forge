@@ -1053,8 +1053,12 @@ of them emitted:
 - **Sources** — how many review comments taught the rule, the lightest term:
   one source (most rules) scores nothing, two half, more approaching the full
   weight, so a check reviewers keep asking for settles a near-tie without
-  outranking a narrower or more on-topic rule. The `max_rules_in_file` eviction
-  values rules on the same static terms (specificity, recency, sources).
+  outranking a narrower or more on-topic rule. Recency and sources together are
+  capped at recency's own weight, so the newest broad rule with many sources
+  still loses to an older scoped one. When every dated candidate shares one
+  date, recency is neutral (as for an undated rule) and sources settles the tie.
+  The `max_rules_in_file` eviction values rules on the same static terms
+  (specificity, recency, sources), through the same capped sum.
 
 Ties break on recency and then on a content-derived key — never on position,
 which is the age order the ranking exists to replace. The emitted set is

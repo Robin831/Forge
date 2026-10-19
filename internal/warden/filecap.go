@@ -50,7 +50,7 @@ func EvictOverCap(rules []Rule, max int, now time.Time) (active []Rule, archived
 	}
 	recencyScores(scored)
 	for i := range scored {
-		scored[i].total = specificityWeight*scored[i].specificity + recencyWeight*scored[i].recency + sourcesWeight*scored[i].sources
+		scored[i].total = specificityWeight*scored[i].specificity + secondaryScore(scored[i])
 	}
 	sort.SliceStable(scored, func(i, j int) bool { return higherRanked(scored[i], scored[j]) })
 

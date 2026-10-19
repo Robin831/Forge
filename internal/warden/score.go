@@ -1,6 +1,7 @@
 package warden
 
 import (
+	"math"
 	"sort"
 	"strings"
 	"time"
@@ -22,8 +23,10 @@ import (
 // a reachable set spread across the file's whole history, not a truncation from
 // the other end.
 // Sources weighs how many review comments taught the rule: a rule taught twice
-// is a check reviewers keep needing. It is the lightest term, so it settles
-// near-ties rather than outranking a narrower or more on-topic rule.
+// is a check reviewers keep needing. Recency and sources together are capped at
+// recency's own maximum, so sources settles near-ties but never lifts a rule
+// past one it could not already outrank on recency (a newest `**/*` rule must
+// not beat an older scoped one by having more sources).
 const (
 	specificityWeight = 1.0
 	patternWeight     = 0.7
@@ -221,7 +224,10 @@ func recencyScores(scores []ruleScore) {
 		case scores[i].added.IsZero():
 			scores[i].recency = 0.5
 		case span <= 0:
-			scores[i].recency = 1
+			// Every dated rule shares one date: recency says nothing, so it is the
+			// same neutral value as an undated rule, which leaves room under the
+			// secondary cap for sources to settle the tie.
+			scores[i].recency = 0.5
 		default:
 			scores[i].recency = float64(scores[i].added.Sub(oldest)) / float64(span)
 		}
@@ -264,10 +270,15 @@ func scoreCandidates(rules []Rule, positions []int, changedFiles []string, hits,
 	for i := range scores {
 		scores[i].total = specificityWeight*scores[i].specificity +
 			patternWeight*scores[i].pattern +
-			recencyWeight*scores[i].recency +
-			sourcesWeight*scores[i].sources
+			secondaryScore(scores[i])
 	}
 	return scores
+}
+
+// secondaryScore is recency and sources together, capped at recency's own
+// maximum: the one place both selections (checklist and eviction) take it from.
+func secondaryScore(s ruleScore) float64 {
+	return math.Min(recencyWeight*s.recency+sourcesWeight*s.sources, recencyWeight)
 }
 
 // sourcesScore maps how many review comments taught a rule into [0,1): one
