@@ -1036,7 +1036,7 @@ history, 61 rules were reachable in total and nothing learned in the preceding
 four months could reach a review at all: the learner was writing into a file
 where only the head was read.
 
-Candidates are now ranked on three components and the best `max_rules_per_review`
+Candidates are now ranked on four components and the best `max_rules_per_review`
 of them emitted:
 
 - **Specificity** — how narrowly the rule's most specific *matching* glob names
@@ -1050,6 +1050,11 @@ of them emitted:
   ties among rules that are equally broad and equally on-topic (which, on a
   mature file, is most of them) without letting a vague new rule outrank a
   narrowly scoped old one.
+- **Sources** — how many review comments taught the rule, the lightest term:
+  one source (most rules) scores nothing, two half, more approaching the full
+  weight, so a check reviewers keep asking for settles a near-tie without
+  outranking a narrower or more on-topic rule. The `max_rules_in_file` eviction
+  values rules on the same static terms (specificity, recency, sources).
 
 Ties break on recency and then on a content-derived key — never on position,
 which is the age order the ranking exists to replace. The emitted set is

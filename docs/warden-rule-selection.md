@@ -71,7 +71,7 @@ the head of the file.
 ## What replaced it
 
 See "How the review-time set is chosen" in [configuration.md](configuration.md)
-for the ranking (specificity, pattern relevance, recency), the two-word pattern
+for the ranking (specificity, pattern relevance, recency, sources), the two-word pattern
 threshold, the per-review funnel log line, and the `max_rules_in_file` ceiling.
 
 The one property worth restating here is the guard: the ordering is total and
