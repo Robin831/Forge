@@ -870,10 +870,14 @@ func (d *Daemon) anvilPollSnapshots() map[string]anvilPollSnapshot {
 }
 
 // assayPRBody is the PR's body for assay's change context, so rules about the
-// PR description have the description to check. A provider that cannot read it,
-// or a failed read, gives "" and the review runs without it.
+// PR description have the description to check. Only the anvil's registered
+// provider is asked (no fallback); none, one that cannot read bodies, or a
+// failed read gives "" and the review runs without it.
 func (d *Daemon) assayPRBody(ctx context.Context, anvil, worktreePath string, prNumber int) string {
-	reader, ok := d.vcsForAnvil(anvil).(vcs.PRBodyReader)
+	d.vcsProvidersMu.RLock()
+	provider := d.vcsProviders[anvil]
+	d.vcsProvidersMu.RUnlock()
+	reader, ok := provider.(vcs.PRBodyReader)
 	if !ok {
 		return ""
 	}
