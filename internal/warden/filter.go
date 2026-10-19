@@ -106,10 +106,20 @@ func categoriesForFile(path string) map[string]bool {
 	}
 	switch {
 	case strings.HasSuffix(lower, ".cs"):
-		return map[string]bool{
+		cats := map[string]bool{
 			"error-handling": true, "security": true, "concurrency": true,
 			"performance": true, "style": true, "other": true,
 		}
+		// C# is also the UI language of a Blazor app and the language of its
+		// test projects: a ui rule must reach a component's code-behind, and a
+		// testing rule a test project's helpers, not only files named *Tests.cs.
+		if isBlazorUICSharp(lower) {
+			cats["ui"] = true
+		}
+		if inTestProject(lower) {
+			cats["testing"] = true
+		}
+		return cats
 	case strings.HasSuffix(lower, ".tsx"),
 		strings.HasSuffix(lower, ".ts"):
 		// TypeScript is a full application language, not just a styling
@@ -128,6 +138,33 @@ func categoriesForFile(path string) map[string]bool {
 		return map[string]bool{"other": true, "security": true}
 	}
 	return allCanonicalCategories()
+}
+
+// isBlazorUICSharp reports whether a lower-cased .cs path is Blazor UI code: a
+// component's code-behind (.razor.cs), or a file in a Components, Pages or
+// Shared folder, where Blazor keeps its components.
+func isBlazorUICSharp(lower string) bool {
+	if strings.HasSuffix(lower, ".razor.cs") {
+		return true
+	}
+	for _, seg := range strings.Split(filepath.ToSlash(filepath.Dir(lower)), "/") {
+		if seg == "components" || seg == "pages" || seg == "shared" {
+			return true
+		}
+	}
+	return false
+}
+
+// inTestProject reports whether a lower-cased path lies in a test project: a
+// folder named test or tests, or one ending in .tests or tests (Foo.Tests,
+// FooTests), which is how .NET solutions name them.
+func inTestProject(lower string) bool {
+	for _, seg := range strings.Split(filepath.ToSlash(filepath.Dir(lower)), "/") {
+		if seg == "test" || seg == "tests" || strings.HasSuffix(seg, ".tests") || strings.HasSuffix(seg, "tests") {
+			return true
+		}
+	}
+	return false
 }
 
 func allCanonicalCategories() map[string]bool {

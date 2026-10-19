@@ -70,6 +70,27 @@ func TestCategoriesForFile(t *testing.T) {
 	css := categoriesForFile("web/app.css")
 	assert.Equal(t, map[string]bool{"ui": true, "style": true, "other": true}, css)
 
+	// Blazor UI C#: a component's code-behind and the folders Blazor keeps
+	// components in admit ui; an API or service file does not.
+	for _, path := range []string{"src/Explorer/Components/VariableTable.razor.cs", "src/Explorer/Components/Grid/GridState.cs",
+		"src/App/Pages/Index.cs", "src/App/Shared/MainLayout.cs", "src/App/Kelda.razor.cs"} {
+		got := categoriesForFile(path)
+		assert.True(t, got["ui"], "%s must admit ui", path)
+		assert.True(t, got["security"], "%s keeps the C# categories", path)
+	}
+	for _, path := range []string{"api/Fhi.Metadata.Api/Services/ExportService.cs", "src/Components.Generator.cs"} {
+		assert.False(t, categoriesForFile(path)["ui"], "%s is not Blazor UI", path)
+	}
+
+	// A test project's helpers admit testing too, and keep the C# categories.
+	for _, path := range []string{"api/Fhi.Metadata.Api.Tests/Helpers/TestHelper.cs", "tests/api-tests/Fixtures.cs",
+		"src/ExplorerTests/Fakes/FakeClient.cs", "test/Builders/KildeBuilder.cs"} {
+		got := categoriesForFile(path)
+		assert.True(t, got["testing"], "%s must admit testing", path)
+		assert.True(t, got["concurrency"], "%s keeps the C# categories", path)
+	}
+	assert.False(t, categoriesForFile("api/Fhi.Metadata.Api/Testing/Clock.cs")["testing"], "a folder named Testing is not a test project")
+
 	test := categoriesForFile("src/FooTests.cs")
 	assert.True(t, test["testing"])
 	assert.False(t, test["security"])
@@ -119,10 +140,23 @@ func TestFilterRules_CategoryFilter_CsOnly(t *testing.T) {
 	diff := "ui component testing assertion security validate doc comment"
 	got := FilterRules(rules, diff, []string{"src/Service.cs"}, cfg)
 	ids := ruleIDs(got)
-	assert.NotContains(t, ids, "ui-1", ".cs-only diff must drop ui-categorised rules")
+	assert.NotContains(t, ids, "ui-1", "a service .cs diff must drop ui-categorised rules")
 	assert.NotContains(t, ids, "test-1", ".cs-only diff must drop testing-categorised rules")
 	assert.Contains(t, ids, "sec-1", "security applies to .cs files")
 	assert.Contains(t, ids, "doc-1", "non-canonical categories pass the category filter unfiltered")
+}
+
+// TestFilterRules_CategoryFilter_BlazorAndTestProject is the regression for
+// Explorer's ui rules and Munin's testing rules being dropped on C# diffs.
+func TestFilterRules_CategoryFilter_BlazorAndTestProject(t *testing.T) {
+	rules := []Rule{
+		{ID: "ui-1", Category: "ui", Pattern: "component", Check: "x"},
+		{ID: "test-1", Category: "testing", Pattern: "assertion", Check: "y"},
+	}
+	diff := "ui component testing assertion"
+	cfg := DefaultReviewFilterConfig()
+	assert.Equal(t, []string{"ui-1"}, ruleIDs(FilterRules(rules, diff, []string{"src/Explorer/Components/Panel.razor.cs"}, cfg)))
+	assert.Equal(t, []string{"test-1"}, ruleIDs(FilterRules(rules, diff, []string{"api/Fhi.Metadata.Api.Tests/Helpers/TestHelper.cs"}, cfg)))
 }
 
 func TestFilterRules_PatternGrepFilter(t *testing.T) {
