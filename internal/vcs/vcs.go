@@ -631,6 +631,13 @@ type BatchStatusChecker interface {
 }
 
 // OpenPR is a lightweight view of a PR used for reconciliation.
+// PRBodyReader is implemented by providers that can read one PR's body by
+// number. It is optional: a provider without it gives assay no PR body, and the
+// review runs as before.
+type PRBodyReader interface {
+	PRBody(ctx context.Context, worktreePath string, prNumber int) (string, error)
+}
+
 type OpenPR struct {
 	Number int
 	Title  string

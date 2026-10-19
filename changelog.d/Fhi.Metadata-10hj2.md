@@ -1,0 +1,2 @@
+category: Fixed
+- **Assay reads the PR body** - assay's review was given no PR description, so the rules about the PR body (that it carries the evidence for its claims, the right `Closes-Bead` line, the measured numbers a bead asks for) could never be checked. The daemon now reads the open PR's body (GitHub) and passes it to every pass as the change context, labelled as the PR body and kept up to 6000 characters; when the body cannot be read the review runs without it, as before. (Fhi.Metadata-10hj2)
