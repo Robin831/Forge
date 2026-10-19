@@ -46,11 +46,16 @@ type ReviewFilterConfig struct {
 	FilterPatternGrep bool
 }
 
+// DefaultMaxRulesPerReview is the shipped checklist cap; config mirrors it as
+// DefaultWardenMaxRulesPerReview.
+const DefaultMaxRulesPerReview = 60
+
 // DefaultReviewFilterConfig returns the default review-time filter
-// configuration: all three filters enabled, MaxRules=30, UseAllRules=false.
+// configuration: all three filters enabled, MaxRules=DefaultMaxRulesPerReview,
+// UseAllRules=false.
 func DefaultReviewFilterConfig() ReviewFilterConfig {
 	return ReviewFilterConfig{
-		MaxRules:          30,
+		MaxRules:          DefaultMaxRulesPerReview,
 		UseAllRules:       false,
 		FilterPathGlob:    true,
 		FilterCategory:    true,

@@ -1460,7 +1460,7 @@ func TestLoad_WardenSettings_Default(t *testing.T) {
 
 	cfg, err := Load(cfgPath)
 	require.NoError(t, err)
-	assert.Equal(t, 30, cfg.Settings.Warden.ResolvedMaxRulesPerReview())
+	assert.Equal(t, 60, cfg.Settings.Warden.ResolvedMaxRulesPerReview())
 	assert.False(t, cfg.Settings.Warden.UseAllRules)
 	assert.True(t, cfg.Settings.Warden.IsFilterPathGlobEnabled())
 	assert.True(t, cfg.Settings.Warden.IsFilterCategoryEnabled())

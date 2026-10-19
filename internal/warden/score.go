@@ -21,10 +21,14 @@ import (
 // scoped older one. Age is a proxy for value, not a measure of it — the goal is
 // a reachable set spread across the file's whole history, not a truncation from
 // the other end.
+// Sources weighs how many review comments taught the rule: a rule taught twice
+// is a check reviewers keep needing. It is the lightest term, so it settles
+// near-ties rather than outranking a narrower or more on-topic rule.
 const (
 	specificityWeight = 1.0
 	patternWeight     = 0.7
 	recencyWeight     = 0.5
+	sourcesWeight     = 0.3
 )
 
 // ruleScore is one candidate rule with its ranking components. The components
@@ -35,6 +39,7 @@ type ruleScore struct {
 	specificity float64
 	pattern     float64
 	recency     float64
+	sources     float64
 	total       float64
 	added       time.Time
 	// index is the rule's position in the FILE it came from — the position
@@ -250,6 +255,7 @@ func scoreCandidates(rules []Rule, positions []int, changedFiles []string, hits,
 			rule:        r,
 			specificity: ruleSpecificity(r, changedFiles),
 			pattern:     patternRelevance(hits[i], words[i]),
+			sources:     sourcesScore(len(r.Source)),
 			added:       added,
 			index:       pos,
 		}
@@ -258,9 +264,20 @@ func scoreCandidates(rules []Rule, positions []int, changedFiles []string, hits,
 	for i := range scores {
 		scores[i].total = specificityWeight*scores[i].specificity +
 			patternWeight*scores[i].pattern +
-			recencyWeight*scores[i].recency
+			recencyWeight*scores[i].recency +
+			sourcesWeight*scores[i].sources
 	}
 	return scores
+}
+
+// sourcesScore maps how many review comments taught a rule into [0,1): one
+// source (most rules) scores 0, two 0.5, three 0.67, saturating like
+// globNarrowness so a much-repeated rule cannot outweigh the other terms.
+func sourcesScore(n int) float64 {
+	if n <= 1 {
+		return 0
+	}
+	return 1 - 1/float64(n)
 }
 
 // ruleTieKey is the last resort in the ordering: a total, content-derived key

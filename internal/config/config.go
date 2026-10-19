@@ -1353,7 +1353,7 @@ func (f ForgeChatSettings) ResolvedTurnRetentionCap() int {
 // can't match the current diff (path/category/pattern grep).
 type WardenSettings struct {
 	// MaxRulesPerReview caps the number of rules emitted in the checklist
-	// after filtering. Omitted or zero uses the default of 30. Negative
+	// after filtering. Omitted or zero uses the default of 60. Negative
 	// values disable the cap entirely. Positive values set an explicit cap.
 	MaxRulesPerReview int `mapstructure:"max_rules_per_review" yaml:"max_rules_per_review,omitempty"`
 	// UseAllRules, when true, bypasses the three filter passes and applies
@@ -1476,6 +1476,9 @@ const (
 	// criterion. It mirrors warden.DefaultOverlapThreshold, which config
 	// cannot import without a cycle.
 	DefaultWardenOverlapThreshold = 0.55
+	// DefaultWardenMaxRulesPerReview is the shipped checklist cap. It mirrors
+	// warden.DefaultMaxRulesPerReview, which config cannot import without a cycle.
+	DefaultWardenMaxRulesPerReview = 60
 	// DefaultWardenMaxRulesInFile is the shipped ceiling on the active rules
 	// file, and the unconditional backstop behind the three consolidation
 	// passes: whatever they merge, archive or re-scope, the file is under this
@@ -1577,13 +1580,13 @@ func (w WardenSettings) ResolvedMaxRulesInFile() int {
 }
 
 // ResolvedMaxRulesPerReview returns the cap to pass to FilterRules.
-// Zero (unset) → 30 (default). Negative → 0 (no cap; warden's selectRules
+// Zero (unset) → DefaultWardenMaxRulesPerReview. Negative → 0 (no cap; warden's selectRules
 // treats ≤0 as unlimited and returns every candidate in ranked order).
 // Positive → returned as-is.
 func (w WardenSettings) ResolvedMaxRulesPerReview() int {
 	switch {
 	case w.MaxRulesPerReview == 0:
-		return 30
+		return DefaultWardenMaxRulesPerReview
 	case w.MaxRulesPerReview < 0:
 		return 0
 	default:
@@ -2786,7 +2789,7 @@ func Defaults() Config {
 			// poll fallback is an opt-in one-release safety valve.
 			SSEPollFallback: false,
 			Warden: WardenSettings{
-				MaxRulesPerReview: 30,
+				MaxRulesPerReview: DefaultWardenMaxRulesPerReview,
 				MaxRulesInFile:    DefaultWardenMaxRulesInFile,
 				UseAllRules:       false,
 				FilterPathGlob:    boolPtr(true),
@@ -2897,7 +2900,7 @@ func Load(configFile string) (*Config, error) {
 	v.SetDefault("settings.bus_enabled", false)
 	v.SetDefault("settings.bus_buffer_size", DefaultBusBufferSize)
 	v.SetDefault("settings.sse_poll_fallback", false)
-	v.SetDefault("settings.warden.max_rules_per_review", 30)
+	v.SetDefault("settings.warden.max_rules_per_review", DefaultWardenMaxRulesPerReview)
 	v.SetDefault("settings.warden.use_all_rules", false)
 	v.SetDefault("settings.warden.filter_path_glob", true)
 	v.SetDefault("settings.warden.filter_category", true)
