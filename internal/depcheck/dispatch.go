@@ -18,9 +18,12 @@ import (
 //   - (beadID, nil)  when a bead was found or created successfully
 //   - ("", nil)      when no outdated packages were detected (nothing to dispatch)
 //   - ("", err)      when the scan or bead-creation step failed
-func FindOrCreateBeadID(ctx context.Context, db *state.DB, anvilName, anvilPath string) (string, error) {
+//
+// exclude is the anvil's depcheck_exclude, on top of DefaultExclude.
+func FindOrCreateBeadID(ctx context.Context, db *state.DB, anvilName, anvilPath string, exclude ...string) (string, error) {
 	title := consolidatedBeadTitle(time.Now())
 	s := newScanner(db)
+	s.UpdateAnvilExcludes(map[string][]string{anvilName: exclude})
 
 	// Fast path: this anvil already has an open consolidated bead.
 	existing, err := findConsolidatedBead(ctx, s.owners, anvilPath, anvilName)

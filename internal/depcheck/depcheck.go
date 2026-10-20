@@ -215,6 +215,12 @@ func (s *Scanner) UpdateAnvilExcludes(excludes map[string][]string) {
 	s.mu.Unlock()
 }
 
+// withExcludes is the one place a scan's manifest source gets its excludes, for
+// the scheduled scan and the on-demand ScanAnvilDeps alike (Copilot on Forge #951).
+func (s *Scanner) withExcludes(name string, src manifestSource) manifestSource {
+	return excludingSource{manifestSource: src, globs: s.excludesFor(name)}
+}
+
 func (s *Scanner) excludesFor(name string) []string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -301,7 +307,7 @@ func (s *Scanner) ScanAnvilDeps(ctx context.Context, name, path string) []*Check
 		if ctx.Err() != nil {
 			return results
 		}
-		result := sc.fn(ctx, name, path, worktreeSource{root: path})
+		result := sc.fn(ctx, name, path, s.withExcludes(name, worktreeSource{root: path}))
 		if result == nil {
 			continue // ecosystem not present
 		}
@@ -362,7 +368,7 @@ func (s *Scanner) scanAnvil(ctx context.Context, name, path string) {
 	// Reading the manifests is the proof that whatever blocked an earlier scan
 	// is gone, so it is what withdraws the entry — no other path can know.
 	s.clearBlocked(name)
-	src = excludingSource{manifestSource: src, globs: s.excludesFor(name)}
+	src = s.withExcludes(name, src)
 
 	var allResults []*CheckResult
 	for _, sc := range s.ecosystemScanners() {

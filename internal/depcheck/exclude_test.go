@@ -2,6 +2,8 @@ package depcheck
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -51,4 +53,23 @@ func TestPerAnvilExcludesAddToTheDefault(t *testing.T) {
 	s.UpdateAnvilExcludes(in)
 	in["x"][0] = "b/**"
 	assert.Equal(t, []string{"samples/**", "a/**"}, s.excludesFor("x"))
+}
+
+// The on-demand scan (ScanAnvilDeps, FindOrCreateBeadID) reads the working tree
+// directly; it gets the same excludes as the scheduled scan (Copilot on Forge #951).
+func TestOnDemandWorktreeSourceGetsTheExcludes(t *testing.T) {
+	root := t.TempDir()
+	for _, rel := range []string{"samples/HostileHost/HostileHost.csproj", "src/App/App.csproj", "tools/gen/package.json"} {
+		require.NoError(t, os.MkdirAll(filepath.Join(root, filepath.Dir(rel)), 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(root, rel), []byte("<Project />"), 0o644))
+	}
+	s := &Scanner{}
+	s.UpdateAnvilExcludes(map[string][]string{"explorer": {"tools/**"}})
+	paths, err := s.withExcludes("explorer", worktreeSource{root: root}).Paths(context.Background())
+	require.NoError(t, err)
+	assert.Contains(t, paths, "src/App/App.csproj")
+	for _, p := range paths {
+		assert.NotContains(t, p, "samples/", "the default exclude applies to the working tree too")
+		assert.NotContains(t, p, "tools/", "and so do the anvil's own globs")
+	}
 }
