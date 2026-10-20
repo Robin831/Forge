@@ -87,7 +87,8 @@ type Scanner struct {
 	checks      checkRecorder
 	interval    time.Duration
 	timeout     time.Duration
-	anvilPaths  map[string]string // anvil name -> path
+	anvilPaths  map[string]string   // anvil name -> path
+	excludes    map[string][]string // anvil name -> extra globs (DefaultExclude always applies)
 	previewLive PreviewLivenessFunc
 	mu          sync.RWMutex
 }
@@ -184,6 +185,24 @@ func (s *Scanner) emit(typ state.EventType, message, beadID, anvil string) {
 
 // UpdateAnvilPaths replaces the set of anvils to scan. This is safe to call
 // while Run is active and takes effect on the next scan cycle.
+// UpdateAnvilExcludes sets each anvil's extra depcheck_exclude globs. Safe to
+// call while Run is active.
+func (s *Scanner) UpdateAnvilExcludes(excludes map[string][]string) {
+	copied := make(map[string][]string, len(excludes))
+	for k, v := range excludes {
+		copied[k] = append([]string(nil), v...)
+	}
+	s.mu.Lock()
+	s.excludes = copied
+	s.mu.Unlock()
+}
+
+func (s *Scanner) excludesFor(name string) []string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return append(append([]string(nil), DefaultExclude...), s.excludes[name]...)
+}
+
 func (s *Scanner) UpdateAnvilPaths(paths map[string]string) {
 	copied := make(map[string]string, len(paths))
 	for k, v := range paths {
@@ -335,6 +354,7 @@ func (s *Scanner) scanAnvil(ctx context.Context, name, path string) {
 	// Reading the manifests is the proof that whatever blocked an earlier scan
 	// is gone, so it is what withdraws the entry — no other path can know.
 	s.clearBlocked(name)
+	src = excludingSource{manifestSource: src, globs: s.excludesFor(name)}
 
 	var allResults []*CheckResult
 	for _, sc := range s.ecosystemScanners() {

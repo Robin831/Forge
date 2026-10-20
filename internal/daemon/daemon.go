@@ -1652,6 +1652,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 			}
 		}
 		d.depcheckScanner.UpdateAnvilTags(depcheckTags)
+		d.depcheckScanner.UpdateAnvilExcludes(depcheckExcludes(d.cfg.Load().Anvils))
 		// Never sync an anvil's node_modules while a Kiln preview is linked
 		// into that checkout — `npm ci` deletes node_modules first, and the
 		// delete reaches through the link into the running preview.
@@ -10503,6 +10504,7 @@ func (d *Daemon) updateAnvilPaths(old, new *config.Config) {
 	if d.depcheckScanner != nil {
 		depcheckPaths := filterDepcheckAnvils(paths, new.Anvils)
 		d.depcheckScanner.UpdateAnvilPaths(depcheckPaths)
+		d.depcheckScanner.UpdateAnvilExcludes(depcheckExcludes(new.Anvils))
 		d.logger.Info("updated depcheck anvil paths", "count", len(depcheckPaths))
 	}
 
@@ -10755,6 +10757,17 @@ func (a *adventurerExecutorAdapter) Execute(ctx context.Context, quest *questgiv
 		Duration:     r.Duration,
 		Screenshots:  r.Screenshots,
 	}
+}
+
+// depcheckExcludes collects each anvil's depcheck_exclude globs for the scanner.
+func depcheckExcludes(anvilCfgs map[string]config.AnvilConfig) map[string][]string {
+	out := make(map[string][]string, len(anvilCfgs))
+	for name, ac := range anvilCfgs {
+		if len(ac.DepcheckExclude) > 0 {
+			out[name] = ac.DepcheckExclude
+		}
+	}
+	return out
 }
 
 // filterDepcheckAnvils returns the subset of anvils that should be scanned by
