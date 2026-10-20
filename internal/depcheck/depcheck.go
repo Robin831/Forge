@@ -10,6 +10,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -17,6 +18,7 @@ import (
 
 	"github.com/Robin831/Forge/internal/executil"
 	"github.com/Robin831/Forge/internal/state"
+	"github.com/bmatcuk/doublestar/v4"
 )
 
 // DepsUpdateLabel is the label applied to dependency-update beads so that
@@ -185,12 +187,28 @@ func (s *Scanner) emit(typ state.EventType, message, beadID, anvil string) {
 
 // UpdateAnvilPaths replaces the set of anvils to scan. This is safe to call
 // while Run is active and takes effect on the next scan cycle.
+func (s *Scanner) UpdateAnvilPaths(paths map[string]string) {
+	copied := make(map[string]string, len(paths))
+	for k, v := range paths {
+		copied[k] = v
+	}
+	s.mu.Lock()
+	s.anvilPaths = copied
+	s.mu.Unlock()
+}
+
 // UpdateAnvilExcludes sets each anvil's extra depcheck_exclude globs. Safe to
 // call while Run is active.
 func (s *Scanner) UpdateAnvilExcludes(excludes map[string][]string) {
 	copied := make(map[string][]string, len(excludes))
 	for k, v := range excludes {
 		copied[k] = append([]string(nil), v...)
+		for _, g := range v {
+			// A typo would exclude nothing and bring the failure it was meant to skip back, so it is said.
+			if !doublestar.ValidatePattern(strings.TrimPrefix(filepath.ToSlash(strings.TrimSpace(g)), "./")) {
+				log.Printf("[depcheck] %s: depcheck_exclude %q is not a valid glob and matches nothing", k, g)
+			}
+		}
 	}
 	s.mu.Lock()
 	s.excludes = copied
@@ -201,16 +219,6 @@ func (s *Scanner) excludesFor(name string) []string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return append(append([]string(nil), DefaultExclude...), s.excludes[name]...)
-}
-
-func (s *Scanner) UpdateAnvilPaths(paths map[string]string) {
-	copied := make(map[string]string, len(paths))
-	for k, v := range paths {
-		copied[k] = v
-	}
-	s.mu.Lock()
-	s.anvilPaths = copied
-	s.mu.Unlock()
 }
 
 // SetPreviewLiveness installs the callback the scanner consults before syncing

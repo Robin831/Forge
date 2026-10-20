@@ -792,6 +792,7 @@ func TestSave_RoundTrip_PreservesAllFields(t *testing.T) {
 
 	original := Defaults()
 	original.Anvils["myrepo"] = AnvilConfig{
+		DepcheckExclude: []string{"tools/**"},
 		Path:            "/some/path",
 		MaxSmiths:       2,
 		AutoDispatch:    "tagged",
@@ -825,6 +826,7 @@ func TestSave_RoundTrip_PreservesAllFields(t *testing.T) {
 		"smith_providers must survive Save→Load round-trip")
 
 	// Anvil optional bools.
+	assert.Equal(t, []string{"tools/**"}, loaded.Anvils["myrepo"].DepcheckExclude, "depcheck_exclude survives a save")
 	require.NotNil(t, loaded.Anvils["myrepo"].DepcheckEnabled)
 	assert.False(t, *loaded.Anvils["myrepo"].DepcheckEnabled)
 

@@ -10443,6 +10443,11 @@ func (d *Daemon) updateAnvilPaths(old, new *config.Config) {
 				changed = true
 				break
 			}
+			// Also detect a change to depcheck_exclude alone
+			if depcheckExcludeChanged(oldAnvil, newAnvil) {
+				changed = true
+				break
+			}
 			// Also detect questgiver_enabled toggle
 			oldQG := oldAnvil.QuestgiverEnabled
 			newQG := newAnvil.QuestgiverEnabled
@@ -10757,6 +10762,12 @@ func (a *adventurerExecutorAdapter) Execute(ctx context.Context, quest *questgiv
 		Duration:     r.Duration,
 		Screenshots:  r.Screenshots,
 	}
+}
+
+// depcheckExcludeChanged reports whether an anvil's depcheck_exclude list differs,
+// so a hot reload that touches only that list still reaches the scanner.
+func depcheckExcludeChanged(old, new config.AnvilConfig) bool {
+	return !slices.Equal(old.DepcheckExclude, new.DepcheckExclude)
 }
 
 // depcheckExcludes collects each anvil's depcheck_exclude globs for the scanner.
