@@ -10,6 +10,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -17,6 +18,7 @@ import (
 
 	"github.com/Robin831/Forge/internal/executil"
 	"github.com/Robin831/Forge/internal/state"
+	"github.com/bmatcuk/doublestar/v4"
 )
 
 // DepsUpdateLabel is the label applied to dependency-update beads so that
@@ -87,7 +89,8 @@ type Scanner struct {
 	checks      checkRecorder
 	interval    time.Duration
 	timeout     time.Duration
-	anvilPaths  map[string]string // anvil name -> path
+	anvilPaths  map[string]string   // anvil name -> path
+	excludes    map[string][]string // anvil name -> extra globs (DefaultExclude always applies)
 	previewLive PreviewLivenessFunc
 	mu          sync.RWMutex
 }
@@ -194,6 +197,36 @@ func (s *Scanner) UpdateAnvilPaths(paths map[string]string) {
 	s.mu.Unlock()
 }
 
+// UpdateAnvilExcludes sets each anvil's extra depcheck_exclude globs. Safe to
+// call while Run is active.
+func (s *Scanner) UpdateAnvilExcludes(excludes map[string][]string) {
+	copied := make(map[string][]string, len(excludes))
+	for k, v := range excludes {
+		copied[k] = append([]string(nil), v...)
+		for _, g := range v {
+			// A typo would exclude nothing and bring the failure it was meant to skip back, so it is said.
+			if !doublestar.ValidatePattern(strings.TrimPrefix(filepath.ToSlash(strings.TrimSpace(g)), "./")) {
+				log.Printf("[depcheck] %s: depcheck_exclude %q is not a valid glob and matches nothing", k, g)
+			}
+		}
+	}
+	s.mu.Lock()
+	s.excludes = copied
+	s.mu.Unlock()
+}
+
+// withExcludes is the one place a scan's manifest source gets its excludes, for
+// the scheduled scan and the on-demand ScanAnvilDeps alike (Copilot on Forge #951).
+func (s *Scanner) withExcludes(name string, src manifestSource) manifestSource {
+	return excludingSource{manifestSource: src, globs: s.excludesFor(name)}
+}
+
+func (s *Scanner) excludesFor(name string) []string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return append(append([]string(nil), DefaultExclude...), s.excludes[name]...)
+}
+
 // SetPreviewLiveness installs the callback the scanner consults before syncing
 // an anvil's node_modules. Safe to call while Run is active. A nil callback
 // (the default) means "no anvil ever has a live preview", which is exactly the
@@ -274,7 +307,7 @@ func (s *Scanner) ScanAnvilDeps(ctx context.Context, name, path string) []*Check
 		if ctx.Err() != nil {
 			return results
 		}
-		result := sc.fn(ctx, name, path, worktreeSource{root: path})
+		result := sc.fn(ctx, name, path, s.withExcludes(name, worktreeSource{root: path}))
 		if result == nil {
 			continue // ecosystem not present
 		}
@@ -335,6 +368,7 @@ func (s *Scanner) scanAnvil(ctx context.Context, name, path string) {
 	// Reading the manifests is the proof that whatever blocked an earlier scan
 	// is gone, so it is what withdraws the entry — no other path can know.
 	s.clearBlocked(name)
+	src = s.withExcludes(name, src)
 
 	var allResults []*CheckResult
 	for _, sc := range s.ecosystemScanners() {

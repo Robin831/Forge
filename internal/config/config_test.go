@@ -763,6 +763,26 @@ anvils:
 	assert.Nil(t, cfg.Anvils["default-repo"].DepcheckEnabled)
 }
 
+func TestLoad_DepcheckExclude(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "forge.yaml")
+	content := `
+anvils:
+  explorer:
+    path: /some/path
+    depcheck_exclude:
+      - "tools/**"
+      - "docs/examples/**"
+  munin:
+    path: /other/path
+`
+	require.NoError(t, os.WriteFile(cfgPath, []byte(content), 0o644))
+	cfg, err := Load(cfgPath)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"tools/**", "docs/examples/**"}, cfg.Anvils["explorer"].DepcheckExclude)
+	assert.Empty(t, cfg.Anvils["munin"].DepcheckExclude)
+}
+
 func TestSave_RoundTrip_PreservesAllFields(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "forge.yaml")
@@ -772,6 +792,7 @@ func TestSave_RoundTrip_PreservesAllFields(t *testing.T) {
 
 	original := Defaults()
 	original.Anvils["myrepo"] = AnvilConfig{
+		DepcheckExclude: []string{"tools/**"},
 		Path:            "/some/path",
 		MaxSmiths:       2,
 		AutoDispatch:    "tagged",
@@ -805,6 +826,7 @@ func TestSave_RoundTrip_PreservesAllFields(t *testing.T) {
 		"smith_providers must survive Save→Load round-trip")
 
 	// Anvil optional bools.
+	assert.Equal(t, []string{"tools/**"}, loaded.Anvils["myrepo"].DepcheckExclude, "depcheck_exclude survives a save")
 	require.NotNil(t, loaded.Anvils["myrepo"].DepcheckEnabled)
 	assert.False(t, *loaded.Anvils["myrepo"].DepcheckEnabled)
 

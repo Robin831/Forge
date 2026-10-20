@@ -322,6 +322,11 @@ type AnvilConfig struct {
 	// anvil for outdated dependencies. When nil (default), depcheck runs
 	// as normal (opt-out). Set to false to skip this anvil entirely.
 	DepcheckEnabled *bool `mapstructure:"depcheck_enabled" yaml:"depcheck_enabled,omitempty"`
+	// DepcheckExclude lists repo-relative doublestar globs whose manifests the
+	// depcheck scan skips, on top of the built-in defaults (samples/**: test
+	// hosts that are not shipped and may pin packages from feeds the anvil
+	// cannot read). A solution that names an excluded project still restores it.
+	DepcheckExclude []string `mapstructure:"depcheck_exclude" yaml:"depcheck_exclude,omitempty"`
 	// QuestgiverEnabled controls whether the QuestGiver monitor runs
 	// quests for this anvil. When nil (default), the global setting is used.
 	// Set to false to skip this anvil entirely.

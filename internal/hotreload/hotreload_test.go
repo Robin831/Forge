@@ -106,6 +106,20 @@ func TestApplyChanges_PerAnvilAssayConfig(t *testing.T) {
 	}
 }
 
+// An edit that changes only an anvil's depcheck_exclude must be reported, or the
+// watcher never stores it and the daemon never hands it to the scanner (Copilot on Forge #951).
+func TestApplyChanges_DepcheckExcludeOnly(t *testing.T) {
+	mk := func(globs ...string) *config.Config {
+		return &config.Config{Anvils: map[string]config.AnvilConfig{"explorer": {Path: "/p", DepcheckExclude: globs}}}
+	}
+	if ch := applyChanges(mk(), mk("tools/**")); len(ch) == 0 {
+		t.Error("an exclude-only edit must be detected")
+	}
+	if ch := applyChanges(mk("tools/**"), mk("tools/**")); len(ch) != 0 {
+		t.Errorf("an unchanged list is no change, got %v", ch)
+	}
+}
+
 // TestApplyChanges_SelfDeployConfig verifies a self_deploy edit is detected.
 // Every consumer of the block reads it live, but reload() only stores the new
 // config when applyChanges reports a change — so an undetected edit was both

@@ -22,6 +22,7 @@ anvils:
     golangci_lint: null            # null/omit = auto-detect (runs only if binary found on PATH); false = disable
     go_race_detection: false       # Per-anvil race detector override
     depcheck_enabled: true         # Set to false to skip depcheck for this anvil
+    depcheck_exclude: ["tools/**"] # Extra globs depcheck skips (samples/** is always skipped)
     hooks:                         # Pipeline stage hooks (optional)
       after_smith: './scripts/post-smith.sh'
       before_temper: './scripts/pre-temper.sh'  # runs for every temper invocation (pipeline, burnish, quench)
@@ -174,6 +175,7 @@ Each key under `anvils` is the anvil name. The name is used in CLI output, logs,
 | `go_race_detection` | bool\|null | null (use global) | Per-anvil override for Go race detection in Temper. When set, takes precedence over the global setting. |
 | `temper` | object\|null | null (auto-detect) | Custom Temper commands for this anvil. When set, replaces auto-detected build/test/lint steps. See [Custom Temper Commands](#custom-temper-commands) below. |
 | `depcheck_enabled` | bool\|null | null (enabled) | Per-anvil toggle for depcheck scanning. When null, depcheck runs as normal. Set to `false` to skip this anvil entirely. |
+| `depcheck_exclude` | list | `[]` | Repo-relative doublestar globs whose manifests depcheck skips, in every ecosystem, on top of the built-in `samples/**` (test and sample hosts are not shipped and may pin packages from feeds the anvil cannot read). A solution that names an excluded project still restores it, since the solution is scanned as a whole. |
 | `auto_merge` | bool | `false` | When enabled, PRs that reach the ready-to-merge state (CI passing, no conflicts, no unresolved threads, no pending reviews) are automatically merged using the configured `merge_strategy`. External PRs (`ext-*`) are never auto-merged. |
 | `questgiver_enabled` | bool\|null | null (use global) | Per-anvil override for QuestGiver E2E quest scanning. When null, uses `settings.questgiver_enabled`. Set to `false` to opt this anvil out entirely. |
 | `preview_enabled` | bool\|null | null (use global) | Per-anvil override for Kiln preview environments. When null, uses `settings.preview_enabled`. Set to `false` to opt this anvil out entirely. An anvil without a `.forge/preview.yaml` manifest offers no preview regardless. See [Preview Environments (Kiln)](#preview-environments-kiln). |
