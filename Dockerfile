@@ -101,6 +101,10 @@ FROM mcr.microsoft.com/dotnet/sdk:10.0 AS runtime
 # Make apt fully non-interactive so package installs never block the build.
 ENV DEBIAN_FRONTEND=noninteractive
 
+# The exact Node.js 24 build from NodeSource. Pinned so a rebuild cannot reuse a cached older layer: 24.22.1 fixes
+# CVE-2026-111497 (Brotli decoder RCE). Bump it here: a new value invalidates the cached install layer.
+ARG NODE_VERSION=24.22.1-1nodesource1
+
 # Install OS-level dependencies, Node.js 24 (NodeSource), and the GitHub CLI
 # (cli.github.com). Both third-party apt repos are added via signed-by=
 # keyring entries in /etc/apt/keyrings as recommended by current Debian best
@@ -130,7 +134,8 @@ RUN set -eux; \
     echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
         > /etc/apt/sources.list.d/github-cli.list; \
     apt-get update; \
-    apt-get install -y --no-install-recommends nodejs gh; \
+    apt-get install -y --no-install-recommends "nodejs=${NODE_VERSION}" gh; \
+    node --version | grep -qx "v${NODE_VERSION%%-*}"; \
     \
     # Trim apt caches so the runtime layer stays small
     apt-get clean; \
