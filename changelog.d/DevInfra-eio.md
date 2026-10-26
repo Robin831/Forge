@@ -1,2 +1,0 @@
-category: Security
-- **The image runs Node.js 24.22.1, pinned** - CVE-2026-111497 («Node2Shell»), an out-of-bounds write in the Brotli decoder bundled with Node, is fixed from 24.22.1. The Dockerfile installed whatever NodeSource's node_24.x held, and a cached layer kept 24.22.0 on the devboxes; `NODE_VERSION=24.22.1-1nodesource1` is now pinned, and the build fails if `node --version` is anything else. Needs a release, then the devbox image and a roll. (DevInfra-eio)

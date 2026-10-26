@@ -1,2 +1,0 @@
-category: Fixed
-- **Depcheck skips sample hosts** - the dependency check failed for a whole .NET anvil when one project under `samples/` pinned a package from a feed the anvil cannot read (Explorer's `samples/HostileHost`, which pins Stiler from the private helsedata feed: `dotnet list package` exited 1 with an empty stderr). Manifests under `samples/**` are now skipped in every ecosystem, since sample and test hosts are not shipped, and an anvil can list more globs to skip with `depcheck_exclude`. (Fhi.Metadata-oohxy)

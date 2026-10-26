@@ -9,6 +9,16 @@ Unreleased changes live as fragments in `changelog.d/` and are assembled at
 release time by `scripts/assemble-changelog.sh`.
 
 
+## [0.37.1] - 2026-10-26
+
+### Fixed
+
+- **Depcheck skips sample hosts** - the dependency check failed for a whole .NET anvil when one project under `samples/` pinned a package from a feed the anvil cannot read (Explorer's `samples/HostileHost`, which pins Stiler from the private helsedata feed: `dotnet list package` exited 1 with an empty stderr). Manifests under `samples/**` are now skipped in every ecosystem, since sample and test hosts are not shipped, and an anvil can list more globs to skip with `depcheck_exclude`. (Fhi.Metadata-oohxy)
+
+### Security
+
+- **The image runs Node.js 24.22.1, pinned** - CVE-2026-111497 («Node2Shell»), an out-of-bounds write in the Brotli decoder bundled with Node, is fixed from 24.22.1. The Dockerfile installed whatever NodeSource's node_24.x held, and a cached layer kept 24.22.0 on the devboxes; `NODE_VERSION=24.22.1-1nodesource1` is now pinned, and the build fails if `node --version` is anything else. Needs a release, then the devbox image and a roll. (DevInfra-eio)
+
 ## [0.37.0] - 2026-10-19
 
 ### Added
