@@ -631,6 +631,18 @@ func addSequentialDepWithRetry(ctx context.Context, anvilPath, parentID, childID
 	return lastOut, depRetryAttempts, lastErr
 }
 
+// subBeadParentArgs files a sub-bead under the epic its decomposed bead sits in.
+// A bead routed through a Crucible epic (EpicBranch set) keeps the old,
+// parentless children: joining the epic would change what the Crucible counts.
+func subBeadParentArgs(parent poller.Bead) []string {
+	if parent.Parent != "" && parent.EpicBranch == "" {
+		return []string{"--parent", parent.Parent, "--no-inherit-labels"}
+	}
+	log.Printf("[schematic:%s] Warning: creating a sub-bead with no parent epic (decomposed bead's parent %q, epic branch %q)",
+		parent.ID, parent.Parent, parent.EpicBranch)
+	return nil
+}
+
 // createSubBeads creates sub-beads via bd CLI with blocking dependency links.
 // Each sub-bead blocks the parent so that bd ready excludes the parent until
 // all sub-beads are closed. Children are chained sequentially (child N+1
@@ -694,16 +706,17 @@ func createSubBeads(ctx context.Context, parent poller.Bead, tasks []subTaskVerd
 		// until all sub-beads are closed. The marker label lets a later
 		// re-decomposition detect and reuse this child instead of duplicating.
 		createCtx, cancel := context.WithTimeout(ctx, executil.BdTimeout())
-		out, err := run(createCtx, anvilPath,
+		createArgs := append([]string{
 			"create",
-			"--title="+task.Title,
-			"--description="+desc,
+			"--title=" + task.Title,
+			"--description=" + desc,
 			"--type=task",
 			fmt.Sprintf("--priority=%d", parent.Priority),
-			"--deps", "blocks:"+parent.ID,
+			"--deps", "blocks:" + parent.ID,
 			"--labels", marker,
 			"--json",
-		)
+		}, subBeadParentArgs(parent)...)
+		out, err := run(createCtx, anvilPath, createArgs...)
 		cancel()
 		if err != nil {
 			log.Printf("[schematic:%s] Sub-bead creation failed after %d/%d sub-beads (task %q): %v", parent.ID, len(subBeads), len(tasks), task.Title, err)

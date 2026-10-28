@@ -3,16 +3,23 @@ package ledger
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/Robin831/Forge/internal/config"
 	"github.com/Robin831/Forge/internal/executil"
 )
 
 // Action result messages returned by bead CRUD commands.
 
-// BeadCreatedMsg indicates a new bead was successfully created.
-type BeadCreatedMsg struct{ ID string }
+// BeadCreatedMsg indicates a new bead was successfully created. NoParent is
+// set when the anvil has no beads.default_parent, so the TUI can say so (its
+// log output is discarded while it runs).
+type BeadCreatedMsg struct {
+	ID       string
+	NoParent bool
+}
 
 // BeadUpdatedMsg indicates a bead was successfully updated.
 type BeadUpdatedMsg struct{ ID string }
@@ -26,29 +33,38 @@ type BeadReopenedMsg struct{ ID string }
 // ActionErrorMsg indicates a bead action failed.
 type ActionErrorMsg struct{ Err error }
 
-// NewBeadCmd creates a new bead via bd create.
-func NewBeadCmd(anvilPath, title, description, issueType string, priority int) tea.Cmd {
+// NewBeadCmd creates a new bead via bd create, under parent when it is set.
+func NewBeadCmd(anvilName, anvilPath, parent, title, description, issueType string, priority int) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), executil.BdTimeout())
 		defer cancel()
 
-		args := []string{
-			"create",
-			"--title", title,
-			"--description", description,
-			"--type", issueType,
-			"--priority", fmt.Sprintf("%d", priority),
-			"--json",
-		}
-		out, err := bdExec(ctx, anvilPath, args...)
+		out, err := bdExec(ctx, anvilPath, newBeadArgs(anvilName, parent, title, description, issueType, priority)...)
 		if err != nil {
 			return ActionErrorMsg{Err: fmt.Errorf("create bead: %w", err)}
 		}
 		// Try to extract the ID from the JSON output — bd create --json
 		// returns the created bead. We just report success with best-effort ID.
 		id := extractIDFromJSON(out)
-		return BeadCreatedMsg{ID: id}
+		return BeadCreatedMsg{ID: id, NoParent: strings.TrimSpace(parent) == ""}
 	}
+}
+
+// newBeadArgs builds the `bd create` call for a ledger bead. An empty type is
+// sent as task rather than left to bd's default.
+func newBeadArgs(anvilName, parent, title, description, issueType string, priority int) []string {
+	if strings.TrimSpace(issueType) == "" {
+		issueType = "task"
+	}
+	args := []string{
+		"create",
+		"--title", title,
+		"--description", description,
+		"--type", issueType,
+		"--priority", fmt.Sprintf("%d", priority),
+		"--json",
+	}
+	return append(args, executil.BdParentArgs(nil, anvilName, config.BeadKindLedger, parent)...)
 }
 
 // EditBeadCmd updates a bead's title and description.

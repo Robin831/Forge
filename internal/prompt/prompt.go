@@ -29,6 +29,9 @@ type BeadContext struct {
 	Priority int
 	// Parent is the parent bead ID (if any).
 	Parent string
+	// FollowupParent is the epic a bead the smith files for an unrelated
+	// discovered issue goes under (the anvil's beads config); "" for none.
+	FollowupParent string
 	// Branch is the git branch created for this work.
 	Branch string
 	// AnvilName is the name of the anvil (repo label).
@@ -335,7 +338,7 @@ or other issues that are **not related to your current bead**. Do NOT fix them y
 instead, create a new bead so the issue is tracked for future work:
 
 ` + "`" + `` + "`" + `` + "`" + `bash
-bd create --json --title="<concise summary>" --description="<what you found and where>" --type=bug|task --priority=3 --deps discovered-from:{{.Bead.BeadID}}
+bd create --json --title="<concise summary>" --description="<what you found and where>" --type=bug|task --priority=3 --deps discovered-from:{{.Bead.BeadID}}{{if .Bead.FollowupParent}} --parent={{.Bead.FollowupParent}} --no-inherit-labels{{end}}
 ` + "`" + `` + "`" + `` + "`" + `
 
 Guidelines for discovered issues:
@@ -346,6 +349,9 @@ Guidelines for discovered issues:
 - Use ` + "`" + `--type=bug` + "`" + ` for broken behavior, ` + "`" + `--type=task` + "`" + ` for improvements
 - Default to ` + "`" + `--priority=3` + "`" + ` (low) unless the issue is clearly more severe
 - Always link back with ` + "`" + `--deps discovered-from:{{.Bead.BeadID}}` + "`" + `
+{{- if .Bead.FollowupParent}}
+- Always file it under the epic with ` + "`" + `--parent={{.Bead.FollowupParent}} --no-inherit-labels` + "`" + `
+{{- end}}
 - Keep descriptions specific: include file paths, function names, and what's wrong
 - Do not spend excessive time searching for issues — only log what you naturally encounter
 

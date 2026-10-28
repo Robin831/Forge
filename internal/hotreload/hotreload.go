@@ -23,6 +23,7 @@
 //   - anvils.<name>.max_smiths (changes to existing anvils' concurrency limit)
 //   - anvils.<name>.path (changes to existing anvils' path; updates bellows and depcheck)
 //   - anvils.<name>.depcheck_exclude (the extra globs depcheck skips; read by the next scan)
+//   - anvils.<name>.beads (parent epic for Forge-created beads; read per bd create)
 //   - anvils.<name>.preview_enabled (read per preview_start, so the next start obeys it)
 //   - anvils.<name>.preview_auto (read on the next ready-to-merge transition)
 //   - anvils.<name>.preview_quests (read per quest run)
@@ -540,6 +541,9 @@ func applyChanges(old, new *config.Config) []string {
 			// daemon's depcheck update never runs for an undetected exclude edit.
 			if !slices.Equal(oldAnvil.DepcheckExclude, newAnvil.DepcheckExclude) {
 				changes = append(changes, fmt.Sprintf("anvil %s depcheck_exclude: %q → %q", name, oldAnvil.DepcheckExclude, newAnvil.DepcheckExclude))
+			}
+			if !reflect.DeepEqual(oldAnvil.Beads, newAnvil.Beads) {
+				changes = append(changes, fmt.Sprintf("anvil %s beads config changed", name))
 			}
 			// The per-anvil preview tri-states are resolved per request
 			// (config.IsPreviewEnabledForAnvil and friends), so swapping the

@@ -150,7 +150,7 @@ func (s *Server) handleForgeSessionCreateBeads(w http.ResponseWriter, r *http.Re
 
 	// Use the parent request context for materialisation so a slow client
 	// disconnect can still abort partway, prompting rollback.
-	mres := forgechat.MaterializeEmission(r.Context(), s.logger, turnResp.Emission, lookup, runner)
+	mres := forgechat.MaterializeEmissionWithParents(r.Context(), s.logger, turnResp.Emission, lookup, s.beadParents, runner)
 	if mres.Err != nil {
 		// Persist a status message with the failure + rollback summary so
 		// the conversation has a record. Then surface the original error

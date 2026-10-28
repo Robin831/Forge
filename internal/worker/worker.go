@@ -125,18 +125,19 @@ func (w *Worker) Run(ctx context.Context, extraFlags []string) (*smith.Result, e
 	// Step 2: Build prompt
 	log.Printf("[%s] Building prompt", w.ID)
 	beadCtx := prompt.BeadContext{
-		BeadID:       w.Bead.ID,
-		Title:        w.Bead.Title,
-		Description:  w.Bead.SpecForPrompt(),
-		Notes:        w.Bead.Notes,
-		IssueType:    w.Bead.IssueType,
-		Priority:     w.Bead.Priority,
-		Parent:       w.Bead.Parent,
-		ExternalRef:  w.Bead.ExternalRef,
-		Branch:       wt.Branch,
-		AnvilName:    w.AnvilName,
-		AnvilPath:    w.AnvilConfig.Path,
-		WorktreePath: wt.Path,
+		BeadID:         w.Bead.ID,
+		Title:          w.Bead.Title,
+		Description:    w.Bead.SpecForPrompt(),
+		Notes:          w.Bead.Notes,
+		IssueType:      w.Bead.IssueType,
+		Priority:       w.Bead.Priority,
+		Parent:         w.Bead.Parent,
+		FollowupParent: w.AnvilConfig.Beads.ParentFor(config.BeadKindFollowup),
+		ExternalRef:    w.Bead.ExternalRef,
+		Branch:         wt.Branch,
+		AnvilName:      w.AnvilName,
+		AnvilPath:      w.AnvilConfig.Path,
+		WorktreePath:   wt.Path,
 	}
 
 	// Check for custom template

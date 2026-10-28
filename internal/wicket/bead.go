@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Robin831/Forge/internal/config"
 	"github.com/Robin831/Forge/internal/executil"
 	"github.com/Robin831/Forge/internal/state"
 )
@@ -70,7 +71,7 @@ func defaultBDRunner(ctx context.Context, args []string, dir string) (string, er
 
 // buildBDArgs constructs the argument list for `bd create` (without the
 // "create" verb itself). Separated for unit-testability.
-func buildBDArgs(decision TriageDecision, issue Issue, priority int, anvilName string) []string {
+func buildBDArgs(decision TriageDecision, issue Issue, priority int, anvilName, parent string) []string {
 	sourceURL := issueURL(issue.Repo, issue.Number)
 	desc := decision.BeadDescription
 	if sourceURL != "" {
@@ -93,7 +94,7 @@ func buildBDArgs(decision TriageDecision, issue Issue, priority int, anvilName s
 		}
 	}
 
-	return args
+	return append(args, executil.BdParentArgs(nil, anvilName, config.BeadKindWicket, parent)...)
 }
 
 // parseBDOutput extracts the bead ID from the output of `bd create --silent`.
@@ -124,7 +125,10 @@ func parseBDOutput(output string) (string, error) {
 //
 // db may be nil, in which case persistence to state.db is skipped and only
 // the in-memory cache is updated.
-func CreateBead(ctx context.Context, db *state.DB, decision TriageDecision, issue Issue, priority int, anvilName, anvilPath string) (string, error) {
+//
+// parent is the epic the bead is filed under; "" files it with no parent and
+// logs a warning.
+func CreateBead(ctx context.Context, db *state.DB, decision TriageDecision, issue Issue, priority int, anvilName, anvilPath, parent string) (string, error) {
 	if decision.Action != ActionCreateBead {
 		return "", fmt.Errorf("CreateBead called with action %q; only %q is allowed", decision.Action, ActionCreateBead)
 	}
@@ -138,7 +142,7 @@ func CreateBead(ctx context.Context, db *state.DB, decision TriageDecision, issu
 		return "", fmt.Errorf("invalid priority %d: must be between 0 and 4", priority)
 	}
 
-	args := buildBDArgs(decision, issue, priority, anvilName)
+	args := buildBDArgs(decision, issue, priority, anvilName, parent)
 
 	output, err := bdRunner(ctx, args, anvilPath)
 	if err != nil {

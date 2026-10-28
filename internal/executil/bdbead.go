@@ -1,6 +1,27 @@
 package executil
 
-import "strings"
+import (
+	"log/slog"
+	"strings"
+)
+
+// BdParentArgs returns the `bd create` flags that file a new bead under parent.
+// --no-inherit-labels keeps the bead's labels what they were before it had a
+// parent: an epic's dispatch or crucible label must not leak onto it.
+// An empty parent returns nil and logs one warning, so a missing
+// beads.default_parent is visible. A nil logger uses slog.Default().
+func BdParentArgs(logger *slog.Logger, anvil, kind, parent string) []string {
+	parent = strings.TrimSpace(parent)
+	if parent != "" {
+		return []string{"--parent", parent, "--no-inherit-labels"}
+	}
+	if logger == nil {
+		logger = slog.Default()
+	}
+	logger.Warn("creating a bead with no parent epic: set beads.default_parent for this anvil",
+		"anvil", anvil, "kind", kind)
+	return nil
+}
 
 // The three readings of bd's output below are claims about BD's behaviour, not
 // about any caller's — which is why they live here beside the single bd entry

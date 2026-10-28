@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Robin831/Forge/internal/config"
 	"github.com/Robin831/Forge/internal/executil"
 	"github.com/Robin831/Forge/internal/state"
 	"github.com/bmatcuk/doublestar/v4"
@@ -92,7 +93,26 @@ type Scanner struct {
 	anvilPaths  map[string]string   // anvil name -> path
 	excludes    map[string][]string // anvil name -> extra globs (DefaultExclude always applies)
 	previewLive PreviewLivenessFunc
+	parentFor   func(anvil string) string // the anvil's parent epic for a dependency bead; nil = none
 	mu          sync.RWMutex
+}
+
+// SetBeadParent sets how the scanner finds the parent epic a new consolidated
+// bead is filed under. The daemon passes a closure over its live config.
+func (s *Scanner) SetBeadParent(fn func(anvil string) string) {
+	s.mu.Lock()
+	s.parentFor = fn
+	s.mu.Unlock()
+}
+
+func (s *Scanner) beadParent(anvil string) string {
+	s.mu.RLock()
+	fn := s.parentFor
+	s.mu.RUnlock()
+	if fn == nil {
+		return ""
+	}
+	return fn(anvil)
 }
 
 // minScanTimeout is the floor on the per-ecosystem scan timeout. It is a floor
@@ -525,15 +545,8 @@ func (s *Scanner) createConsolidatedBead(ctx context.Context, allResults []*Chec
 		}
 	}
 
-	cmd, cancel := executil.BdCommandTimeout(ctx, 3*time.Minute,
-		"create",
-		fmt.Sprintf("--title=%s", title),
-		fmt.Sprintf("--description=%s", desc),
-		"--type=chore",
-		fmt.Sprintf("--priority=%s", priority),
-		fmt.Sprintf("--labels=%s", DepsUpdateLabel),
-		"--json",
-	)
+	args := s.consolidatedCreateArgs(anvilName, title, desc, priority)
+	cmd, cancel := executil.BdCommandTimeout(ctx, 3*time.Minute, args...)
 	defer cancel()
 	cmd.Dir = anvilPath
 
@@ -557,6 +570,22 @@ func (s *Scanner) createConsolidatedBead(ctx context.Context, allResults []*Chec
 		s.emit(state.EventDepcheckBeadCreated,
 			fmt.Sprintf("Created consolidated dep bead for %s: %s", anvilName, title), "", anvilName)
 	}
+}
+
+// consolidatedCreateArgs builds the `bd create` call for a consolidated bead,
+// under the anvil's configured parent epic when it has one.
+func (s *Scanner) consolidatedCreateArgs(anvilName, title, desc, priority string) []string {
+	parentArgs := executil.BdParentArgs(nil, anvilName, config.BeadKindDepcheck, s.beadParent(anvilName))
+	args := []string{
+		"create",
+		fmt.Sprintf("--title=%s", title),
+		fmt.Sprintf("--description=%s", desc),
+		"--type=chore",
+		fmt.Sprintf("--priority=%s", priority),
+		fmt.Sprintf("--labels=%s", DepsUpdateLabel),
+		"--json",
+	}
+	return append(args, parentArgs...)
 }
 
 // updateConsolidatedBead merges new packages from allResults into the existing

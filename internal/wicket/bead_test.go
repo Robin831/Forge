@@ -35,7 +35,7 @@ func TestBuildBDArgs(t *testing.T) {
 		Number: 42,
 	}
 
-	args := buildBDArgs(decision, issue, 2, "my-anvil")
+	args := buildBDArgs(decision, issue, 2, "my-anvil", "")
 
 	assertFlag(t, args, "--title", "Fix login bug")
 
@@ -64,7 +64,7 @@ func TestBuildBDArgs_NoAnvil(t *testing.T) {
 	}
 	issue := Issue{Repo: "owner/repo", Number: 1}
 
-	args := buildBDArgs(decision, issue, 2, "")
+	args := buildBDArgs(decision, issue, 2, "", "")
 	assert.NotContains(t, args, "--metadata", "expected no --metadata when anvilName is empty")
 }
 
@@ -144,7 +144,7 @@ func TestCreateBead_StoresMapping(t *testing.T) {
 	}
 	issue := Issue{Repo: "org/repo", Number: 7}
 
-	id, err := CreateBead(context.Background(), db, decision, issue, 2, "test-anvil", "")
+	id, err := CreateBead(context.Background(), db, decision, issue, 2, "test-anvil", "", "")
 	require.NoError(t, err)
 	assert.Equal(t, "Forge-test1", id)
 
@@ -175,7 +175,7 @@ func TestCreateBead_InsertsRowWhenMissing(t *testing.T) {
 	}
 	issue := Issue{Repo: "org/repo", Number: 99}
 
-	id, err := CreateBead(context.Background(), db, decision, issue, 1, "test-anvil", "")
+	id, err := CreateBead(context.Background(), db, decision, issue, 1, "test-anvil", "", "")
 	require.NoError(t, err)
 	assert.Equal(t, "Forge-new1", id)
 
@@ -202,7 +202,7 @@ func TestCreateBead_RunnerError(t *testing.T) {
 	}
 	issue := Issue{Repo: "org/repo", Number: 1}
 
-	_, err := CreateBead(context.Background(), nil, decision, issue, 2, "", "")
+	_, err := CreateBead(context.Background(), nil, decision, issue, 2, "", "", "")
 	assert.Error(t, err)
 }
 
@@ -249,7 +249,7 @@ func TestCreateBead_ValidationErrors(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := CreateBead(context.Background(), nil, tc.decision, issue, tc.priority, "", "")
+			_, err := CreateBead(context.Background(), nil, tc.decision, issue, tc.priority, "", "", "")
 			assert.Error(t, err, "expected validation error")
 		})
 	}

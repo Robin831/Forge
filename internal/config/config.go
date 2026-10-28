@@ -18,6 +18,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -327,6 +328,9 @@ type AnvilConfig struct {
 	// hosts that are not shipped and may pin packages from feeds the anvil
 	// cannot read). A solution that names an excluded project still restores it.
 	DepcheckExclude []string `mapstructure:"depcheck_exclude" yaml:"depcheck_exclude,omitempty"`
+	// Beads names the parent epic for the beads the Forge itself files in this
+	// anvil's pool (dependency updates, vulnerabilities, Wicket issues, ...).
+	Beads BeadsConfig `mapstructure:"beads" yaml:"beads,omitempty"`
 	// QuestgiverEnabled controls whether the QuestGiver monitor runs
 	// quests for this anvil. When nil (default), the global setting is used.
 	// Set to false to skip this anvil entirely.
@@ -2247,6 +2251,47 @@ func ParsePortRange(raw string) (int, int, error) {
 	return lo, hi, nil
 }
 
+// Bead kinds the Forge files on its own. Each is a key under an anvil's
+// beads.parents, overriding beads.default_parent for that kind.
+const (
+	BeadKindDepcheck   = "depcheck"   // consolidated dependency-update bead
+	BeadKindVulncheck  = "vulncheck"  // one bead per govulncheck finding
+	BeadKindWicket     = "wicket"     // a GitHub issue triaged into a bead
+	BeadKindQuestgiver = "questgiver" // a failed E2E quest
+	BeadKindChat       = "chat"       // a bead materialized from Forge chat
+	BeadKindLedger     = "ledger"     // a bead filed from the ledger TUI
+	BeadKindFollowup   = "followup"   // an issue a smith discovers while working
+)
+
+// BeadKinds lists every kind beads.parents accepts.
+var BeadKinds = []string{BeadKindDepcheck, BeadKindVulncheck, BeadKindWicket, BeadKindQuestgiver, BeadKindChat, BeadKindLedger, BeadKindFollowup}
+
+// BeadsConfig holds an anvil's settings for the beads the Forge creates.
+type BeadsConfig struct {
+	// DefaultParent is the epic every Forge-created bead is filed under
+	// (bd create --parent). Empty files beads with no parent and logs a warning.
+	DefaultParent string `mapstructure:"default_parent" yaml:"default_parent,omitempty"`
+	// Parents overrides DefaultParent per bead kind (see BeadKinds).
+	Parents map[string]string `mapstructure:"parents" yaml:"parents,omitempty"`
+}
+
+// ParentFor returns the parent epic for a bead of the given kind, or "".
+func (b BeadsConfig) ParentFor(kind string) string {
+	if p := strings.TrimSpace(b.Parents[kind]); p != "" {
+		return p
+	}
+	return strings.TrimSpace(b.DefaultParent)
+}
+
+// BeadParent returns the parent epic for a bead of kind filed in the named
+// anvil's pool, or "" when none is configured or the anvil is unknown.
+func (c *Config) BeadParent(anvil, kind string) string {
+	if c == nil {
+		return ""
+	}
+	return c.Anvils[anvil].Beads.ParentFor(kind)
+}
+
 // IsPreviewEnabledForAnvil reports whether Kiln previews may run for the named
 // anvil: the global preview_enabled gate must be on, and the anvil must not
 // have opted out via its own preview_enabled: false. An unknown anvil name, or
@@ -3439,6 +3484,11 @@ func (c *Config) Validate() []string {
 		}
 		if anvil.MaxSmiths < 0 {
 			errs = append(errs, fmt.Sprintf("anvil %q: max_smiths must be >= 0", name))
+		}
+		for kind := range anvil.Beads.Parents {
+			if !slices.Contains(BeadKinds, kind) {
+				errs = append(errs, fmt.Sprintf("anvil %q: beads.parents has unknown kind %q (valid: %s)", name, kind, strings.Join(BeadKinds, ", ")))
+			}
 		}
 
 		if _, err := vcs.ParsePlatform(anvil.Platform); err != nil {
