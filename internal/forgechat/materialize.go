@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Robin831/Forge/internal/config"
 	"github.com/Robin831/Forge/internal/executil"
 )
 
@@ -46,6 +47,10 @@ type MaterializeResult struct {
 // treat that as a validation failure (we already check before materialising,
 // but a stale resolver could miss one).
 type AnvilLookup func(name string) (path string, ok bool)
+
+// ParentLookup resolves the epic a materialized bead in the named anvil is
+// filed under, or "" for none.
+type ParentLookup func(anvil string) string
 
 // BdRunner runs a `bd <args...>` command in dir and returns its stdout (or
 // an error containing stderr). Tests inject a fake to avoid spawning real
@@ -100,6 +105,20 @@ func MaterializeEmission(
 	lookup AnvilLookup,
 	runner BdRunner,
 ) MaterializeResult {
+	return MaterializeEmissionWithParents(ctx, logger, env, lookup, nil, runner)
+}
+
+// MaterializeEmissionWithParents is MaterializeEmission with each bead filed
+// under the epic parents names for its anvil. A nil parents files every bead
+// with no parent, logging a warning per bead.
+func MaterializeEmissionWithParents(
+	ctx context.Context,
+	logger *slog.Logger,
+	env *EmissionEnvelope,
+	lookup AnvilLookup,
+	parents ParentLookup,
+	runner BdRunner,
+) MaterializeResult {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -152,7 +171,12 @@ func MaterializeEmission(
 			}
 		}
 
-		args := buildCreateArgs(bead, proposalToBead)
+		parent := ""
+		if parents != nil {
+			parent = parents(bead.Anvil)
+		}
+		args := append(buildCreateArgs(bead, proposalToBead),
+			executil.BdParentArgs(logger, bead.Anvil, config.BeadKindChat, parent)...)
 		opCtx, cancel := context.WithTimeout(ctx, bdCreatePerOp)
 		out, err := runner(opCtx, anvilPath, args...)
 		cancel()

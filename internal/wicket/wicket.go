@@ -618,8 +618,9 @@ func (m *Monitor) handleCreateBead(ctx context.Context, anvil string, issue Issu
 
 	m.mu.RLock()
 	anvilPath := m.cfg.Anvils[anvil].Path
+	parent := m.cfg.BeadParent(anvil, config.BeadKindWicket)
 	m.mu.RUnlock()
-	beadID, err := CreateBead(ctx, m.db, decision, issue, 2, anvil, anvilPath)
+	beadID, err := CreateBead(ctx, m.db, decision, issue, 2, anvil, anvilPath, parent)
 	if err != nil {
 		log.Printf("[wicket] %s: create bead for %s#%d: %v", anvil, issue.Repo, issue.Number, err)
 		_ = m.db.LogEvent(state.EventWicketError,

@@ -163,6 +163,7 @@ func (d *Daemon) startWebServer(ctx context.Context) error {
 		}
 		return out
 	})
+	srv.SetBeadParentLookup(d.beadParentFor(config.BeadKindChat))
 
 	go func() {
 		if err := srv.Start(ctx); err != nil && ctx.Err() == nil {

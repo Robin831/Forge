@@ -123,6 +123,18 @@ type Scanner struct {
 	timeout         time.Duration
 	govulncheckPath string // resolved path to govulncheck binary; set by New
 	available       bool   // true if govulncheck was found at construction time
+	parentFor       func(anvil string) string
+}
+
+// SetBeadParent overrides how a new bead's parent epic is found; without it the
+// anvils' beads config given to New is read. The daemon passes its live config.
+func (s *Scanner) SetBeadParent(fn func(anvil string) string) { s.parentFor = fn }
+
+func (s *Scanner) beadParent(anvil string) string {
+	if s.parentFor != nil {
+		return s.parentFor(anvil)
+	}
+	return s.anvils[anvil].Beads.ParentFor(config.BeadKindVulncheck)
 }
 
 // New creates a Scanner. timeout caps each govulncheck subprocess; pass 0 to
@@ -367,7 +379,7 @@ func (s *Scanner) CreateBeads(ctx context.Context, results []ScanResult) (int, e
 				continue
 			}
 
-			beadID, err := s.createBead(ctx, result.Path, title, description, priority)
+			beadID, err := s.createBead(ctx, result.Anvil, result.Path, title, description, priority)
 			if err != nil {
 				s.logger.Error("failed to create bead for vuln", "vuln", vuln.ID, "anvil", result.Anvil, "error", err)
 				continue
@@ -389,14 +401,8 @@ func (s *Scanner) CreateBeads(ctx context.Context, results []ScanResult) (int, e
 
 // createBead calls `bd create` to make a new issue and returns its id, or "" if
 // bd's response did not carry one.
-func (s *Scanner) createBead(ctx context.Context, anvilPath, title, description string, priority int) (string, error) {
-	cmd, cancel := executil.BdCommand(ctx, "create",
-		"--title", title,
-		"--description", description,
-		"--type", "bug",
-		fmt.Sprintf("--priority=%d", priority),
-		"--json",
-	)
+func (s *Scanner) createBead(ctx context.Context, anvil, anvilPath, title, description string, priority int) (string, error) {
+	cmd, cancel := executil.BdCommand(ctx, s.createArgs(anvil, title, description, priority)...)
 	defer cancel()
 	cmd.Dir = anvilPath
 
@@ -405,6 +411,19 @@ func (s *Scanner) createBead(ctx context.Context, anvilPath, title, description 
 		return "", fmt.Errorf("bd create: %w: %s", err, string(out))
 	}
 	return executil.BdCreatedBeadID(out), nil
+}
+
+// createArgs builds the `bd create` call for a vulnerability bead, under the
+// anvil's configured parent epic when it has one.
+func (s *Scanner) createArgs(anvil, title, description string, priority int) []string {
+	args := []string{"create",
+		"--title", title,
+		"--description", description,
+		"--type", "bug",
+		fmt.Sprintf("--priority=%d", priority),
+		"--json",
+	}
+	return append(args, executil.BdParentArgs(s.logger, anvil, config.BeadKindVulncheck, s.beadParent(anvil))...)
 }
 
 // buildBeadDescription formats a vulnerability into a detailed bead description.

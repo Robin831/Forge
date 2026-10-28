@@ -834,6 +834,14 @@ func (d *Daemon) config() *config.Config {
 	return d.cfg.Load()
 }
 
+// beadParentFor resolves an anvil's parent epic for beads of kind from the live
+// config, so a hot-reloaded beads.default_parent reaches the next bd create.
+func (d *Daemon) beadParentFor(kind string) func(anvil string) string {
+	return func(anvil string) string {
+		return d.config().BeadParent(anvil, kind)
+	}
+}
+
 // recordAnvilPoll updates the in-memory last-poll snapshot for the given anvil.
 // Called from the OnAnvilDone callback on every poll completion regardless of
 // outcome. Replaces the EventPoll event-table writes that used to provide this
@@ -1653,6 +1661,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 		}
 		d.depcheckScanner.UpdateAnvilTags(depcheckTags)
 		d.depcheckScanner.UpdateAnvilExcludes(depcheckExcludes(d.cfg.Load().Anvils))
+		d.depcheckScanner.SetBeadParent(d.beadParentFor(config.BeadKindDepcheck))
 		// Never sync an anvil's node_modules while a Kiln preview is linked
 		// into that checkout — `npm ci` deletes node_modules first, and the
 		// delete reaches through the link into the running preview.
@@ -1667,6 +1676,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 	// Start vulnerability scanning loop (respects vulncheck_enabled config)
 	if d.config().Settings.IsVulncheckEnabled() {
 		d.vulnScanner = vulncheck.New(d.db, d.logger, d.config().Anvils, d.config().Settings.VulncheckTimeout)
+		d.vulnScanner.SetBeadParent(d.beadParentFor(config.BeadKindVulncheck))
 		go d.vulnScanner.RunScheduled(ctx, d.config().Settings.VulncheckInterval)
 	} else {
 		d.logger.Info("vulncheck disabled via configuration (vulncheck_enabled: false)")
@@ -1793,6 +1803,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 		// check the preview is healthy before driving a browser at it.
 		d.questgiverMonitor.SetPreviewQuestAnvils(previewQuestPaths)
 		d.questgiverMonitor.SetPreviewLookup(d.previewQuestLookup)
+		d.questgiverMonitor.SetBeadParent(d.beadParentFor(config.BeadKindQuestgiver))
 		if questScanEnabled {
 			go func() {
 				if err := d.questgiverMonitor.Run(ctx); err != nil && err != context.Canceled {
@@ -11126,6 +11137,7 @@ func (d *Daemon) handleForceSmith(beadID, anvil, branch, userNote string, anvilC
 		Notes:               notes,
 		AnvilName:           anvil,
 		AnvilPath:           anvilCfg.Path,
+		FollowupParent:      anvilCfg.Beads.ParentFor(config.BeadKindFollowup),
 		WorktreePath:        wt.Path,
 		Branch:              branch,
 		Iteration:           iteration,

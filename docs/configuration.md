@@ -23,6 +23,10 @@ anvils:
     go_race_detection: false       # Per-anvil race detector override
     depcheck_enabled: true         # Set to false to skip depcheck for this anvil
     depcheck_exclude: ["tools/**"] # Extra globs depcheck skips (samples/** is always skipped)
+    beads:                         # Parent epic for the beads the Forge creates (see "Parent Epic for Forge-Created Beads")
+      default_parent: Heimdall-6tyq
+      parents:                     # Optional per-kind overrides
+        depcheck: Heimdall-deps
     hooks:                         # Pipeline stage hooks (optional)
       after_smith: './scripts/post-smith.sh'
       before_temper: './scripts/pre-temper.sh'  # runs for every temper invocation (pipeline, burnish, quench)
@@ -195,6 +199,51 @@ Each key under `anvils` is the anvil name. The name is used in CLI output, logs,
 | `stage_providers` | map[string][]string | `{}` (use global) | Per-anvil override for `settings.stage_providers`. When set, takes precedence over the global stage providers for beads in this anvil. Same keys/format. See [Settings](#settings) and the Wicket [Per-Anvil Settings](#per-anvil-settings) table. |
 | `assay` | object\|null | null (use global) | Per-anvil overlay for the top-level `assay` (AI PR review) config. Non-empty fields override the corresponding global values. See [Assay — AI Pull-Request Review](#assay--ai-pull-request-review) below. |
 | `changelog` | object\|null | null (built-in convention) | This repository's changelog-fragment convention, for the one question Forge asks about it: does a pushed branch carry the bead's fragment, i.e. did the prior worker finish. See [Changelog Fragment Convention](#changelog-fragment-convention) below. |
+| `beads.default_parent` | string | `""` | The epic every bead the Forge creates in this anvil's pool is filed under (`bd create --parent <id>`). Empty files them with no parent, as before, and logs one warning per created bead. See [Parent Epic for Forge-Created Beads](#parent-epic-for-forge-created-beads) below. |
+| `beads.parents` | map[string]string | `{}` | Per-kind overrides of `default_parent`. Keys: `depcheck`, `vulncheck`, `wicket`, `questgiver`, `chat`, `ledger`, `followup`; an unknown key fails validation. |
+
+### Parent Epic for Forge-Created Beads
+
+A bead without a parent epic does not show on the team's stand-up, so every bead
+the Forge files can be hung under one. Set it per anvil, since each anvil writes
+to its own pool:
+
+```yaml
+anvils:
+  heimdall:
+    beads:
+      default_parent: Heimdall-6tyq
+  munin:
+    beads:
+      default_parent: Fhi.Metadata-eeuey
+      parents:
+        followup: Fhi.Metadata-abc12   # optional: smith-discovered issues elsewhere
+```
+
+| Kind | What creates it | Type |
+|------|-----------------|------|
+| `depcheck` | the consolidated «Package updates starting …» bead | chore |
+| `vulncheck` | one bead per govulncheck finding | bug |
+| `wicket` | a GitHub issue Wicket triaged into a bead | task |
+| `questgiver` | a failed E2E quest | bug |
+| `chat` | a bead materialized from a Forge chat session | from the proposal, `task` when blank |
+| `ledger` | a bead filed from the `forge ledger` TUI | from the form, `task` when blank |
+| `followup` | an unrelated issue a smith finds while working; its prompt asks for `--parent` | bug/task |
+
+The flags are `--parent <id> --no-inherit-labels`: bd copies a parent's labels
+onto a new child unless told not to, and an epic's dispatch or `crucible` label
+must not reach a dependency bead. With a parent, bd names the bead
+`<parent>.<n>`. A parent that does not exist makes `bd create` fail, which shows
+as the kind's usual creation-failed event.
+
+When the setting is empty the bead is created exactly as before and the daemon
+logs `creating a bead with no parent epic` with the anvil and kind (the ledger
+TUI shows it in its event panel instead). No warning is logged for `followup`,
+since the smith creates those beads itself.
+
+Sub-beads that Schematic decomposes a bead into are not configured here: they
+inherit the decomposed bead's own parent epic, and are created without one (with
+a warning) when it has none or sits in a Crucible epic.
 
 ### Changelog Fragment Convention
 
@@ -2588,6 +2637,7 @@ The config is validated at load time. Errors are reported as a list:
 - Each anvil `path` must be non-empty
 - Each anvil `platform` (if set) must be one of: `github`, `gitlab`, `gitea`, `bitbucket`, `azuredevops` (note: `bitbucket` and `azuredevops` are recognised by the validator but not yet implemented)
 - Each anvil `max_smiths` must be >= 0
+- Each key under an anvil's `beads.parents` must be one of: `depcheck`, `vulncheck`, `wicket`, `questgiver`, `chat`, `ledger`, `followup`
 - `auto_dispatch` must be one of: `all`, `tagged`, `priority`, `off`
 - If `auto_dispatch: tagged`, then `auto_dispatch_tag` must be non-empty
 - If `auto_dispatch: priority`, then `auto_dispatch_min_priority` must be 0-4
@@ -2621,7 +2671,7 @@ The daemon watches `forge.yaml` via fsnotify. When the file changes, **only a su
 - `anvils.<name>.preview_quests` is re-read per quest run
 - `anvils.<name>.changelog.*` is re-read per stranded-branch completion probe, so a new fragment convention applies to the next one — which matters here, since the edit is usually made in response to an escalation that is still standing
 - `self_deploy.*` (the whole block) is re-read live: the version-skew check re-reads it every tick, and a deploy is handed the config as it stands at the moment it is triggered — so enabling self-deploy, or changing any of its knobs, needs no restart
-- Other per-anvil keys the daemon applies live: `auto_merge` (next ready-to-merge transition), `max_smiths`, `path`, `stage_providers`, `assay.*`, plus adding or removing an anvil entry
+- Other per-anvil keys the daemon applies live: `auto_merge` (next ready-to-merge transition), `max_smiths`, `path`, `stage_providers`, `assay.*`, `beads.*` (read by the next daemon-side `bd create`; a smith already running keeps the follow-up parent it was given), plus adding or removing an anvil entry
 - In-flight workers are **not** interrupted
 
 All other configuration changes (including `providers`, `rate_limit_backoff`, `daily_cost_limit`, `merge_strategy`, per-anvil keys not listed above, and scheduling fields not listed above) **require a daemon restart** to take effect.

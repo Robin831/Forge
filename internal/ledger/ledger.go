@@ -554,6 +554,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			label = "bead"
 		}
 		m.addEvent(EventInfo, fmt.Sprintf("Created %s", label))
+		if msg.NoParent {
+			m.addEvent(EventWarn, fmt.Sprintf("%s has no parent epic: set beads.default_parent for this anvil", label))
+		}
 		cmd := m.addToast(fmt.Sprintf("Created %s", label), false)
 		m.fetching = true
 		return m, tea.Batch(cmd, m.refreshBeads())
@@ -810,7 +813,8 @@ func (m *Model) executeFormAction() tea.Cmd {
 				return ActionErrorMsg{Err: fmt.Errorf("unknown anvil: %s", m.formAnvil)}
 			}
 		}
-		return NewBeadCmd(anvilPath, m.formTitle, m.formDescription, m.formType, parsePriority(m.formPriority))
+		parent := m.anvilConfigs[m.formAnvil].Beads.ParentFor(config.BeadKindLedger)
+		return NewBeadCmd(m.formAnvil, anvilPath, parent, m.formTitle, m.formDescription, m.formType, parsePriority(m.formPriority))
 
 	case FormEditBead:
 		if m.formTarget == nil {

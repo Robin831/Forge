@@ -8,6 +8,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/Robin831/Forge/internal/config"
 	"github.com/Robin831/Forge/internal/executil"
 	"github.com/Robin831/Forge/internal/state"
 )
@@ -49,6 +50,30 @@ type Monitor struct {
 	previewLookup PreviewLookup
 	logger        *slog.Logger
 	newExec       func() QuestExecutor
+	parentFor     func(anvil string) string // parent epic for a quest-failure bead; nil = none
+}
+
+// SetBeadParent sets how a quest-failure bead's parent epic is found. The
+// daemon passes a closure over its live config.
+func (m *Monitor) SetBeadParent(fn func(anvil string) string) {
+	m.mu.Lock()
+	m.parentFor = fn
+	m.mu.Unlock()
+}
+
+// createArgs builds the `bd create` call for a quest-failure bead, under the
+// anvil's configured parent epic when it has one.
+func (m *Monitor) createArgs(anvilName, title, description string) []string {
+	m.mu.RLock()
+	fn := m.parentFor
+	m.mu.RUnlock()
+	parent := ""
+	if fn != nil {
+		parent = fn(anvilName)
+	}
+	args := []string{"create", "--title", title, "--description", description,
+		"--type", "bug", "--priority=1", "--json"}
+	return append(args, executil.BdParentArgs(m.logger, anvilName, config.BeadKindQuestgiver, parent)...)
 }
 
 // New creates a Monitor that polls anvils for quests at the given interval.
@@ -266,9 +291,7 @@ func (m *Monitor) createBead(ctx context.Context, anvilName, anvilPath string, q
 
 	description := questBeadDescription(anvilName, quest, result, stepAction)
 
-	cmd, cancel := executil.BdCommand(ctx,
-		"create", "--title", title, "--description", description,
-		"--type", "bug", "--priority=1", "--json")
+	cmd, cancel := executil.BdCommand(ctx, m.createArgs(anvilName, title, description)...)
 	defer cancel()
 	cmd.Dir = anvilPath
 

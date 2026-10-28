@@ -131,6 +131,10 @@ type Server struct {
 	// "anvil has no auto_dispatch_tag configured" for every request.
 	anvilTags AnvilDispatchTagLister
 
+	// beadParents resolves the epic a chat-materialized bead is filed under.
+	// Optional: nil files those beads with no parent (and a warning each).
+	beadParents forgechat.ParentLookup
+
 	// bdRunner runs `bd` subprocesses for bead materialisation. Optional:
 	// nil falls back to forgechat.DefaultBdRunner. Tests inject a fake.
 	bdRunner BdRunnerFn
@@ -256,6 +260,12 @@ func (s *Server) SetAnvilRepoURLs(m map[string]string) {
 // the callback, after which apply-dispatch-tag requests are rejected.
 func (s *Server) SetAnvilDispatchTagLister(a AnvilDispatchTagLister) {
 	s.anvilTags = a
+}
+
+// SetBeadParentLookup installs the resolver for the epic chat-materialized
+// beads are filed under. nil files them with no parent.
+func (s *Server) SetBeadParentLookup(p forgechat.ParentLookup) {
+	s.beadParents = p
 }
 
 // SetBdRunner installs the bd subprocess shim used for bead materialisation.

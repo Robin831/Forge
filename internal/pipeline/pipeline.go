@@ -1243,6 +1243,7 @@ func Run(ctx context.Context, p Params) *Outcome {
 		IssueType:           p.Bead.IssueType,
 		Priority:            p.Bead.Priority,
 		Parent:              p.Bead.Parent,
+		FollowupParent:      p.AnvilConfig.Beads.ParentFor(config.BeadKindFollowup),
 		ExternalRef:         p.Bead.ExternalRef,
 		Branch:              wt.Branch,
 		AnvilName:           p.AnvilName,
