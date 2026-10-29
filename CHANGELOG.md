@@ -9,6 +9,12 @@ Unreleased changes live as fragments in `changelog.d/` and are assembled at
 release time by `scripts/assemble-changelog.sh`.
 
 
+## [0.37.2] - 2026-10-29
+
+### Changed
+
+- **The image runs Node.js 26.13.0 LTS, pinned** - Node 26 became LTS on 28 October 2026 and 26.13.0 is its first LTS release; it keeps the CVE-2026-111497 fix that 24.22.1 brought. `NODE_VERSION=26.13.0-1nodesource1` comes from NodeSource's node_26.x, and the frontend's `.nvmrc` is 26. The global Claude Code install allows its postinstall by name (npm 11 warns about scripts it was not told to allow), and `claude --version` fails the build if only the placeholder binary landed. Needs a release, then the devbox image and a roll. (DevInfra-jna.5)
+
 ## [0.37.1] - 2026-10-26
 
 ### Fixed
