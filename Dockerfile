@@ -12,7 +12,7 @@
 #                   (CGO_ENABLED=1 because bd's embedded Dolt requires CGO)
 #   * gh          - GitHub CLI
 #   * git         - worktree-aware
-#   * node 24     - LTS, required for the npm-installed claude CLI
+#   * node 26     - LTS, required for the npm-installed claude CLI
 #   * .NET 10 SDK - used by .NET anvils for build/lint/test
 #
 # Build-context expectations:
@@ -101,11 +101,11 @@ FROM mcr.microsoft.com/dotnet/sdk:10.0 AS runtime
 # Make apt fully non-interactive so package installs never block the build.
 ENV DEBIAN_FRONTEND=noninteractive
 
-# The exact Node.js 24 build from NodeSource. Pinned so a rebuild cannot reuse a cached older layer: 24.22.1 fixes
-# CVE-2026-111497 (Brotli decoder RCE). Bump it here: a new value invalidates the cached install layer.
-ARG NODE_VERSION=24.22.1-1nodesource1
+# The exact Node.js 26 LTS build from NodeSource (DevInfra-jna.5; 26.13.0 is the first LTS release, and carries the
+# CVE-2026-111497 fix from 26.12.1). Pinned so a rebuild cannot reuse a cached older layer; a new value invalidates it.
+ARG NODE_VERSION=26.13.0-1nodesource1
 
-# Install OS-level dependencies, Node.js 24 (NodeSource), and the GitHub CLI
+# Install OS-level dependencies, Node.js 26 (NodeSource), and the GitHub CLI
 # (cli.github.com). Both third-party apt repos are added via signed-by=
 # keyring entries in /etc/apt/keyrings as recommended by current Debian best
 # practice — no remote scripts are piped into bash.
@@ -120,11 +120,11 @@ RUN set -eux; \
         tini \
         tmux; \
     \
-    # Node.js 24 LTS via NodeSource keyring + sources.list entry (no curl|bash)
+    # Node.js 26 LTS via NodeSource keyring + sources.list entry (no curl|bash)
     install -d -m 0755 /etc/apt/keyrings; \
     curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
         | gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg; \
-    echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_24.x nodistro main" \
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_26.x nodistro main" \
         > /etc/apt/sources.list.d/nodesource.list; \
     \
     # GitHub CLI via the official stable apt repo
@@ -145,8 +145,11 @@ RUN set -eux; \
 # PATH and is invokable from Smith subprocesses regardless of cwd.
 # Pin the version via build ARG for reproducible builds; override at build
 # time with --build-arg CLAUDE_CODE_VERSION=x.y.z to upgrade intentionally.
+# Its postinstall links the native binary over a placeholder; npm 11 warns about install scripts it was not told to
+# allow, so allow this one by name. --version fails the build if only the placeholder landed.
 ARG CLAUDE_CODE_VERSION=@latest
-RUN npm install -g @anthropic-ai/claude-code${CLAUDE_CODE_VERSION} \
+RUN npm install -g --allow-scripts=@anthropic-ai/claude-code @anthropic-ai/claude-code${CLAUDE_CODE_VERSION} \
+    && claude --version \
     && npm cache clean --force
 
 # Shared libraries and fonts Playwright's bundled chromium needs to launch.
