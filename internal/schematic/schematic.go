@@ -26,6 +26,7 @@ import (
 	"github.com/Robin831/Forge/internal/poller"
 	"github.com/Robin831/Forge/internal/provider"
 	"github.com/Robin831/Forge/internal/smith"
+	"github.com/Robin831/Forge/internal/vardebeads"
 )
 
 // Action describes what the Schematic decided to do.
@@ -702,7 +703,7 @@ func createSubBeads(ctx context.Context, parent poller.Bead, tasks []subTaskVerd
 			"--type=task",
 			fmt.Sprintf("--priority=%d", parent.Priority),
 			"--deps", "blocks:"+parent.ID,
-			"--labels", strings.Join(append([]string{marker}, dispatchLabels(parent.Labels)...), ","),
+			"--labels", strings.Join(append([]string{marker}, partLabels(parent.Labels)...), ","),
 			"--json",
 		)
 		cancel()
@@ -1395,9 +1396,13 @@ func syncSubBeadIssues(ctx context.Context, cfg Config, parent poller.Bead, subs
 
 var dispatchLabel = regexp.MustCompile(`^forge[A-Za-z]+$`)
 
-// dispatchLabels are the parent's Forge dispatch labels (forgeSkybert, not the forge-decomposed marker). A part gets
-// them at create: through Varde, the one write that may give a bead a Forge label without beads_forge_label.
-func dispatchLabels(labels []string) []string {
+// partLabels are the parent's Forge dispatch labels (forgeSkybert, not the forge-decomposed marker) when bead writes go
+// through Varde: a part gets them at create, the one write there that may give a bead a Forge label (DevInfra-gbx.8).
+// With bd the daemon copies the tag afterwards, as before.
+func partLabels(labels []string) []string {
+	if !vardebeads.Enabled() {
+		return nil
+	}
 	var out []string
 	for _, l := range labels {
 		if dispatchLabel.MatchString(l) {

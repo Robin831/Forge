@@ -9681,15 +9681,16 @@ func (d *Daemon) resolveAnvilConfig(name string) (string, config.AnvilConfig, bo
 	return "", config.AnvilConfig{}, false
 }
 
-// restoreBeadAfterPause sets a bead back to status=open with no assignee and
-// takes off needs-human, the inverse of releaseBeadClaim, for the manual
-// retry/resume paths (forge queue retry, Hearth crucible resume). With bd it
-// also re-applies the anvil's auto_dispatch_tag, which beads escalated before
-// DevInfra-gbx.8 lost; Varde never lets the Forge add one, so there a person
-// hands such a bead over again with beads_forge_label.
+// restoreBeadAfterPause sets a bead back to status=open with no assignee, the
+// inverse of releaseBeadClaim, for the manual retry/resume paths (forge queue
+// retry, Hearth crucible resume). With bd it re-applies the auto_dispatch_tag
+// the escalation stripped; through Varde (DevInfra-gbx.8) the tag was kept, so
+// it takes off needs-human instead.
 func (d *Daemon) restoreBeadAfterPause(ctx context.Context, beadID string, anvilCfg config.AnvilConfig) ([]byte, error) {
-	args := []string{"update", beadID, "--status=open", "--assignee=", "--remove-label=" + poller.LabelNeedsHuman}
-	if anvilCfg.AutoDispatchTag != "" && !vardebeads.Enabled() {
+	args := []string{"update", beadID, "--status=open", "--assignee="}
+	if vardebeads.Enabled() {
+		args = append(args, "--remove-label="+poller.LabelNeedsHuman)
+	} else if anvilCfg.AutoDispatchTag != "" {
 		args = append(args, "--add-label="+anvilCfg.AutoDispatchTag)
 	}
 	args = append(args, "--json")
@@ -9705,10 +9706,10 @@ func (d *Daemon) restoreBeadAfterPause(ctx context.Context, beadID string, anvil
 // recovery acts as the fallback.
 //
 // When escalate is true (circuit-breaker escalation, needs_human=1 has been
-// set), the bead also gets the needs-human label, which takes it out of the
-// poller's `bd ready`. The dispatch tag stays: Varde never lets the Forge add
-// it back (DevInfra-gbx.8). On a transient failure (escalate=false) the bead is
-// only released, so the next poll can re-dispatch it (Forge-dua2).
+// set), the bead leaves the poller's `bd ready`: with bd the anvil's
+// auto_dispatch_tag is removed; through Varde (DevInfra-gbx.8), which never
+// lets the Forge add it back, the tag stays and the bead gets needs-human. On a
+// transient failure (escalate=false) it is only released (Forge-dua2).
 func (d *Daemon) releaseBeadClaim(beadID, anvil string, escalate bool) {
 	anvilCfg, ok := d.cfg.Load().Anvils[anvil]
 	if !ok || anvilCfg.Path == "" {
@@ -9721,8 +9722,11 @@ func (d *Daemon) releaseBeadClaim(beadID, anvil string, escalate bool) {
 		baseCtx = context.Background()
 	}
 	args := []string{"update", beadID, "--status=open", "--assignee="}
-	if escalate {
+	switch {
+	case escalate && vardebeads.Enabled():
 		args = append(args, "--add-label="+poller.LabelNeedsHuman)
+	case escalate && anvilCfg.AutoDispatchTag != "":
+		args = append(args, "--remove-label="+anvilCfg.AutoDispatchTag)
 	}
 	args = append(args, "--json")
 

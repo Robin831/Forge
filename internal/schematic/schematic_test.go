@@ -15,6 +15,7 @@ import (
 
 	"github.com/Robin831/Forge/internal/executil"
 	"github.com/Robin831/Forge/internal/poller"
+	"github.com/Robin831/Forge/internal/vardebeads"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -1101,6 +1102,8 @@ func TestCreateSubBeads_ReFetchFailureNamesTheFlagAndBdsOutput(t *testing.T) {
 // A part gets the parent's dispatch labels at create, the one way Varde lets the Forge give a bead a Forge label
 // (DevInfra-gbx.8); the forge-decomposed marker and other labels stay on the parent.
 func TestCreateSubBeads_CopiesDispatchLabelsAtCreate(t *testing.T) {
+	t.Setenv(vardebeads.EnvURL, "http://varde.invalid")
+	t.Setenv(vardebeads.EnvKeyFile, "/nowhere")
 	fake := newFakeRunner()
 	parent := poller.Bead{ID: "parent-1", Title: "Feature", Priority: 2, Labels: []string{"forgeSkybert", "forge-decomposed", "neste"}}
 	_, err := createSubBeads(context.Background(), parent, []subTaskVerdict{{Title: "Only task", Description: "Desc"}}, "/tmp", fake.run)
@@ -1114,4 +1117,19 @@ func TestCreateSubBeads_CopiesDispatchLabelsAtCreate(t *testing.T) {
 		}
 	}
 	assert.Equal(t, schematicChildLabel(parent.ID)+",forgeSkybert", labels)
+}
+
+// With bd a part is created with the marker only; the daemon copies the tag afterwards, as before DevInfra-gbx.8.
+func TestCreateSubBeads_WithBdOnlyTheMarker(t *testing.T) {
+	fake := newFakeRunner()
+	parent := poller.Bead{ID: "parent-1", Title: "Feature", Priority: 2, Labels: []string{"forgeSkybert"}}
+	_, err := createSubBeads(context.Background(), parent, []subTaskVerdict{{Title: "Only task", Description: "Desc"}}, "/tmp", fake.run)
+	require.NoError(t, err)
+	for _, call := range fake.calls {
+		for i, a := range call {
+			if len(call) > 0 && call[0] == "create" && a == "--labels" && i+1 < len(call) {
+				assert.Equal(t, schematicChildLabel(parent.ID), call[i+1])
+			}
+		}
+	}
 }

@@ -17,6 +17,7 @@ import (
 	"github.com/Robin831/Forge/internal/config"
 	"github.com/Robin831/Forge/internal/epic"
 	"github.com/Robin831/Forge/internal/executil"
+	"github.com/Robin831/Forge/internal/vardebeads"
 )
 
 // Bead represents an issue returned by 'bd ready --json'.
@@ -297,8 +298,8 @@ func (p *BeadPoller) Poll(ctx context.Context) ([]Bead, []AnvilResult) {
 	return all, results
 }
 
-// LabelNeedsHuman marks a bead the Forge gave up on. It keeps its dispatch label (Varde never lets the Forge add one
-// back), so the poller skips it until a person retries it (DevInfra-gbx.8).
+// LabelNeedsHuman marks a bead the Forge gave up on when its writes go through Varde: it keeps its dispatch label
+// (Varde never lets the Forge add one back), so the poller skips it until a person retries it (DevInfra-gbx.8).
 const LabelNeedsHuman = "needs-human"
 
 // pollAnvil runs 'bd ready --json --limit <n>' in an anvil directory and parses the output.
@@ -308,7 +309,10 @@ func (p *BeadPoller) pollAnvil(ctx context.Context, name string, anvil config.An
 	if limit <= 0 {
 		limit = 100
 	}
-	args := []string{"ready", "--json", "--limit", strconv.Itoa(limit), "--exclude-label", LabelNeedsHuman}
+	args := []string{"ready", "--json", "--limit", strconv.Itoa(limit)}
+	if vardebeads.Enabled() {
+		args = append(args, "--exclude-label", LabelNeedsHuman)
+	}
 	if p.UseLabelFilter && anvil.AutoDispatchTag != "" {
 		args = append(args, "--label", anvil.AutoDispatchTag)
 	}

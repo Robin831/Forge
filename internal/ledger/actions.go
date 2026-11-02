@@ -7,6 +7,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/Robin831/Forge/internal/executil"
+	"github.com/Robin831/Forge/internal/vardebeads"
 )
 
 // Action result messages returned by bead CRUD commands.
@@ -90,7 +91,11 @@ func ReopenBeadCmd(anvilPath, beadID string) tea.Cmd {
 		ctx, cancel := context.WithTimeout(context.Background(), executil.BdTimeout())
 		defer cancel()
 
-		args := []string{"reopen", beadID}
+		// Through Varde an update to open is a release, which would leave a closed bead closed (DevInfra-gbx.8).
+		args := []string{"update", beadID, "--status=open"}
+		if vardebeads.Enabled() {
+			args = []string{"reopen", beadID}
+		}
 		_, err := bdExec(ctx, anvilPath, args...)
 		if err != nil {
 			return ActionErrorMsg{Err: fmt.Errorf("reopen %s: %w", beadID, err)}
