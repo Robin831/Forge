@@ -160,7 +160,7 @@ func CreateDetached(ctx context.Context, anvilPath, beadID, branchName string) (
 	}
 
 	// Link node_modules from the main checkout (see the npm ci warning above).
-	if err := linkNodeModules(anvilPath, previewPath); err != nil {
+	if err := linkNodeModulesWith(anvilPath, previewPath, false); err != nil {
 		// Non-fatal: a preview service that needs dependencies will fail its
 		// health check with a clearer message than an aborted create.
 		slog.Warn("worktree: failed to link node_modules into preview",

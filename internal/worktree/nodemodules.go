@@ -2,6 +2,7 @@ package worktree
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -17,10 +18,16 @@ var nodeModulesDirs = []string{"", "web", "frontend", "client", "app", "ui"}
 // the main anvil checkout. This allows Smiths to run npm scripts without
 // a fresh npm ci, since the main checkout already has node_modules populated.
 //
-// Only directories where the main checkout has a node_modules are linked.
-// If the worktree already has a node_modules (e.g. from a reused worktree),
-// the existing directory is left untouched.
+// Only directories where the main checkout has a node_modules are linked, and
+// only when that install matches the worktree's package-lock.json. A reused
+// worktree's own directory is left untouched; its stale link is removed.
 func linkNodeModules(anvilPath, worktreePath string) error {
+	return linkNodeModulesWith(anvilPath, worktreePath, true)
+}
+
+// linkNodeModulesWith is linkNodeModules; with onlyMatching false (a preview, which has no install step and
+// would otherwise start without any node_modules) a stale install is still shared, with a warning.
+func linkNodeModulesWith(anvilPath, worktreePath string, onlyMatching bool) error {
 	for _, sub := range nodeModulesDirs {
 		srcNM := filepath.Join(anvilPath, sub, "node_modules")
 		info, err := os.Stat(srcNM)
@@ -30,12 +37,31 @@ func linkNodeModules(anvilPath, worktreePath string) error {
 
 		dstParent := filepath.Join(worktreePath, sub)
 		dstNM := filepath.Join(dstParent, "node_modules")
+		// Only a tree installed from this worktree's own lockfile is shared: Temper refuses npm ci on a link, so a
+		// stale shared tree would never be refreshed (DevInfra-rjb.3). Unknown (no lockfile) keeps the old sharing.
+		match, known, why := installedMatchesLock(srcNM, filepath.Join(dstParent, "package-lock.json"))
+		stale := known && !match
+		if stale && !onlyMatching {
+			slog.Warn("worktree: sharing an install that does not match this lockfile (no install step here)", "dir", sub, "worktree", worktreePath, "why", why)
+			stale = false
+		}
 
-		// If the destination already exists (dir, symlink, or junction), skip.
+		// An existing destination: a real directory is the worktree's own and stays; a link to a stale tree goes.
 		if _, err := os.Lstat(dstNM); err == nil {
+			if linked, _ := isReparsePoint(dstNM); linked && stale {
+				// os.Remove takes the link itself, never the anvil's tree behind it.
+				if err := os.Remove(dstNM); err != nil {
+					return fmt.Errorf("removing stale node_modules link %s: %w", sub, err)
+				}
+				slog.Info("worktree: node_modules link removed, the anvil's install does not match this lockfile; npm ci installs here", "dir", sub, "worktree", worktreePath, "why", why)
+			}
 			continue
 		} else if !os.IsNotExist(err) {
 			return fmt.Errorf("checking existing node_modules destination %s: %w", sub, err)
+		}
+		if stale {
+			slog.Info("worktree: node_modules not linked, the anvil's install does not match this lockfile; npm ci installs here", "dir", sub, "worktree", worktreePath, "why", why)
+			continue
 		}
 
 		// Ensure the parent directory exists in the worktree. For root-level
