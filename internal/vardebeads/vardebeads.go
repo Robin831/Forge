@@ -4,8 +4,12 @@
 package vardebeads
 
 import (
+	"bytes"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 )
@@ -360,3 +364,64 @@ func HandOverRefusal(label string) string {
 	}
 	return fmt.Sprintf("%s hands a bead to the Forge; through Varde that is beads_forge_label (the coordinator, past the forge-ready gate and the cap), not a label write", label)
 }
+
+// EnvSmithKeyFile names the smiths' own Varde key (beads:read,beads:file): it files a task or bug under the owner's
+// own open epic, notes, adds a plain label, never claims or closes. Under FORGE_VARDE_*, never inherited by sessions.
+const EnvSmithKeyFile = "FORGE_VARDE_SMITH_KEY_FILE"
+
+// SmithEnabled reports whether smiths may file beads through Varde with their own key.
+func SmithEnabled() bool { return Enabled() && os.Getenv(EnvSmithKeyFile) != "" }
+
+// SmithMCPConfig writes a Claude --mcp-config file naming Varde with the smiths' key and returns its path. It lives
+// in dir (the daemon's own state directory, never a worktree), mode 0600; the key is no more exposed than its mounted
+// file already is to the smith's uid.
+func SmithMCPConfig(dir string) (string, error) {
+	raw, err := os.ReadFile(os.Getenv(EnvSmithKeyFile))
+	if err != nil {
+		return "", fmt.Errorf("reading the smiths' Varde key: %w", err)
+	}
+	key := strings.TrimSpace(string(raw))
+	if key == "" {
+		return "", fmt.Errorf("the smiths' Varde key file is empty")
+	}
+	url := strings.TrimRight(os.Getenv(EnvURL), "/")
+	if err := checkURL(url); err != nil {
+		return "", err
+	}
+	body, err := json.Marshal(map[string]any{"mcpServers": map[string]any{SmithMCPServer: map[string]any{
+		"type": "http", "url": url + "/mcp", "headers": map[string]string{"Authorization": "Bearer " + key}}}})
+	if err != nil {
+		return "", err
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", err
+	}
+	if err := os.Chmod(dir, 0o700); err != nil {
+		return "", err
+	}
+	path := filepath.Join(dir, "smith-mcp.json")
+	// Unchanged (the usual case) is left alone; a change goes through a temp file of its own and a rename, so smiths
+	// spawned at the same time never read a half-written file.
+	if old, err := os.ReadFile(path); err == nil && bytes.Equal(old, body) {
+		return path, nil
+	}
+	tmp, err := os.CreateTemp(dir, "smith-mcp-*.json")
+	if err != nil {
+		return "", err
+	}
+	_, werr := tmp.Write(body)
+	cerr := tmp.Close()
+	if werr != nil || cerr != nil {
+		os.Remove(tmp.Name())
+		return "", errors.Join(werr, cerr)
+	}
+	if err := os.Rename(tmp.Name(), path); err != nil {
+		os.Remove(tmp.Name())
+		return "", err
+	}
+	return path, nil
+}
+
+// SmithMCPServer is the name the smiths' Varde server has in their session: its own, so a project's .mcp.json or a
+// user's own varde server cannot stand in for it.
+const SmithMCPServer = "varde-smith"

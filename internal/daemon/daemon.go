@@ -11139,6 +11139,7 @@ func (d *Daemon) handleForceSmith(beadID, anvil, branch, userNote string, anvilC
 		Notes:               notes,
 		AnvilName:           anvil,
 		AnvilPath:           anvilCfg.Path,
+		BeadsParent:         anvilCfg.BeadsParent,
 		WorktreePath:        wt.Path,
 		Branch:              branch,
 		Iteration:           iteration,
@@ -11156,7 +11157,7 @@ func (d *Daemon) handleForceSmith(beadID, anvil, branch, userNote string, anvilC
 
 	var lastExitCode int
 	for _, pv := range providers {
-		process, err := smith.SpawnWithProvider(ctx, wt.Path, promptText, logDir, pv, d.cfg.Load().Settings.ClaudeFlags)
+		process, err := smith.SpawnSmith(ctx, wt.Path, promptText, logDir, pv, d.cfg.Load().Settings.ClaudeFlags)
 		if err != nil {
 			d.logger.Warn("force_smith: spawn failed, trying next provider", "provider", pv.Label(), "error", err)
 			continue
