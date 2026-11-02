@@ -426,3 +426,20 @@ func TestBuild_ExternalRefOmittedWhenEmpty(t *testing.T) {
 
 	assert.NotContains(t, result, "**External Reference**")
 }
+
+// A forge on plain bd gives smiths 0.37.2's instructions (file beads with bd); through Varde they list what they find.
+func TestBuild_DiscoveredIssuesFollowTheBeadMode(t *testing.T) {
+	ctx := BeadContext{BeadID: "B-1", Title: "t", Description: "d", IssueType: "task", AnvilPath: t.TempDir(), WorktreePath: t.TempDir()}
+	plain, err := NewBuilder().Build(ctx)
+	require.NoError(t, err)
+	assert.Contains(t, plain, "bd create --json")
+	assert.Contains(t, plain, "--deps discovered-from:B-1")
+	assert.NotContains(t, plain, "## Discovered issues")
+
+	t.Setenv("FORGE_VARDE_URL", "http://varde.invalid")
+	t.Setenv("FORGE_VARDE_KEY_FILE", "/nowhere")
+	varde, err := NewBuilder().Build(ctx)
+	require.NoError(t, err)
+	assert.Contains(t, varde, "## Discovered issues")
+	assert.NotContains(t, varde, "bd create")
+}

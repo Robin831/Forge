@@ -141,6 +141,8 @@ func TestRunStep_WithoutTheEnvLeavesTheChildEnvAlone(t *testing.T) {
 
 // DevInfra-gbx.8: the build and tests run the agent's code, so they get no beads credentials, lock or no lock.
 func TestRunStep_NoBeadsCredentials(t *testing.T) {
+	t.Setenv("FORGE_VARDE_URL", "http://varde.invalid")
+	t.Setenv("FORGE_VARDE_KEY_FILE", "/nowhere")
 	t.Setenv(heavyLockEnv, filepath.Join(t.TempDir(), "lock"))
 	t.Setenv("BEADS_DOLT_PASSWORD", "secret")
 	path := filepath.Join(t.TempDir(), "dotnet")

@@ -291,6 +291,8 @@ func TestQuestRunQuestNotFound(t *testing.T) {
 
 // DevInfra-gbx.8: quest setup and teardown run in the anvil without the beads database credentials.
 func TestRunShellCmd_NoBeadsCredentials(t *testing.T) {
+	t.Setenv("FORGE_VARDE_URL", "http://varde.invalid")
+	t.Setenv("FORGE_VARDE_KEY_FILE", "/nowhere")
 	if runtime.GOOS == "windows" {
 		t.Skip("POSIX shell expansion")
 	}

@@ -965,8 +965,8 @@ func buildChildEnv(parentEnv []string, providerEnv map[string]string, gitEnv []s
 		if executil.IsGitRepoEnvVar(key) {
 			continue
 		}
-		// No beads database access for the agent: its bead writes go through Varde (DevInfra-gbx.8).
-		if executil.IsBeadsCredentialEnv(e) {
+		// No beads database access for the agent when the Forge's writes go through Varde (DevInfra-gbx.8).
+		if executil.KeepsBeadsCredentialsOut() && executil.IsBeadsCredentialEnv(e) {
 			continue
 		}
 		skip := false

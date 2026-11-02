@@ -1,6 +1,10 @@
 package executil
 
-import "strings"
+import (
+	"strings"
+
+	"github.com/Robin831/Forge/internal/vardebeads"
+)
 
 // beadsCredentialKeys are the environment variables that point a process at the beads database: bd's own
 // (BEADS_DOLT_*, host, user and password among them), its credentials file, and Dolt's remote password. Agent sessions
@@ -25,8 +29,15 @@ func IsBeadsCredentialEnv(entry string) bool {
 	return false
 }
 
-// WithoutBeadsCredentials returns env without the entries IsBeadsCredentialEnv matches.
+// KeepsBeadsCredentialsOut reports whether agent sessions are kept from the beads database: only when the Forge's own
+// bead writes go through Varde. A forge on plain bd keeps 0.37.2's behaviour, its smiths filing beads with bd.
+func KeepsBeadsCredentialsOut() bool { return vardebeads.Enabled() }
+
+// WithoutBeadsCredentials returns env without the entries IsBeadsCredentialEnv matches, through Varde; else env as is.
 func WithoutBeadsCredentials(env []string) []string {
+	if !KeepsBeadsCredentialsOut() {
+		return append([]string(nil), env...)
+	}
 	out := make([]string, 0, len(env))
 	for _, entry := range env {
 		if !IsBeadsCredentialEnv(entry) {

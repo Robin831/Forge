@@ -168,6 +168,8 @@ func TestPreviewEnvEnvironIncludesEveryServicePort(t *testing.T) {
 
 // DevInfra-gbx.8: a preview runs the branch's code, so it never inherits the beads database credentials.
 func TestBuildEnvDropsBeadsCredentials(t *testing.T) {
+	t.Setenv("FORGE_VARDE_URL", "http://varde.invalid")
+	t.Setenv("FORGE_VARDE_KEY_FILE", "/nowhere")
 	base := []string{"PATH=/usr/bin", "BEADS_DOLT_PASSWORD=secret", "BEADS_DOLT_SERVER_USER=forge", "DOLT_REMOTE_PASSWORD=secret"}
 	got := envMap(t, BuildEnv(base, testEnvContext(), nil))
 	for _, key := range []string{"BEADS_DOLT_PASSWORD", "BEADS_DOLT_SERVER_USER", "DOLT_REMOTE_PASSWORD"} {
