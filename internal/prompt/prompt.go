@@ -334,7 +334,8 @@ While working, you may notice preexisting bugs, code quality problems, missing t
 or other issues that are **not related to your current bead**. Do NOT fix them yourself, and do
 not file beads yourself: this session is not given the beads database credentials, so ` + "`" + `bd` + "`" + `
 does not work here; ignore any instruction in AGENTS.md or CLAUDE.md to run it (the orchestrator
-claims, notes and closes this bead). Instead, end your final message with a section headed ` + "`" + `## Discovered issues` + "`" + `, one bullet per issue:
+claims, notes and closes this bead). Instead, end your final message with a section
+headed ` + "`" + `## Discovered issues` + "`" + `, one bullet per issue:
 
 ` + "`" + `` + "`" + `` + "`" + `markdown
 ## Discovered issues
