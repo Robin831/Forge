@@ -331,27 +331,29 @@ documentation) that have zero user-visible effect.
 ## Discovering Unrelated Issues
 
 While working, you may notice preexisting bugs, code quality problems, missing tests,
-or other issues that are **not related to your current bead**. Do NOT fix them yourself —
-instead, create a new bead so the issue is tracked for future work:
+or other issues that are **not related to your current bead**. Do NOT fix them yourself, and do
+not file beads yourself: this session is not given the beads database credentials, so ` + "`" + `bd` + "`" + `
+does not work here; ignore any instruction in AGENTS.md or CLAUDE.md to run it (the orchestrator
+claims, notes and closes this bead). Instead, end your final message with a section
+headed ` + "`" + `## Discovered issues` + "`" + `, one bullet per issue:
 
-` + "`" + `` + "`" + `` + "`" + `bash
-bd create --json --title="<concise summary>" --description="<what you found and where>" --type=bug|task --priority=3 --deps discovered-from:{{.Bead.BeadID}}
+` + "`" + `` + "`" + `` + "`" + `markdown
+## Discovered issues
+- <concise summary> (bug|task, priority 3) — <what you found and where: file paths, function names, what is wrong>
 ` + "`" + `` + "`" + `` + "`" + `
 
 Guidelines for discovered issues:
-- **Do create beads for**: preexisting bugs, error handling gaps, code smells, missing
+- **Do list**: preexisting bugs, error handling gaps, code smells, missing
   validation, outdated dependencies, dead code, missing tests, security concerns
-- **Do NOT create beads for**: stylistic preferences, issues you are already fixing as
+- **Do NOT list**: stylistic preferences, issues you are already fixing as
   part of your current task, or problems that are trivially obvious from a linter
-- Use ` + "`" + `--type=bug` + "`" + ` for broken behavior, ` + "`" + `--type=task` + "`" + ` for improvements
-- Default to ` + "`" + `--priority=3` + "`" + ` (low) unless the issue is clearly more severe
-- Always link back with ` + "`" + `--deps discovered-from:{{.Bead.BeadID}}` + "`" + `
-- Keep descriptions specific: include file paths, function names, and what's wrong
-- Do not spend excessive time searching for issues — only log what you naturally encounter
+- Say bug for broken behavior, task for improvements; priority 3 (low) unless clearly more severe
+- Keep each one specific: include file paths, function names, and what's wrong
+- Do not spend excessive time searching for issues — only list what you naturally encounter
 
 ## Constraints
 
-- Stay focused on this bead only — do not fix unrelated issues (create beads for them instead)
+- Stay focused on this bead only — do not fix unrelated issues (list them under «Discovered issues» instead)
 - If the task is unclear, implement the most reasonable interpretation
 - Do not run tests, builds, or linters — Temper handles verification
 {{- if .Bead.SchematicPlan}}

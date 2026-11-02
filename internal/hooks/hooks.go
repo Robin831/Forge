@@ -88,7 +88,8 @@ func RunHook(ctx context.Context, workerID, hookName, cmd string, env HookEnv) e
 	// those descendants survive the pipeline and hold worktree files open.
 	executil.SetProcessGroup(c)
 	c.Dir = env.WorktreePath
-	c.Env = append(FilterForgeEnv(os.Environ()), env.Environ()...)
+	// Hooks are the repository's scripts, which the agent can edit: no beads credentials for them (DevInfra-gbx.8).
+	c.Env = append(FilterForgeEnv(executil.WithoutBeadsCredentials(os.Environ())), env.Environ()...)
 	out, err := c.CombinedOutput()
 	// Best-effort tree kill so any lingering children do not outlive the hook.
 	_ = executil.KillProcessTree(c)

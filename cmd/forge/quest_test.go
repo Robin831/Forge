@@ -1,8 +1,10 @@
 package main
 
 import (
+	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -284,5 +286,25 @@ func TestQuestRunQuestNotFound(t *testing.T) {
 	}
 	if got := err.Error(); !strings.Contains(got, "no quests found") {
 		t.Errorf("expected 'no quests found' in error, got: %s", got)
+	}
+}
+
+// DevInfra-gbx.8: quest setup and teardown run in the anvil without the beads database credentials.
+func TestRunShellCmd_NoBeadsCredentials(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX shell expansion")
+	}
+	t.Setenv("BEADS_DOLT_PASSWORD", "secret")
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "env.txt")
+	if err := runShellCmd(context.Background(), "echo pw=${BEADS_DOLT_PASSWORD:-none} > "+marker, dir); err != nil {
+		t.Fatalf("runShellCmd: %v", err)
+	}
+	data, err := os.ReadFile(marker)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "pw=none") {
+		t.Errorf("the password reached the quest command: %q", data)
 	}
 }

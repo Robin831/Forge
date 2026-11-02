@@ -781,3 +781,14 @@ func testHome(t *testing.T) string {
 	}
 	return home
 }
+
+// DevInfra-gbx.8: an agent session gets no beads database access; its bead writes go through Varde.
+func TestBuildChildEnv_StripsBeadsCredentials(t *testing.T) {
+	parent := []string{"PATH=/usr/bin", "BEADS_DOLT_PASSWORD=secret", "BEADS_DOLT_SERVER_USER=forge", "DOLT_REMOTE_PASSWORD=secret", "HOME=/home/forge"}
+	got := buildChildEnv(parent, nil, nil)
+	for _, e := range got {
+		assert.False(t, strings.HasPrefix(e, "BEADS_DOLT_") || strings.HasPrefix(e, "DOLT_REMOTE_PASSWORD="), "leaked %q", e)
+	}
+	assert.Contains(t, got, "PATH=/usr/bin")
+	assert.Contains(t, got, "HOME=/home/forge")
+}

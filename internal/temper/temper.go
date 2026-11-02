@@ -812,8 +812,10 @@ func runStep(ctx context.Context, worktreePath string, step Step, defaultTimeout
 	// worktree recreation for the same bead.
 	executil.SetProcessGroup(cmd)
 	cmd.Dir = dir
+	// The build and tests run the agent's code: no beads database access for it either (DevInfra-gbx.8).
+	cmd.Env = executil.WithoutBeadsCredentials(os.Environ())
 	if heavyLockHeld {
-		cmd.Env = append(os.Environ(), heavyLockHeldEnv+"=1")
+		cmd.Env = append(cmd.Env, heavyLockHeldEnv+"=1")
 	}
 
 	// Cancel the whole GROUP, not just the direct child. exec.CommandContext's
