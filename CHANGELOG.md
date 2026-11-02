@@ -9,6 +9,12 @@ Unreleased changes live as fragments in `changelog.d/` and are assembled at
 release time by `scripts/assemble-changelog.sh`.
 
 
+## [0.37.3] - 2026-11-02
+
+### Security
+
+- **Agent sessions no longer inherit the beads database credentials** - smiths and every other agent session the Forge starts, the build and test steps, pipeline hooks, preview (kiln) commands and quest setup that run the branch's code, and the ledger's AI helper no longer get `BEADS_DOLT_*` (the Dolt host, user and password), `BEADS_CREDENTIALS_FILE`, `BEADS_PROXIED_SERVER_EXTERNAL_PASSWORD` or `DOLT_REMOTE_PASSWORD` from the daemon. This is hygiene, not a boundary: the boundary is a read-only database user for the Forge. Until a session writes beads through Varde, the smith lists unrelated issues it finds under «Discovered issues» in its final message, which ends up in the smith's log, instead of running `bd create`. (DevInfra-gbx.8)
+
 ## [0.37.2] - 2026-10-29
 
 ### Changed
