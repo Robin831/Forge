@@ -11,6 +11,7 @@ import (
 	"github.com/Robin831/Forge/internal/config"
 	"github.com/Robin831/Forge/internal/executil"
 	"github.com/Robin831/Forge/internal/state"
+	"github.com/Robin831/Forge/internal/vardebeads"
 )
 
 // bdUpdateRunner is the function used to execute `bd update`. Tests replace this
@@ -192,6 +193,10 @@ func (m *Monitor) dispatchBead(ctx context.Context, anvil string, wi state.Wicke
 // handleLabelComment applies a tag to the bead and posts a follow-up comment
 // re-asking about dispatch.
 func (m *Monitor) handleLabelComment(ctx context.Context, anvil string, wi state.WicketIssue, tag string) {
+	if why := vardebeads.HandOverRefusal(tag); why != "" {
+		log.Printf("[wicket:dispatch] %s: %s not labelled %q: %s", anvil, wi.BeadID, tag, why)
+		return
+	}
 	if err := bdUpdateRunner(ctx, wi.BeadID, []string{"--add-label", tag}); err != nil {
 		log.Printf("[wicket:dispatch] %s: bd update tag %q for %s: %v", anvil, tag, wi.BeadID, err)
 		return

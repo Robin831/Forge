@@ -11,6 +11,7 @@ import (
 
 	"github.com/Robin831/Forge/internal/executil"
 	"github.com/Robin831/Forge/internal/state"
+	"github.com/Robin831/Forge/internal/vardebeads"
 )
 
 // issueKey uniquely identifies a GitHub issue.
@@ -86,7 +87,8 @@ func buildBDArgs(decision TriageDecision, issue Issue, priority int, anvilName s
 		"--silent",
 	}
 
-	if anvilName != "" {
+	// Unread anywhere, and Varde has no metadata field (DevInfra-gbx.8): with bd only.
+	if anvilName != "" && !vardebeads.Enabled() {
 		meta, err := json.Marshal(map[string]string{"anvil_name": anvilName})
 		if err == nil {
 			args = append(args, "--metadata", string(meta))

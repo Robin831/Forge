@@ -46,11 +46,16 @@ type ReviewFilterConfig struct {
 	FilterPatternGrep bool
 }
 
+// DefaultMaxRulesPerReview is the shipped checklist cap; config mirrors it as
+// DefaultWardenMaxRulesPerReview.
+const DefaultMaxRulesPerReview = 60
+
 // DefaultReviewFilterConfig returns the default review-time filter
-// configuration: all three filters enabled, MaxRules=30, UseAllRules=false.
+// configuration: all three filters enabled, MaxRules=DefaultMaxRulesPerReview,
+// UseAllRules=false.
 func DefaultReviewFilterConfig() ReviewFilterConfig {
 	return ReviewFilterConfig{
-		MaxRules:          30,
+		MaxRules:          DefaultMaxRulesPerReview,
 		UseAllRules:       false,
 		FilterPathGlob:    true,
 		FilterCategory:    true,
@@ -106,10 +111,20 @@ func categoriesForFile(path string) map[string]bool {
 	}
 	switch {
 	case strings.HasSuffix(lower, ".cs"):
-		return map[string]bool{
+		cats := map[string]bool{
 			"error-handling": true, "security": true, "concurrency": true,
 			"performance": true, "style": true, "other": true,
 		}
+		// C# is also the UI language of a Blazor app and the language of its
+		// test projects: a ui rule must reach a component's code-behind, and a
+		// testing rule a test project's helpers, not only files named *Tests.cs.
+		if isBlazorUICSharp(lower) {
+			cats["ui"] = true
+		}
+		if inTestProject(path) {
+			cats["testing"] = true
+		}
+		return cats
 	case strings.HasSuffix(lower, ".tsx"),
 		strings.HasSuffix(lower, ".ts"):
 		// TypeScript is a full application language, not just a styling
@@ -128,6 +143,34 @@ func categoriesForFile(path string) map[string]bool {
 		return map[string]bool{"other": true, "security": true}
 	}
 	return allCanonicalCategories()
+}
+
+// isBlazorUICSharp reports whether a lower-cased .cs path is Blazor UI code: a
+// component's code-behind (.razor.cs), or a file in a Components, Pages or
+// Shared folder, where Blazor keeps its components.
+func isBlazorUICSharp(lower string) bool {
+	if strings.HasSuffix(lower, ".razor.cs") {
+		return true
+	}
+	for _, seg := range strings.Split(filepath.ToSlash(filepath.Dir(lower)), "/") {
+		if seg == "components" || seg == "pages" || seg == "shared" {
+			return true
+		}
+	}
+	return false
+}
+
+// inTestProject reports whether a path lies in a test project: a folder named
+// test or tests in any case, or one named the .NET way, Foo.Tests or FooTests.
+// The suffix is matched in its own case so that Contests or Latests is not one.
+func inTestProject(path string) bool {
+	for _, seg := range strings.Split(filepath.ToSlash(filepath.Dir(path)), "/") {
+		lower := strings.ToLower(seg)
+		if lower == "test" || lower == "tests" || strings.HasSuffix(lower, ".tests") || (strings.HasSuffix(seg, "Tests") && len(seg) > len("Tests")) {
+			return true
+		}
+	}
+	return false
 }
 
 func allCanonicalCategories() map[string]bool {

@@ -63,3 +63,6 @@ func inferAnvilPath(wtPath string) string {
 	}
 	return ""
 }
+
+// InferAnvilPath is inferAnvilPath for Temper: "" when the worktree is not under <anvil>/.workers.
+func InferAnvilPath(wtPath string) string { return inferAnvilPath(wtPath) }

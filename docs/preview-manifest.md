@@ -193,7 +193,8 @@ Every service sees the port of *every* service, so a client can be told where
 its api listens without either side knowing the allocation in advance. The name
 is uppercased and `-` becomes `_` (`api-gateway` → `FORGE_PREVIEW_PORT_API_GATEWAY`).
 
-Precedence, from weakest to strongest: the daemon's own environment, the
+Precedence, from weakest to strongest: the daemon's own environment (less the beads
+database credentials, `BEADS_DOLT_*` and the like, which no preview inherits), the
 service's `env`, then the `FORGE_*` context. A manifest can therefore override
 an inherited variable (that is how a service is pointed at its preview
 database) but cannot override the context variables — those describe which

@@ -15,6 +15,7 @@ import (
 
 	"github.com/Robin831/Forge/internal/executil"
 	"github.com/Robin831/Forge/internal/poller"
+	"github.com/Robin831/Forge/internal/vardebeads"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -844,10 +845,10 @@ func TestCreateSubBeads_AppliesMarkerLabel(t *testing.T) {
 		hasLabelsFlag := false
 		hasMarker := false
 		for i, a := range call {
-			if a == "--labels" && i+1 < len(call) && call[i+1] == marker {
+			if a == "--labels" && i+1 < len(call) && strings.HasPrefix(call[i+1], marker) {
 				hasLabelsFlag = true
 			}
-			if a == marker {
+			if strings.Split(a, ",")[0] == marker {
 				hasMarker = true
 			}
 		}
@@ -1096,4 +1097,46 @@ func TestCreateSubBeads_ReFetchFailureNamesTheFlagAndBdsOutput(t *testing.T) {
 	assert.Contains(t, out, executil.BdIncludeDependentsFlag,
 		"the warning must name the flag an old bd is missing")
 	assert.Contains(t, out, "unknown flag", "the warning must carry bd's own output")
+}
+
+// A part gets the parent's dispatch labels at create, the one way Varde lets the Forge give a bead a Forge label
+// (DevInfra-gbx.8); the forge-decomposed marker and other labels stay on the parent.
+func TestCreateSubBeads_CopiesDispatchLabelsAtCreate(t *testing.T) {
+	t.Setenv(vardebeads.EnvURL, "http://varde.invalid")
+	t.Setenv(vardebeads.EnvKeyFile, "/nowhere")
+	fake := newFakeRunner()
+	parent := poller.Bead{ID: "parent-1", Title: "Feature", Priority: 2, Labels: []string{"forgeSkybert", "forge-decomposed", "neste"}}
+	_, err := createSubBeads(context.Background(), parent, []subTaskVerdict{{Title: "Only task", Description: "Desc"}}, "/tmp", fake.run)
+	require.NoError(t, err)
+	var labels string
+	for _, call := range fake.calls {
+		for i, a := range call {
+			if len(call) > 0 && call[0] == "create" && a == "--labels" && i+1 < len(call) {
+				labels = call[i+1]
+			}
+		}
+	}
+	assert.Equal(t, schematicChildLabel(parent.ID)+",forgeSkybert,"+poller.LabelWiring, labels, "held while its waits are set")
+	var released bool
+	for _, call := range fake.calls {
+		if len(call) >= 4 && call[0] == "update" && call[2] == "--remove-label" && call[3] == poller.LabelWiring {
+			released = true
+		}
+	}
+	assert.True(t, released, "the hold comes off once every wait is set")
+}
+
+// With bd a part is created with the marker only; the daemon copies the tag afterwards, as before DevInfra-gbx.8.
+func TestCreateSubBeads_WithBdOnlyTheMarker(t *testing.T) {
+	fake := newFakeRunner()
+	parent := poller.Bead{ID: "parent-1", Title: "Feature", Priority: 2, Labels: []string{"forgeSkybert"}}
+	_, err := createSubBeads(context.Background(), parent, []subTaskVerdict{{Title: "Only task", Description: "Desc"}}, "/tmp", fake.run)
+	require.NoError(t, err)
+	for _, call := range fake.calls {
+		for i, a := range call {
+			if len(call) > 0 && call[0] == "create" && a == "--labels" && i+1 < len(call) {
+				assert.Equal(t, schematicChildLabel(parent.ID), call[i+1])
+			}
+		}
+	}
 }

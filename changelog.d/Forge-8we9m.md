@@ -1,2 +1,0 @@
-category: Changed
-- **Assay turn budget re-measured under the 24-turn cap** - `docs/assay-turn-budget.md` reports the four figures Forge-55eq asked for over 32 runs since the raise deployed: 0% retry rate, 0% deep-session cap-hit rate, no `error_max_cost` stops, and no turn-killed sessions (the costliest deep session was 19% of the $3.00 ceiling). The pressure on the cap had already gone three weeks before the raise, so no setting changes. The per-pass extracts and `measurements/extract-assay-passes.py`, which reproduces them, are committed. (Forge-8we9m)

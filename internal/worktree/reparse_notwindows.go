@@ -22,6 +22,11 @@ func unlinkReparsePoints(root string) error {
 		}
 
 		if d.Type()&fs.ModeSymlink == 0 {
+			// A worktree's own node_modules: RemoveAll never follows a symlink here, and its .bin links and
+			// workspace links are part of the install a reused worktree keeps (DevInfra-rjb.3).
+			if d.IsDir() && d.Name() == "node_modules" {
+				return filepath.SkipDir
+			}
 			return nil
 		}
 
@@ -35,4 +40,13 @@ func unlinkReparsePoints(root string) error {
 		}
 		return nil
 	})
+}
+
+// isReparsePoint reports whether path is a symlink: the only directory link outside Windows.
+func isReparsePoint(path string) (bool, error) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return false, err
+	}
+	return info.Mode()&os.ModeSymlink != 0, nil
 }

@@ -67,6 +67,7 @@ import (
 	"github.com/Robin831/Forge/internal/state"
 	"github.com/Robin831/Forge/internal/temper"
 	"github.com/Robin831/Forge/internal/textfmt"
+	"github.com/Robin831/Forge/internal/vardebeads"
 	"github.com/Robin831/Forge/internal/vcs"
 	"github.com/Robin831/Forge/internal/vcs/github"
 	"github.com/Robin831/Forge/internal/vulncheck"
@@ -790,6 +791,7 @@ func New(cfg *config.Config, configPath string) (*Daemon, error) {
 	d.costLimitLoggedDate.Store("")
 	d.cfg.Store(cfg)
 	d.warnAssayProviderConflicts(cfg)
+	d.warnVardeDispatch(cfg)
 	applyWardenFilterConfig(cfg)
 	applyPricingConfig(cfg)
 	applyWorktreeTimeoutConfig(cfg)
@@ -867,6 +869,26 @@ func (d *Daemon) anvilPollSnapshots() map[string]anvilPollSnapshot {
 		out[k] = v
 	}
 	return out
+}
+
+// assayPRBody is the PR's body for assay's change context, so rules about the
+// PR description have the description to check. Only the anvil's registered
+// provider is asked (no fallback); none, one that cannot read bodies, or a
+// failed read gives "" and the review runs without it.
+func (d *Daemon) assayPRBody(ctx context.Context, anvil, worktreePath string, prNumber int) string {
+	d.vcsProvidersMu.RLock()
+	provider := d.vcsProviders[anvil]
+	d.vcsProvidersMu.RUnlock()
+	reader, ok := provider.(vcs.PRBodyReader)
+	if !ok {
+		return ""
+	}
+	body, err := reader.PRBody(ctx, worktreePath, prNumber)
+	if err != nil {
+		d.logger.Warn("assay: could not read the PR body; reviewing without it", "anvil", anvil, "pr", prNumber, "error", err)
+		return ""
+	}
+	return body
 }
 
 // vcsForAnvil returns the VCS provider for the given anvil name.
@@ -1632,6 +1654,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 			}
 		}
 		d.depcheckScanner.UpdateAnvilTags(depcheckTags)
+		d.depcheckScanner.UpdateAnvilExcludes(depcheckExcludes(d.cfg.Load().Anvils))
 		// Never sync an anvil's node_modules while a Kiln preview is linked
 		// into that checkout — `npm ci` deletes node_modules first, and the
 		// delete reaches through the link into the running preview.
@@ -2267,6 +2290,7 @@ func (d *Daemon) runAssayReview(ctx context.Context, anvil, anvilPath, beadID st
 			BaselineSHA: baselineSHA,
 			BeadID:      beadID,
 			Title:       d.db.BeadTitle(beadID, anvil),
+			Description: d.assayPRBody(ctx, anvil, worktreePath, prNumber),
 			WorkDir:     worktreePath,
 			LogKey:      logKey,
 			OnPassLog:   d.assayLogPathRecorder(workerID),
@@ -7321,6 +7345,9 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 		if tag == "" {
 			return errorResponse(fmt.Sprintf("anvil %q has no auto_dispatch_tag configured", tp.Anvil))
 		}
+		if why := vardebeads.HandOverRefusal(tag); why != "" {
+			return errorResponse(why)
+		}
 		reqID, _ := d.reqTracker.Track()
 		go func() {
 			tagCmd, tagCancel := executil.BdCommand(d.runCtx, "update", tp.BeadID, "--add-label", tag)
@@ -7360,6 +7387,9 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 			gerund = "removing"
 		default:
 			return errorResponse(fmt.Sprintf("invalid action %q (want add|remove)", up.Action))
+		}
+		if why := vardebeads.HandOverRefusal(up.Label); up.Action == "add" && why != "" {
+			return errorResponse(why)
 		}
 		cfgSnapshot := d.cfg.Load()
 		anvilCfg, ok := cfgSnapshot.Anvils[up.Anvil]
@@ -9652,14 +9682,16 @@ func (d *Daemon) resolveAnvilConfig(name string) (string, config.AnvilConfig, bo
 	return "", config.AnvilConfig{}, false
 }
 
-// restoreBeadAfterPause sets a bead back to status=open with no assignee and,
-// if the anvil uses an auto_dispatch_tag, re-applies that label. This is the
-// inverse of releaseBeadClaim and is used by the manual retry/resume paths
-// (forge queue retry, Hearth crucible resume) so beads on tagged anvils
-// become visible to bd ready again instead of sitting silently un-tagged.
+// restoreBeadAfterPause sets a bead back to status=open with no assignee, the
+// inverse of releaseBeadClaim, for the manual retry/resume paths (forge queue
+// retry, Hearth crucible resume). With bd it re-applies the auto_dispatch_tag
+// the escalation stripped; through Varde (DevInfra-gbx.8) the tag was kept, so
+// it takes off needs-human instead.
 func (d *Daemon) restoreBeadAfterPause(ctx context.Context, beadID string, anvilCfg config.AnvilConfig) ([]byte, error) {
 	args := []string{"update", beadID, "--status=open", "--assignee="}
-	if anvilCfg.AutoDispatchTag != "" {
+	if vardebeads.Enabled() {
+		args = append(args, "--remove-label="+poller.LabelNeedsHuman)
+	} else if anvilCfg.AutoDispatchTag != "" {
 		args = append(args, "--add-label="+anvilCfg.AutoDispatchTag)
 	}
 	args = append(args, "--json")
@@ -9674,14 +9706,12 @@ func (d *Daemon) restoreBeadAfterPause(ctx context.Context, beadID string, anvil
 // release fails (bd error, missing anvil config), a warning is logged — orphan
 // recovery acts as the fallback.
 //
-// When stripTag is true, the anvil's auto_dispatch_tag is also removed. This
-// is reserved for circuit-breaker escalation (needs_human=1 has been set) where
-// we want the bead out of the `bd ready` queue. On a transient failure
-// (stripTag=false), the tag is preserved so `bd ready` continues to surface the
-// bead on tagged-dispatch anvils and the next poll can re-dispatch it. Stripping
-// the tag on every transient failure caused tagged-dispatch beads to be silently
-// stranded after a single failure (Forge-dua2).
-func (d *Daemon) releaseBeadClaim(beadID, anvil string, stripTag bool) {
+// When escalate is true (circuit-breaker escalation, needs_human=1 has been
+// set), the bead leaves the poller's `bd ready`: with bd the anvil's
+// auto_dispatch_tag is removed; through Varde (DevInfra-gbx.8), which never
+// lets the Forge add it back, the tag stays and the bead gets needs-human. On a
+// transient failure (escalate=false) it is only released (Forge-dua2).
+func (d *Daemon) releaseBeadClaim(beadID, anvil string, escalate bool) {
 	anvilCfg, ok := d.cfg.Load().Anvils[anvil]
 	if !ok || anvilCfg.Path == "" {
 		d.logger.Warn("cannot release bead claim: anvil not found in config", "bead", beadID, "anvil", anvil)
@@ -9693,7 +9723,10 @@ func (d *Daemon) releaseBeadClaim(beadID, anvil string, stripTag bool) {
 		baseCtx = context.Background()
 	}
 	args := []string{"update", beadID, "--status=open", "--assignee="}
-	if stripTag && anvilCfg.AutoDispatchTag != "" {
+	switch {
+	case escalate && vardebeads.Enabled():
+		args = append(args, "--add-label="+poller.LabelNeedsHuman)
+	case escalate && anvilCfg.AutoDispatchTag != "":
 		args = append(args, "--remove-label="+anvilCfg.AutoDispatchTag)
 	}
 	args = append(args, "--json")
@@ -9734,7 +9767,8 @@ func (d *Daemon) applyDecomposedOutcome(bead poller.Bead, anvilCfg config.AnvilC
 		// When the anvil uses tagged auto_dispatch and the parent has the
 		// dispatch tag, copy that tag to each child so they are eligible for
 		// immediate dispatch by the poller.
-		if anvilCfg.AutoDispatch == "tagged" && anvilCfg.AutoDispatchTag != "" {
+		// Through Varde the parts got the tag at create (split_from); adding it now would be refused.
+		if anvilCfg.AutoDispatch == "tagged" && anvilCfg.AutoDispatchTag != "" && !vardebeads.Enabled() {
 			if d.labelAdder == nil {
 				d.logger.Warn("labelAdder is nil; skipping auto_dispatch tag propagation to child beads",
 					"parent", beadID, "tag", anvilCfg.AutoDispatchTag)
@@ -9885,7 +9919,8 @@ func (d *Daemon) ensureExternalRef(anvilPath string, bead poller.Bead) string {
 	if ref := d.fetchExternalRef(anvilPath, bead.ID); ref != "" {
 		return ref
 	}
-	if d.githubPusher == nil {
+	// Through Varde there is no bd github push (Robin's choice (c), DevInfra-gbx.8): no ref is normal.
+	if d.githubPusher == nil || vardebeads.Enabled() {
 		return ""
 	}
 	out, err := d.githubPusher(anvilPath, bead.ID)
@@ -10421,6 +10456,11 @@ func (d *Daemon) updateAnvilPaths(old, new *config.Config) {
 				changed = true
 				break
 			}
+			// Also detect a change to depcheck_exclude alone
+			if depcheckExcludeChanged(oldAnvil, newAnvil) {
+				changed = true
+				break
+			}
 			// Also detect questgiver_enabled toggle
 			oldQG := oldAnvil.QuestgiverEnabled
 			newQG := newAnvil.QuestgiverEnabled
@@ -10482,6 +10522,7 @@ func (d *Daemon) updateAnvilPaths(old, new *config.Config) {
 	if d.depcheckScanner != nil {
 		depcheckPaths := filterDepcheckAnvils(paths, new.Anvils)
 		d.depcheckScanner.UpdateAnvilPaths(depcheckPaths)
+		d.depcheckScanner.UpdateAnvilExcludes(depcheckExcludes(new.Anvils))
 		d.logger.Info("updated depcheck anvil paths", "count", len(depcheckPaths))
 	}
 
@@ -10734,6 +10775,23 @@ func (a *adventurerExecutorAdapter) Execute(ctx context.Context, quest *questgiv
 		Duration:     r.Duration,
 		Screenshots:  r.Screenshots,
 	}
+}
+
+// depcheckExcludeChanged reports whether an anvil's depcheck_exclude list differs,
+// so a hot reload that touches only that list still reaches the scanner.
+func depcheckExcludeChanged(old, new config.AnvilConfig) bool {
+	return !slices.Equal(old.DepcheckExclude, new.DepcheckExclude)
+}
+
+// depcheckExcludes collects each anvil's depcheck_exclude globs for the scanner.
+func depcheckExcludes(anvilCfgs map[string]config.AnvilConfig) map[string][]string {
+	out := make(map[string][]string, len(anvilCfgs))
+	for name, ac := range anvilCfgs {
+		if len(ac.DepcheckExclude) > 0 {
+			out[name] = ac.DepcheckExclude
+		}
+	}
+	return out
 }
 
 // filterDepcheckAnvils returns the subset of anvils that should be scanned by
@@ -11081,6 +11139,7 @@ func (d *Daemon) handleForceSmith(beadID, anvil, branch, userNote string, anvilC
 		Notes:               notes,
 		AnvilName:           anvil,
 		AnvilPath:           anvilCfg.Path,
+		BeadsParent:         anvilCfg.BeadsParent,
 		WorktreePath:        wt.Path,
 		Branch:              branch,
 		Iteration:           iteration,
@@ -11098,7 +11157,7 @@ func (d *Daemon) handleForceSmith(beadID, anvil, branch, userNote string, anvilC
 
 	var lastExitCode int
 	for _, pv := range providers {
-		process, err := smith.SpawnWithProvider(ctx, wt.Path, promptText, logDir, pv, d.cfg.Load().Settings.ClaudeFlags)
+		process, err := smith.SpawnSmith(ctx, wt.Path, promptText, logDir, pv, d.cfg.Load().Settings.ClaudeFlags)
 		if err != nil {
 			d.logger.Warn("force_smith: spawn failed, trying next provider", "provider", pv.Label(), "error", err)
 			continue

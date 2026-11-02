@@ -22,6 +22,7 @@
 //   - anvils.<name>.auto_merge (takes effect on next ready-to-merge transition)
 //   - anvils.<name>.max_smiths (changes to existing anvils' concurrency limit)
 //   - anvils.<name>.path (changes to existing anvils' path; updates bellows and depcheck)
+//   - anvils.<name>.depcheck_exclude (the extra globs depcheck skips; read by the next scan)
 //   - anvils.<name>.preview_enabled (read per preview_start, so the next start obeys it)
 //   - anvils.<name>.preview_auto (read on the next ready-to-merge transition)
 //   - anvils.<name>.preview_quests (read per quest run)
@@ -49,6 +50,7 @@ import (
 	"log/slog"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -533,6 +535,11 @@ func applyChanges(old, new *config.Config) []string {
 			}
 			if !reflect.DeepEqual(oldAnvil.Assay, newAnvil.Assay) {
 				changes = append(changes, fmt.Sprintf("anvil %s assay config changed", name))
+			}
+			// reload() stores the new config only when a change is reported, so the
+			// daemon's depcheck update never runs for an undetected exclude edit.
+			if !slices.Equal(oldAnvil.DepcheckExclude, newAnvil.DepcheckExclude) {
+				changes = append(changes, fmt.Sprintf("anvil %s depcheck_exclude: %q → %q", name, oldAnvil.DepcheckExclude, newAnvil.DepcheckExclude))
 			}
 			// The per-anvil preview tri-states are resolved per request
 			// (config.IsPreviewEnabledForAnvil and friends), so swapping the
