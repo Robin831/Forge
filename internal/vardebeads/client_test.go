@@ -67,3 +67,18 @@ func TestClientDoesNotRetryACreateAfterA5xx(t *testing.T) {
 		t.Errorf("err=%v calls=%d", err, calls)
 	}
 }
+
+// A redirect is answered as it is, never followed: it could carry the bearer key to plain http or another host.
+func TestClientNeverFollowsARedirect(t *testing.T) {
+	followed := false
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { followed = r.Header.Get("Authorization") != "" }))
+	defer target.Close()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target.URL+"/mcp", http.StatusTemporaryRedirect)
+	}))
+	defer srv.Close()
+	c := &Client{URL: srv.URL, Key: "k", HTTP: NoRedirects(srv.Client())}
+	if _, err := c.Call(context.Background(), "beads_note", map[string]any{}); err == nil || followed {
+		t.Errorf("err=%v followed=%v", err, followed)
+	}
+}

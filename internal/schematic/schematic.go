@@ -813,6 +813,17 @@ func createSubBeads(ctx context.Context, parent poller.Bead, tasks []subTaskVerd
 	// Close the parent bead only when all downstream block transfers succeeded.
 	// If any transfer failed, keep the parent open so downstream beads remain
 	// correctly gated by the parent until the dependency can be retried.
+	// Through Varde the parts were held from the create; every wait is set now, so they may be dispatched. A part
+	// whose hold cannot come off stays held, which a person sees, rather than running early.
+	if allBlocksTransferred && len(partLabels(parent.Labels)) > 0 {
+		for _, sb := range subBeads {
+			hCtx, hCancel := context.WithTimeout(ctx, executil.BdTimeout())
+			if out, err := run(hCtx, anvilPath, "update", sb.ID, "--remove-label", poller.LabelWiring); err != nil {
+				log.Printf("[schematic:%s] Warning: %s stays held (%s): %v: %s", parent.ID, sb.ID, poller.LabelWiring, err, out)
+			}
+			hCancel()
+		}
+	}
 	if !allBlocksTransferred {
 		log.Printf("[schematic:%s] Skipping parent close: not all downstream block transfers succeeded", parent.ID)
 		return subBeads, nil
@@ -1398,8 +1409,8 @@ func syncSubBeadIssues(ctx context.Context, cfg Config, parent poller.Bead, subs
 var dispatchLabel = regexp.MustCompile(`^forge[A-Za-z]+$`)
 
 // partLabels are the parent's Forge dispatch labels (forgeSkybert, not the forge-decomposed marker) when bead writes go
-// through Varde: a part gets them at create, the one write there that may give a bead a Forge label (DevInfra-gbx.8).
-// With bd the daemon copies the tag afterwards, as before.
+// through Varde, with the wiring hold: a part gets them at create, the one write there that may give a bead a Forge
+// label (DevInfra-gbx.8). With bd the daemon copies the tag afterwards, as before.
 func partLabels(labels []string) []string {
 	if !vardebeads.Enabled() {
 		return nil
@@ -1409,6 +1420,9 @@ func partLabels(labels []string) []string {
 		if dispatchLabel.MatchString(l) {
 			out = append(out, l)
 		}
+	}
+	if len(out) > 0 {
+		out = append(out, poller.LabelWiring)
 	}
 	return out
 }

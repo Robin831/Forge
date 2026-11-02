@@ -107,7 +107,8 @@ and monitors pull requests (Bellows) across registered repositories (Anvils).`,
 				if abs, absErr := filepath.Abs(cfgPath); cfgPath != "" && absErr == nil {
 					cfgPath = abs
 				}
-				executil.SetVardeWrites(exe, cfgPath)
+				base, _ := os.Getwd()
+				executil.SetVardeWrites(exe, cfgPath, base)
 			} else {
 				fmt.Fprintf(os.Stderr, "Error: bead writes go through Varde, but the forge binary cannot be found: %v\n", err)
 				os.Exit(1)

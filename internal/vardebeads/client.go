@@ -45,7 +45,7 @@ func NewClientFromEnv() (*Client, error) {
 	if key == "" {
 		return nil, fmt.Errorf("the Varde key file %s is empty", file)
 	}
-	return &Client{URL: url, Key: key, HTTP: &http.Client{Timeout: 60 * time.Second}}, nil
+	return &Client{URL: url, Key: key, HTTP: NoRedirects(&http.Client{Timeout: 60 * time.Second})}, nil
 }
 
 type toolResult struct {
@@ -54,6 +54,12 @@ type toolResult struct {
 	} `json:"content"`
 	Structured json.RawMessage `json:"structuredContent"`
 	IsError    bool            `json:"isError"`
+}
+
+// NoRedirects makes c answer a redirect as it is: following one could carry the bearer key to another scheme or host.
+func NoRedirects(c *http.Client) *http.Client {
+	c.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	return c
 }
 
 func isLoopback(host string) bool { return host == "localhost" || host == "127.0.0.1" || host == "::1" }

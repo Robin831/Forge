@@ -303,6 +303,10 @@ func (p *BeadPoller) Poll(ctx context.Context) ([]Bead, []AnvilResult) {
 // (Varde never lets the Forge add one back), so the poller skips it until a person retries it (DevInfra-gbx.8).
 const LabelNeedsHuman = "needs-human"
 
+// LabelWiring holds a split bead's part through Varde while its waits are set: it carries its Forge label from the
+// create, so without the hold a poll could dispatch it before the part it waits on (DevInfra-gbx.8).
+const LabelWiring = "schematic-wiring"
+
 // pollAnvil runs 'bd ready --json --limit <n>' in an anvil directory and parses the output.
 // The limit is taken from BdReadyLimit (default 100 when unset/non-positive).
 func (p *BeadPoller) pollAnvil(ctx context.Context, name string, anvil config.AnvilConfig) ([]Bead, error) {
@@ -314,7 +318,7 @@ func (p *BeadPoller) pollAnvil(ctx context.Context, name string, anvil config.An
 	// In the query too, so escalated beads never fill the limit; the image's bd has the flag (the Go filter below
 	// stays, for a bd that ignores it).
 	if vardebeads.Enabled() {
-		args = append(args, "--exclude-label", LabelNeedsHuman)
+		args = append(args, "--exclude-label", LabelNeedsHuman+","+LabelWiring)
 	}
 	if p.UseLabelFilter && anvil.AutoDispatchTag != "" {
 		args = append(args, "--label", anvil.AutoDispatchTag)
@@ -340,7 +344,7 @@ func (p *BeadPoller) pollAnvil(ctx context.Context, name string, anvil config.An
 	if vardebeads.Enabled() {
 		kept := beads[:0]
 		for _, b := range beads {
-			if !slices.ContainsFunc(b.Labels, func(l string) bool { return strings.EqualFold(l, LabelNeedsHuman) }) {
+			if !slices.ContainsFunc(b.Labels, func(l string) bool { return strings.EqualFold(l, LabelNeedsHuman) || strings.EqualFold(l, LabelWiring) }) {
 				kept = append(kept, b)
 			}
 		}

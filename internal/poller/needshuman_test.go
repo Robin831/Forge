@@ -17,7 +17,7 @@ func TestPollSkipsNeedsHumanOnlyThroughVarde(t *testing.T) {
 		t.Skip("uses a shell script as bd")
 	}
 	dir := t.TempDir()
-	ready := `[{"id":"B-1","title":"a","status":"open","labels":["forgeSkybert"]},{"id":"B-2","title":"b","status":"open","labels":["forgeSkybert","Needs-Human"]}]`
+	ready := `[{"id":"B-1","title":"a","status":"open","labels":["forgeSkybert"]},{"id":"B-2","title":"b","status":"open","labels":["forgeSkybert","Needs-Human"]},{"id":"B-3","title":"c","status":"open","labels":["forgeSkybert","schematic-wiring"]}]`
 	if err := os.WriteFile(filepath.Join(dir, "bd"), []byte("#!/bin/sh\necho '"+ready+"'\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -33,7 +33,7 @@ func TestPollSkipsNeedsHumanOnlyThroughVarde(t *testing.T) {
 		}
 		return out
 	}
-	if got := ids(); len(got) != 2 {
+	if got := ids(); len(got) != 3 {
 		t.Errorf("with bd: %v", got)
 	}
 	t.Setenv(vardebeads.EnvURL, "https://varde.invalid")

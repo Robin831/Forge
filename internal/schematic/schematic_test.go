@@ -1116,7 +1116,14 @@ func TestCreateSubBeads_CopiesDispatchLabelsAtCreate(t *testing.T) {
 			}
 		}
 	}
-	assert.Equal(t, schematicChildLabel(parent.ID)+",forgeSkybert", labels)
+	assert.Equal(t, schematicChildLabel(parent.ID)+",forgeSkybert,"+poller.LabelWiring, labels, "held while its waits are set")
+	var released bool
+	for _, call := range fake.calls {
+		if len(call) >= 4 && call[0] == "update" && call[2] == "--remove-label" && call[3] == poller.LabelWiring {
+			released = true
+		}
+	}
+	assert.True(t, released, "the hold comes off once every wait is set")
 }
 
 // With bd a part is created with the marker only; the daemon copies the tag afterwards, as before DevInfra-gbx.8.

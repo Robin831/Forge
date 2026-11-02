@@ -7,11 +7,11 @@ import (
 )
 
 func TestVardeWritesRouteOnlyWrites(t *testing.T) {
-	SetVardeWrites("/opt/forge", "/etc/forge.yaml")
-	defer SetVardeWrites("", "")
+	SetVardeWrites("/opt/forge", "/etc/forge.yaml", "/srv")
+	defer SetVardeWrites("", "", "")
 	write, cancel := BdCommand(context.Background(), "update", "B-1", "--append-notes", "x")
 	defer cancel()
-	if got := strings.Join(write.Args, " "); got != "/opt/forge --config /etc/forge.yaml bd-varde -- update B-1 --append-notes x" {
+	if got := strings.Join(write.Args, " "); got != "/opt/forge --config /etc/forge.yaml bd-varde --base /srv -- update B-1 --append-notes x" {
 		t.Errorf("a write runs %q", got)
 	}
 	read, cancel2 := BdCommand(context.Background(), "show", "B-1", "--json")
@@ -19,7 +19,7 @@ func TestVardeWritesRouteOnlyWrites(t *testing.T) {
 	if read.Args[0] != "bd" {
 		t.Errorf("a read runs %q, want bd", read.Args)
 	}
-	SetVardeWrites("", "")
+	SetVardeWrites("", "", "")
 	off, cancel3 := BdCommand(context.Background(), "close", "B-1")
 	defer cancel3()
 	if off.Args[0] != "bd" {
