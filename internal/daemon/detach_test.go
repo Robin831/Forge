@@ -360,3 +360,22 @@ func TestDrainPendingAction_DropsConsecutiveDetachedActions(t *testing.T) {
 	require.NoError(t, err)
 	assert.Nil(t, row, "the action parked behind two detached ones must still run")
 }
+
+// A manual run on a PR muted before it started keeps its push; a stop issued during any run blocks it.
+func TestStoppedSinceDispatch(t *testing.T) {
+	d, db := newDetachTestDaemon(t)
+	mutedID := insertDetachPR(t, db, 21, "TEST-muted")
+	freshID := insertDetachPR(t, db, 22, "TEST-fresh")
+	require.NoError(t, db.UpdatePRBellowsDetached(mutedID, true))
+
+	manualOnMuted := d.stoppedSinceDispatch(lifecycle.ActionRequest{Action: lifecycle.ActionRebase, Anvil: "munin", PRNumber: 21, IsManual: true})
+	assert.False(t, manualOnMuted(), "a manual run on an already-muted PR still pushes")
+
+	auto := d.stoppedSinceDispatch(lifecycle.ActionRequest{Action: lifecycle.ActionRebase, Anvil: "munin", PRNumber: 22})
+	manual := d.stoppedSinceDispatch(lifecycle.ActionRequest{Action: lifecycle.ActionRebase, Anvil: "munin", PRNumber: 22, IsManual: true})
+	assert.False(t, auto())
+	assert.False(t, manual())
+	require.NoError(t, db.UpdatePRBellowsDetached(freshID, true))
+	assert.True(t, auto(), "a stop during an automatic run blocks the push")
+	assert.True(t, manual(), "a stop during a manual run blocks the push")
+}

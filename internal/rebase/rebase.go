@@ -289,6 +289,10 @@ func (p *Params) pushRebased(startHead string) error {
 			return nil
 		}
 	}
+	// Again after the fetch: a stop issued while it ran must still win.
+	if p.Stopped != nil && p.Stopped() {
+		return ErrBellowsStopped
+	}
 	lease := fmt.Sprintf("--force-with-lease=refs/heads/%s:%s", p.Branch, startHead)
 	if res := runGit(p.WorktreePath, "push", lease, "origin", "HEAD:refs/heads/"+p.Branch); res.err != nil {
 		return fmt.Errorf("push refused (origin/%s moved since the rebase started, or the push failed): %s", p.Branch, firstLine(res.output))

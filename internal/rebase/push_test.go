@@ -132,6 +132,25 @@ func TestPushRebased_StoppedBellowsSkipsThePush(t *testing.T) {
 	}
 }
 
+func TestPushRebased_StopDuringTheFetchSkipsThePush(t *testing.T) {
+	r := newPushRepo(t)
+	p := r.params()
+	calls := 0
+	p.Stopped = func() bool { calls++; return calls > 1 } // stopped after the first check, as during the fetch
+	before := r.head()
+	start, err := p.startFromRemote()
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.rebase()
+	if err := p.pushRebased(start); !errors.Is(err, ErrBellowsStopped) {
+		t.Fatalf("error = %v, want ErrBellowsStopped", err)
+	}
+	if got := r.head(); got != before {
+		t.Errorf("origin head moved to %s after the stop", got)
+	}
+}
+
 // A worktree behind origin (a commit pushed before the job) is fast-forwarded,
 // so the rebase carries that commit instead of dropping it.
 func TestStartFromRemote_BehindIsFastForwarded(t *testing.T) {

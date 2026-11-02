@@ -122,3 +122,15 @@ func detachKillSummary(prNumber int, killed []string) string {
 	}
 	return fmt.Sprintf("PR #%d: stopped %d in-flight fix worker(s) on detach: %v", prNumber, len(killed), killed)
 }
+
+// stoppedSinceDispatch reports, just before a fix or rebase pushes, that `forge bellows stop` detached the PR. A
+// manual run on a PR muted before it started keeps its override (as in actionBlockedByDetach); only a stop issued
+// during that run blocks its push. A lookup that fails does not stop it.
+func (d *Daemon) stoppedSinceDispatch(req lifecycle.ActionRequest) func() bool {
+	detached := func() bool {
+		pr, err := d.db.GetPRByNumber(req.Anvil, req.PRNumber)
+		return err == nil && pr != nil && pr.BellowsDetached
+	}
+	mutedAtStart := req.IsManual && detached()
+	return func() bool { return !mutedAtStart && detached() }
+}
