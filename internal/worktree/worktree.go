@@ -236,6 +236,8 @@ func (m *Manager) CreateWithOptions(ctx context.Context, anvilPath, beadID strin
 		if err := git(anvilPath, "fetch", "origin"); err != nil {
 			return nil, fmt.Errorf("git fetch: %w", err)
 		}
+		// The anvil's checkout and shared installs follow origin, so new worktrees can share them (DevInfra-rjb.4).
+		syncAnvil(ctx, anvilPath)
 	}
 
 	if branchExists(ctx, anvilPath, targetBranch) && !opts.ResetBranch {
