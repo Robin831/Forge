@@ -32,10 +32,8 @@ func NewClientFromEnv() (*Client, error) {
 	if url == "" || file == "" {
 		return nil, fmt.Errorf("%s and %s must both be set", EnvURL, EnvKeyFile)
 	}
-	// The key is a bearer token: never over plain http, except to this machine.
-	parsed, err := neturl.Parse(url)
-	if err != nil || parsed.Host == "" || (parsed.Scheme != "https" && !(parsed.Scheme == "http" && isLoopback(parsed.Hostname()))) {
-		return nil, fmt.Errorf("%s must be an https URL", EnvURL)
+	if err := checkURL(url); err != nil {
+		return nil, err
 	}
 	raw, err := os.ReadFile(file)
 	if err != nil {
@@ -60,6 +58,15 @@ type toolResult struct {
 func NoRedirects(c *http.Client) *http.Client {
 	c.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	return c
+}
+
+// checkURL: the key is a bearer token, never sent over plain http except to this machine.
+func checkURL(url string) error {
+	parsed, err := neturl.Parse(url)
+	if err != nil || parsed.Host == "" || (parsed.Scheme != "https" && !(parsed.Scheme == "http" && isLoopback(parsed.Hostname()))) {
+		return fmt.Errorf("%s must be an https URL", EnvURL)
+	}
+	return nil
 }
 
 func isLoopback(host string) bool { return host == "localhost" || host == "127.0.0.1" || host == "::1" }

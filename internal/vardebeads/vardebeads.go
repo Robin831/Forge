@@ -4,8 +4,10 @@
 package vardebeads
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 )
@@ -359,4 +361,43 @@ func HandOverRefusal(label string) string {
 		return ""
 	}
 	return fmt.Sprintf("%s hands a bead to the Forge; through Varde that is beads_forge_label (the coordinator, past the forge-ready gate and the cap), not a label write", label)
+}
+
+// EnvSmithKeyFile names the smiths' own Varde key (beads:read,beads:file): it files a task or bug under the owner's
+// own open epic and nothing else. Under FORGE_VARDE_*, so agent sessions never inherit the variable.
+const EnvSmithKeyFile = "FORGE_VARDE_SMITH_KEY_FILE"
+
+// SmithEnabled reports whether smiths may file beads through Varde with their own key.
+func SmithEnabled() bool { return Enabled() && os.Getenv(EnvSmithKeyFile) != "" }
+
+// SmithMCPConfig writes a Claude --mcp-config file naming Varde with the smiths' key and returns its path. It lives
+// in dir (the daemon's own state directory, never a worktree), mode 0600; the key is no more exposed than its mounted
+// file already is to the smith's uid.
+func SmithMCPConfig(dir string) (string, error) {
+	raw, err := os.ReadFile(os.Getenv(EnvSmithKeyFile))
+	if err != nil {
+		return "", fmt.Errorf("reading the smiths' Varde key: %w", err)
+	}
+	key := strings.TrimSpace(string(raw))
+	if key == "" {
+		return "", fmt.Errorf("the smiths' Varde key file is empty")
+	}
+	url := strings.TrimRight(os.Getenv(EnvURL), "/")
+	if err := checkURL(url); err != nil {
+		return "", err
+	}
+	body, err := json.Marshal(map[string]any{"mcpServers": map[string]any{"varde": map[string]any{
+		"type": "http", "url": url + "/mcp", "headers": map[string]string{"Authorization": "Bearer " + key}}}})
+	if err != nil {
+		return "", err
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", err
+	}
+	path := filepath.Join(dir, "smith-mcp.json")
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, body, 0o600); err != nil {
+		return "", err
+	}
+	return path, os.Rename(tmp, path)
 }

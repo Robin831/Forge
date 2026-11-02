@@ -136,6 +136,7 @@ func (w *Worker) Run(ctx context.Context, extraFlags []string) (*smith.Result, e
 		Branch:       wt.Branch,
 		AnvilName:    w.AnvilName,
 		AnvilPath:    w.AnvilConfig.Path,
+		BeadsParent:  w.AnvilConfig.BeadsParent,
 		WorktreePath: wt.Path,
 	}
 

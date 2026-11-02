@@ -9,6 +9,7 @@ on bd, so the Forge's database user can be read-only.
 | `FORGE_VARDE_URL` | Varde's base URL; the Forge calls its `/mcp` endpoint. |
 | `FORGE_VARDE_KEY_FILE` | A file holding the Forge's Varde key (scopes `beads:read,beads:write,beads:file,beads:forge`). Only the path is in the environment; agent sessions inherit neither variable. |
 | `FORGE_VARDE_SESSION` | The session name Varde's notes sign with. Default `Forge`. |
+| `FORGE_VARDE_SMITH_KEY_FILE` | Optional. A file holding the smiths' own key (scopes `beads:read,beads:file`). With it, the session that implements a bead files discovered issues itself (below). |
 
 How it works: `executil.BdCommand` runs `forge --config <forge.yaml> bd-varde -- <bd arguments>` instead of bd for a
 write, in the anvil's directory. `bd-varde` translates the arguments into Varde's bead tools and prints what bd would:
@@ -44,3 +45,14 @@ Varde refuses some writes bd allowed, on purpose:
 
 The Forge itself never needs to add a dispatch label: a bead it escalates keeps its label and gets `needs-human`
 (the poller skips it; a retry takes it off), and the parts of a split bead get the parent's label when they are created.
+
+## Smiths filing what they find
+
+With `FORGE_VARDE_SMITH_KEY_FILE` set, the implementing smith (and its steer resumes) runs with
+`--mcp-config ~/.forge/varde/smith-mcp.json` (mode 0600, outside every worktree), which names Varde with the smiths'
+key. Its prompt tells it to file each discovered issue with `beads_create` under the anvil's `beads_parent`. The key
+can do nothing else: no claim, close, label or dependency, no epic, nothing outside the owner's own open epic. Only
+Claude reads `--mcp-config`; with another provider, without the key, or without `beads_parent`, the smith lists what it
+finds under «Discovered issues» in its final message. Review, triage and the other stages never get the tools.
+
+The key file is readable to the smith's uid like the Forge's own; smiths under their own uid is DevInfra-rjb.1.

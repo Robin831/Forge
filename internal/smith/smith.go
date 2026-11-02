@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -23,6 +24,7 @@ import (
 	"github.com/Robin831/Forge/internal/executil"
 	"github.com/Robin831/Forge/internal/gitguard"
 	"github.com/Robin831/Forge/internal/provider"
+	"github.com/Robin831/Forge/internal/vardebeads"
 	"github.com/Robin831/Forge/internal/worktree"
 )
 
@@ -317,7 +319,7 @@ func SessionModel(r *Result, pv provider.Provider) string {
 //
 // logDir is where the session log file is written.
 func Spawn(ctx context.Context, worktreePath, promptText, logDir string, extraFlags []string) (*Process, error) {
-	return SpawnWithProvider(ctx, worktreePath, promptText, logDir, provider.Provider{Kind: provider.Claude}, extraFlags)
+	return SpawnSmith(ctx, worktreePath, promptText, logDir, provider.Provider{Kind: provider.Claude}, extraFlags)
 }
 
 // SpawnOptions configures optional behaviour for SpawnWithOptions.
@@ -328,6 +330,10 @@ type SpawnOptions struct {
 	// stage-identifiable log file. An empty value defaults to "smith",
 	// producing smith-<ts>-<seq>.log.
 	LogPrefix string
+
+	// BeadTools gives the session Varde's bead tools with the smiths' own key, when bead writes go through Varde and
+	// that key is mounted (DevInfra-gbx.8); only the session that implements a bead, never review or triage stages.
+	BeadTools bool
 
 	// ResumeSessionID, when non-empty, resumes a prior provider session instead
 	// of starting a fresh one. The provider's ResumeFlag is appended to the
@@ -372,6 +378,29 @@ func logFileName(prefix string, ts int64) string {
 // logDir is where the session log file is written. The log file is named
 // smith-<ts>-<seq>.log; callers that need a stage-specific prefix should use
 // SpawnWithOptions instead.
+// beadToolArgs are the flags that give a session Varde's bead tools: only for BeadTools, only Claude (which reads
+// --mcp-config), only when the smiths' key is mounted. Without them the prompt has the smith list what it finds.
+func beadToolArgs(opts SpawnOptions, pv provider.Provider) []string {
+	if !opts.BeadTools || pv.Kind != provider.Claude || !vardebeads.SmithEnabled() {
+		return nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil
+	}
+	cfgPath, err := vardebeads.SmithMCPConfig(filepath.Join(home, ".forge", "varde"))
+	if err != nil {
+		log.Printf("[smith] no Varde bead tools for this session: %v", err)
+		return nil
+	}
+	return []string{"--mcp-config", cfgPath}
+}
+
+// SpawnSmith is SpawnWithProvider for the session that implements a bead: with Varde's bead tools when they are on.
+func SpawnSmith(ctx context.Context, worktreePath, promptText, logDir string, pv provider.Provider, extraFlags []string) (*Process, error) {
+	return SpawnWithOptions(ctx, worktreePath, promptText, logDir, pv, extraFlags, SpawnOptions{BeadTools: true})
+}
+
 func SpawnWithProvider(ctx context.Context, worktreePath, promptText, logDir string, pv provider.Provider, extraFlags []string) (*Process, error) {
 	return SpawnWithOptions(ctx, worktreePath, promptText, logDir, pv, extraFlags, SpawnOptions{})
 }
@@ -389,6 +418,7 @@ func SpawnWithOptions(ctx context.Context, worktreePath, promptText, logDir stri
 	}
 
 	args := pv.BuildArgs(extraFlags)
+	args = append(args, beadToolArgs(opts, pv)...)
 	// Steer mode: resume an existing provider session when requested. Only
 	// providers that report a session_id support this (Claude); others return
 	// nil from ResumeFlag and start a fresh session.

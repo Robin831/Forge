@@ -1001,7 +1001,7 @@ func Run(ctx context.Context, p Params) *Outcome {
 	}
 	spawnSmith := p.SmithRunner
 	if spawnSmith == nil {
-		spawnSmith = smith.SpawnWithProvider
+		spawnSmith = smith.SpawnSmith
 	}
 	runTemper := p.TemperRunner
 	if runTemper == nil {
@@ -1087,6 +1087,7 @@ func Run(ctx context.Context, p Params) *Outcome {
 			return smith.SpawnWithOptions(ctx, wtPath, steerMsg, logDir, pv, extraFlags, smith.SpawnOptions{
 				LogPrefix:       "steer",
 				ResumeSessionID: sessionID,
+				BeadTools:       true,
 			})
 		}
 	}
@@ -1247,6 +1248,7 @@ func Run(ctx context.Context, p Params) *Outcome {
 		Branch:              wt.Branch,
 		AnvilName:           p.AnvilName,
 		AnvilPath:           p.AnvilConfig.Path,
+		BeadsParent:         p.AnvilConfig.BeadsParent,
 		WorktreePath:        wt.Path,
 		CopilotCombinedMode: combinedMode,
 	}
