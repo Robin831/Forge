@@ -5,6 +5,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	"github.com/Robin831/Forge/internal/executil"
 )
 
 // PortEnvPrefix is the prefix of the per-service port variables every preview
@@ -78,6 +80,8 @@ func BuildEnv(base []string, env PreviewEnv, serviceEnv map[string]string) []str
 	if base == nil {
 		base = os.Environ()
 	}
+	// A preview runs the branch's code from the branch's own manifest: no beads credentials for it (DevInfra-gbx.8).
+	base = executil.WithoutBeadsCredentials(base)
 	forgeVars := env.Vars()
 
 	// Everything set below is removed from the inherited environment first, so

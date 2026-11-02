@@ -5,11 +5,13 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 
 	"github.com/Robin831/Forge/internal/config"
 	"github.com/Robin831/Forge/internal/executil"
 	"github.com/Robin831/Forge/internal/forge"
+	"github.com/Robin831/Forge/internal/vardebeads"
 	"github.com/spf13/cobra"
 )
 
@@ -59,6 +61,7 @@ func init() {
 
 	// Register subcommands
 	rootCmd.AddCommand(versionCmd)
+	rootCmd.AddCommand(bdVardeCmd)
 }
 
 var rootCmd = &cobra.Command{
@@ -97,6 +100,20 @@ and monitors pull requests (Bellows) across registered repositories (Anvils).`,
 		// settings.bd_timeout here as well — the daemon does the same at startup
 		// and on hot-reload.
 		executil.SetBdTimeout(cfg.Settings.BdTimeout)
+		if vardebeads.Enabled() && cmd.Name() != "bd-varde" {
+			if exe, err := os.Executable(); err == nil {
+				// Absolute: the write runs in the anvil's directory, where a relative path would not resolve.
+				cfgPath := config.ConfigFilePath(configFile)
+				if abs, absErr := filepath.Abs(cfgPath); cfgPath != "" && absErr == nil {
+					cfgPath = abs
+				}
+				base, _ := os.Getwd()
+				executil.SetVardeWrites(exe, cfgPath, base)
+			} else {
+				fmt.Fprintf(os.Stderr, "Error: bead writes go through Varde, but the forge binary cannot be found: %v\n", err)
+				os.Exit(1)
+			}
+		}
 
 		if verbose {
 			if path := config.ConfigFilePath(configFile); path != "" {

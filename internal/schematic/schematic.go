@@ -17,6 +17,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -25,6 +26,7 @@ import (
 	"github.com/Robin831/Forge/internal/poller"
 	"github.com/Robin831/Forge/internal/provider"
 	"github.com/Robin831/Forge/internal/smith"
+	"github.com/Robin831/Forge/internal/vardebeads"
 )
 
 // Action describes what the Schematic decided to do.
@@ -701,7 +703,7 @@ func createSubBeads(ctx context.Context, parent poller.Bead, tasks []subTaskVerd
 			"--type=task",
 			fmt.Sprintf("--priority=%d", parent.Priority),
 			"--deps", "blocks:"+parent.ID,
-			"--labels", marker,
+			"--labels", strings.Join(append([]string{marker}, partLabels(parent.Labels)...), ","),
 			"--json",
 		)
 		cancel()
@@ -811,6 +813,17 @@ func createSubBeads(ctx context.Context, parent poller.Bead, tasks []subTaskVerd
 	// Close the parent bead only when all downstream block transfers succeeded.
 	// If any transfer failed, keep the parent open so downstream beads remain
 	// correctly gated by the parent until the dependency can be retried.
+	// Through Varde the parts were held from the create; every wait is set now, so they may be dispatched. A part
+	// whose hold cannot come off stays held, which a person sees, rather than running early.
+	if allBlocksTransferred && len(partLabels(parent.Labels)) > 0 {
+		for _, sb := range subBeads {
+			hCtx, hCancel := context.WithTimeout(ctx, executil.BdTimeout())
+			if out, err := run(hCtx, anvilPath, "update", sb.ID, "--remove-label", poller.LabelWiring); err != nil {
+				log.Printf("[schematic:%s] Warning: %s stays held (%s): %v: %s", parent.ID, sb.ID, poller.LabelWiring, err, out)
+			}
+			hCancel()
+		}
+	}
 	if !allBlocksTransferred {
 		log.Printf("[schematic:%s] Skipping parent close: not all downstream block transfers succeeded", parent.ID)
 		return subBeads, nil
@@ -1347,7 +1360,8 @@ func subBeadsWithoutExternalRef(ctx context.Context, anvilPath string, ids []str
 // schematic_issue_sync_failed event, and the PR step's own external_ref guard
 // is the backstop that syncs an individual bead just before its PR is created.
 func syncSubBeadIssues(ctx context.Context, cfg Config, parent poller.Bead, subs []SubBead, anvilPath string, run bdRunner) {
-	if len(subs) == 0 {
+	// Through Varde there is no bd github push (DevInfra-gbx.8), so no sync to report as failed.
+	if len(subs) == 0 || vardebeads.Enabled() {
 		return
 	}
 	ids := make([]string, len(subs))
@@ -1390,4 +1404,25 @@ func syncSubBeadIssues(ctx context.Context, cfg Config, parent poller.Bead, subs
 	}
 	log.Printf("[schematic:%s] Synced GitHub issues for %d sub-bead(s): %s",
 		parent.ID, len(missing), strings.Join(missing, ", "))
+}
+
+var dispatchLabel = regexp.MustCompile(`^forge[A-Za-z]+$`)
+
+// partLabels are the parent's Forge dispatch labels (forgeSkybert, not the forge-decomposed marker) when bead writes go
+// through Varde, with the wiring hold: a part gets them at create, the one write there that may give a bead a Forge
+// label (DevInfra-gbx.8). With bd the daemon copies the tag afterwards, as before.
+func partLabels(labels []string) []string {
+	if !vardebeads.Enabled() {
+		return nil
+	}
+	var out []string
+	for _, l := range labels {
+		if dispatchLabel.MatchString(l) {
+			out = append(out, l)
+		}
+	}
+	if len(out) > 0 {
+		out = append(out, poller.LabelWiring)
+	}
+	return out
 }

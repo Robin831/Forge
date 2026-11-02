@@ -426,3 +426,41 @@ func TestBuild_ExternalRefOmittedWhenEmpty(t *testing.T) {
 
 	assert.NotContains(t, result, "**External Reference**")
 }
+
+// A forge on plain bd gives smiths 0.37.2's instructions (file beads with bd); through Varde they list what they find.
+func TestBuild_DiscoveredIssuesFollowTheBeadMode(t *testing.T) {
+	ctx := BeadContext{BeadID: "B-1", Title: "t", Description: "d", IssueType: "task", AnvilPath: t.TempDir(), WorktreePath: t.TempDir()}
+	plain, err := NewBuilder().Build(ctx)
+	require.NoError(t, err)
+	assert.Contains(t, plain, "bd create --json")
+	assert.Contains(t, plain, "--deps discovered-from:B-1")
+	assert.NotContains(t, plain, "## Discovered issues")
+
+	t.Setenv("FORGE_VARDE_URL", "http://varde.invalid")
+	t.Setenv("FORGE_VARDE_KEY_FILE", "/nowhere")
+	varde, err := NewBuilder().Build(ctx)
+	require.NoError(t, err)
+	assert.Contains(t, varde, "## Discovered issues")
+	assert.NotContains(t, varde, "bd create")
+}
+
+// Through Varde with the smiths' own key and an epic, the smith files with Varde's beads_create (DevInfra-gbx.8).
+func TestBuild_SmithFilesThroughVardeWithItsKey(t *testing.T) {
+	key := filepath.Join(t.TempDir(), "k")
+	require.NoError(t, os.WriteFile(key, []byte("k"), 0o600))
+	t.Setenv("FORGE_VARDE_URL", "https://varde.invalid")
+	t.Setenv("FORGE_VARDE_KEY_FILE", "/nowhere")
+	t.Setenv("FORGE_VARDE_SMITH_KEY_FILE", key)
+	ctx := BeadContext{BeadID: "B-1", Title: "t", Description: "d", IssueType: "task", AnvilPath: t.TempDir(), WorktreePath: t.TempDir(), BeadsParent: "EP-9"}
+	filing, err := NewBuilder().Build(ctx)
+	require.NoError(t, err)
+	assert.Contains(t, filing, "`beads_create` tool of the `varde-smith` MCP server")
+	assert.Contains(t, filing, "`parent`: `EP-9`")
+	assert.Contains(t, filing, "## Discovered issues", "the fallback when the tool is missing")
+	assert.NotContains(t, filing, "bd create")
+
+	ctx.BeadsParent = ""
+	listing, err := NewBuilder().Build(ctx)
+	require.NoError(t, err)
+	assert.NotContains(t, listing, "beads_create", "no epic to file under: list instead")
+}

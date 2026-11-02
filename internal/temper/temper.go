@@ -570,7 +570,25 @@ func Run(ctx context.Context, worktreePath string, cfg Config, db *state.DB, bea
 		_ = db.LogEvent(state.EventTemperStarted, fmt.Sprintf("Starting %d verification step(s) for %s", len(cfg.Steps), beadID), beadID, anvil)
 	}
 
+	// Dependencies first, so no step checks against packages the lockfile no longer asks for (DevInfra-rjb.3).
+	depSteps, freshInstall, depsOK := ensureNodeDeps(ctx, worktreePath, stepTimeout, outputCap)
+	result.Steps = append(result.Steps, depSteps...)
+	if !depsOK {
+		last := depSteps[len(depSteps)-1]
+		result.FailedStep = last.Name
+		result.Classification = last.Classification
+	}
+
 	for _, step := range cfg.Steps {
+		if !depsOK {
+			break
+		}
+		// A clean install Temper just did from the same lockfile: running npm ci again changes nothing.
+		if isDestructiveNpmInstall(step) && freshInstall[resolveStepDir(worktreePath, step.Dir)] {
+			result.Steps = append(result.Steps, StepResult{Name: step.Name, Command: fmt.Sprintf("%s %s", step.Command, strings.Join(step.Args, " ")),
+				Passed: true, Skipped: true, SkipReason: SkipReasonFreshInstall, Optional: step.Optional})
+			continue
+		}
 		// Scan-only conflict-marker step: no Command, just a content scan
 		// over VerifyNoConflictMarkers. Runs unconditionally — Paths gating
 		// is intentionally bypassed so committed merge markers are caught
@@ -812,8 +830,10 @@ func runStep(ctx context.Context, worktreePath string, step Step, defaultTimeout
 	// worktree recreation for the same bead.
 	executil.SetProcessGroup(cmd)
 	cmd.Dir = dir
+	// The build and tests run the agent's code: no beads database access for it either (DevInfra-gbx.8).
+	cmd.Env = executil.WithoutBeadsCredentials(os.Environ())
 	if heavyLockHeld {
-		cmd.Env = append(os.Environ(), heavyLockHeldEnv+"=1")
+		cmd.Env = append(cmd.Env, heavyLockHeldEnv+"=1")
 	}
 
 	// Cancel the whole GROUP, not just the direct child. exec.CommandContext's

@@ -1,6 +1,6 @@
 # Warden rule selection: what the review-time cap was really doing
 
-`settings.warden.max_rules_per_review` (default 30) decides which learned rules
+`settings.warden.max_rules_per_review` (default 60) decides which learned rules
 reach the Warden's checklist. Until Forge-n9aq it did so with `rules[:30]` —
 plain truncation in file order, with no ranking, recency preference or sampling.
 
@@ -35,7 +35,7 @@ are chosen for every diff".
 ## Measured
 
 Two anvils, each against every squash-merged PR in its own history, with the
-shipped filter configuration (all three filters on, `max_rules_per_review: 30`):
+shipped filter configuration of the time (all three filters on, `max_rules_per_review: 30`, the default until it became 60):
 
 | Anvil | Rules on file | PRs | Reachable BEFORE | Reachable AFTER |
 |---|---|---|---|---|
@@ -71,7 +71,7 @@ the head of the file.
 ## What replaced it
 
 See "How the review-time set is chosen" in [configuration.md](configuration.md)
-for the ranking (specificity, pattern relevance, recency), the two-word pattern
+for the ranking (specificity, pattern relevance, recency, sources), the two-word pattern
 threshold, the per-review funnel log line, and the `max_rules_in_file` ceiling.
 
 The one property worth restating here is the guard: the ordering is total and

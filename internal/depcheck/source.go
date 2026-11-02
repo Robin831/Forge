@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/bmatcuk/doublestar/v4"
 )
 
 // manifestSource supplies the repository's tracked manifest files to the
@@ -114,4 +116,42 @@ func pathDir(relPath string) string {
 		return ""
 	}
 	return relPath[:idx]
+}
+
+// DefaultExclude is skipped on every anvil: sample and test hosts are not
+// shipped, and they may pin packages from feeds the anvil cannot read, which
+// fails the whole .NET scan with an empty-stderr `dotnet list package`.
+var DefaultExclude = []string{"samples/**"}
+
+// excludingSource hides the manifests under the excluded globs from every
+// ecosystem scan; Read is untouched, so a file is never half-excluded.
+type excludingSource struct {
+	manifestSource
+	globs []string
+}
+
+func (e excludingSource) Paths(ctx context.Context) ([]string, error) {
+	paths, err := e.manifestSource.Paths(ctx)
+	if err != nil {
+		return nil, err
+	}
+	kept := paths[:0:0]
+	for _, p := range paths {
+		if !excluded(p, e.globs) {
+			kept = append(kept, p)
+		}
+	}
+	return kept, nil
+}
+
+// excluded reports whether the repo-relative path matches one of the globs.
+// A malformed glob matches nothing rather than everything.
+func excluded(path string, globs []string) bool {
+	path = filepath.ToSlash(path)
+	for _, g := range globs {
+		if ok, err := doublestar.Match(strings.TrimPrefix(filepath.ToSlash(strings.TrimSpace(g)), "./"), path); err == nil && ok {
+			return true
+		}
+	}
+	return false
 }
