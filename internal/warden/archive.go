@@ -14,7 +14,8 @@ import (
 // stale) review rules.
 const ArchiveFileName = ".forge/warden-rules.archive.yaml"
 
-// Archive reason constants. ArchivedRule.ArchiveReason must be one of these.
+// Archive reason constants. The Forge writes the first three; a reason it does
+// not know is kept and counted under its own name (see ArchiveSummary.Other).
 const (
 	ArchiveReasonDuplicate = "duplicate"
 	ArchiveReasonStale     = "stale"
@@ -23,6 +24,10 @@ const (
 	// than "stale" because the rule is not stale: it lost a slot, and raising
 	// the ceiling is enough to want it back.
 	ArchiveReasonOverCap = "over-cap"
+	// ArchiveReasonLostInForcePush marks a rule restored into the archive by
+	// hand after a batch branch was force-replaced without keeping it (the
+	// Smelter before #944). The Forge never writes it; it reads and counts it.
+	ArchiveReasonLostInForcePush = "lost-in-force-push"
 )
 
 // ArchivedRule represents a Rule that has been retired from the active
@@ -34,6 +39,9 @@ type ArchivedRule struct {
 	LastSeen      time.Time `yaml:"last_seen,omitempty"     json:"last_seen,omitempty"`
 	ArchivedAt    time.Time `yaml:"archived_at"             json:"archived_at"`
 	ArchiveReason string    `yaml:"archive_reason"          json:"archive_reason"`
+	// SourcePR names the batch PR a rule was lost from or learned in, when the
+	// writer knows it (a restore after a force-push, say); empty otherwise.
+	SourcePR string `yaml:"source_pr,omitempty" json:"source_pr,omitempty"`
 }
 
 // MarshalYAML produces a single mapping node combining Rule's fields (via
@@ -56,11 +64,13 @@ func (ar ArchivedRule) MarshalYAML() (any, error) {
 		LastSeen      time.Time `yaml:"last_seen,omitempty"`
 		ArchivedAt    time.Time `yaml:"archived_at"`
 		ArchiveReason string    `yaml:"archive_reason"`
+		SourcePR      string    `yaml:"source_pr,omitempty"`
 	}{
 		SupersededBy:  ar.SupersededBy,
 		LastSeen:      ar.LastSeen,
 		ArchivedAt:    ar.ArchivedAt,
 		ArchiveReason: ar.ArchiveReason,
+		SourcePR:      ar.SourcePR,
 	}
 
 	var extraNode yaml.Node
@@ -86,6 +96,7 @@ func (ar *ArchivedRule) UnmarshalYAML(value *yaml.Node) error {
 		LastSeen      time.Time `yaml:"last_seen"`
 		ArchivedAt    time.Time `yaml:"archived_at"`
 		ArchiveReason string    `yaml:"archive_reason"`
+		SourcePR      string    `yaml:"source_pr"`
 	}
 	if err := value.Decode(&extras); err != nil {
 		return err
@@ -94,6 +105,7 @@ func (ar *ArchivedRule) UnmarshalYAML(value *yaml.Node) error {
 	ar.LastSeen = extras.LastSeen
 	ar.ArchivedAt = extras.ArchivedAt
 	ar.ArchiveReason = extras.ArchiveReason
+	ar.SourcePR = extras.SourcePR
 	return nil
 }
 
