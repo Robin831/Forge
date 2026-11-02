@@ -14,7 +14,7 @@ const lockV2 = `{"lockfileVersion":3,"packages":{"":{"name":"client"},
 
 const hidden = `{"lockfileVersion":3,"packages":{
 "node_modules/@eslint-react/eslint-plugin":{"version":"%s"},
-"node_modules/left-over":{"version":"1.0.0"}}}`
+"node_modules/local":{"resolved":"../local","link":true}}}`
 
 // setupLockCase makes an anvil whose client/node_modules was installed at installed, and a worktree whose
 // client/package-lock.json locks locked (DevInfra-rjb.3).
@@ -42,7 +42,7 @@ func TestLinkNodeModules_LinksWhenTheInstallMatchesTheLockfile(t *testing.T) {
 		t.Fatal(err)
 	}
 	if linked, _ := isReparsePoint(filepath.Join(wt, "client", "node_modules")); !linked {
-		t.Error("a matching install (an absent optional package, a link entry and a left-over package included) is shared")
+		t.Error("a matching install (an absent optional package and a link entry included) is shared")
 	}
 }
 
@@ -134,7 +134,14 @@ func TestInstalledMatchesLockCases(t *testing.T) {
 		{"hidden lockfile corrupt", sprintfLock("1.0.0"), "{not json", false, false},
 		{"lockfile v1 (no packages)", `{"lockfileVersion":1,"dependencies":{}}`, `{"packages":{}}`, false, false},
 		{"nested package at another version", `{"packages":{"node_modules/a/node_modules/b":{"version":"2.0.0"}}}`, `{"packages":{"node_modules/a/node_modules/b":{"version":"1.0.0"}}}`, false, true},
-		{"platform and devOptional packages may be absent", `{"packages":{"node_modules/x":{"version":"1.0.0","os":["darwin"]},"node_modules/y":{"version":"1.0.0","devOptional":true},"node_modules/z":{"version":"1.0.0","cpu":["arm64"]}}}`, `{"packages":{}}`, true, true},
+		{"optional and devOptional packages may be absent", `{"packages":{"node_modules/x":{"version":"1.0.0","optional":true,"os":["darwin"]},"node_modules/y":{"version":"1.0.0","devOptional":true}}}`, `{"packages":{}}`, true, true},
+		{"a required package with an os may not be absent", `{"packages":{"node_modules/x":{"version":"1.0.0","os":["linux"]}}}`, `{"packages":{}}`, false, true},
+		{"a package installed but no longer locked is stale", `{"packages":{"node_modules/a":{"version":"1.0.0"}}}`, `{"packages":{"node_modules/a":{"version":"1.0.0"},"node_modules/a/node_modules/b":{"version":"1.0.0"}}}`, false, true},
+		{"a link missing from the install is stale", `{"packages":{"node_modules/l":{"resolved":"../l","link":true}}}`, `{"packages":{}}`, false, true},
+		{"a link to another target is stale", `{"packages":{"node_modules/l":{"resolved":"../l","link":true}}}`, `{"packages":{"node_modules/l":{"resolved":"../m","link":true}}}`, false, true},
+		{"the same version from another source is stale", `{"packages":{"node_modules/g":{"version":"1.0.0","resolved":"git+ssh://x#aaa"}}}`, `{"packages":{"node_modules/g":{"version":"1.0.0","resolved":"git+ssh://x#bbb"}}}`, false, true},
+		{"a different integrity is stale", `{"packages":{"node_modules/i":{"version":"1.0.0","integrity":"sha512-a"}}}`, `{"packages":{"node_modules/i":{"version":"1.0.0","integrity":"sha512-b"}}}`, false, true},
+		{"a field npm left out is not a difference", `{"packages":{"node_modules/i":{"version":"1.0.0","integrity":"sha512-a"}}}`, `{"packages":{"node_modules/i":{"version":"1.0.0"}}}`, true, true},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			dir := t.TempDir()
@@ -170,5 +177,17 @@ func TestLinkNodeModules_PreviewKeepsItsExistingStaleLink(t *testing.T) {
 	}
 	if linked, _ := isReparsePoint(filepath.Join(wt, "client", "node_modules")); !linked {
 		t.Error("a preview's link must stay")
+	}
+}
+
+// The worktree's lockfile comes from the branch: a non-regular one is unknown, never read (Copilot on #958).
+func TestReadLockRefusesNonRegularFiles(t *testing.T) {
+	dir := t.TempDir()
+	link := filepath.Join(dir, "package-lock.json")
+	if err := os.Symlink(os.DevNull, link); err != nil {
+		t.Skip("no symlinks here")
+	}
+	if _, err := readLock(link); err == nil {
+		t.Error("a symlink lockfile must be refused")
 	}
 }
