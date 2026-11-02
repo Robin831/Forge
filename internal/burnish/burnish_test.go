@@ -27,10 +27,15 @@ type testHarness struct {
 	origGitRevParse func(ctx context.Context, dir, ref string) (string, error)
 	origHookRun     func(ctx context.Context, workerID, hookName, cmd string, env hooks.HookEnv) error
 	origChangedFile func(ctx context.Context, worktreePath, baseBranch, logPrefix string) []string
+	origSync        func(ctx context.Context, worktreePath, branch string, prNumber int)
 }
 
 func newTestHarness() *testHarness {
+	// A stubbed worktree is no git checkout: bringing it up to origin is a no-op here.
+	origSync := syncToRemoteFn
+	syncToRemoteFn = func(context.Context, string, string, int) {}
 	return &testHarness{
+		origSync:        origSync,
 		origSmithSpawn:  smithSpawnFn,
 		origTemperRun:   temperRunFn,
 		origGitPush:     gitPushFn,
@@ -47,6 +52,7 @@ func (h *testHarness) restore() {
 	gitRevParseFn = h.origGitRevParse
 	hookRunFn = h.origHookRun
 	changedFilesFn = h.origChangedFile
+	syncToRemoteFn = h.origSync
 }
 
 // fakeVCS implements vcs.Provider for testing.
