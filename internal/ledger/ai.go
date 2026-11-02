@@ -126,7 +126,7 @@ func runAIImprovementCmd(bead Bead, anvilPath string, runID int) tea.Cmd {
 
 		// Strip CLAUDECODE so claude doesn't refuse to run inside another session.
 		// Also apply per-provider env overrides (e.g. Ollama backend variables).
-		env := os.Environ()
+		env := executil.WithoutBeadsCredentials(os.Environ())
 		filtered := env[:0:0]
 		for _, e := range env {
 			if strings.HasPrefix(e, "CLAUDECODE=") {

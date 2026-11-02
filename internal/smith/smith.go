@@ -965,6 +965,10 @@ func buildChildEnv(parentEnv []string, providerEnv map[string]string, gitEnv []s
 		if executil.IsGitRepoEnvVar(key) {
 			continue
 		}
+		// No beads database access for the agent: its bead writes go through Varde (DevInfra-gbx.8).
+		if executil.IsBeadsCredentialEnv(e) {
+			continue
+		}
 		skip := false
 		for k := range providerEnv {
 			if strings.HasPrefix(e, k+"=") {

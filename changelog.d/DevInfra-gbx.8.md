@@ -1,0 +1,2 @@
+category: Security
+- **Agent sessions get no beads database access** - smiths and every other agent session the Forge starts, the build and test steps that run their code, and the ledger's AI helper no longer inherit `BEADS_DOLT_*` (the Dolt host, user and password) or `DOLT_REMOTE_PASSWORD` from the daemon. Until a session writes beads through Varde, the smith lists unrelated issues it finds under «Discovered issues» in its final message instead of running `bd create`. (DevInfra-gbx.8)
