@@ -1,7 +1,6 @@
 package worktree
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"crypto/sha256"
@@ -14,6 +13,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/Robin831/Forge/internal/executil"
 )
 
 // syncAnvil keeps the anvil's own checkout and its shared Node installs current before a worktree is made from it
@@ -33,58 +34,52 @@ func syncAnvil(ctx context.Context, anvilPath string) {
 		if ctx.Err() != nil {
 			return
 		}
-		touchLock(anvilPath)
 		refreshSharedInstall(ctx, anvilPath, sub)
 	}
 }
 
 const (
 	syncLockName   = ".forge-sync.lock"
-	syncLockStale  = 30 * time.Minute
 	installTimeout = 10 * time.Minute
 	syncDeadline   = 25 * time.Minute
 	failureBackoff = 30 * time.Minute
 )
 
-// lockAnvil takes the anvil for one sync across processes (a lock file made with O_EXCL); a lock older than
-// syncLockStale is from a sync that died and is taken over. It never waits.
+// lockAnvil takes the anvil for one sync across processes, with an OS file lock (flock, LockFileEx) that the OS drops
+// when its holder exits: no stale lock to reclaim, so no two syncs can both win. It never waits.
 func lockAnvil(anvilPath string) (func(), bool) {
-	path := filepath.Join(gitDir(anvilPath), syncLockName)
-	for attempt := 0; attempt < 2; attempt++ {
-		f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
-		if err == nil {
-			_ = f.Close()
-			return func() { _ = os.Remove(path) }, true
-		}
-		if !errors.Is(err, os.ErrExist) {
-			slog.Warn("anvil sync: cannot take the sync lock; not syncing", "anvil", anvilPath, "error", err)
-			return nil, false
-		}
-		info, statErr := os.Stat(path)
-		if statErr != nil || time.Since(info.ModTime()) < syncLockStale {
-			return nil, false
-		}
-		_ = os.Remove(path)
+	f, err := os.OpenFile(filepath.Join(gitDir(anvilPath), syncLockName), os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		slog.Warn("anvil sync: cannot open the sync lock; not syncing", "anvil", anvilPath, "error", err)
+		return nil, false
 	}
-	return nil, false
+	if !tryLockFile(f) {
+		_ = f.Close()
+		return nil, false
+	}
+	return func() { unlockFile(f); _ = f.Close() }, true
 }
 
-// syncInProgress reports a live sync lock on the anvil (one older than syncLockStale is from a sync that died).
+// syncInProgress reports that a sync holds the anvil's lock right now.
 func syncInProgress(anvilPath string) bool {
-	info, err := os.Stat(filepath.Join(gitDir(anvilPath), syncLockName))
-	return err == nil && time.Since(info.ModTime()) < syncLockStale
-}
-
-// touchLock marks the sync as alive, so its lock never looks stale while it runs.
-func touchLock(anvilPath string) {
-	now := time.Now()
-	_ = os.Chtimes(filepath.Join(gitDir(anvilPath), syncLockName), now, now)
+	f, err := os.OpenFile(filepath.Join(gitDir(anvilPath), syncLockName), os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	if !tryLockFile(f) {
+		return true
+	}
+	unlockFile(f)
+	return false
 }
 
 // gitDir is git's own directory for the anvil, where the lock lives (never tracked, never in a worktree); .git can be
 // a file pointing elsewhere (a submodule or a worktree anvil).
 func gitDir(anvilPath string) string {
-	out, err := exec.Command("git", "-C", anvilPath, "rev-parse", "--git-common-dir").Output()
+	cmd := exec.Command("git", "-C", anvilPath, "rev-parse", "--git-common-dir")
+	cmd.Env = localGitEnv() // an inherited GIT_DIR would point the lock at another repository
+	out, err := cmd.Output()
 	if dir := strings.TrimSpace(string(out)); err == nil && dir != "" {
 		if !filepath.IsAbs(dir) {
 			dir = filepath.Join(anvilPath, dir)
@@ -124,13 +119,17 @@ func fastForwardAnvil(ctx context.Context, anvilPath string) {
 	}
 }
 
-// npmCommand runs npm ci in dir; tests replace it. WaitDelay: a postinstall child holding the output pipe must not
-// keep the call past its timeout.
+// npmCommand runs npm ci in dir; tests replace it. In its own process group, cancelled and reaped as a whole (as
+// Temper's steps are), so no postinstall child goes on changing the install after the lock is released.
 var npmCommand = func(ctx context.Context, dir string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, "npm", "ci", "--prefer-offline", "--no-audit", "--no-fund")
 	cmd.Dir = dir
+	executil.SetProcessGroup(cmd)
+	cmd.Cancel = func() error { return executil.KillProcessTree(cmd) }
 	cmd.WaitDelay = 10 * time.Second
-	return cmd.CombinedOutput()
+	out, err := cmd.CombinedOutput()
+	_ = executil.KillProcessTree(cmd)
+	return out, err
 }
 
 var failures sync.Map // anvil|sub|lockfile hash -> time of a failed install: not retried before failureBackoff
@@ -192,13 +191,13 @@ func linksTo(ctx context.Context, anvilPath, nm string) []string {
 		return nil
 	}
 	var list bytes.Buffer
-	if gitCmdOut(ctx, anvilPath, &list, "worktree", "list", "--porcelain") != nil {
+	// -z: paths as they are, not quoted, so a path with a newline is still the path.
+	if gitCmdOut(ctx, anvilPath, &list, "worktree", "list", "--porcelain", "-z") != nil {
 		return []string{"(git worktree list failed)"} // cannot tell: treat as in use
 	}
 	var users []string
-	sc := bufio.NewScanner(&list)
-	for sc.Scan() {
-		path, ok := strings.CutPrefix(sc.Text(), "worktree ")
+	for _, field := range strings.Split(list.String(), "\x00") {
+		path, ok := strings.CutPrefix(field, "worktree ")
 		if !ok || filepath.Clean(path) == filepath.Clean(anvilPath) {
 			continue
 		}

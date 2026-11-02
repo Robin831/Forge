@@ -67,6 +67,10 @@ func installedMatchesLock(installedNM, lockPath string) (match, known bool, why 
 		return false, false, err.Error()
 	}
 	have, err := readLock(filepath.Join(installedNM, ".package-lock.json"))
+	if os.IsNotExist(err) {
+		// A lockfile, but no record of what is installed: an interrupted or foreign install, never shared as it is.
+		return false, true, "nothing records what is installed (node_modules/.package-lock.json is missing)"
+	}
 	if err != nil {
 		return false, false, err.Error()
 	}

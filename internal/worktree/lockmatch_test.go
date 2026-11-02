@@ -130,7 +130,7 @@ func TestInstalledMatchesLockCases(t *testing.T) {
 		name, lock, hidden string
 		match, known       bool
 	}{
-		{"hidden lockfile missing", sprintfLock("1.0.0"), "", false, false},
+		{"hidden lockfile missing: nothing records the install, so it is stale", sprintfLock("1.0.0"), "", false, true},
 		{"hidden lockfile corrupt", sprintfLock("1.0.0"), "{not json", false, false},
 		{"lockfile v1 (no packages)", `{"lockfileVersion":1,"dependencies":{}}`, `{"packages":{}}`, false, false},
 		{"nested package at another version", `{"packages":{"node_modules/a/node_modules/b":{"version":"2.0.0"}}}`, `{"packages":{"node_modules/a/node_modules/b":{"version":"1.0.0"}}}`, false, true},

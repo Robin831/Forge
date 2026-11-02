@@ -10,13 +10,13 @@ import (
 	"runtime"
 	"strings"
 	"testing"
-	"time"
 )
 
 func run(t *testing.T, dir string, args ...string) string {
 	t.Helper()
 	cmd := exec.Command("git", append([]string{"-c", "user.name=t", "-c", "user.email=t@t", "-c", "init.defaultBranch=main", "-c", "commit.gpgsign=false"}, args...)...)
 	cmd.Dir = dir
+	cmd.Env = envWithoutGitVars() // a smith's worktree env must not send these to the enclosing repository
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("git %v: %v: %s", args, err, out)
@@ -190,19 +190,23 @@ func TestSyncAnvilSkipsWhenAnotherSyncHoldsIt(t *testing.T) {
 	}
 }
 
-func TestLockAnvilTakesOverAStaleLock(t *testing.T) {
+func TestLockAnvilIsExclusiveAndFreedOnRelease(t *testing.T) {
 	anvil, _ := gitTrio(t)
-	path := filepath.Join(anvil, ".git", syncLockName)
-	writeLockFile(t, path, "")
-	old := time.Now().Add(-2 * syncLockStale)
-	_ = os.Chtimes(path, old, old)
 	unlock, ok := lockAnvil(anvil)
-	if !ok {
-		t.Fatal("a lock from a dead sync is taken over")
+	if !ok || !syncInProgress(anvil) {
+		t.Fatal("first lock taken and seen")
+	}
+	if _, again := lockAnvil(anvil); again {
+		t.Error("a second sync does not get the lock")
 	}
 	unlock()
-	if _, err := os.Stat(path); !os.IsNotExist(err) {
-		t.Error("unlock removes the lock")
+	if syncInProgress(anvil) {
+		t.Error("released")
+	}
+	if u2, ok := lockAnvil(anvil); !ok {
+		t.Error("free again")
+	} else {
+		u2()
 	}
 }
 
