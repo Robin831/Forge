@@ -791,6 +791,7 @@ func New(cfg *config.Config, configPath string) (*Daemon, error) {
 	d.costLimitLoggedDate.Store("")
 	d.cfg.Store(cfg)
 	d.warnAssayProviderConflicts(cfg)
+	d.warnVardeDispatch(cfg)
 	applyWardenFilterConfig(cfg)
 	applyPricingConfig(cfg)
 	applyWorktreeTimeoutConfig(cfg)
@@ -9918,7 +9919,8 @@ func (d *Daemon) ensureExternalRef(anvilPath string, bead poller.Bead) string {
 	if ref := d.fetchExternalRef(anvilPath, bead.ID); ref != "" {
 		return ref
 	}
-	if d.githubPusher == nil {
+	// Through Varde there is no bd github push (Robin's choice (c), DevInfra-gbx.8): no ref is normal.
+	if d.githubPusher == nil || vardebeads.Enabled() {
 		return ""
 	}
 	out, err := d.githubPusher(anvilPath, bead.ID)

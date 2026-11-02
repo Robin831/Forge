@@ -26,11 +26,19 @@ func IsWrite(args []string) bool {
 	if len(args) == 0 {
 		return false
 	}
+	sub := ""
+	if len(args) > 1 {
+		sub = args[1]
+	}
 	switch args[0] {
-	case "create", "update", "close", "reopen", "delete", "dep", "label", "github":
+	case "create", "update", "close", "reopen", "delete":
 		return true
+	case "dep", "label":
+		return sub == "add" || sub == "remove"
 	case "comments":
-		return len(args) > 1 && args[1] == "add"
+		return sub == "add"
+	case "github":
+		return sub == "push"
 	}
 	return false
 }
@@ -52,6 +60,43 @@ type Plan struct {
 	Tolerate []string
 	// NoOp: nothing to send (bd github push; external_ref is set at create).
 	NoOp bool
+	// DependsOn: after the create, the new bead is made to depend on these (bd create --deps <id>).
+	DependsOn []string
+}
+
+// Varde's limits on what it stores; longer text is cut with a marker rather than refused.
+const (
+	limitTitle  = 200
+	limitText   = 8000
+	limitNote   = 4000
+	limitReason = 500
+)
+
+func cut(text string, limit int) string {
+	r := []rune(text)
+	if len(r) <= limit {
+		return text
+	}
+	const mark = " … (cut to Varde's limit)"
+	return string(r[:limit-len([]rune(mark))]) + mark
+}
+
+// The flags each bd write may carry; any other flag is refused, so nothing is silently dropped.
+var allowedFlags = map[string]map[string]bool{
+	"create":   {"title": true, "description": true, "type": true, "priority": true, "labels": true, "deps": true, "json": true, "silent": true},
+	"update":   {"status": true, "assignee": true, "add-label": true, "remove-label": true, "append-notes": true, "title": true, "description": true, "priority": true, "json": true},
+	"close":    {"reason": true, "force": true, "json": true},
+	"reopen":   {"reason": true, "json": true},
+	"dep":      {"type": true, "json": true},
+	"label":    {"json": true},
+	"comments": {"json": true},
+	"github":   {"json": true},
+}
+
+// notDoing tells a close that delivered nothing (a rollback, a discard, a stop) from finished work, by the Forge's own reasons.
+func notDoing(reason string) bool {
+	r := strings.ToLower(reason)
+	return strings.Contains(r, "rollback") || strings.HasPrefix(r, "discarded") || strings.HasPrefix(r, "stopped")
 }
 
 type parsed struct {
@@ -112,6 +157,18 @@ func Translate(args []string, session, anvilParent string) (Plan, error) {
 		return Plan{}, fmt.Errorf("no bd command")
 	}
 	p := parse(args[1:])
+	if allowed, ok := allowedFlags[args[0]]; ok {
+		for name := range p.flags {
+			if !allowed[name] {
+				return Plan{}, fmt.Errorf("bd %s --%s has no counterpart in Varde; nothing was written", args[0], name)
+			}
+		}
+		for name := range p.bools {
+			if !allowed[name] {
+				return Plan{}, fmt.Errorf("bd %s --%s has no counterpart in Varde; nothing was written", args[0], name)
+			}
+		}
+	}
 	with := func(m map[string]any) map[string]any { m["session"] = session; return m }
 	switch args[0] {
 	case "github":
@@ -120,7 +177,7 @@ func Translate(args []string, session, anvilParent string) (Plan, error) {
 		if len(p.pos) < 3 {
 			return Plan{}, fmt.Errorf("bd comments add needs an id and a text")
 		}
-		return Plan{Calls: []Call{{"beads_note", with(map[string]any{"id": p.pos[1], "text": strings.Join(p.pos[2:], " ")})}}}, nil
+		return Plan{Calls: []Call{{"beads_note", with(map[string]any{"id": p.pos[1], "text": cut(strings.Join(p.pos[2:], " "), limitNote)})}}}, nil
 	case "label":
 		if len(p.pos) < 3 || (p.pos[0] != "add" && p.pos[0] != "remove") {
 			return Plan{}, fmt.Errorf("bd label: only add and remove, with an id and a label")
@@ -147,7 +204,11 @@ func Translate(args []string, session, anvilParent string) (Plan, error) {
 		if strings.TrimSpace(reason) == "" {
 			reason = "Closed by the Forge."
 		}
-		m := with(map[string]any{"id": p.pos[0], "kind": "done", "reason": reason})
+		kind := "done"
+		if notDoing(reason) {
+			kind = "not-doing"
+		}
+		m := with(map[string]any{"id": p.pos[0], "kind": kind, "reason": cut(reason, limitReason)})
 		if p.bools["force"] {
 			m["force"] = true
 		}
@@ -160,7 +221,7 @@ func Translate(args []string, session, anvilParent string) (Plan, error) {
 		if reason == "" {
 			reason = "Reopened by the Forge."
 		}
-		return Plan{Calls: []Call{{"beads_reopen", with(map[string]any{"id": p.pos[0], "reason": reason})}}}, nil
+		return Plan{Calls: []Call{{"beads_reopen", with(map[string]any{"id": p.pos[0], "reason": cut(reason, limitReason)})}}}, nil
 	case "update":
 		return translateUpdate(p, with)
 	case "create":
@@ -175,6 +236,17 @@ func translateUpdate(p parsed, with func(map[string]any) map[string]any) (Plan, 
 	}
 	id := p.pos[0]
 	var plan Plan
+	// Labels first: an escalation that fails halfway must not leave a released bead without needs-human.
+	if add, remove := splitList(p.flags["add-label"]), splitList(p.flags["remove-label"]); len(add)+len(remove) > 0 {
+		m := with(map[string]any{"id": id})
+		if len(add) > 0 {
+			m["add"] = add
+		}
+		if len(remove) > 0 {
+			m["remove"] = remove
+		}
+		plan.Calls = append(plan.Calls, Call{"beads_label", m})
+	}
 	status, hasStatus := p.one("status")
 	assignee, setsAssignee := p.one("assignee")
 	if setsAssignee && assignee != "" {
@@ -186,33 +258,21 @@ func translateUpdate(p parsed, with func(map[string]any) map[string]any) (Plan, 
 		case status == "in_progress":
 			plan.Calls = append(plan.Calls, Call{"beads_claim", with(map[string]any{"id": id})})
 		case status == "open" || (!hasStatus && clearsAssignee):
-			plan.Calls = append(plan.Calls, Call{"beads_release", with(map[string]any{"id": id, "why": "Released by the Forge."})})
+			plan.Calls = append(plan.Calls, Call{"beads_release", with(map[string]any{"id": id})})
 			plan.Tolerate = append(plan.Tolerate, "no assignee", "no claim to let go")
 		default:
 			return Plan{}, fmt.Errorf("bd update --status=%s is not one the Forge writes through Varde", status)
 		}
 	}
-	if add, remove := splitList(p.flags["add-label"]), splitList(p.flags["remove-label"]); len(add)+len(remove) > 0 {
-		m := with(map[string]any{"id": id})
-		if len(add) > 0 {
-			m["add"] = add
-		}
-		if len(remove) > 0 {
-			m["remove"] = remove
-		}
-		plan.Calls = append(plan.Calls, Call{"beads_label", m})
-	}
 	if notes, ok := p.one("append-notes"); ok {
-		plan.Calls = append(plan.Calls, Call{"beads_note", with(map[string]any{"id": id, "text": notes})})
-	}
-	if _, ok := p.one("notes"); ok {
-		return Plan{}, fmt.Errorf("bd update --notes replaces every note; Varde only appends (use --append-notes)")
+		plan.Calls = append(plan.Calls, Call{"beads_note", with(map[string]any{"id": id, "text": cut(notes, limitNote)})})
 	}
 	fields := with(map[string]any{"id": id})
-	for _, name := range []string{"title", "description"} {
-		if v, ok := p.one(name); ok {
-			fields[name] = v
-		}
+	if v, ok := p.one("title"); ok {
+		fields["title"] = cut(v, limitTitle)
+	}
+	if v, ok := p.one("description"); ok {
+		fields["description"] = cut(v, limitText)
 	}
 	if v, ok := p.one("priority"); ok {
 		n, err := strconv.Atoi(strings.TrimPrefix(strings.ToUpper(v), "P"))
@@ -235,9 +295,9 @@ func translateCreate(p parsed, with func(map[string]any) map[string]any, anvilPa
 	if strings.TrimSpace(title) == "" {
 		return Plan{}, fmt.Errorf("bd create needs --title")
 	}
-	m := with(map[string]any{"title": title})
+	m := with(map[string]any{"title": cut(title, limitTitle)})
 	if v, ok := p.one("description"); ok {
-		m["description"] = v
+		m["description"] = cut(v, limitText)
 	}
 	m["type"] = "task"
 	if v, ok := p.one("type"); ok && v != "" {
@@ -257,19 +317,27 @@ func translateCreate(p parsed, with func(map[string]any) map[string]any, anvilPa
 	for _, dep := range splitList(p.flags["deps"]) {
 		kind, on, ok := strings.Cut(dep, ":")
 		if !ok {
-			kind, on = "blocks", dep
+			kind, on = "depends-on", dep
 		}
 		switch kind {
 		case "blocks":
-			// A split bead's child (schematic): Varde puts it under the split bead's parent, with the split bead's own
-			// Forge label allowed, and the dependency set.
+			// bd's blocks:X is "the new bead blocks X": only schematic's parts of a split bead X say it. Varde puts the
+			// part under X's parent, with X's own Forge label allowed, and sets the dependency.
+			if _, twice := m["split_from"]; twice {
+				return Plan{}, fmt.Errorf("bd create --deps: a part belongs to one split bead, not several")
+			}
 			m["split_from"] = on
 		case "discovered-from":
 			m["discovered_from"] = on
 			plan.Lookup = on
+		case "depends-on", "blocked-by":
+			plan.DependsOn = append(plan.DependsOn, on)
 		default:
-			return Plan{}, fmt.Errorf("bd create --deps %s: only blocks and discovered-from", dep)
+			return Plan{}, fmt.Errorf("bd create --deps %s: only blocks, depends-on and discovered-from", dep)
 		}
+	}
+	if _, split := m["split_from"]; split && (plan.Lookup != "" || len(plan.DependsOn) > 0) {
+		return Plan{}, fmt.Errorf("bd create --deps: a part of a split bead takes no other dependency")
 	}
 	if _, split := m["split_from"]; !split && plan.Lookup == "" {
 		if anvilParent == "" {

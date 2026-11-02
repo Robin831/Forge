@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 
 	"github.com/Robin831/Forge/internal/config"
@@ -101,7 +102,12 @@ and monitors pull requests (Bellows) across registered repositories (Anvils).`,
 		executil.SetBdTimeout(cfg.Settings.BdTimeout)
 		if vardebeads.Enabled() && cmd.Name() != "bd-varde" {
 			if exe, err := os.Executable(); err == nil {
-				executil.SetVardeWrites(exe, config.ConfigFilePath(configFile))
+				// Absolute: the write runs in the anvil's directory, where a relative path would not resolve.
+				cfgPath := config.ConfigFilePath(configFile)
+				if abs, absErr := filepath.Abs(cfgPath); cfgPath != "" && absErr == nil {
+					cfgPath = abs
+				}
+				executil.SetVardeWrites(exe, cfgPath)
 			} else {
 				fmt.Fprintf(os.Stderr, "Error: bead writes go through Varde, but the forge binary cannot be found: %v\n", err)
 				os.Exit(1)

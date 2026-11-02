@@ -14,9 +14,10 @@ import (
 
 // Client calls Varde's MCP endpoint with the Forge's key.
 type Client struct {
-	URL  string // Varde's base URL, without /mcp
-	Key  string
-	HTTP *http.Client
+	URL     string // Varde's base URL, without /mcp
+	Key     string
+	HTTP    *http.Client
+	Backoff []time.Duration
 }
 
 // ErrRefused is a tool refusal: Varde answered, and said no. Its text is Varde's own.
@@ -29,6 +30,10 @@ func NewClientFromEnv() (*Client, error) {
 	url, file := strings.TrimRight(os.Getenv(EnvURL), "/"), os.Getenv(EnvKeyFile)
 	if url == "" || file == "" {
 		return nil, fmt.Errorf("%s and %s must both be set", EnvURL, EnvKeyFile)
+	}
+	// The key is a bearer token: never over plain http, except to this machine.
+	if !strings.HasPrefix(url, "https://") && !strings.HasPrefix(url, "http://127.0.0.1") && !strings.HasPrefix(url, "http://localhost") {
+		return nil, fmt.Errorf("%s must be https", EnvURL)
 	}
 	raw, err := os.ReadFile(file)
 	if err != nil {
@@ -49,30 +54,56 @@ type toolResult struct {
 	IsError    bool            `json:"isError"`
 }
 
+// Backoff is how long to wait before each retry of a 429 or 5xx; nil means two retries, 2 s then 6 s.
+func (c *Client) backoff() []time.Duration {
+	if c.Backoff != nil {
+		return c.Backoff
+	}
+	return []time.Duration{2 * time.Second, 6 * time.Second}
+}
+
+func (c *Client) post(ctx context.Context, body []byte) ([]byte, int, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.URL+"/mcp", bytes.NewReader(body))
+	if err != nil {
+		return nil, 0, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json, text/event-stream")
+	req.Header.Set("Authorization", "Bearer "+c.Key)
+	res, err := c.HTTP.Do(req)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer res.Body.Close()
+	raw, err := io.ReadAll(io.LimitReader(res.Body, 4<<20))
+	return raw, res.StatusCode, err
+}
+
 // Call runs one tool and returns its structured answer. A refusal is *ErrRefused; anything else is a transport error.
 func (c *Client) Call(ctx context.Context, tool string, args map[string]any) (json.RawMessage, error) {
 	body, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": map[string]any{"name": tool, "arguments": args}})
 	if err != nil {
 		return nil, err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.URL+"/mcp", bytes.NewReader(body))
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/json")
-	req.Header.Set("Authorization", "Bearer "+c.Key)
-	res, err := c.HTTP.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("varde %s: %w", tool, err)
-	}
-	defer res.Body.Close()
-	raw, err := io.ReadAll(io.LimitReader(res.Body, 4<<20))
-	if err != nil {
-		return nil, fmt.Errorf("varde %s: reading the answer: %w", tool, err)
-	}
-	if res.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("varde %s: HTTP %d: %s", tool, res.StatusCode, strings.TrimSpace(string(raw[:min(len(raw), 300)])))
+	var raw []byte
+	for attempt := 0; ; attempt++ {
+		var status int
+		raw, status, err = c.post(ctx, body)
+		if err != nil {
+			return nil, fmt.Errorf("varde %s: %w", tool, err)
+		}
+		if status == http.StatusOK {
+			break
+		}
+		if attempt < len(c.backoff()) && (status == http.StatusTooManyRequests || status >= 500) {
+			select {
+			case <-time.After(c.backoff()[attempt]):
+				continue
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+		}
+		return nil, fmt.Errorf("varde %s: HTTP %d: %s", tool, status, strings.TrimSpace(string(raw[:min(len(raw), 300)])))
 	}
 	var answer struct {
 		Result *toolResult `json:"result"`

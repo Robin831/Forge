@@ -78,3 +78,14 @@ func TestEscalationAndRetryWithBdAreUnchanged(t *testing.T) {
 		t.Errorf("retry ran %q", got)
 	}
 }
+
+func TestVardeDispatchWarnsForUntaggedAnvils(t *testing.T) {
+	cfg := &config.Config{Anvils: map[string]config.AnvilConfig{"tagged": {AutoDispatch: "tagged", AutoDispatchTag: "forgeSkybert"}, "all": {AutoDispatch: "all"}}}
+	if got := untaggedUnderVarde(cfg); len(got) != 0 {
+		t.Errorf("with bd: %v", got)
+	}
+	vardeMode(t)
+	if got := untaggedUnderVarde(cfg); len(got) != 1 || got[0] != "all" {
+		t.Errorf("through Varde: %v", got)
+	}
+}

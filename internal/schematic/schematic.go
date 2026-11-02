@@ -1349,7 +1349,8 @@ func subBeadsWithoutExternalRef(ctx context.Context, anvilPath string, ids []str
 // schematic_issue_sync_failed event, and the PR step's own external_ref guard
 // is the backstop that syncs an individual bead just before its PR is created.
 func syncSubBeadIssues(ctx context.Context, cfg Config, parent poller.Bead, subs []SubBead, anvilPath string, run bdRunner) {
-	if len(subs) == 0 {
+	// Through Varde there is no bd github push (DevInfra-gbx.8), so no sync to report as failed.
+	if len(subs) == 0 || vardebeads.Enabled() {
 		return
 	}
 	ids := make([]string, len(subs))

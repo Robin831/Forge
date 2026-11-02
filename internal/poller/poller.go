@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -310,9 +311,6 @@ func (p *BeadPoller) pollAnvil(ctx context.Context, name string, anvil config.An
 		limit = 100
 	}
 	args := []string{"ready", "--json", "--limit", strconv.Itoa(limit)}
-	if vardebeads.Enabled() {
-		args = append(args, "--exclude-label", LabelNeedsHuman)
-	}
 	if p.UseLabelFilter && anvil.AutoDispatchTag != "" {
 		args = append(args, "--label", anvil.AutoDispatchTag)
 	}
@@ -331,6 +329,17 @@ func (p *BeadPoller) pollAnvil(ctx context.Context, name string, anvil config.An
 	var beads []Bead
 	if err := json.Unmarshal(output, &beads); err != nil {
 		return nil, fmt.Errorf("parsing bd ready output for %s: %w", name, err)
+	}
+
+	// Through Varde a bead the Forge gave up on keeps its tag and carries needs-human: not dispatchable.
+	if vardebeads.Enabled() {
+		kept := beads[:0]
+		for _, b := range beads {
+			if !slices.ContainsFunc(b.Labels, func(l string) bool { return strings.EqualFold(l, LabelNeedsHuman) }) {
+				kept = append(kept, b)
+			}
+		}
+		beads = kept
 	}
 
 	// Tag each bead with the anvil name

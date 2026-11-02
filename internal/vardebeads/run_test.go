@@ -69,7 +69,17 @@ func TestRunFindsTheParentForADiscoveredBead(t *testing.T) {
 func TestRunStopsAtTheFirstFailure(t *testing.T) {
 	f := &fakeVarde{refuse: map[string]string{"beads_release": "Refused (403): B-1 is assigned to claude/sophie."}}
 	err := Run(context.Background(), f, []string{"update", "B-1", "--status=open", "--assignee=", "--add-label=needs-human"}, "Forge", "", &bytes.Buffer{})
-	if err == nil || len(f.calls) != 1 {
-		t.Errorf("err=%v calls=%d: a refused release must not go on to label", err, len(f.calls))
+	if err == nil || len(f.calls) != 2 || f.calls[0].Tool != "beads_label" {
+		t.Errorf("err=%v calls=%+v: the label goes first, and a refused release is an error", err, f.calls)
+	}
+}
+
+func TestRunAddsTheWaitAfterTheCreate(t *testing.T) {
+	f := &fakeVarde{answers: map[string]json.RawMessage{"beads_create": json.RawMessage(`{"ok":true,"id":"B-9"}`)}}
+	if err := Run(context.Background(), f, []string{"create", "--title", "x", "--deps", "B-7", "--json"}, "Forge", "EP-1", &bytes.Buffer{}); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.calls) != 2 || f.calls[1].Tool != "beads_dep" || f.calls[1].Args["id"] != "B-9" || f.calls[1].Args["on"] != "B-7" {
+		t.Errorf("calls = %+v", f.calls)
 	}
 }

@@ -74,6 +74,12 @@ func Run(ctx context.Context, c Caller, args []string, session, anvilParent stri
 			created = answer.ID
 		}
 	}
+	// bd create --deps <id>: the new bead waits on <id>. A failure here leaves the bead without that wait, so say so.
+	for _, on := range plan.DependsOn {
+		if _, err := c.Call(ctx, "beads_dep", map[string]any{"session": session, "id": created, "on": on, "type": "blocks"}); err != nil {
+			return fmt.Errorf("created %s, but it does not yet wait on %s: %w", created, on, err)
+		}
+	}
 	switch {
 	case plan.Create && plan.Silent:
 		fmt.Fprintln(stdout, created)
