@@ -74,10 +74,15 @@ func Run(ctx context.Context, c Caller, args []string, session, anvilParent stri
 			created = answer.ID
 		}
 	}
-	// bd create --deps <id>: the new bead waits on <id>. A failure here leaves the bead without that wait, so say so.
+	// bd create --deps <id>: the new bead waits on <id>. Without that wait it would be dispatched too early, so a bead
+	// whose wait could not be set is closed again and the create fails as a whole, as bd's would.
 	for _, on := range plan.DependsOn {
 		if _, err := c.Call(ctx, "beads_dep", map[string]any{"session": session, "id": created, "on": on, "type": "blocks"}); err != nil {
-			return fmt.Errorf("created %s, but it does not yet wait on %s: %w", created, on, err)
+			_, closeErr := c.Call(context.WithoutCancel(ctx), "beads_close", map[string]any{"session": session, "id": created, "kind": "not-doing", "reason": "rollback: its dependency on " + on + " could not be set"})
+			if closeErr != nil {
+				return fmt.Errorf("created %s, could not make it wait on %s (%w), and could not close it again: %v", created, on, err, closeErr)
+			}
+			return fmt.Errorf("could not make the new bead wait on %s, so it was closed again: %w", on, err)
 		}
 	}
 	switch {

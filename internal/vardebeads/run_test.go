@@ -83,3 +83,17 @@ func TestRunAddsTheWaitAfterTheCreate(t *testing.T) {
 		t.Errorf("calls = %+v", f.calls)
 	}
 }
+
+// A bead whose wait could not be set is closed again, so it is never dispatched early or left behind.
+func TestRunClosesTheBeadWhenItsWaitFails(t *testing.T) {
+	f := &fakeVarde{answers: map[string]json.RawMessage{"beads_create": json.RawMessage(`{"ok":true,"id":"B-9"}`)}, refuse: map[string]string{"beads_dep": "Refused (400): cycle"}}
+	var out bytes.Buffer
+	err := Run(context.Background(), f, []string{"create", "--title", "x", "--deps", "B-7", "--json"}, "Forge", "EP-1", &out)
+	if err == nil || out.Len() != 0 {
+		t.Fatalf("err=%v out=%q: the create must fail as a whole", err, out.String())
+	}
+	last := f.calls[len(f.calls)-1]
+	if last.Tool != "beads_close" || last.Args["id"] != "B-9" || last.Args["kind"] != "not-doing" {
+		t.Errorf("last call = %+v", last)
+	}
+}

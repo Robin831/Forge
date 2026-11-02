@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	neturl "net/url"
 	"os"
 	"strings"
 	"time"
@@ -32,8 +33,9 @@ func NewClientFromEnv() (*Client, error) {
 		return nil, fmt.Errorf("%s and %s must both be set", EnvURL, EnvKeyFile)
 	}
 	// The key is a bearer token: never over plain http, except to this machine.
-	if !strings.HasPrefix(url, "https://") && !strings.HasPrefix(url, "http://127.0.0.1") && !strings.HasPrefix(url, "http://localhost") {
-		return nil, fmt.Errorf("%s must be https", EnvURL)
+	parsed, err := neturl.Parse(url)
+	if err != nil || parsed.Host == "" || (parsed.Scheme != "https" && !(parsed.Scheme == "http" && isLoopback(parsed.Hostname()))) {
+		return nil, fmt.Errorf("%s must be an https URL", EnvURL)
 	}
 	raw, err := os.ReadFile(file)
 	if err != nil {
@@ -53,6 +55,12 @@ type toolResult struct {
 	Structured json.RawMessage `json:"structuredContent"`
 	IsError    bool            `json:"isError"`
 }
+
+func isLoopback(host string) bool { return host == "localhost" || host == "127.0.0.1" || host == "::1" }
+
+// Retried after a 5xx: tools whose second call changes nothing. A gateway's 502 can come after Varde wrote, so a create
+// or a note is not sent twice; a 429 is refused before any write, so every tool is retried after one.
+var idempotent = map[string]bool{"beads_label": true, "beads_dep": true, "beads_release": true, "beads_claim": true, "beads_close": true, "beads_show": true}
 
 // Backoff is how long to wait before each retry of a 429 or 5xx; nil means two retries, 2 s then 6 s.
 func (c *Client) backoff() []time.Duration {
@@ -95,7 +103,7 @@ func (c *Client) Call(ctx context.Context, tool string, args map[string]any) (js
 		if status == http.StatusOK {
 			break
 		}
-		if attempt < len(c.backoff()) && (status == http.StatusTooManyRequests || status >= 500) {
+		if attempt < len(c.backoff()) && (status == http.StatusTooManyRequests || (status >= 500 && idempotent[tool])) {
 			select {
 			case <-time.After(c.backoff()[attempt]):
 				continue

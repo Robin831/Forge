@@ -17,6 +17,9 @@ const (
 	EnvSession = "FORGE_VARDE_SESSION"
 )
 
+// HalfSet reports a configuration that names Varde but cannot reach it: one of the two variables without the other.
+func HalfSet() bool { return (os.Getenv(EnvURL) == "") != (os.Getenv(EnvKeyFile) == "") }
+
 // Enabled reports whether bead writes go through Varde.
 func Enabled() bool { return os.Getenv(EnvURL) != "" && os.Getenv(EnvKeyFile) != "" }
 

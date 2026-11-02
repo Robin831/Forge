@@ -36,7 +36,7 @@ func TestPollSkipsNeedsHumanOnlyThroughVarde(t *testing.T) {
 	if got := ids(); len(got) != 2 {
 		t.Errorf("with bd: %v", got)
 	}
-	t.Setenv(vardebeads.EnvURL, "http://varde.invalid")
+	t.Setenv(vardebeads.EnvURL, "https://varde.invalid")
 	t.Setenv(vardebeads.EnvKeyFile, "/nowhere")
 	if got := ids(); len(got) != 1 || got[0] != "B-1" {
 		t.Errorf("through Varde: %v", got)

@@ -311,6 +311,11 @@ func (p *BeadPoller) pollAnvil(ctx context.Context, name string, anvil config.An
 		limit = 100
 	}
 	args := []string{"ready", "--json", "--limit", strconv.Itoa(limit)}
+	// In the query too, so escalated beads never fill the limit; the image's bd has the flag (the Go filter below
+	// stays, for a bd that ignores it).
+	if vardebeads.Enabled() {
+		args = append(args, "--exclude-label", LabelNeedsHuman)
+	}
 	if p.UseLabelFilter && anvil.AutoDispatchTag != "" {
 		args = append(args, "--label", anvil.AutoDispatchTag)
 	}
