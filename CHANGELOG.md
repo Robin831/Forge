@@ -9,6 +9,20 @@ Unreleased changes live as fragments in `changelog.d/` and are assembled at
 release time by `scripts/assemble-changelog.sh`.
 
 
+## [0.38.0] - 2026-11-02
+
+### Added
+
+- **Smiths file what they find through Varde** - when bead writes go through Varde and `FORGE_VARDE_SMITH_KEY_FILE` names the smiths' own key (`beads:read,beads:file`: a task or bug under the owner's own open epic, a note, a plain label; never a claim, close or forge label), the session that implements a bead gets Varde's bead tools (`--mcp-config`, Claude only) and is told to file discovered issues with `beads_create` under the anvil's `beads_parent`, falling back to a «Discovered issues» list when the tool is missing. Review, triage and other stages never get the tools. (DevInfra-gbx.8)
+
+### Changed
+
+- **Bead writes can go through Varde** - with `FORGE_VARDE_URL` and `FORGE_VARDE_KEY_FILE` set, every bd write the Forge makes (claims, releases, notes, labels, closes, dependencies, new beads) runs as the hidden `forge bd-varde` command, which sends it to Varde's bead tools with the Forge's own key and answers as bd would; reads stay on bd, so the Forge's database user can be read-only. Each anvil names the epic its own new beads go under with `beads_parent`. In that mode a bead the Forge escalates keeps its dispatch label and gets `needs-human`, which the poller skips and a retry takes off; parts of a split bead get the parent's dispatch label when they are created; adding a dispatch label by hand (Hearth's tag, wicket auto-dispatch) is refused, since a hand-over goes through Varde's `beads_forge_label`; and `bd github push` is dropped. Without those two variables the Forge behaves exactly as before. (DevInfra-gbx.8)
+
+### Fixed
+
+- **A forge on plain bd gets its smiths' bd back** - since 0.37.3 agent sessions were kept from the beads database and told to list what they found instead of filing beads. That now applies only when the Forge's bead writes go through Varde; a forge without `FORGE_VARDE_URL` and `FORGE_VARDE_KEY_FILE` gives its smiths the beads environment and 0.37.2's instructions (file discovered issues with `bd create`) again. (DevInfra-gbx.8)
+
 ## [0.37.3] - 2026-11-02
 
 ### Security

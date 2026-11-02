@@ -1,2 +1,0 @@
-category: Fixed
-- **A forge on plain bd gets its smiths' bd back** - since 0.37.3 agent sessions were kept from the beads database and told to list what they found instead of filing beads. That now applies only when the Forge's bead writes go through Varde; a forge without `FORGE_VARDE_URL` and `FORGE_VARDE_KEY_FILE` gives its smiths the beads environment and 0.37.2's instructions (file discovered issues with `bd create`) again. (DevInfra-gbx.8)
