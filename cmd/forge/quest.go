@@ -238,6 +238,8 @@ func runShellCmd(ctx context.Context, command, dir string) error {
 	}
 	executil.HideWindow(cmd)
 	executil.SetProcessGroup(cmd)
+	// Setup and teardown run in the anvil: no beads credentials for them (DevInfra-gbx.8).
+	cmd.Env = executil.WithoutBeadsCredentials(os.Environ())
 	cmd.Dir = dir
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr

@@ -129,3 +129,17 @@ func TestShellArgs(t *testing.T) {
 	assert.NotEmpty(t, shell)
 	assert.NotEmpty(t, flag)
 }
+
+// DevInfra-gbx.8: a hook is the repository's script, which the agent can edit, so it gets no beads credentials.
+func TestRunHook_NoBeadsCredentials(t *testing.T) {
+	skipIfNoShell(t)
+	skipIfWindows(t)
+	t.Setenv("BEADS_DOLT_PASSWORD", "secret")
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "env.txt")
+	err := RunHook(context.Background(), "w1", "before_temper", "echo pw=${BEADS_DOLT_PASSWORD:-none} > "+marker, HookEnv{BeadID: "b", WorktreePath: dir, Stage: "temper"})
+	require.NoError(t, err)
+	data, err := os.ReadFile(marker)
+	require.NoError(t, err)
+	assert.Contains(t, string(data), "pw=none")
+}

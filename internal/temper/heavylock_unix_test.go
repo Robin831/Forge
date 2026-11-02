@@ -138,3 +138,15 @@ func TestRunStep_WithoutTheEnvLeavesTheChildEnvAlone(t *testing.T) {
 	assert.True(t, res.Passed)
 	assert.True(t, strings.Contains(res.Output, "held=no"), res.Output)
 }
+
+// DevInfra-gbx.8: the build and tests run the agent's code, so they get no beads credentials, lock or no lock.
+func TestRunStep_NoBeadsCredentials(t *testing.T) {
+	t.Setenv(heavyLockEnv, filepath.Join(t.TempDir(), "lock"))
+	t.Setenv("BEADS_DOLT_PASSWORD", "secret")
+	path := filepath.Join(t.TempDir(), "dotnet")
+	require.NoError(t, os.WriteFile(path, []byte("#!/bin/sh\necho \"pw=${BEADS_DOLT_PASSWORD:-none}\"\n"), 0o755))
+	heavy := runStep(context.Background(), t.TempDir(), Step{Name: "api-build", Command: path, Args: []string{"build"}}, time.Minute, DefaultOutputCap)
+	assert.Contains(t, heavy.Output, "pw=none", "with the heavy lock held")
+	light := runStep(context.Background(), t.TempDir(), Step{Name: "preview", Command: path, Args: []string{"run"}}, time.Minute, DefaultOutputCap)
+	assert.Contains(t, light.Output, "pw=none", "without the lock (the env was nil, so everything was inherited)")
+}

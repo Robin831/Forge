@@ -2,15 +2,22 @@ package executil
 
 import "strings"
 
-// beadsCredentialPrefixes are the environment variables that let a process reach the beads database: bd's own
-// (BEADS_DOLT_*, host, user and password among them) and Dolt's remote password. Agent sessions and the code they
-// write never get them: a bead write goes through Varde, never straight to the database (DevInfra-gbx.8).
-var beadsCredentialPrefixes = []string{"BEADS_DOLT_", "BEADS_PROXIED_SERVER_EXTERNAL_PASSWORD=", "DOLT_REMOTE_PASSWORD="}
+// beadsCredentialKeys are the environment variables that point a process at the beads database: bd's own
+// (BEADS_DOLT_*, host, user and password among them), its credentials file, and Dolt's remote password. Agent sessions
+// and the code they run do not inherit them (DevInfra-gbx.8). This is hygiene, not a boundary: a process with the
+// daemon's uid can still read the daemon's environment; the boundary is a read-only database user.
+var beadsCredentialKeys = []string{"BEADS_DOLT_*", "BEADS_CREDENTIALS_FILE", "BEADS_PROXIED_SERVER_EXTERNAL_PASSWORD", "DOLT_REMOTE_PASSWORD"}
 
-// IsBeadsCredentialEnv reports whether one KEY=VALUE entry carries beads database access.
+// IsBeadsCredentialEnv reports whether one KEY=VALUE entry is one of them. Names compare without case, as on Windows.
 func IsBeadsCredentialEnv(entry string) bool {
-	for _, prefix := range beadsCredentialPrefixes {
-		if strings.HasPrefix(entry, prefix) {
+	key, _, _ := strings.Cut(entry, "=")
+	key = strings.ToUpper(key)
+	for _, want := range beadsCredentialKeys {
+		if prefix, ok := strings.CutSuffix(want, "*"); ok {
+			if strings.HasPrefix(key, prefix) {
+				return true
+			}
+		} else if key == want {
 			return true
 		}
 	}
