@@ -8,9 +8,12 @@ import (
 )
 
 type lockPackage struct {
-	Version  string `json:"version"`
-	Optional bool   `json:"optional"`
-	Link     bool   `json:"link"`
+	Version     string   `json:"version"`
+	Optional    bool     `json:"optional"`
+	DevOptional bool     `json:"devOptional"`
+	Link        bool     `json:"link"`
+	OS          []string `json:"os"`
+	CPU         []string `json:"cpu"`
 }
 
 type lockFile struct {
@@ -35,8 +38,8 @@ func readLock(path string) (map[string]lockPackage, error) {
 // installedMatchesLock compares what is installed in installedNM (npm's hidden lockfile,
 // node_modules/.package-lock.json, written on every install) with the worktree's package-lock.json
 // (DevInfra-rjb.3). known is false when either file is missing or unreadable: then nobody can tell.
-// Every non-optional package the lockfile names must be installed at its version; an optional one
-// (another platform's binary) may be absent; packages installed but no longer locked are ignored.
+// Every package the lockfile names must be installed at its version, except one npm may skip (optional,
+// devOptional, or tied to an os or cpu); packages installed but no longer locked are ignored.
 func installedMatchesLock(installedNM, lockPath string) (match, known bool, why string) {
 	want, err := readLock(lockPath)
 	if err != nil {
@@ -52,7 +55,7 @@ func installedMatchesLock(installedNM, lockPath string) (match, known bool, why 
 		}
 		h, ok := have[key]
 		switch {
-		case !ok && w.Optional:
+		case !ok && (w.Optional || w.DevOptional || len(w.OS) > 0 || len(w.CPU) > 0):
 			continue
 		case !ok:
 			return false, true, key + " is locked at " + w.Version + " but not installed"

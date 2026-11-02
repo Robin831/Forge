@@ -39,16 +39,22 @@ func linkNodeModulesWith(anvilPath, worktreePath string, onlyMatching bool) erro
 		dstNM := filepath.Join(dstParent, "node_modules")
 		// Only a tree installed from this worktree's own lockfile is shared: Temper refuses npm ci on a link, so a
 		// stale shared tree would never be refreshed (DevInfra-rjb.3). Unknown (no lockfile) keeps the old sharing.
-		match, known, why := installedMatchesLock(srcNM, filepath.Join(dstParent, "package-lock.json"))
-		stale := known && !match
-		if stale && !onlyMatching {
-			slog.Warn("worktree: sharing an install that does not match this lockfile (no install step here)", "dir", sub, "worktree", worktreePath, "why", why)
-			stale = false
+		staleTree := func() (bool, string) {
+			match, known, why := installedMatchesLock(srcNM, filepath.Join(dstParent, "package-lock.json"))
+			if known && !match && !onlyMatching {
+				slog.Warn("worktree: sharing an install that does not match this lockfile (no install step here)", "dir", sub, "worktree", worktreePath, "why", why)
+				return false, why
+			}
+			return known && !match, why
 		}
 
 		// An existing destination: a real directory is the worktree's own and stays; a link to a stale tree goes.
 		if _, err := os.Lstat(dstNM); err == nil {
-			if linked, _ := isReparsePoint(dstNM); linked && stale {
+			linked, _ := isReparsePoint(dstNM)
+			if !linked {
+				continue
+			}
+			if stale, why := staleTree(); stale {
 				// os.Remove takes the link itself, never the anvil's tree behind it.
 				if err := os.Remove(dstNM); err != nil {
 					return fmt.Errorf("removing stale node_modules link %s: %w", sub, err)
@@ -59,7 +65,7 @@ func linkNodeModulesWith(anvilPath, worktreePath string, onlyMatching bool) erro
 		} else if !os.IsNotExist(err) {
 			return fmt.Errorf("checking existing node_modules destination %s: %w", sub, err)
 		}
-		if stale {
+		if stale, why := staleTree(); stale {
 			slog.Info("worktree: node_modules not linked, the anvil's install does not match this lockfile; npm ci installs here", "dir", sub, "worktree", worktreePath, "why", why)
 			continue
 		}
