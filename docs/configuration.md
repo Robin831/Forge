@@ -22,6 +22,7 @@ anvils:
     golangci_lint: null            # null/omit = auto-detect (runs only if binary found on PATH); false = disable
     go_race_detection: false       # Per-anvil race detector override
     depcheck_enabled: true         # Set to false to skip depcheck for this anvil
+    depcheck_exclude: ["tools/**"] # Extra globs depcheck skips (samples/** is always skipped)
     hooks:                         # Pipeline stage hooks (optional)
       after_smith: './scripts/post-smith.sh'
       before_temper: './scripts/pre-temper.sh'  # runs for every temper invocation (pipeline, burnish, quench)
@@ -126,7 +127,7 @@ settings:
   crucible_poll_interval: 3m
   auto_merge_crucible_children: true
   warden:                          # review-time rule filtering (see Warden Rule Filtering)
-    max_rules_per_review: 30
+    max_rules_per_review: 60
     archive_after_days: 90
     inactive_after_days: 90
     max_rules_in_file: 300
@@ -169,11 +170,13 @@ Each key under `anvils` is the anvil name. The name is used in CLI output, logs,
 | `auto_dispatch` | string | `"all"` | Dispatch mode — see below. |
 | `auto_dispatch_tag` | string | | Required when `auto_dispatch: tagged`. Beads must have this tag (case-insensitive) to be dispatched. |
 | `auto_dispatch_min_priority` | int | 0 | Required when `auto_dispatch: priority`. Only beads with priority <= this value are dispatched. Range: 0-4. |
+| `beads_parent` | string | | The epic the Forge files its own new beads under (scanners, quests, wicket) when its bead writes go through Varde (`FORGE_VARDE_URL` and `FORGE_VARDE_KEY_FILE` set), since Varde files every bead under one. Without it such a create fails. |
 | `schematic_enabled` | bool\|null | null (use global) | Per-anvil override for `settings.schematic_enabled`. When set, takes precedence over the global setting. |
 | `golangci_lint` | bool\|null | null (auto-detect) | Per-anvil override for golangci-lint in Temper. When null, golangci-lint runs if the binary is found on PATH. Set to `false` to disable. |
 | `go_race_detection` | bool\|null | null (use global) | Per-anvil override for Go race detection in Temper. When set, takes precedence over the global setting. |
 | `temper` | object\|null | null (auto-detect) | Custom Temper commands for this anvil. When set, replaces auto-detected build/test/lint steps. See [Custom Temper Commands](#custom-temper-commands) below. |
 | `depcheck_enabled` | bool\|null | null (enabled) | Per-anvil toggle for depcheck scanning. When null, depcheck runs as normal. Set to `false` to skip this anvil entirely. |
+| `depcheck_exclude` | list | `[]` | Repo-relative doublestar globs whose manifests depcheck skips, in every ecosystem, on top of the built-in `samples/**` (test and sample hosts are not shipped and may pin packages from feeds the anvil cannot read). A solution that names an excluded project still restores it, since the solution is scanned as a whole. |
 | `auto_merge` | bool | `false` | When enabled, PRs that reach the ready-to-merge state (CI passing, no conflicts, no unresolved threads, no pending reviews) are automatically merged using the configured `merge_strategy`. External PRs (`ext-*`) are never auto-merged. |
 | `questgiver_enabled` | bool\|null | null (use global) | Per-anvil override for QuestGiver E2E quest scanning. When null, uses `settings.questgiver_enabled`. Set to `false` to opt this anvil out entirely. |
 | `preview_enabled` | bool\|null | null (use global) | Per-anvil override for Kiln preview environments. When null, uses `settings.preview_enabled`. Set to `false` to opt this anvil out entirely. An anvil without a `.forge/preview.yaml` manifest offers no preview regardless. See [Preview Environments (Kiln)](#preview-environments-kiln). |
@@ -997,7 +1000,7 @@ settings live under `settings.warden`.
 ```yaml
 settings:
   warden:
-    max_rules_per_review: 30   # cap on rules emitted per review; 0 = default 30; negative = no cap
+    max_rules_per_review: 60   # cap on rules emitted per review; 0 = default 60; negative = no cap
     use_all_rules: false       # true bypasses the three filter passes (keeps only the cap)
     filter_path_glob: true     # filter by Rule.Paths against the changed files
     filter_category: true      # filter by Rule.Category against the extension→category map
@@ -1012,7 +1015,7 @@ settings:
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `warden.max_rules_per_review` | int | `30` | Caps the number of rules emitted in the review checklist after filtering. `0` (or omit) uses the default of `30`; a negative value disables the cap entirely; a positive value sets an explicit cap. |
+| `warden.max_rules_per_review` | int | `60` | Caps the number of rules emitted in the review checklist after filtering. `0` (or omit) uses the default of `60`; a negative value disables the cap entirely; a positive value sets an explicit cap. Within the cap, rules are ranked by path specificity, how much of their pattern the diff contains, recency and, lightest, how many review comments taught them. |
 | `warden.use_all_rules` | bool | `false` | When `true`, bypasses the three filter passes and applies only `max_rules_per_review`. Useful for A/B comparison against the pre-filter behavior. |
 | `warden.filter_path_glob` | bool | `true` | Enables filtering by each rule's `Paths` against the changed files in the diff. |
 | `warden.filter_category` | bool | `true` | Enables filtering by each rule's `Category` against the in-code extension → category map. |
@@ -1021,7 +1024,7 @@ settings:
 | `warden.inactive_after_days` | int | falls back to `archive_after_days` | The second half of the staleness sweep: how long a rule must have gone **unused** — unemitted into any review checklist and uncredited with any finding (`last_emitted`/`last_finding`, see Warden rule usage telemetry) — before it is archived. A rule is retired only when it has crossed **both** this and `archive_after_days`. The two are separate knobs because they measure different things: age is a fact about the distillation session that produced the rule, inactivity a fact about whether anything has wanted it since — and on age alone a rule the review selection puts in front of a reviewer every week is retired for being old. `0` (or omit) uses the resolved `archive_after_days`, which is exactly the behaviour of a deployment that never configured it. Unlike every other knob here a **negative value does not disable** this half, because switching it off *is* the defect; a deployment that wants retirement on age alone sets this to `1`. |
 | `warden.allow_archive_terminus` | bool | `false` | Lets the staleness sweep archive a rule that other, **archived** rules were merged into (a supersession terminus). Off by default: such a rule carries the merged content of every rule behind it, each of those is already archived, so retiring it retires the whole chain with nothing left on the active file to say what went. The rules the guard holds back are named in the flush log, the Smelter commit body and the batch PR body, so an operator turns this on having read which ones. `forge warden consolidate --force` is the same override for one off-cycle run. |
 | `warden.dedup_threshold` | float | `0.6` | Jaccard similarity (0.0–1.0) above which two active rules are treated as duplicates and the older entry is archived with reason `duplicate`. `0` (or omit) uses the default of `0.6`; a **negative** value turns **both** consolidation passes off — `overlap_threshold` is never applied on its own, so this is the single off switch for consolidation. The disable is negative and not `0` for the same reason `archive_after_days`' is: `0` is the field's zero value, so an unset setting and an explicit `dedup_threshold: 0` are indistinguishable by the time either reaches the daemon, and reading that as "off" would disable consolidation for every deployment that never configured it. |
-| `warden.max_rules_in_file` | int | `300` | Hard ceiling on how many rules the active `.forge/warden-rules.yaml` may hold, and the unconditional backstop behind the three consolidation passes: whatever they merge, archive or re-scope, the file is under this count when the flush ends. Past it the Smelter evicts the lowest-value rules — least specific paths, oldest — into the archive store with reason `over-cap`, so raising the ceiling is all it takes to want them back. `0` (or omit) uses the default of `300`; a negative value disables the ceiling, on `dedup_threshold`'s rule (`0` is the field's zero value and cannot mean "off"). The default was 1000, which is the four-figure size the ceiling exists to prevent set as the ceiling: a review reads `max_rules_per_review` (30) of the file, and on the two anvils measured (1793 and 727 rules) only 61 and 125 rules respectively could reach any review across their whole PR history — so a ceiling in the low hundreds sits above what is reachable rather than cutting into it. It stays a count and not a shorter `archive_after_days` because an age threshold evicts nothing on a dormant anvil and everything on a busy one, while a count means what it says whatever the learning rate has been; the two are complements. |
+| `warden.max_rules_in_file` | int | `300` | Hard ceiling on how many rules the active `.forge/warden-rules.yaml` may hold, and the unconditional backstop behind the three consolidation passes: whatever they merge, archive or re-scope, the file is under this count when the flush ends. Past it the Smelter evicts the lowest-value rules — least specific paths, oldest — into the archive store with reason `over-cap`, so raising the ceiling is all it takes to want them back. `0` (or omit) uses the default of `300`; a negative value disables the ceiling, on `dedup_threshold`'s rule (`0` is the field's zero value and cannot mean "off"). The default was 1000, which is the four-figure size the ceiling exists to prevent set as the ceiling: a review reads `max_rules_per_review` (30 when this was measured, 60 now) of the file, and on the two anvils measured (1793 and 727 rules) only 61 and 125 rules respectively could reach any review across their whole PR history — so a ceiling in the low hundreds sits above what is reachable rather than cutting into it. It stays a count and not a shorter `archive_after_days` because an age threshold evicts nothing on a dormant anvil and everything on a busy one, while a count means what it says whatever the learning rate has been; the two are complements. |
 | `warden.overlap_threshold` | float | `0.55` | The second duplicate criterion: the share of the **shorter** rule's vocabulary that also appears in the longer one (`\|A ∩ B\| / min(\|A\|, \|B\|)`). Two rules are near-duplicates when **either** criterion fires. `0` (or omit) uses the default of `0.55`; a negative value disables the criterion, leaving Jaccard alone. |
 
 ### How the review-time set is chosen
@@ -1036,7 +1039,7 @@ history, 61 rules were reachable in total and nothing learned in the preceding
 four months could reach a review at all: the learner was writing into a file
 where only the head was read.
 
-Candidates are now ranked on three components and the best `max_rules_per_review`
+Candidates are now ranked on four components and the best `max_rules_per_review`
 of them emitted:
 
 - **Specificity** — how narrowly the rule's most specific *matching* glob names
@@ -1050,6 +1053,15 @@ of them emitted:
   ties among rules that are equally broad and equally on-topic (which, on a
   mature file, is most of them) without letting a vague new rule outrank a
   narrowly scoped old one.
+- **Sources** — how many review comments taught the rule, the lightest term:
+  one source (most rules) scores nothing, two half, more approaching the full
+  weight, so a check reviewers keep asking for settles a near-tie without
+  outranking a narrower or more on-topic rule. Recency and sources together are
+  capped at recency's own weight, so the newest broad rule with many sources
+  still loses to an older scoped one. When every dated candidate shares one
+  date, recency is neutral (as for an undated rule) and sources settles the tie.
+  The `max_rules_in_file` eviction values rules on the same static terms
+  (specificity, recency, sources), through the same capped sum.
 
 Ties break on recency and then on a content-derived key — never on position,
 which is the age order the ranking exists to replace. The emitted set is

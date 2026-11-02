@@ -1,2 +1,0 @@
-category: Changed
-- **Dependency updates** - Bumped Go modules `go-chi/chi/v5` 5.4.0, `golang.org/x/crypto` 0.58.0, `golang.org/x/net` 0.61.0, `golang.org/x/sys` 0.49.0, `Microsoft/go-winio` 0.6.4, `bmatcuk/doublestar/v4` 4.10.3 and `mattn/go-runewidth` 0.0.31, and the Hearth 2.0 frontend's `lucide-react` 1.57.0, `@testing-library/user-event` 14.6.8, `@types/node` 26.6.5, `vite` 8.3.4 and `vitest` 5.0.4. All patch/minor updates. (Forge-vttu2)

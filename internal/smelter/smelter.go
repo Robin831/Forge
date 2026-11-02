@@ -27,6 +27,9 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// appendedNote ends the body of a batch PR a later run was appended to.
+const appendedNote = "This PR has had later runs appended to it; each commit on the branch is one run, and none replaced an earlier one."
+
 const (
 	// prTitle is the title used for smelter PRs.
 	prTitle = "forge: batch warden rule update [no-changelog]"
@@ -89,6 +92,10 @@ type Smelter struct {
 	// a rule the guard holds is unchanged by the flush that reported it, so
 	// an unsuppressed line repeats every cycle forever.
 	termini terminusAnnouncer
+
+	// findPR looks up the newest PR on a batch branch; findBatchPR (gh) unless
+	// a test replaces it.
+	findPR func(ctx context.Context, dir, branch string) (batchPR, error)
 }
 
 // Option configures a Smelter at construction time.
@@ -169,6 +176,7 @@ func New(db *state.DB, interval time.Duration, anvilPaths map[string]string, opt
 		anvilPaths: anvilPaths,
 		intervalCh: make(chan time.Duration, 1),
 	}
+	s.findPR = s.findBatchPR
 	for _, opt := range opts {
 		opt(s)
 	}
@@ -373,11 +381,19 @@ func (s *Smelter) flushAnvil(ctx context.Context, anvilName, anvilPath string, r
 	branch := branchForAnvil(anvilName)
 	wtBeadID := "smelter-batch-" + anvilName
 
-	// 1. Create an isolated worktree for the batch branch.
-	wt, err := s.wtMgr.CreateWithOptions(ctx, anvilPath, wtBeadID, worktree.CreateOptions{
-		Branch:      branch,
-		ResetBranch: true, // always reset to main for a clean diff
-	})
+	// 1. Decide whether the batch branch may be replaced, then create an
+	//    isolated worktree on main (replace) or on the branch itself (append).
+	base, err := s.prepareBatchBase(ctx, anvilPath, branch)
+	if err != nil {
+		return fmt.Errorf("batch branch for %s: %w", anvilName, err)
+	}
+	opts := worktree.CreateOptions{Branch: branch, ResetBranch: true}
+	if base.mode == appendToBatch {
+		// ResetBranch with BaseBranch resets to origin/<branch>: the open
+		// batch exactly as it is on origin, earlier rules and fixes included.
+		opts.BaseBranch = branch
+	}
+	wt, err := s.wtMgr.CreateWithOptions(ctx, anvilPath, wtBeadID, opts)
 	if err != nil {
 		return fmt.Errorf("creating worktree for %s: %w", anvilName, err)
 	}
@@ -426,12 +442,12 @@ func (s *Smelter) flushAnvil(ctx context.Context, anvilName, anvilPath string, r
 	}
 
 	// 4. Commit and force-push from the worktree.
-	if err := s.commitAndPush(ctx, wt.Path, branch, passes); err != nil {
+	if err := s.commitAndPush(ctx, wt.Path, branch, passes, base.mode == appendToBatch, base.head); err != nil {
 		return fmt.Errorf("commit/push for %s: %w", anvilName, err)
 	}
 
 	// 5. Create or update the PR.
-	if err := s.ensurePR(ctx, wt.Path, anvilName, branch, passes); err != nil {
+	if err := s.ensurePR(ctx, wt.Path, anvilName, branch, passes, base); err != nil {
 		return fmt.Errorf("PR creation for %s: %w", anvilName, err)
 	}
 
@@ -1074,7 +1090,16 @@ func archiveRules(wtPath string, duplicates, stale []warden.ArchivedRule) error 
 // buildCommitMessage so all three passes (added/consolidated from Pass 1,
 // archived from Pass 2, backfilled from Pass 3) land in one commit on the
 // same PR — one PR per anvil per smelter run.
-func (s *Smelter) commitAndPush(ctx context.Context, wtPath, branch string, passes PassResults) error {
+//
+// appendOnly pushes without force: the branch has an open PR, and a push that
+// is not a fast-forward (someone pushed meanwhile) fails rather than replace
+// their commits; the pending queue is kept for the next flush.
+//
+// expectedHead is what a replace may overwrite: the head prepareBatchBase
+// inspected (and kept, when it needed keeping), or "" when it found no branch.
+// The lease names it explicitly, so a head pushed after the inspection is never
+// overwritten even though the fetches since have moved the tracking ref.
+func (s *Smelter) commitAndPush(ctx context.Context, wtPath, branch string, passes PassResults, appendOnly bool, expectedHead string) error {
 	gitEnv := executil.CleanGitEnv()
 	git := func(args ...string) error {
 		cmdCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
@@ -1143,8 +1168,11 @@ func (s *Smelter) commitAndPush(ctx context.Context, wtPath, branch string, pass
 		}
 	}
 
-	// Force-push to the batch branch.
-	if err := git("push", "--force-with-lease", "origin", branch); err != nil {
+	if appendOnly {
+		return git("push", "origin", branch)
+	}
+	// Force-push to the batch branch, leased to the head that was inspected.
+	if err := git("push", "--force-with-lease=refs/heads/"+branch+":"+expectedHead, "origin", branch); err != nil {
 		return err
 	}
 
@@ -1153,18 +1181,19 @@ func (s *Smelter) commitAndPush(ctx context.Context, wtPath, branch string, pass
 
 // ensurePR creates a PR for the batch branch if one doesn't already exist.
 // If a previous PR was merged or closed, creates a new one.
-func (s *Smelter) ensurePR(ctx context.Context, wtPath, anvilName, branch string, passes PassResults) error {
+func (s *Smelter) ensurePR(ctx context.Context, wtPath, anvilName, branch string, passes PassResults, base batchBase) error {
 	// Check for an existing open PR on the batch branch.
-	prNumber, prState, err := s.findBatchPR(ctx, wtPath, branch)
+	found, err := s.findPR(ctx, wtPath, branch)
+	prNumber, prState := found.Number, found.State
 	if err != nil {
 		log.Printf("[smelter] Warning: could not check for existing PR on %s: %v", anvilName, err)
 		// Fall through to create — gh pr create will error if one already exists.
 	}
 
 	if prState == "OPEN" {
-		// PR already exists and is open — it was just force-pushed, so it's updated.
-		// Also update the body so it reflects all pass outcomes from the current push.
-		body := buildPRBody(passes)
+		// PR already exists and is open — this run was appended to it. The
+		// body describes this run; the commit list keeps every earlier one.
+		body := buildPRBody(passes) + "\n\n" + appendedNote
 		editCtx, editCancel := context.WithTimeout(ctx, 60*time.Second)
 		defer editCancel()
 		editCmd := executil.HideWindow(exec.CommandContext(editCtx, "gh", "pr", "edit",
@@ -1177,12 +1206,15 @@ func (s *Smelter) ensurePR(ctx context.Context, wtPath, anvilName, branch string
 		if err := editCmd.Run(); err != nil {
 			log.Printf("[smelter] Warning: could not update PR #%d body: %v\nstderr: %s", prNumber, err, editStderr.String())
 		}
-		log.Printf("[smelter] Existing open PR #%d for %s updated via force-push (%s)", prNumber, anvilName, passResultsSummary(passes))
+		log.Printf("[smelter] Existing open PR #%d for %s updated with a new commit (%s)", prNumber, anvilName, passResultsSummary(passes))
 		return nil
 	}
 
 	// No open PR (merged/closed/doesn't exist) — create a new one.
 	body := buildPRBody(passes)
+	if base.archivedAs != "" {
+		body += "\n\n" + fmt.Sprintf("The previous head of this branch had commits main does not have and no merged PR; it is kept as `%s`.", base.archivedAs)
+	}
 
 	ghCtx, ghCancel := context.WithTimeout(ctx, 60*time.Second)
 	defer ghCancel()
@@ -1211,16 +1243,36 @@ func (s *Smelter) ensurePR(ctx context.Context, wtPath, anvilName, branch string
 	return nil
 }
 
-// findBatchPR looks for an existing PR on the batch branch and returns its
-// number and state ("OPEN", "MERGED", "CLOSED"). Returns (0, "", nil) if
-// no PR exists for the branch.
-func (s *Smelter) findBatchPR(ctx context.Context, wtPath, branch string) (int, string, error) {
+// batchPR is the PR findBatchPR found on a batch branch: its number, state
+// ("OPEN", "MERGED", "CLOSED") and the head commit it was opened or merged
+// with. The zero value means no PR.
+type batchPR struct {
+	Number  int
+	State   string
+	HeadOID string
+}
+
+// findBatchPR looks for an existing PR on the batch branch. An open PR wins
+// over a newer closed one: the newest PR alone could hide an older one still
+// under review, and replacing the branch under it is what this lookup guards
+// against.
+func (s *Smelter) findBatchPR(ctx context.Context, wtPath, branch string) (batchPR, error) {
+	for _, state := range []string{"open", "all"} {
+		found, err := listBatchPR(ctx, wtPath, branch, state)
+		if err != nil || found.Number != 0 {
+			return found, err
+		}
+	}
+	return batchPR{}, nil
+}
+
+func listBatchPR(ctx context.Context, wtPath, branch, state string) (batchPR, error) {
 	ghCtx, ghCancel := context.WithTimeout(ctx, 60*time.Second)
 	defer ghCancel()
 	cmd := executil.HideWindow(exec.CommandContext(ghCtx, "gh", "pr", "list",
 		"--head", branch,
-		"--state", "all",
-		"--json", "number,state",
+		"--state", state,
+		"--json", "number,state,headRefOid",
 		"--limit", "1",
 	))
 	cmd.Dir = wtPath
@@ -1229,20 +1281,21 @@ func (s *Smelter) findBatchPR(ctx context.Context, wtPath, branch string) (int, 
 	cmd.Stderr = &stderr
 
 	if err := cmd.Run(); err != nil {
-		return 0, "", fmt.Errorf("gh pr list: %w\nstderr: %s", err, stderr.String())
+		return batchPR{}, fmt.Errorf("gh pr list: %w\nstderr: %s", err, stderr.String())
 	}
 
 	var prs []struct {
-		Number int    `json:"number"`
-		State  string `json:"state"`
+		Number     int    `json:"number"`
+		State      string `json:"state"`
+		HeadRefOid string `json:"headRefOid"`
 	}
 	if err := json.Unmarshal(stdout.Bytes(), &prs); err != nil {
-		return 0, "", fmt.Errorf("parsing pr list: %w", err)
+		return batchPR{}, fmt.Errorf("parsing pr list: %w", err)
 	}
 
 	if len(prs) == 0 {
-		return 0, "", nil
+		return batchPR{}, nil
 	}
 
-	return prs[0].Number, strings.ToUpper(prs[0].State), nil
+	return batchPR{Number: prs[0].Number, State: strings.ToUpper(prs[0].State), HeadOID: prs[0].HeadRefOid}, nil
 }

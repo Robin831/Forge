@@ -9,6 +9,8 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+
+	"github.com/Robin831/Forge/internal/vardebeads"
 )
 
 // DefaultBdTimeout is the default timeout for bd subprocess invocations.
@@ -115,6 +117,9 @@ func BdCommandTimeout(parent context.Context, timeout time.Duration, args ...str
 
 	ctx, cancel := context.WithTimeout(parent, timeout)
 	cmd := HideWindow(exec.CommandContext(ctx, "bd", args...))
+	if w := vardeWrites.Load(); w != nil && vardebeads.IsWrite(args) {
+		cmd = HideWindow(exec.CommandContext(ctx, w.exe, append([]string{"--config", w.config, "bd-varde", "--base", w.base, "--"}, args...)...))
+	}
 	return &BdCmd{
 		Cmd:   cmd,
 		ctx:   ctx,
@@ -157,4 +162,19 @@ func (c *BdCmd) classify(err error, start time.Time) error {
 		}
 	}
 	return err
+}
+
+type vardeTarget struct{ exe, config, base string }
+
+var vardeWrites atomic.Pointer[vardeTarget]
+
+// SetVardeWrites sends every bd write from this process through Varde (DevInfra-gbx.8): exe is the forge binary,
+// config the forge.yaml it runs with, so its bd-varde command finds the same anvils; base is this process's working
+// directory, which relative anvil paths are read against. An empty exe turns it off.
+func SetVardeWrites(exe, config, base string) {
+	if exe == "" {
+		vardeWrites.Store(nil)
+		return
+	}
+	vardeWrites.Store(&vardeTarget{exe: exe, config: config, base: base})
 }

@@ -2,6 +2,7 @@ package worktree
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -17,10 +18,16 @@ var nodeModulesDirs = []string{"", "web", "frontend", "client", "app", "ui"}
 // the main anvil checkout. This allows Smiths to run npm scripts without
 // a fresh npm ci, since the main checkout already has node_modules populated.
 //
-// Only directories where the main checkout has a node_modules are linked.
-// If the worktree already has a node_modules (e.g. from a reused worktree),
-// the existing directory is left untouched.
+// Only directories where the main checkout has a node_modules are linked, and
+// only when that install matches the worktree's package-lock.json. A reused
+// worktree's own directory is left untouched; its stale link is removed.
 func linkNodeModules(anvilPath, worktreePath string) error {
+	return linkNodeModulesWith(anvilPath, worktreePath, true)
+}
+
+// linkNodeModulesWith is linkNodeModules; with onlyMatching false (a preview, which has no install step and
+// would otherwise start without any node_modules) a stale install is still shared, with a warning.
+func linkNodeModulesWith(anvilPath, worktreePath string, onlyMatching bool) error {
 	for _, sub := range nodeModulesDirs {
 		srcNM := filepath.Join(anvilPath, sub, "node_modules")
 		info, err := os.Stat(srcNM)
@@ -30,12 +37,42 @@ func linkNodeModules(anvilPath, worktreePath string) error {
 
 		dstParent := filepath.Join(worktreePath, sub)
 		dstNM := filepath.Join(dstParent, "node_modules")
+		// Only a tree installed from this worktree's own lockfile is shared: Temper refuses npm ci on a link, so a
+		// stale shared tree would never be refreshed (DevInfra-rjb.3). Unknown (no lockfile) keeps the old sharing.
+		staleTree := func() (bool, string) {
+			// A sync may be running npm ci in the anvil right now: its tree is half built (DevInfra-rjb.4). A preview
+			// too then goes without: it starts without node_modules rather than with a tree being emptied.
+			if syncInProgress(anvilPath) {
+				return true, "the anvil's install is being refreshed"
+			}
+			match, known, why := installedMatchesLock(srcNM, filepath.Join(dstParent, "package-lock.json"))
+			if known && !match && !onlyMatching {
+				slog.Warn("worktree: sharing an install that does not match this lockfile (no install step here)", "dir", sub, "worktree", worktreePath, "why", why)
+				return false, why
+			}
+			return known && !match, why
+		}
 
-		// If the destination already exists (dir, symlink, or junction), skip.
+		// An existing destination: a real directory is the worktree's own and stays; a link to a stale tree goes.
 		if _, err := os.Lstat(dstNM); err == nil {
+			linked, _ := isReparsePoint(dstNM)
+			if !linked {
+				continue
+			}
+			if stale, why := staleTree(); stale {
+				// os.Remove takes the link itself, never the anvil's tree behind it.
+				if err := os.Remove(dstNM); err != nil {
+					return fmt.Errorf("removing stale node_modules link %s: %w", sub, err)
+				}
+				slog.Info("worktree: node_modules link removed, the anvil's install does not match this lockfile; npm ci installs here", "dir", sub, "worktree", worktreePath, "why", why)
+			}
 			continue
 		} else if !os.IsNotExist(err) {
 			return fmt.Errorf("checking existing node_modules destination %s: %w", sub, err)
+		}
+		if stale, why := staleTree(); stale {
+			slog.Info("worktree: node_modules not linked, the anvil's install does not match this lockfile; npm ci installs here", "dir", sub, "worktree", worktreePath, "why", why)
+			continue
 		}
 
 		// Ensure the parent directory exists in the worktree. For root-level
@@ -47,6 +84,11 @@ func linkNodeModules(anvilPath, worktreePath string) error {
 
 		if err := createDirLink(srcNM, dstNM); err != nil {
 			return fmt.Errorf("linking node_modules %s: %w", sub, err)
+		}
+		// A sync that started between the check above and the link: take the link back (DevInfra-rjb.4).
+		if syncInProgress(anvilPath) {
+			_ = os.Remove(dstNM)
+			slog.Info("worktree: node_modules not linked, the anvil's install is being refreshed", "dir", sub, "worktree", worktreePath)
 		}
 	}
 	return nil

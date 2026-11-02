@@ -9,6 +9,60 @@ Unreleased changes live as fragments in `changelog.d/` and are assembled at
 release time by `scripts/assemble-changelog.sh`.
 
 
+## [0.38.0] - 2026-11-02
+
+### Added
+
+- **Smiths file what they find through Varde** - when bead writes go through Varde and `FORGE_VARDE_SMITH_KEY_FILE` names the smiths' own key (`beads:read,beads:file`: a task or bug under the owner's own open epic, a note, a plain label; never a claim, close or forge label), the session that implements a bead gets Varde's bead tools (`--mcp-config`, Claude only) and is told to file discovered issues with `beads_create` under the anvil's `beads_parent`, falling back to a «Discovered issues» list when the tool is missing. Review, triage and other stages never get the tools. (DevInfra-gbx.8)
+
+### Changed
+
+- **Bead writes can go through Varde** - with `FORGE_VARDE_URL` and `FORGE_VARDE_KEY_FILE` set, every bd write the Forge makes (claims, releases, notes, labels, closes, dependencies, new beads) runs as the hidden `forge bd-varde` command, which sends it to Varde's bead tools with the Forge's own key and answers as bd would; reads stay on bd, so the Forge's database user can be read-only. Each anvil names the epic its own new beads go under with `beads_parent`. In that mode a bead the Forge escalates keeps its dispatch label and gets `needs-human`, which the poller skips and a retry takes off; parts of a split bead get the parent's dispatch label when they are created; adding a dispatch label by hand (Hearth's tag, wicket auto-dispatch) is refused, since a hand-over goes through Varde's `beads_forge_label`; and `bd github push` is dropped. Without those two variables the Forge behaves exactly as before. (DevInfra-gbx.8)
+
+### Fixed
+
+- **A forge on plain bd gets its smiths' bd back** - since 0.37.3 agent sessions were kept from the beads database and told to list what they found instead of filing beads. That now applies only when the Forge's bead writes go through Varde; a forge without `FORGE_VARDE_URL` and `FORGE_VARDE_KEY_FILE` gives its smiths the beads environment and 0.37.2's instructions (file discovered issues with `bd create`) again. (DevInfra-gbx.8)
+
+## [0.37.3] - 2026-11-02
+
+### Security
+
+- **Agent sessions no longer inherit the beads database credentials** - smiths and every other agent session the Forge starts, the build and test steps, pipeline hooks, preview (kiln) commands and quest setup that run the branch's code, and the ledger's AI helper no longer get `BEADS_DOLT_*` (the Dolt host, user and password), `BEADS_CREDENTIALS_FILE`, `BEADS_PROXIED_SERVER_EXTERNAL_PASSWORD` or `DOLT_REMOTE_PASSWORD` from the daemon. This is hygiene, not a boundary: the boundary is a read-only database user for the Forge. Until a session writes beads through Varde, the smith lists unrelated issues it finds under «Discovered issues» in its final message, which ends up in the smith's log, instead of running `bd create`. (DevInfra-gbx.8)
+
+## [0.37.2] - 2026-10-29
+
+### Changed
+
+- **The image runs Node.js 26.13.0 LTS, pinned** - Node 26 became LTS on 28 October 2026 and 26.13.0 is its first LTS release; it keeps the CVE-2026-111497 fix that 24.22.1 brought. `NODE_VERSION=26.13.0-1nodesource1` comes from NodeSource's node_26.x, and the frontend's `.nvmrc` is 26. The global Claude Code install allows its postinstall by name (npm 11 warns about scripts it was not told to allow), and `claude --version` fails the build if only the placeholder binary landed. Needs a release, then the devbox image and a roll. (DevInfra-jna.5)
+
+## [0.37.1] - 2026-10-26
+
+### Fixed
+
+- **Depcheck skips sample hosts** - the dependency check failed for a whole .NET anvil when one project under `samples/` pinned a package from a feed the anvil cannot read (Explorer's `samples/HostileHost`, which pins Stiler from the private helsedata feed: `dotnet list package` exited 1 with an empty stderr). Manifests under `samples/**` are now skipped in every ecosystem, since sample and test hosts are not shipped, and an anvil can list more globs to skip with `depcheck_exclude`. (Fhi.Metadata-oohxy)
+
+### Security
+
+- **The image runs Node.js 24.22.1, pinned** - CVE-2026-111497 («Node2Shell»), an out-of-bounds write in the Brotli decoder bundled with Node, is fixed from 24.22.1. The Dockerfile installed whatever NodeSource's node_24.x held, and a cached layer kept 24.22.0 on the devboxes; `NODE_VERSION=24.22.1-1nodesource1` is now pinned, and the build fails if `node --version` is anything else. Needs a release, then the devbox image and a roll. (DevInfra-eio)
+
+## [0.37.0] - 2026-10-19
+
+### Added
+
+- **Read-only web users** - `FORGE_READ_USERS`, in `FORGE_USERS`' format, lists users who may sign in and read the dashboard and `/api`, but never act: every request other than GET or HEAD under their session is refused with 403 before it reaches a handler (signing out excepted), and their session neither opens preview environments nor receives a preview link token. A name in both lists stops the web server from starting. Meant for a reader such as Varde's MCP, which needs the Forge's state without the power to merge, kill, close or dispatch. (DevInfra-8xl)
+
+### Changed
+
+- **A review sees up to 60 learned rules, and a rule taught more than once ranks higher** - the default `max_rules_per_review` goes from 30 to 60, so a repository with hundreds of rules (Munin has 300) gets twice as many of the ranked candidates in front of the reviewer. The ranking gains a fourth, lightest term: how many review comments taught the rule (one source scores nothing, two half, more approaching the full weight), so a check reviewers keep asking for wins a near-tie without outranking a narrower or more on-topic rule. The file-ceiling eviction values rules the same way. An explicit `max_rules_per_review` in a config is unchanged. (Fhi.Metadata-dpiwa)
+- **Assay turn budget re-measured under the 24-turn cap** - `docs/assay-turn-budget.md` reports the four figures Forge-55eq asked for over 32 runs since the raise deployed: 0% retry rate, 0% deep-session cap-hit rate, no `error_max_cost` stops, and no turn-killed sessions (the costliest deep session was 19% of the $3.00 ceiling). The pressure on the cap had already gone three weeks before the raise, so no setting changes. The per-pass extracts and `measurements/extract-assay-passes.py`, which reproduces them, are committed. (Forge-8we9m)
+- **Dependency updates** - Bumped Go modules `go-chi/chi/v5` 5.4.0, `golang.org/x/crypto` 0.58.0, `golang.org/x/net` 0.61.0, `golang.org/x/sys` 0.49.0, `Microsoft/go-winio` 0.6.4, `bmatcuk/doublestar/v4` 4.10.3 and `mattn/go-runewidth` 0.0.31, and the Hearth 2.0 frontend's `lucide-react` 1.57.0, `@testing-library/user-event` 14.6.8, `@types/node` 26.6.5, `vite` 8.3.4 and `vitest` 5.0.4. All patch/minor updates. (Forge-vttu2)
+
+### Fixed
+
+- **Assay reads the PR body** - assay's review was given no PR description, so the rules about the PR body (that it carries the evidence for its claims, the right `Closes-Bead` line, the measured numbers a bead asks for) could never be checked. The daemon now reads the open PR's body (GitHub) and passes it to every pass as the change context, labelled as the PR body and kept up to 6000 characters; when the body cannot be read the review runs without it, as before. (Fhi.Metadata-10hj2)
+- **The Smelter no longer replaces an open batch PR** - a regeneration of `forge/warden-learn-batch/<anvil>` reset the branch to main and force-pushed, so the rules an open batch PR had learned were dropped without being archived, its review threads were left on lines that were gone, and fix commits pushed to the branch were erased. Now a branch with an open PR is built on and pushed without force (a push that is not a fast-forward fails and keeps the queue); a branch with no open PR and commits main lacks (a closed batch, or no PR) is pushed to `<branch>-replaced-<sha>` before it is replaced; and when the PR state cannot be read the flush stops rather than replace. An open PR is found even when a newer closed PR exists on the same branch. The consolidation and staleness passes still run over the whole file, so a later run may merge or archive one of the open batch's rules (into the archive file, never dropped).
+- **The warden's category filter lets ui and testing rules reach C# diffs where they apply** - a `.cs` file admitted neither `ui` nor `testing` rules unless it was named `*Tests.cs`, so a review of a Blazor component never saw the repo's ui rules and a test project's helpers never saw its testing rules (40 such rules in Munin, 8 in Explorer). A `.razor.cs` file and a `.cs` file under a `Components`, `Pages` or `Shared` folder now admit `ui`, and a `.cs` file in a test project (a folder named `test`/`tests` or ending in `Tests`/`.Tests`) admits `testing`, beside the C# categories it had. (Fhi.Metadata-7b4mj)
+
 ## [0.36.0] - 2026-10-14
 
 ### Added
