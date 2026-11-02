@@ -297,6 +297,10 @@ func (p *BeadPoller) Poll(ctx context.Context) ([]Bead, []AnvilResult) {
 	return all, results
 }
 
+// LabelNeedsHuman marks a bead the Forge gave up on. It keeps its dispatch label (Varde never lets the Forge add one
+// back), so the poller skips it until a person retries it (DevInfra-gbx.8).
+const LabelNeedsHuman = "needs-human"
+
 // pollAnvil runs 'bd ready --json --limit <n>' in an anvil directory and parses the output.
 // The limit is taken from BdReadyLimit (default 100 when unset/non-positive).
 func (p *BeadPoller) pollAnvil(ctx context.Context, name string, anvil config.AnvilConfig) ([]Bead, error) {
@@ -304,7 +308,7 @@ func (p *BeadPoller) pollAnvil(ctx context.Context, name string, anvil config.An
 	if limit <= 0 {
 		limit = 100
 	}
-	args := []string{"ready", "--json", "--limit", strconv.Itoa(limit)}
+	args := []string{"ready", "--json", "--limit", strconv.Itoa(limit), "--exclude-label", LabelNeedsHuman}
 	if p.UseLabelFilter && anvil.AutoDispatchTag != "" {
 		args = append(args, "--label", anvil.AutoDispatchTag)
 	}

@@ -90,7 +90,7 @@ func ReopenBeadCmd(anvilPath, beadID string) tea.Cmd {
 		ctx, cancel := context.WithTimeout(context.Background(), executil.BdTimeout())
 		defer cancel()
 
-		args := []string{"update", beadID, "--status=open"}
+		args := []string{"reopen", beadID}
 		_, err := bdExec(ctx, anvilPath, args...)
 		if err != nil {
 			return ActionErrorMsg{Err: fmt.Errorf("reopen %s: %w", beadID, err)}

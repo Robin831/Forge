@@ -1124,7 +1124,8 @@ func TestHandleIPC_RetryBead_ClearsCrucibleStatusOnSuccess(t *testing.T) {
 	logged := string(logBytes)
 	assert.Contains(t, logged, "update "+beadID, "bd update should target the bead")
 	assert.Contains(t, logged, "--add-label=forgeReady",
-		"bd update should re-apply the auto_dispatch_tag that releaseBeadClaim strips")
+		"with bd, a retry re-applies the tag that beads escalated before DevInfra-gbx.8 lost")
+	assert.Contains(t, logged, "--remove-label=needs-human", "a retry takes the escalation mark off")
 }
 
 // TestHandleIPC_RetryBead_PreservesCrucibleStatusOnBdFailure verifies that
@@ -4777,7 +4778,7 @@ func TestFetchExternalRef(t *testing.T) {
 // invoke bd when the anvil is absent from config (covering the claim-race /
 // pre-claim safety condition).
 func TestReleaseBeadClaim(t *testing.T) {
-	t.Run("stripTag=true removes auto_dispatch_tag", func(t *testing.T) {
+	t.Run("escalate=true keeps the tag and adds needs-human", func(t *testing.T) {
 		tmpDir, err := os.MkdirTemp("", "forge-release-bead-*")
 		require.NoError(t, err)
 		defer os.RemoveAll(tmpDir)
@@ -4823,10 +4824,11 @@ func TestReleaseBeadClaim(t *testing.T) {
 		assert.Contains(t, args, "TEST-1")
 		assert.Contains(t, args, "--status=open")
 		assert.Contains(t, args, "--assignee=")
-		assert.Contains(t, args, "--remove-label=forgeReady")
+		assert.Contains(t, args, "--add-label=needs-human", "escalation marks the bead for a person")
+		assert.NotContains(t, args, "forgeReady", "the dispatch tag stays: Varde never lets the Forge add it back (DevInfra-gbx.8)")
 	})
 
-	t.Run("stripTag=false preserves auto_dispatch_tag (transient failure)", func(t *testing.T) {
+	t.Run("escalate=false only releases (transient failure)", func(t *testing.T) {
 		tmpDir, err := os.MkdirTemp("", "forge-release-bead-keeptag-*")
 		require.NoError(t, err)
 		defer os.RemoveAll(tmpDir)
@@ -5031,7 +5033,7 @@ func TestRecordDispatchFailure_TagPreservation(t *testing.T) {
 	assert.Equal(t, MaxDispatchFailures-1, r.DispatchFailures)
 
 	// One more failure should trip the circuit breaker (needs_human=1) and
-	// strip the tag, since the bead is now in Needs Attention.
+	// mark the bead needs-human, keeping its tag (DevInfra-gbx.8).
 	require.NoError(t, os.Truncate(argsLog, 0))
 	d.recordDispatchFailure(beadID, anvil, "temper exhausted", true)
 
@@ -5039,8 +5041,10 @@ func TestRecordDispatchFailure_TagPreservation(t *testing.T) {
 	require.NoError(t, err)
 	brokenLog := string(logBytes)
 
-	assert.Contains(t, brokenLog, "--remove-label=forgeReady",
-		"tag must be stripped when the dispatch circuit breaker trips")
+	assert.Contains(t, brokenLog, "--add-label=needs-human",
+		"the bead is marked for a person when the dispatch circuit breaker trips")
+	assert.NotContains(t, brokenLog, "--remove-label",
+		"the tag stays: Varde never lets the Forge add it back")
 
 	r, err = db.GetRetry(beadID, anvil)
 	require.NoError(t, err)

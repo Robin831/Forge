@@ -17,6 +17,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -701,7 +702,7 @@ func createSubBeads(ctx context.Context, parent poller.Bead, tasks []subTaskVerd
 			"--type=task",
 			fmt.Sprintf("--priority=%d", parent.Priority),
 			"--deps", "blocks:"+parent.ID,
-			"--labels", marker,
+			"--labels", strings.Join(append([]string{marker}, dispatchLabels(parent.Labels)...), ","),
 			"--json",
 		)
 		cancel()
@@ -1390,4 +1391,18 @@ func syncSubBeadIssues(ctx context.Context, cfg Config, parent poller.Bead, subs
 	}
 	log.Printf("[schematic:%s] Synced GitHub issues for %d sub-bead(s): %s",
 		parent.ID, len(missing), strings.Join(missing, ", "))
+}
+
+var dispatchLabel = regexp.MustCompile(`^forge[A-Za-z]+$`)
+
+// dispatchLabels are the parent's Forge dispatch labels (forgeSkybert, not the forge-decomposed marker). A part gets
+// them at create: through Varde, the one write that may give a bead a Forge label without beads_forge_label.
+func dispatchLabels(labels []string) []string {
+	var out []string
+	for _, l := range labels {
+		if dispatchLabel.MatchString(l) {
+			out = append(out, l)
+		}
+	}
+	return out
 }

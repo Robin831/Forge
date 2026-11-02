@@ -844,10 +844,10 @@ func TestCreateSubBeads_AppliesMarkerLabel(t *testing.T) {
 		hasLabelsFlag := false
 		hasMarker := false
 		for i, a := range call {
-			if a == "--labels" && i+1 < len(call) && call[i+1] == marker {
+			if a == "--labels" && i+1 < len(call) && strings.HasPrefix(call[i+1], marker) {
 				hasLabelsFlag = true
 			}
-			if a == marker {
+			if strings.Split(a, ",")[0] == marker {
 				hasMarker = true
 			}
 		}
@@ -1096,4 +1096,22 @@ func TestCreateSubBeads_ReFetchFailureNamesTheFlagAndBdsOutput(t *testing.T) {
 	assert.Contains(t, out, executil.BdIncludeDependentsFlag,
 		"the warning must name the flag an old bd is missing")
 	assert.Contains(t, out, "unknown flag", "the warning must carry bd's own output")
+}
+
+// A part gets the parent's dispatch labels at create, the one way Varde lets the Forge give a bead a Forge label
+// (DevInfra-gbx.8); the forge-decomposed marker and other labels stay on the parent.
+func TestCreateSubBeads_CopiesDispatchLabelsAtCreate(t *testing.T) {
+	fake := newFakeRunner()
+	parent := poller.Bead{ID: "parent-1", Title: "Feature", Priority: 2, Labels: []string{"forgeSkybert", "forge-decomposed", "neste"}}
+	_, err := createSubBeads(context.Background(), parent, []subTaskVerdict{{Title: "Only task", Description: "Desc"}}, "/tmp", fake.run)
+	require.NoError(t, err)
+	var labels string
+	for _, call := range fake.calls {
+		for i, a := range call {
+			if len(call) > 0 && call[0] == "create" && a == "--labels" && i+1 < len(call) {
+				labels = call[i+1]
+			}
+		}
+	}
+	assert.Equal(t, schematicChildLabel(parent.ID)+",forgeSkybert", labels)
 }

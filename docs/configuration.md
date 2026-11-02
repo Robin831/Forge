@@ -169,6 +169,7 @@ Each key under `anvils` is the anvil name. The name is used in CLI output, logs,
 | `max_smiths` | int | 1 | Maximum concurrent workers for this anvil. Values <= 0 are treated as 1. Overall concurrency is still limited by `max_total_smiths`. |
 | `auto_dispatch` | string | `"all"` | Dispatch mode — see below. |
 | `auto_dispatch_tag` | string | | Required when `auto_dispatch: tagged`. Beads must have this tag (case-insensitive) to be dispatched. |
+| `beads_parent` | string | | The epic the Forge files its own new beads under (scanners, quests, wicket) when its bead writes go through Varde (`FORGE_VARDE_URL` and `FORGE_VARDE_KEY_FILE` set), since Varde files every bead under one. Without it such a create fails. |
 | `auto_dispatch_min_priority` | int | 0 | Required when `auto_dispatch: priority`. Only beads with priority <= this value are dispatched. Range: 0-4. |
 | `schematic_enabled` | bool\|null | null (use global) | Per-anvil override for `settings.schematic_enabled`. When set, takes precedence over the global setting. |
 | `golangci_lint` | bool\|null | null (auto-detect) | Per-anvil override for golangci-lint in Temper. When null, golangci-lint runs if the binary is found on PATH. Set to `false` to disable. |

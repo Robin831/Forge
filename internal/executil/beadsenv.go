@@ -5,8 +5,9 @@ import "strings"
 // beadsCredentialKeys are the environment variables that point a process at the beads database: bd's own
 // (BEADS_DOLT_*, host, user and password among them), its credentials file, and Dolt's remote password. Agent sessions
 // and the code they run do not inherit them (DevInfra-gbx.8). This is hygiene, not a boundary: a process with the
-// daemon's uid can still read the daemon's environment; the boundary is a read-only database user.
-var beadsCredentialKeys = []string{"BEADS_DOLT_*", "BEADS_CREDENTIALS_FILE", "BEADS_PROXIED_SERVER_EXTERNAL_PASSWORD", "DOLT_REMOTE_PASSWORD"}
+// daemon's uid can still read the daemon's environment; the boundary is a read-only database user. FORGE_VARDE_* name
+// the Forge's own Varde key, which writes beads for it.
+var beadsCredentialKeys = []string{"BEADS_DOLT_*", "BEADS_CREDENTIALS_FILE", "BEADS_PROXIED_SERVER_EXTERNAL_PASSWORD", "DOLT_REMOTE_PASSWORD", "FORGE_VARDE_*"}
 
 // IsBeadsCredentialEnv reports whether one KEY=VALUE entry is one of them. Names compare without case, as on Windows.
 func IsBeadsCredentialEnv(entry string) bool {

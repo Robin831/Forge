@@ -14,6 +14,7 @@ import (
 	"github.com/Robin831/Forge/internal/executil"
 	"github.com/Robin831/Forge/internal/provider"
 	"github.com/Robin831/Forge/internal/state"
+	"github.com/Robin831/Forge/internal/vardebeads"
 	sqlite "modernc.org/sqlite"
 	sqlite3 "modernc.org/sqlite/lib"
 )
@@ -649,7 +650,9 @@ func (m *Monitor) handleCreateBead(ctx context.Context, anvil string, issue Issu
 	m.mu.RLock()
 	anvilCfg := m.cfg.Anvils[anvil]
 	m.mu.RUnlock()
-	if anvilCfg.WicketAutoDispatch && anvilCfg.AutoDispatchTag != "" {
+	if why := vardebeads.HandOverRefusal(anvilCfg.AutoDispatchTag); anvilCfg.WicketAutoDispatch && why != "" {
+		log.Printf("[wicket] %s: %s filed, not dispatched: %s", anvil, beadID, why)
+	} else if anvilCfg.WicketAutoDispatch && anvilCfg.AutoDispatchTag != "" {
 		labelCmd, labelCancel := executil.BdCommand(ctx, "label", "add", beadID, anvilCfg.AutoDispatchTag)
 		defer labelCancel()
 		if anvilPath != "" {
