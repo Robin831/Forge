@@ -40,6 +40,11 @@ func linkNodeModulesWith(anvilPath, worktreePath string, onlyMatching bool) erro
 		// Only a tree installed from this worktree's own lockfile is shared: Temper refuses npm ci on a link, so a
 		// stale shared tree would never be refreshed (DevInfra-rjb.3). Unknown (no lockfile) keeps the old sharing.
 		staleTree := func() (bool, string) {
+			// A sync may be running npm ci in the anvil right now: its tree is half built (DevInfra-rjb.4). A preview
+			// too then goes without: it starts without node_modules rather than with a tree being emptied.
+			if syncInProgress(anvilPath) {
+				return true, "the anvil's install is being refreshed"
+			}
 			match, known, why := installedMatchesLock(srcNM, filepath.Join(dstParent, "package-lock.json"))
 			if known && !match && !onlyMatching {
 				slog.Warn("worktree: sharing an install that does not match this lockfile (no install step here)", "dir", sub, "worktree", worktreePath, "why", why)
@@ -79,6 +84,11 @@ func linkNodeModulesWith(anvilPath, worktreePath string, onlyMatching bool) erro
 
 		if err := createDirLink(srcNM, dstNM); err != nil {
 			return fmt.Errorf("linking node_modules %s: %w", sub, err)
+		}
+		// A sync that started between the check above and the link: take the link back (DevInfra-rjb.4).
+		if syncInProgress(anvilPath) {
+			_ = os.Remove(dstNM)
+			slog.Info("worktree: node_modules not linked, the anvil's install is being refreshed", "dir", sub, "worktree", worktreePath)
 		}
 	}
 	return nil
