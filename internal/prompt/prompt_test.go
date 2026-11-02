@@ -454,7 +454,7 @@ func TestBuild_SmithFilesThroughVardeWithItsKey(t *testing.T) {
 	ctx := BeadContext{BeadID: "B-1", Title: "t", Description: "d", IssueType: "task", AnvilPath: t.TempDir(), WorktreePath: t.TempDir(), BeadsParent: "EP-9"}
 	filing, err := NewBuilder().Build(ctx)
 	require.NoError(t, err)
-	assert.Contains(t, filing, "`beads_create` tool of the `varde` MCP server")
+	assert.Contains(t, filing, "`beads_create` tool of the `varde-smith` MCP server")
 	assert.Contains(t, filing, "`parent`: `EP-9`")
 	assert.Contains(t, filing, "## Discovered issues", "the fallback when the tool is missing")
 	assert.NotContains(t, filing, "bd create")

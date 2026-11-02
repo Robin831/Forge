@@ -4,7 +4,9 @@
 package vardebeads
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -386,7 +388,7 @@ func SmithMCPConfig(dir string) (string, error) {
 	if err := checkURL(url); err != nil {
 		return "", err
 	}
-	body, err := json.Marshal(map[string]any{"mcpServers": map[string]any{"varde": map[string]any{
+	body, err := json.Marshal(map[string]any{"mcpServers": map[string]any{SmithMCPServer: map[string]any{
 		"type": "http", "url": url + "/mcp", "headers": map[string]string{"Authorization": "Bearer " + key}}}})
 	if err != nil {
 		return "", err
@@ -394,10 +396,32 @@ func SmithMCPConfig(dir string) (string, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", err
 	}
-	path := filepath.Join(dir, "smith-mcp.json")
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, body, 0o600); err != nil {
+	if err := os.Chmod(dir, 0o700); err != nil {
 		return "", err
 	}
-	return path, os.Rename(tmp, path)
+	path := filepath.Join(dir, "smith-mcp.json")
+	// Unchanged (the usual case) is left alone; a change goes through a temp file of its own and a rename, so smiths
+	// spawned at the same time never read a half-written file.
+	if old, err := os.ReadFile(path); err == nil && bytes.Equal(old, body) {
+		return path, nil
+	}
+	tmp, err := os.CreateTemp(dir, "smith-mcp-*.json")
+	if err != nil {
+		return "", err
+	}
+	_, werr := tmp.Write(body)
+	cerr := tmp.Close()
+	if werr != nil || cerr != nil {
+		os.Remove(tmp.Name())
+		return "", errors.Join(werr, cerr)
+	}
+	if err := os.Rename(tmp.Name(), path); err != nil {
+		os.Remove(tmp.Name())
+		return "", err
+	}
+	return path, nil
 }
+
+// SmithMCPServer is the name the smiths' Varde server has in their session: its own, so a project's .mcp.json or a
+// user's own varde server cannot stand in for it.
+const SmithMCPServer = "varde-smith"

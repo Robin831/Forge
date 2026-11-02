@@ -10,7 +10,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -372,12 +371,6 @@ func logFileName(prefix string, ts int64) string {
 	return fmt.Sprintf("%s-%d-%d.log", prefix, ts, seq)
 }
 
-// SpawnWithProvider starts an AI coding agent process for the given provider.
-// The provider determines which binary is executed and how arguments are built.
-//
-// logDir is where the session log file is written. The log file is named
-// smith-<ts>-<seq>.log; callers that need a stage-specific prefix should use
-// SpawnWithOptions instead.
 // beadToolArgs are the flags that give a session Varde's bead tools: only for BeadTools, only Claude (which reads
 // --mcp-config), only when the smiths' key is mounted. Without them the prompt has the smith list what it finds.
 func beadToolArgs(opts SpawnOptions, pv provider.Provider) []string {
@@ -390,7 +383,7 @@ func beadToolArgs(opts SpawnOptions, pv provider.Provider) []string {
 	}
 	cfgPath, err := vardebeads.SmithMCPConfig(filepath.Join(home, ".forge", "varde"))
 	if err != nil {
-		log.Printf("[smith] no Varde bead tools for this session: %v", err)
+		slog.Warn("smith: no Varde bead tools for this session", "error", err)
 		return nil
 	}
 	return []string{"--mcp-config", cfgPath}
@@ -398,11 +391,20 @@ func beadToolArgs(opts SpawnOptions, pv provider.Provider) []string {
 
 // SpawnSmith is SpawnWithProvider for the session that implements a bead: with Varde's bead tools when they are on.
 func SpawnSmith(ctx context.Context, worktreePath, promptText, logDir string, pv provider.Provider, extraFlags []string) (*Process, error) {
-	return SpawnWithOptions(ctx, worktreePath, promptText, logDir, pv, extraFlags, SpawnOptions{BeadTools: true})
+	return spawnWithOptions(ctx, worktreePath, promptText, logDir, pv, extraFlags, SpawnOptions{BeadTools: true})
 }
 
+// spawnWithOptions is SpawnWithOptions, replaceable in tests to see the options a wrapper passes.
+var spawnWithOptions = SpawnWithOptions
+
+// SpawnWithProvider starts an AI coding agent process for the given provider.
+// The provider determines which binary is executed and how arguments are built.
+//
+// logDir is where the session log file is written. The log file is named
+// smith-<ts>-<seq>.log; callers that need a stage-specific prefix should use
+// SpawnWithOptions instead.
 func SpawnWithProvider(ctx context.Context, worktreePath, promptText, logDir string, pv provider.Provider, extraFlags []string) (*Process, error) {
-	return SpawnWithOptions(ctx, worktreePath, promptText, logDir, pv, extraFlags, SpawnOptions{})
+	return spawnWithOptions(ctx, worktreePath, promptText, logDir, pv, extraFlags, SpawnOptions{})
 }
 
 // SpawnWithOptions starts an AI coding agent process for the given provider,

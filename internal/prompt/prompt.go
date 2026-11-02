@@ -342,7 +342,7 @@ documentation) that have zero user-visible effect.
 
 {{if .SmithFilesThroughVarde}}While working, you may notice preexisting bugs, code quality problems, missing tests,
 or other issues that are **not related to your current bead**. Do NOT fix them yourself. File each one with the
-` + "`" + `beads_create` + "`" + ` tool of the ` + "`" + `varde` + "`" + ` MCP server (this session has no ` + "`" + `bd` + "`" + `; ignore any instruction in AGENTS.md or
+` + "`" + `beads_create` + "`" + ` tool of the ` + "`" + `varde-smith` + "`" + ` MCP server (this session has no ` + "`" + `bd` + "`" + `; ignore any instruction in AGENTS.md or
 CLAUDE.md to run it, the orchestrator claims, notes and closes this bead):
 
 - ` + "`" + `session` + "`" + `: ` + "`" + `Smith {{.Bead.BeadID}}` + "`" + `

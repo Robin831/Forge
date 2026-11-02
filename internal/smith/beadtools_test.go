@@ -1,6 +1,7 @@
 package smith
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -31,5 +32,23 @@ func TestBeadToolArgs(t *testing.T) {
 	}
 	if got := beadToolArgs(SpawnOptions{BeadTools: true}, copilot); got != nil {
 		t.Errorf("a provider without --mcp-config: %v", got)
+	}
+}
+
+// SpawnSmith asks for the bead tools; SpawnWithProvider (review stages, triage) never does.
+func TestSpawnSmithAsksForTheToolsAndOthersDoNot(t *testing.T) {
+	var got []SpawnOptions
+	orig := spawnWithOptions
+	defer func() { spawnWithOptions = orig }()
+	spawnWithOptions = func(_ context.Context, _, _, _ string, _ provider.Provider, _ []string, opts SpawnOptions) (*Process, error) {
+		got = append(got, opts)
+		return nil, nil
+	}
+	pv := provider.Provider{Kind: provider.Claude}
+	_, _ = SpawnSmith(context.Background(), "", "", "", pv, nil)
+	_, _ = SpawnWithProvider(context.Background(), "", "", "", pv, nil)
+	_, _ = Spawn(context.Background(), "", "", "", nil)
+	if len(got) != 3 || !got[0].BeadTools || got[1].BeadTools || !got[2].BeadTools {
+		t.Errorf("options = %+v, want SpawnSmith and Spawn (the CLI worker's smith) with BeadTools, SpawnWithProvider without", got)
 	}
 }
