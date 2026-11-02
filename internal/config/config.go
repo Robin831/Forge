@@ -302,6 +302,9 @@ type AnvilConfig struct {
 	AutoDispatch            string `mapstructure:"auto_dispatch" yaml:"auto_dispatch"`
 	AutoDispatchTag         string `mapstructure:"auto_dispatch_tag" yaml:"auto_dispatch_tag,omitempty"`
 	AutoDispatchMinPriority int    `mapstructure:"auto_dispatch_min_priority" yaml:"auto_dispatch_min_priority"`
+	// BeadsParent is the epic the Forge files its own new beads under (scanners, quests) when its bead writes go
+	// through Varde, which files every bead under one (DevInfra-gbx.8).
+	BeadsParent string `mapstructure:"beads_parent" yaml:"beads_parent,omitempty"`
 	// Platform specifies the VCS hosting platform for this anvil.
 	// Valid values: "github" (default), "gitlab", "gitea", "bitbucket", "azuredevops".
 	// Determines which VCS provider is used for PR operations.

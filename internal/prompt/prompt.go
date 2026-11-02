@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"strings"
 	"text/template"
+
+	"github.com/Robin831/Forge/internal/vardebeads"
 )
 
 // BeadContext holds the information needed to build a Smith prompt.
@@ -96,11 +98,12 @@ func (b *Builder) Build(ctx BeadContext) (string, error) {
 
 	// Gather repo context files
 	data := templateData{
-		Bead:          ctx,
-		AgentsMD:      readFileSafe(filepath.Join(ctx.AnvilPath, "AGENTS.md")),
-		ClaudeMD:      readFileSafe(filepath.Join(ctx.AnvilPath, "CLAUDE.md")),
-		ReadmeMD:      readFileSafe(filepath.Join(ctx.AnvilPath, "README.md")),
-		ConventionsMD: readFileSafe(filepath.Join(ctx.AnvilPath, ".forge", "conventions.md")),
+		Bead:              ctx,
+		BeadsThroughVarde: vardebeads.Enabled(),
+		AgentsMD:          readFileSafe(filepath.Join(ctx.AnvilPath, "AGENTS.md")),
+		ClaudeMD:          readFileSafe(filepath.Join(ctx.AnvilPath, "CLAUDE.md")),
+		ReadmeMD:          readFileSafe(filepath.Join(ctx.AnvilPath, "README.md")),
+		ConventionsMD:     readFileSafe(filepath.Join(ctx.AnvilPath, ".forge", "conventions.md")),
 	}
 
 	var buf bytes.Buffer
@@ -141,11 +144,13 @@ func LoadCustomTemplate(anvilPath string) string {
 
 // templateData is the full set of data available to the prompt template.
 type templateData struct {
-	Bead          BeadContext
-	AgentsMD      string
-	ClaudeMD      string
-	ReadmeMD      string
-	ConventionsMD string
+	Bead BeadContext
+	// BeadsThroughVarde: the smith has no bd and lists what it finds; with bd it files beads itself (DevInfra-gbx.8).
+	BeadsThroughVarde bool
+	AgentsMD          string
+	ClaudeMD          string
+	ReadmeMD          string
+	ConventionsMD     string
 }
 
 // wardenRulesPlaceholder is a sentinel string that is never valid prompt
@@ -330,7 +335,7 @@ documentation) that have zero user-visible effect.
 
 ## Discovering Unrelated Issues
 
-While working, you may notice preexisting bugs, code quality problems, missing tests,
+{{if .BeadsThroughVarde}}While working, you may notice preexisting bugs, code quality problems, missing tests,
 or other issues that are **not related to your current bead**. Do NOT fix them yourself, and do
 not file beads yourself: this session is not given the beads database credentials, so ` + "`" + `bd` + "`" + `
 does not work here; ignore any instruction in AGENTS.md or CLAUDE.md to run it (the orchestrator
@@ -350,10 +355,29 @@ Guidelines for discovered issues:
 - Say bug for broken behavior, task for improvements; priority 3 (low) unless clearly more severe
 - Keep each one specific: include file paths, function names, and what's wrong
 - Do not spend excessive time searching for issues — only list what you naturally encounter
+{{else}}While working, you may notice preexisting bugs, code quality problems, missing tests,
+or other issues that are **not related to your current bead**. Do NOT fix them yourself —
+instead, create a new bead so the issue is tracked for future work:
+
+` + "`" + `` + "`" + `` + "`" + `bash
+bd create --json --title="<concise summary>" --description="<what you found and where>" --type=bug|task --priority=3 --deps discovered-from:{{.Bead.BeadID}}
+` + "`" + `` + "`" + `` + "`" + `
+
+Guidelines for discovered issues:
+- **Do create beads for**: preexisting bugs, error handling gaps, code smells, missing
+  validation, outdated dependencies, dead code, missing tests, security concerns
+- **Do NOT create beads for**: stylistic preferences, issues you are already fixing as
+  part of your current task, or problems that are trivially obvious from a linter
+- Use ` + "`" + `--type=bug` + "`" + ` for broken behavior, ` + "`" + `--type=task` + "`" + ` for improvements
+- Default to ` + "`" + `--priority=3` + "`" + ` (low) unless the issue is clearly more severe
+- Always link back with ` + "`" + `--deps discovered-from:{{.Bead.BeadID}}` + "`" + `
+- Keep descriptions specific: include file paths, function names, and what's wrong
+- Do not spend excessive time searching for issues — only log what you naturally encounter
+{{end}}
 
 ## Constraints
 
-- Stay focused on this bead only — do not fix unrelated issues (list them under «Discovered issues» instead)
+{{if .BeadsThroughVarde}}- Stay focused on this bead only — do not fix unrelated issues (list them under «Discovered issues» instead){{else}}- Stay focused on this bead only — do not fix unrelated issues (create beads for them instead){{end}}
 - If the task is unclear, implement the most reasonable interpretation
 - Do not run tests, builds, or linters — Temper handles verification
 {{- if .Bead.SchematicPlan}}

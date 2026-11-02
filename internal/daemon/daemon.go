@@ -67,6 +67,7 @@ import (
 	"github.com/Robin831/Forge/internal/state"
 	"github.com/Robin831/Forge/internal/temper"
 	"github.com/Robin831/Forge/internal/textfmt"
+	"github.com/Robin831/Forge/internal/vardebeads"
 	"github.com/Robin831/Forge/internal/vcs"
 	"github.com/Robin831/Forge/internal/vcs/github"
 	"github.com/Robin831/Forge/internal/vulncheck"
@@ -790,6 +791,7 @@ func New(cfg *config.Config, configPath string) (*Daemon, error) {
 	d.costLimitLoggedDate.Store("")
 	d.cfg.Store(cfg)
 	d.warnAssayProviderConflicts(cfg)
+	d.warnVardeDispatch(cfg)
 	applyWardenFilterConfig(cfg)
 	applyPricingConfig(cfg)
 	applyWorktreeTimeoutConfig(cfg)
@@ -7343,6 +7345,9 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 		if tag == "" {
 			return errorResponse(fmt.Sprintf("anvil %q has no auto_dispatch_tag configured", tp.Anvil))
 		}
+		if why := vardebeads.HandOverRefusal(tag); why != "" {
+			return errorResponse(why)
+		}
 		reqID, _ := d.reqTracker.Track()
 		go func() {
 			tagCmd, tagCancel := executil.BdCommand(d.runCtx, "update", tp.BeadID, "--add-label", tag)
@@ -7382,6 +7387,9 @@ func (d *Daemon) handleIPC(cmd ipc.Command) ipc.Response {
 			gerund = "removing"
 		default:
 			return errorResponse(fmt.Sprintf("invalid action %q (want add|remove)", up.Action))
+		}
+		if why := vardebeads.HandOverRefusal(up.Label); up.Action == "add" && why != "" {
+			return errorResponse(why)
 		}
 		cfgSnapshot := d.cfg.Load()
 		anvilCfg, ok := cfgSnapshot.Anvils[up.Anvil]
@@ -9674,14 +9682,16 @@ func (d *Daemon) resolveAnvilConfig(name string) (string, config.AnvilConfig, bo
 	return "", config.AnvilConfig{}, false
 }
 
-// restoreBeadAfterPause sets a bead back to status=open with no assignee and,
-// if the anvil uses an auto_dispatch_tag, re-applies that label. This is the
-// inverse of releaseBeadClaim and is used by the manual retry/resume paths
-// (forge queue retry, Hearth crucible resume) so beads on tagged anvils
-// become visible to bd ready again instead of sitting silently un-tagged.
+// restoreBeadAfterPause sets a bead back to status=open with no assignee, the
+// inverse of releaseBeadClaim, for the manual retry/resume paths (forge queue
+// retry, Hearth crucible resume). With bd it re-applies the auto_dispatch_tag
+// the escalation stripped; through Varde (DevInfra-gbx.8) the tag was kept, so
+// it takes off needs-human instead.
 func (d *Daemon) restoreBeadAfterPause(ctx context.Context, beadID string, anvilCfg config.AnvilConfig) ([]byte, error) {
 	args := []string{"update", beadID, "--status=open", "--assignee="}
-	if anvilCfg.AutoDispatchTag != "" {
+	if vardebeads.Enabled() {
+		args = append(args, "--remove-label="+poller.LabelNeedsHuman)
+	} else if anvilCfg.AutoDispatchTag != "" {
 		args = append(args, "--add-label="+anvilCfg.AutoDispatchTag)
 	}
 	args = append(args, "--json")
@@ -9696,14 +9706,12 @@ func (d *Daemon) restoreBeadAfterPause(ctx context.Context, beadID string, anvil
 // release fails (bd error, missing anvil config), a warning is logged — orphan
 // recovery acts as the fallback.
 //
-// When stripTag is true, the anvil's auto_dispatch_tag is also removed. This
-// is reserved for circuit-breaker escalation (needs_human=1 has been set) where
-// we want the bead out of the `bd ready` queue. On a transient failure
-// (stripTag=false), the tag is preserved so `bd ready` continues to surface the
-// bead on tagged-dispatch anvils and the next poll can re-dispatch it. Stripping
-// the tag on every transient failure caused tagged-dispatch beads to be silently
-// stranded after a single failure (Forge-dua2).
-func (d *Daemon) releaseBeadClaim(beadID, anvil string, stripTag bool) {
+// When escalate is true (circuit-breaker escalation, needs_human=1 has been
+// set), the bead leaves the poller's `bd ready`: with bd the anvil's
+// auto_dispatch_tag is removed; through Varde (DevInfra-gbx.8), which never
+// lets the Forge add it back, the tag stays and the bead gets needs-human. On a
+// transient failure (escalate=false) it is only released (Forge-dua2).
+func (d *Daemon) releaseBeadClaim(beadID, anvil string, escalate bool) {
 	anvilCfg, ok := d.cfg.Load().Anvils[anvil]
 	if !ok || anvilCfg.Path == "" {
 		d.logger.Warn("cannot release bead claim: anvil not found in config", "bead", beadID, "anvil", anvil)
@@ -9715,7 +9723,10 @@ func (d *Daemon) releaseBeadClaim(beadID, anvil string, stripTag bool) {
 		baseCtx = context.Background()
 	}
 	args := []string{"update", beadID, "--status=open", "--assignee="}
-	if stripTag && anvilCfg.AutoDispatchTag != "" {
+	switch {
+	case escalate && vardebeads.Enabled():
+		args = append(args, "--add-label="+poller.LabelNeedsHuman)
+	case escalate && anvilCfg.AutoDispatchTag != "":
 		args = append(args, "--remove-label="+anvilCfg.AutoDispatchTag)
 	}
 	args = append(args, "--json")
@@ -9756,7 +9767,8 @@ func (d *Daemon) applyDecomposedOutcome(bead poller.Bead, anvilCfg config.AnvilC
 		// When the anvil uses tagged auto_dispatch and the parent has the
 		// dispatch tag, copy that tag to each child so they are eligible for
 		// immediate dispatch by the poller.
-		if anvilCfg.AutoDispatch == "tagged" && anvilCfg.AutoDispatchTag != "" {
+		// Through Varde the parts got the tag at create (split_from); adding it now would be refused.
+		if anvilCfg.AutoDispatch == "tagged" && anvilCfg.AutoDispatchTag != "" && !vardebeads.Enabled() {
 			if d.labelAdder == nil {
 				d.logger.Warn("labelAdder is nil; skipping auto_dispatch tag propagation to child beads",
 					"parent", beadID, "tag", anvilCfg.AutoDispatchTag)
@@ -9907,7 +9919,8 @@ func (d *Daemon) ensureExternalRef(anvilPath string, bead poller.Bead) string {
 	if ref := d.fetchExternalRef(anvilPath, bead.ID); ref != "" {
 		return ref
 	}
-	if d.githubPusher == nil {
+	// Through Varde there is no bd github push (Robin's choice (c), DevInfra-gbx.8): no ref is normal.
+	if d.githubPusher == nil || vardebeads.Enabled() {
 		return ""
 	}
 	out, err := d.githubPusher(anvilPath, bead.ID)

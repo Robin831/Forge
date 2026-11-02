@@ -134,6 +134,8 @@ func TestShellArgs(t *testing.T) {
 func TestRunHook_NoBeadsCredentials(t *testing.T) {
 	skipIfNoShell(t)
 	skipIfWindows(t)
+	t.Setenv("FORGE_VARDE_URL", "http://varde.invalid")
+	t.Setenv("FORGE_VARDE_KEY_FILE", "/nowhere")
 	t.Setenv("BEADS_DOLT_PASSWORD", "secret")
 	dir := t.TempDir()
 	marker := filepath.Join(dir, "env.txt")
