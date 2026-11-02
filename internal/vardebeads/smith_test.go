@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"testing"
 )
@@ -29,7 +30,8 @@ func TestSmithMCPConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 	info, _ := os.Stat(path)
-	if info.Mode().Perm() != 0o600 {
+	// Windows has no POSIX mode bits (a writable file reads as 0666); the content checks below still run there.
+	if runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
 		t.Errorf("mode %v, want 0600", info.Mode().Perm())
 	}
 	raw, _ := os.ReadFile(path)

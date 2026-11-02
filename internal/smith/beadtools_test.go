@@ -12,7 +12,7 @@ import (
 
 // Only the implementing Claude session gets Varde's bead tools, and only with the smiths' key mounted (DevInfra-gbx.8).
 func TestBeadToolArgs(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	setTestHome(t, t.TempDir()) // USERPROFILE on Windows: never the developer's own ~/.forge
 	claude, copilot := provider.Provider{Kind: provider.Claude}, provider.Provider{Kind: provider.Copilot}
 	if got := beadToolArgs(SpawnOptions{BeadTools: true}, claude); got != nil {
 		t.Errorf("plain bd: %v", got)

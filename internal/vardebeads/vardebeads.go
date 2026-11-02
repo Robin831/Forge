@@ -366,7 +366,7 @@ func HandOverRefusal(label string) string {
 }
 
 // EnvSmithKeyFile names the smiths' own Varde key (beads:read,beads:file): it files a task or bug under the owner's
-// own open epic and nothing else. Under FORGE_VARDE_*, so agent sessions never inherit the variable.
+// own open epic, notes, adds a plain label, never claims or closes. Under FORGE_VARDE_*, never inherited by sessions.
 const EnvSmithKeyFile = "FORGE_VARDE_SMITH_KEY_FILE"
 
 // SmithEnabled reports whether smiths may file beads through Varde with their own key.
