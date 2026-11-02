@@ -21,7 +21,11 @@ func TestReopenThroughVardeAndWithBd(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
-	run := func() string { ReopenBeadCmd(dir, "B-1")(); raw, _ := os.ReadFile(argsFile); return strings.TrimSpace(string(raw)) }
+	run := func() string {
+		ReopenBeadCmd(dir, "B-1")()
+		raw, _ := os.ReadFile(argsFile)
+		return strings.TrimSpace(string(raw))
+	}
 	if got := run(); got != "update B-1 --status=open" {
 		t.Errorf("with bd: %q", got)
 	}
