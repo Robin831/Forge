@@ -159,8 +159,7 @@ RUN set -eux; \
     apt-get clean; \
     rm -rf /var/lib/apt/lists/* /root/.npm
 
-# Copy the bd binary built in stage 1b. Pure-Go embedded Dolt courtesy of
-# the gms_pure_go build tag — no CGO, statically linked.
+# Copy the stock bd release from stage 1b (a CGO build, linked against glibc).
 COPY --from=bd-builder --chmod=0755 /out/bd /usr/local/bin/bd
 
 # Install the standalone dolt CLI. The bootstrap initContainer needs it to
