@@ -24,7 +24,7 @@ const (
 // HalfSet reports a configuration that names Varde but cannot reach it: one of the two variables without the other.
 func HalfSet() bool { return (os.Getenv(EnvURL) == "") != (os.Getenv(EnvKeyFile) == "") }
 
-// Enabled reports whether bead writes go through Varde.
+// Enabled reports whether bead reads and writes go through Varde (writes since DevInfra-gbx.8, reads since rjb.6).
 func Enabled() bool { return os.Getenv(EnvURL) != "" && os.Getenv(EnvKeyFile) != "" }
 
 // IsWrite reports whether a bd argument list writes. Everything else goes to Varde as a read (IsRead).

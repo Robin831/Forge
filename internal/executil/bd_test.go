@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/Robin831/Forge/internal/vardebeads"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -226,5 +227,17 @@ func TestBdCommand_SuccessReturnsOutput(t *testing.T) {
 	}
 	if string(out) != "[]" {
 		t.Errorf("Output() = %q; want %q", string(out), "[]")
+	}
+}
+
+// The show builders' real shapes, as crucible, schematic and Hearth send them, stay inside Varde's whitelist.
+func TestShowBuildersAreVardeReads(t *testing.T) {
+	ids := []string{"Fhi.Metadata-a", "Fhi.Metadata-b.1"}
+	for name, args := range map[string][]string{
+		"BdShowArgs": BdShowArgs(ids...), "BdShowIDArgs": append([]string{"show"}, BdShowIDArgs(ids...)...), "BdShowDependentsArgs": BdShowDependentsArgs(ids...),
+	} {
+		if !vardebeads.IsRead(args) {
+			t.Errorf("%s = %v is not a Varde read", name, args)
+		}
 	}
 }

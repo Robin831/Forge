@@ -51,7 +51,8 @@ func readStatus(v string) bool {
 }
 
 // IsRead reports whether a bd argument list is a read Varde's beads_bd_read runs: ready, list, show (positional ids
-// or --id=, optionally --include-dependents) or comments <id>, with only the flags the Forge itself sends.
+// or --id=, optionally --include-dependents) or comments <id>, with only the flags the Forge itself sends. Varde also
+// refuses an id without the pool's prefix (400), which reaches the caller as exit 1 with no JSON, not as "no such bead".
 func IsRead(args []string) bool {
 	if len(args) == 0 || len(args) > 2*readMaxIDs+10 {
 		return false

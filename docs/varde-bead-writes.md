@@ -88,4 +88,9 @@ handed to a local bd.
   `bd list` fallbacks instead of `bd sql`. `forge doctor` checks each anvil's reads through Varde
   (`beads_bd_read list --limit 1`) instead of bd on PATH, its dependents flag and the database.
 - **Varde down:** reads fail as writes do, so the poller finds no work and nothing is dispatched until Varde answers.
+- **forge.yaml:** every read runs `forge bd-varde`, which loads forge.yaml. A hand edit that does not parse stops the
+  reads, and with them the poll, at once, where the daemon itself keeps running on the config it started with.
+- **Limits:** one read names at most 200 beads. `crucible`'s check of an epic's children asks for them in one `show`;
+  past 200 it is refused locally and takes the conservative path, every child treated as ordinary. A read whose answer
+  is past Varde's 3 MiB comes back as a 502 that says to narrow it.
   There is no fallback to bd.
