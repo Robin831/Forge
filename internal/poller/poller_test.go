@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/Robin831/Forge/internal/vardebeads"
 	"path/filepath"
 	"sort"
 	"testing"
@@ -455,4 +456,15 @@ func TestPoll_StaggerRespectsContextCancellation(t *testing.T) {
 
 	// All anvils should still be represented in results.
 	assert.Len(t, results, len(anvils))
+}
+
+// The poll's real ready shapes, with and without Varde and a tag, stay inside Varde's whitelist (Opus on rjb.6 PR 2).
+func TestReadyArgsAreVardeReads(t *testing.T) {
+	for _, varde := range []bool{false, true} {
+		for _, tag := range []string{"", "forgeSkybert"} {
+			if args := readyArgs(100, tag, varde); !vardebeads.IsRead(args) {
+				t.Errorf("readyArgs(100, %q, %v) = %v is not a Varde read", tag, varde, args)
+			}
+		}
+	}
 }

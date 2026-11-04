@@ -73,7 +73,7 @@ func isLoopback(host string) bool { return host == "localhost" || host == "127.0
 
 // Retried after a 5xx: tools whose second call changes nothing. A gateway's 502 can come after Varde wrote, so a create
 // or a note is not sent twice; a 429 is refused before any write, so every tool is retried after one.
-var idempotent = map[string]bool{"beads_label": true, "beads_dep": true, "beads_release": true, "beads_claim": true, "beads_close": true, "beads_show": true}
+var idempotent = map[string]bool{"beads_label": true, "beads_dep": true, "beads_release": true, "beads_claim": true, "beads_close": true, "beads_show": true, ReadTool: true}
 
 // Backoff is how long to wait before each retry of a 429 or 5xx; nil means two retries, 2 s then 6 s.
 func (c *Client) backoff() []time.Duration {

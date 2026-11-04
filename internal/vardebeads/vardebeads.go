@@ -1,6 +1,6 @@
-// Package vardebeads sends the Forge's bead writes to Varde instead of the beads database (DevInfra-gbx.8): the
-// daemon's own bd write commands are translated into Varde's MCP bead tools, signed with the Forge's key, so the
-// Forge needs only a read-only database user. Reads stay on bd.
+// Package vardebeads sends the Forge's bd commands to Varde instead of the beads database: writes are translated into
+// Varde's MCP bead tools (DevInfra-gbx.8), reads go to its live beads_bd_read (DevInfra-rjb.6), all signed with the
+// Forge's key, so the Forge needs no bd and no database login.
 package vardebeads
 
 import (
@@ -24,11 +24,10 @@ const (
 // HalfSet reports a configuration that names Varde but cannot reach it: one of the two variables without the other.
 func HalfSet() bool { return (os.Getenv(EnvURL) == "") != (os.Getenv(EnvKeyFile) == "") }
 
-// Enabled reports whether bead writes go through Varde.
+// Enabled reports whether bead reads and writes go through Varde (writes since DevInfra-gbx.8, reads since rjb.6).
 func Enabled() bool { return os.Getenv(EnvURL) != "" && os.Getenv(EnvKeyFile) != "" }
 
-// IsWrite reports whether a bd argument list writes. Reads (show, list, ready, sql, comments without add, --help)
-// stay on bd.
+// IsWrite reports whether a bd argument list writes. Everything else goes to Varde as a read (IsRead).
 func IsWrite(args []string) bool {
 	if len(args) == 0 {
 		return false

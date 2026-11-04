@@ -21,6 +21,7 @@ import (
 	"github.com/Robin831/Forge/internal/ipc"
 	"github.com/Robin831/Forge/internal/provider"
 	"github.com/Robin831/Forge/internal/state"
+	"github.com/Robin831/Forge/internal/vardebeads"
 	"github.com/Robin831/Forge/internal/vcs"
 	"github.com/spf13/cobra"
 )
@@ -68,11 +69,14 @@ var doctorCmd = &cobra.Command{
 		// 1. Check git installed
 		checks = append(checks, checkGit())
 
-		// 2. Check bd (beads) installed
-		checks = append(checks, checkBinary("bd", "beads issue tracker"))
-
-		// 2a. Check bd is new enough to emit the dependents array on demand
-		checks = append(checks, checkBdIncludeDependents())
+		// 2. Check bd (beads) installed, new enough to emit the dependents array on demand; under Varde the Forge
+		// runs no bd (DevInfra-rjb.6), so check instead that Varde answers each anvil's reads.
+		if vardebeads.Enabled() {
+			checks = append(checks, checkVardeReads()...)
+		} else {
+			checks = append(checks, checkBinary("bd", "beads issue tracker"))
+			checks = append(checks, checkBdIncludeDependents())
+		}
 
 		// 3. Check VCS CLI tools — platform-aware based on configured anvils
 		checks = append(checks, checkVCSTools()...)
@@ -104,8 +108,10 @@ var doctorCmd = &cobra.Command{
 		// 11. Check govulncheck (optional — needed for vulnerability scanning)
 		checks = append(checks, checkGovulncheck())
 
-		// 12. Check Dolt/beads database connectivity
-		checks = append(checks, checkDoltConnectivity())
+		// 12. Check Dolt/beads database connectivity (through Varde: checked in 2)
+		if !vardebeads.Enabled() {
+			checks = append(checks, checkDoltConnectivity())
+		}
 
 		// 13. Check depcheck tooling for configured anvils
 		checks = append(checks, checkDepcheckTooling()...)
@@ -863,6 +869,49 @@ func checkDoltConnectivity() checkResult {
 		Status: "ok",
 		Detail: "connected",
 	}
+}
+
+// newVardeCaller is the Varde client doctor checks with; tests swap in a fake.
+var newVardeCaller = func() (vardebeads.Caller, error) { return vardebeads.NewClientFromEnv() }
+
+// checkVardeReads asks Varde for one bead of each anvil's pool (beads_bd_read list --limit 1), which proves the key,
+// the pool mapping and Varde's bd at once.
+func checkVardeReads() []checkResult {
+	const name = "Varde bead reads"
+	client, err := newVardeCaller()
+	if err != nil {
+		return []checkResult{{Name: name, Status: "fail", Detail: err.Error()}}
+	}
+	if cfg == nil || len(cfg.Anvils) == 0 {
+		return []checkResult{{Name: name, Status: "warn", Detail: "no anvils configured to read for"}}
+	}
+	anvils := make([]string, 0, len(cfg.Anvils))
+	for anvil := range cfg.Anvils {
+		anvils = append(anvils, anvil)
+	}
+	sort.Strings(anvils)
+	var results []checkResult
+	for _, anvil := range anvils {
+		a := cfg.Anvils[anvil]
+		check := checkResult{Name: name + " (" + anvil + ")"}
+		pool, err := vardebeads.ResolvePool(a.VardePool, a.Path)
+		if err != nil {
+			check.Status, check.Detail = "fail", err.Error()
+			results = append(results, check)
+			continue
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		var stdout, stderr strings.Builder
+		code := vardebeads.RunRead(ctx, client, pool, []string{"list", "--limit", "1", "--json"}, &stdout, &stderr, nil)
+		cancel()
+		if code != 0 {
+			check.Status, check.Detail = "fail", fmt.Sprintf("pool %s: %s", pool, strings.TrimSpace(stderr.String()))
+		} else {
+			check.Status, check.Detail = "ok", "pool "+pool+" answers"
+		}
+		results = append(results, check)
+	}
+	return results
 }
 
 // checkDepcheckTooling verifies that the CLI tools required by depcheck are

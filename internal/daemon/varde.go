@@ -25,7 +25,7 @@ func untaggedUnderVarde(cfg *config.Config) []string {
 
 func (d *Daemon) warnVardeDispatch(cfg *config.Config) {
 	if vardebeads.HalfSet() {
-		d.logger.Warn("only one of FORGE_VARDE_URL and FORGE_VARDE_KEY_FILE is set, so bead writes still go to bd")
+		d.logger.Warn("only one of FORGE_VARDE_URL and FORGE_VARDE_KEY_FILE is set, so bead reads and writes still go to a local bd, which fails where the image has none")
 	}
 	for _, name := range untaggedUnderVarde(cfg) {
 		d.logger.Warn("bead writes go through Varde, which lets the Forge claim only beads with its own Forge label; use auto_dispatch: tagged", "anvil", name)

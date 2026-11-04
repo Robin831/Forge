@@ -10,6 +10,7 @@ import (
 	"github.com/Robin831/Forge/internal/config"
 	"github.com/Robin831/Forge/internal/notify"
 	"github.com/Robin831/Forge/internal/state"
+	"github.com/Robin831/Forge/internal/vardebeads"
 )
 
 // wedgedWarnInterval rate-limits the per-anvil WARN line emitted while an anvil
@@ -40,6 +41,15 @@ func (d *Daemon) checkAnvilHealth(ctx context.Context, cfg *config.Config) {
 	// otherwise a resolved wedge stays pinned in needs-attention and `forge
 	// status` forever while dispatch, gated on the same setting, proceeds.
 	if !cfg.Settings.IsAnvilHealthCheckEnabled() || len(cfg.Anvils) == 0 {
+		d.releaseAllWedgedAnvils()
+		return
+	}
+	// Under Varde the Forge has no Dolt clone to wedge and Varde runs no sql for it (DevInfra-rjb.6); Varde stops
+	// its own writes on a dirty pool.
+	if vardebeads.Enabled() {
+		d.anvilHealthVardeOnce.Do(func() {
+			d.logger.Info("anvil health check skipped: beads go through Varde, so there is no local Dolt clone to wedge")
+		})
 		d.releaseAllWedgedAnvils()
 		return
 	}

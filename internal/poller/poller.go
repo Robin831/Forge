@@ -307,6 +307,20 @@ const LabelNeedsHuman = "needs-human"
 // create, so without the hold a poll could dispatch it before the part it waits on (DevInfra-gbx.8).
 const LabelWiring = "schematic-wiring"
 
+// readyArgs is the poll's bd ready, its own function so a test holds it to Varde's whitelist (vardebeads.IsRead).
+// The exclusion is in the query too, so escalated beads never fill the limit; the Go filter in pollAnvil stays, for a
+// bd that ignores it.
+func readyArgs(limit int, tag string, varde bool) []string {
+	args := []string{"ready", "--json", "--limit", strconv.Itoa(limit)}
+	if varde {
+		args = append(args, "--exclude-label", LabelNeedsHuman+","+LabelWiring)
+	}
+	if tag != "" {
+		args = append(args, "--label", tag)
+	}
+	return args
+}
+
 // pollAnvil runs 'bd ready --json --limit <n>' in an anvil directory and parses the output.
 // The limit is taken from BdReadyLimit (default 100 when unset/non-positive).
 func (p *BeadPoller) pollAnvil(ctx context.Context, name string, anvil config.AnvilConfig) ([]Bead, error) {
@@ -314,15 +328,11 @@ func (p *BeadPoller) pollAnvil(ctx context.Context, name string, anvil config.An
 	if limit <= 0 {
 		limit = 100
 	}
-	args := []string{"ready", "--json", "--limit", strconv.Itoa(limit)}
-	// In the query too, so escalated beads never fill the limit; the image's bd has the flag (the Go filter below
-	// stays, for a bd that ignores it).
-	if vardebeads.Enabled() {
-		args = append(args, "--exclude-label", LabelNeedsHuman+","+LabelWiring)
+	tag := ""
+	if p.UseLabelFilter {
+		tag = anvil.AutoDispatchTag
 	}
-	if p.UseLabelFilter && anvil.AutoDispatchTag != "" {
-		args = append(args, "--label", anvil.AutoDispatchTag)
-	}
+	args := readyArgs(limit, tag, vardebeads.Enabled())
 	// Build command with timeout
 	cmd, cancel := executil.BdCommand(ctx, args...)
 	defer cancel()

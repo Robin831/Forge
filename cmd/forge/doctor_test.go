@@ -1,6 +1,8 @@
 package main
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -11,6 +13,7 @@ import (
 
 	"github.com/Robin831/Forge/internal/config"
 	"github.com/Robin831/Forge/internal/provider"
+	"github.com/Robin831/Forge/internal/vardebeads"
 )
 
 func TestCheckGit(t *testing.T) {
@@ -945,5 +948,41 @@ func TestCheckAssayPasses_AllAnvilsDisabledReportsDisabled(t *testing.T) {
 	results := checkAssayPasses()
 	if len(results) != 1 || results[0].Status != "ok" || !strings.Contains(results[0].Detail, "assay disabled") {
 		t.Fatalf("results = %+v, want one ok 'assay disabled' row", results)
+	}
+}
+
+type doctorVarde struct{ answers map[string]string }
+
+func (v doctorVarde) Call(_ context.Context, tool string, args map[string]any) (json.RawMessage, error) {
+	if text, ok := v.answers[args["pool"].(string)]; ok {
+		return nil, &vardebeads.ErrRefused{Text: text}
+	}
+	return json.RawMessage(`{"exitCode":0,"stdout":"[]","stderr":""}`), nil
+}
+
+// Under Varde, doctor checks each anvil's reads through Varde instead of bd (DevInfra-rjb.6).
+func TestCheckVardeReads(t *testing.T) {
+	old, oldCaller := cfg, newVardeCaller
+	defer func() { cfg, newVardeCaller = old, oldCaller }()
+	newVardeCaller = func() (vardebeads.Caller, error) {
+		return doctorVarde{answers: map[string]string{"heimdall": "Refused (404): no bead pool heimdall here"}}, nil
+	}
+	cfg = &config.Config{Anvils: map[string]config.AnvilConfig{
+		"a": {Path: t.TempDir(), VardePool: "munin"},
+		"b": {Path: t.TempDir(), VardePool: "heimdall"},
+		"c": {Path: t.TempDir()},
+	}}
+	got := checkVardeReads()
+	if len(got) != 3 {
+		t.Fatalf("one check per anvil, got %+v", got)
+	}
+	want := []string{"ok", "fail", "fail"}
+	for i, r := range got {
+		if r.Status != want[i] {
+			t.Errorf("%s: %s (%s), want %s", r.Name, r.Status, r.Detail, want[i])
+		}
+	}
+	if !strings.Contains(got[1].Detail, "Refused (404)") || !strings.Contains(got[2].Detail, "varde_pool") {
+		t.Errorf("details: %q / %q", got[1].Detail, got[2].Detail)
 	}
 }

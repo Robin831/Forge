@@ -117,8 +117,14 @@ func BdCommandTimeout(parent context.Context, timeout time.Duration, args ...str
 
 	ctx, cancel := context.WithTimeout(parent, timeout)
 	cmd := HideWindow(exec.CommandContext(ctx, "bd", args...))
-	if w := vardeWrites.Load(); w != nil && vardebeads.IsWrite(args) {
-		cmd = HideWindow(exec.CommandContext(ctx, w.exe, append([]string{"--config", w.config, "bd-varde", "--base", w.base, "--"}, args...)...))
+	if w := vardeWrites.Load(); w != nil {
+		// Under Varde the Forge runs no bd of its own (DevInfra-rjb.6): a read that is not one of Varde's shapes is
+		// refused by bd-varde itself, never handed to a local bd.
+		mode := []string{"--config", w.config, "bd-varde", "--base", w.base}
+		if !vardebeads.IsWrite(args) {
+			mode = append(mode, "--read")
+		}
+		cmd = HideWindow(exec.CommandContext(ctx, w.exe, append(append(mode, "--"), args...)...))
 	}
 	return &BdCmd{
 		Cmd:   cmd,
@@ -168,9 +174,10 @@ type vardeTarget struct{ exe, config, base string }
 
 var vardeWrites atomic.Pointer[vardeTarget]
 
-// SetVardeWrites sends every bd write from this process through Varde (DevInfra-gbx.8): exe is the forge binary,
-// config the forge.yaml it runs with, so its bd-varde command finds the same anvils; base is this process's working
-// directory, which relative anvil paths are read against. An empty exe turns it off.
+// SetVardeWrites sends every bd command from this process through Varde, writes (DevInfra-gbx.8) and reads
+// (DevInfra-rjb.6): exe is the forge binary, config the forge.yaml it runs with, so its bd-varde command finds the
+// same anvils; base is this process's working directory, which relative anvil paths are read against. An empty exe
+// turns it off.
 func SetVardeWrites(exe, config, base string) {
 	if exe == "" {
 		vardeWrites.Store(nil)

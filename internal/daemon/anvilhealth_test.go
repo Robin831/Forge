@@ -231,6 +231,28 @@ func TestCheckAnvilHealth_Disabled(t *testing.T) {
 	assert.Empty(t, rows)
 }
 
+// Under Varde there is no local Dolt clone to wedge and no sql to run (DevInfra-rjb.6): no probe, a flag raised
+// before is released, and the skip is logged once.
+func TestCheckAnvilHealth_SkippedUnderVarde(t *testing.T) {
+	runner := &scriptedRunner{conflicts: `[{"conflict_table":"issues","conflict_count":3}]`}
+	d, db, logs := newHealthTestDaemon(t, runner)
+	d.checkAnvilHealth(context.Background(), d.cfg.Load())
+	rows, err := db.WedgedAnvils()
+	require.NoError(t, err)
+	require.NotEmpty(t, rows, "precondition: wedged before Varde")
+
+	t.Setenv("FORGE_VARDE_URL", "https://varde.example")
+	t.Setenv("FORGE_VARDE_KEY_FILE", "/nonexistent")
+	before := atomic.LoadInt32(&runner.calls)
+	d.checkAnvilHealth(context.Background(), d.cfg.Load())
+	d.checkAnvilHealth(context.Background(), d.cfg.Load())
+	assert.Equal(t, before, atomic.LoadInt32(&runner.calls), "no probe under Varde")
+	rows, err = db.WedgedAnvils()
+	require.NoError(t, err)
+	assert.Empty(t, rows)
+	assert.Equal(t, 1, strings.Count(logs.String(), "anvil health check skipped"))
+}
+
 // TestCheckAnvilHealth_SkipsAnvilsWithoutPath guards against probing a
 // misconfigured anvil (which would fail on every poll and log forever).
 func TestCheckAnvilHealth_SkipsAnvilsWithoutPath(t *testing.T) {
