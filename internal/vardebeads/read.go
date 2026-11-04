@@ -99,7 +99,8 @@ func IsRead(args []string) bool {
 		case "--status":
 			closed = closed || readStatus(value) && strings.Contains(","+value+",", ",closed,")
 		case "--limit":
-			limited, limitZero = true, value == "0"
+			// Any --limit 0 counts, as Varde's includes('--limit=0') does, not only the last one given.
+			limited, limitZero = true, limitZero || value == "0"
 		}
 	}
 	switch {

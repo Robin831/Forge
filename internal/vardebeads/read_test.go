@@ -55,6 +55,7 @@ func TestIsReadMirrorsVardesWhitelist(t *testing.T) {
 		{"unknown status", []string{"list", "--status=tombstone"}, false},
 		{"closed without limit", []string{"list", "--status=closed", "--json"}, false},
 		{"closed with limit 0", []string{"list", "--status=open,closed", "--limit", "0"}, false},
+		{"closed with a later limit after 0", []string{"list", "--status=closed", "--limit", "0", "--limit", "5"}, false},
 		{"limit too big", []string{"ready", "--limit", "10000"}, false},
 		{"flag-shaped id", []string{"show", "--id=-x"}, false},
 		{"global db flag", []string{"list", "--db", "/tmp/x"}, false},
