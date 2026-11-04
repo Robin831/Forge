@@ -9,6 +9,12 @@ Unreleased changes live as fragments in `changelog.d/` and are assembled at
 release time by `scripts/assemble-changelog.sh`.
 
 
+## [0.38.3] - 2026-11-04
+
+### Changed
+
+- **Bead reads go through Varde too** - when bead writes go through Varde (`FORGE_VARDE_URL` and `FORGE_VARDE_KEY_FILE` set), every bd read the Forge makes (the poll's ready and in-progress lists, show with or without dependents, comments in Hearth, the scanners' lists) now runs as `forge bd-varde --read`, which sends it to Varde's live `beads_bd_read` in the anvil's pool and prints bd's own answer and exit code, so the Forge runs no bd of its own and needs neither bd nor a database login in that mode. Each anvil can name its pool with `varde_pool`; unset, it is read from the anvil's git-tracked `.beads` files (following `.beads/redirect`), and a read fails asking for the setting when nothing names one. Varde's busy (503) and slow (504) answers are retried after 1, 3 and 6 s. In that mode the anvil health check (Dolt sql) is skipped, depcheck and the ledger use `bd list` instead of `bd sql`, and `forge doctor` checks each anvil's reads through Varde instead of bd. A read Varde does not run is refused, never handed to a local bd. Needs Varde with `beads_bd_read` (DevInfra PR 660). (DevInfra-rjb.6)
+
 ## [0.38.2] - 2026-11-04
 
 ### Changed
