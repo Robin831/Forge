@@ -29,7 +29,7 @@
 #     the same persistent volume cleans up stale worktrees automatically.
 
 # ============================================================================
-# Stage 1a: Build the forge binary from source
+# Stage 1: Build the forge binary from source
 # ============================================================================
 FROM golang:1.26-bookworm AS forge-builder
 
