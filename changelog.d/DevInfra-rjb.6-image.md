@@ -1,2 +1,0 @@
-category: Removed
-- **No bd and no dolt in the Forge image** - the skybert image no longer downloads bd or the dolt CLI, and no longer sets BD_DISABLE_METRICS: both Forges read and write beads through Varde (DevInfra-rjb.6), so nothing in the pod runs them. The post-release workflow now fails if either is in the image. A Forge installed without Varde still uses the bd on its own PATH. (DevInfra-rjb.6)

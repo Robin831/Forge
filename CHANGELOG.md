@@ -9,6 +9,12 @@ Unreleased changes live as fragments in `changelog.d/` and are assembled at
 release time by `scripts/assemble-changelog.sh`.
 
 
+## [0.39.0] - 2026-11-04
+
+### Removed
+
+- **No bd and no dolt in the Forge image** - the skybert image no longer downloads bd or the dolt CLI, and no longer sets BD_DISABLE_METRICS: both Forges read and write beads through Varde (DevInfra-rjb.6), so nothing in the pod runs them. The post-release workflow now fails if either is in the image. A Forge installed without Varde still uses the bd on its own PATH. (DevInfra-rjb.6)
+
 ## [0.38.3] - 2026-11-04
 
 ### Changed
