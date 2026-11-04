@@ -2,7 +2,7 @@
 # to ghcr.io/robin831/forge. It contains just the forge binary and the
 # absolute minimum of OS dependencies — it is NOT suitable for actually
 # running the daemon, since the daemon's Smith subprocesses require claude,
-# bd, gh, node, .NET and other tooling. For deployment use the multi-stage
+# gh, node, .NET and other tooling (beads go through Varde). For deployment use the multi-stage
 # Dockerfile in this repository instead.
 FROM alpine:3.21
 

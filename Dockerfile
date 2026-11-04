@@ -8,8 +8,6 @@
 #
 #   * forge       - built from source in the builder stage
 #   * claude      - Anthropic Claude Code CLI (npm)
-#   * bd          - stock beads release (v1.3.2), downloaded and checked by sha256
-#                   (CGO_ENABLED=1 because bd's embedded Dolt requires CGO)
 #   * gh          - GitHub CLI
 #   * git         - worktree-aware
 #   * node 26     - LTS, required for the npm-installed claude CLI
@@ -17,8 +15,8 @@
 #
 # Build-context expectations:
 #   - The full Forge source tree (cmd/, internal/, go.mod, go.sum, ...).
-#   - The bd binary is not staged from outside: bd-builder downloads the stock
-#     release named by BD_VERSION and checks it against BD_SHA256.
+#   - No bd and no dolt: the Forge reads and writes beads through Varde
+#     (DevInfra-rjb.6; docs/varde-bead-writes.md), so the pod needs neither.
 #
 # Runtime behaviour:
 #   - The daemon runs in foreground mode (FORGE_FOREGROUND=1) so it survives
@@ -31,7 +29,7 @@
 #     the same persistent volume cleans up stale worktrees automatically.
 
 # ============================================================================
-# Stage 1a: Build the forge binary from source
+# Stage 1: Build the forge binary from source
 # ============================================================================
 FROM golang:1.26-bookworm AS forge-builder
 
@@ -51,22 +49,6 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
         -trimpath \
         -ldflags="-s -w -X github.com/Robin831/Forge/internal/forge.Version=${VERSION} -X github.com/Robin831/Forge/internal/forge.Build=${COMMIT}" \
         -o /out/forge ./cmd/forge
-
-# ============================================================================
-# Stage 1b: bd (beads), stock upstream release v1.3.2, checked by sha256.
-# ============================================================================
-# The same binary Varde runs (Fhi.Munin.DevInfra varde/Dockerfile.workspace): dolt-beads is on schema 66 since the
-# 03.11.2026 switch (DevInfra-o8m), which the fork's bd 1.1.2 refuses. The release build has CGO, so the embedded
-# store still works. Bump BD_VERSION and BD_SHA256 together, from the release's checksums.txt.
-FROM golang:1.26-bookworm AS bd-builder
-
-ARG BD_VERSION=1.3.2
-ARG BD_SHA256=c6ea3281f6ff82628351b2d0967c9eb85862c8a0ec0ebc24e63e645c8b02462e
-
-RUN set -eux; \
-    curl -fsSL -o /tmp/bd.tgz "https://github.com/gastownhall/beads/releases/download/v${BD_VERSION}/beads_${BD_VERSION}_linux_amd64.tar.gz"; \
-    echo "${BD_SHA256}  /tmp/bd.tgz" | sha256sum -c -; \
-    mkdir -p /out && tar -xzf /tmp/bd.tgz -C /out bd && /out/bd version
 
 # ============================================================================
 # Stage 2: Runtime image with all CLIs the daemon and Smith subprocesses need
@@ -158,32 +140,6 @@ RUN set -eux; \
     test "$(fc-list | wc -l)" -gt 0; \
     apt-get clean; \
     rm -rf /var/lib/apt/lists/* /root/.npm
-
-# Copy the stock bd release from stage 1b (a CGO build, linked against glibc).
-COPY --from=bd-builder --chmod=0755 /out/bd /usr/local/bin/bd
-
-# Install the standalone dolt CLI. The bootstrap initContainer needs it to
-# `dolt checkout -b beads-sync` after `bd init --remote`, since the local
-# clone defaults to main and pushes are rejected on main (the server has
-# main checked out). Dolt is distributed as a single static Linux binary.
-# Keep this in step with the dolt-beads server (currently 2.2.3). A 1.x CLI
-# talks to a 2.x server fine — clone and push were both verified against 2.2.3
-# before the server was upgraded — so this pin is not a flag day, but there is
-# no reason to lag it either.
-ARG DOLT_VERSION=2.2.3
-RUN set -eux; \
-    arch=$(dpkg --print-architecture); \
-    case "$arch" in \
-        amd64) dolt_arch=amd64 ;; \
-        arm64) dolt_arch=arm64 ;; \
-        *) echo "unsupported arch: $arch" >&2; exit 1 ;; \
-    esac; \
-    curl -fsSL "https://github.com/dolthub/dolt/releases/download/v${DOLT_VERSION}/dolt-linux-${dolt_arch}.tar.gz" \
-        -o /tmp/dolt.tar.gz; \
-    tar -xzf /tmp/dolt.tar.gz -C /tmp; \
-    install -m 0755 "/tmp/dolt-linux-${dolt_arch}/bin/dolt" /usr/local/bin/dolt; \
-    rm -rf /tmp/dolt.tar.gz /tmp/dolt-linux-${dolt_arch}; \
-    dolt version
 
 # Install sqlcmd (go-sqlcmd, a single static binary — no ODBC stack, no EULA
 # env var). Kiln preview setup/teardown scripts use it to create and drop
@@ -295,22 +251,6 @@ WORKDIR /home/forge
 # container. The CMD also passes --foreground explicitly as a belt-and-
 # suspenders measure for users who override CMD.
 ENV FORGE_FOREGROUND=1
-
-# bd ships anonymous usage metrics ON, not off: internal/config sets
-# metrics.disabled=false with endpoint https://gastownhall-eventsapi.com/mp/collect.
-# It sends command names, bd version and OS platform under a machine-derived id
-# — no issue content — but it is still outbound third-party telemetry from an
-# FHI-operated container, so it is off by default here.
-#
-# This must be the env var, not `bd metrics off`. That writes
-# $HOME/.config/bd/config.yaml, and /home/forge is a PVC mount at runtime, so
-# anything baked into the image under that path is masked by the volume — the
-# setting would silently vanish on a fresh pod. BD_DISABLE_METRICS also
-# outranks the saved config, so a stale file on the volume cannot re-enable it.
-# The devbox image is FROM this one and inherits it.
-#
-# Set BD_DISABLE_METRICS=0 on a container to opt back in.
-ENV BD_DISABLE_METRICS=1
 
 # tini provides a proper PID 1: it reaps zombies (Smith → claude → helpers)
 # and forwards SIGTERM cleanly so graceful shutdown runs.

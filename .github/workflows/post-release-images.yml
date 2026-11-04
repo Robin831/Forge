@@ -2,13 +2,13 @@
 #
 # Why this is a separate workflow instead of steps in release.yml:
 #
-#   The `-skybert` image is the FULL devbox image (dolt + bd from the
-#   stock bd release + claude + ttyd). It is a convenience image for the
+#   The `-skybert` image is the FULL devbox image (claude + ttyd + the
+#   toolchains; no bd or dolt since DevInfra-rjb.6). It is a convenience image for the
 #   skybert cluster, NOT a release artifact — nothing in the release itself
 #   (binaries, checksums, SBOMs, GitHub release, Homebrew/Scoop taps, the
 #   minimal `ghcr.io/robin831/forge:<tag>` image) depends on it. Building it
 #   inline meant every release waited on a fat image nobody needs at release
-#   time, and a flaky base-image pull or a broken `bd` build turned a
+#   time, and a flaky base-image pull or a broken tool download turned a
 #   perfectly good release run red.
 #
 #   Running it here decouples the two completely: this workflow is triggered
@@ -98,8 +98,8 @@ jobs:
 
       # Build the FULL cluster image. The GoReleaser images built by release.yml
       # are the minimal alpine binary (Dockerfile.minimal); the skybert cluster
-      # needs the full Dockerfile (dolt + stock bd v1.3.2 +
-      # claude + ttyd). Pushed under a distinct `-skybert` tag so it never
+      # needs the full Dockerfile (claude + ttyd + the toolchains; no bd or
+      # dolt). Pushed under a distinct `-skybert` tag so it never
       # collides with the minimal images.
       # Deploy (no laptop build): update-skybert.ps1 -SkipBuild -ImageTag <tag>-skybert
       - name: Resolve full-image build args
@@ -122,15 +122,14 @@ jobs:
             COMMIT=${{ steps.sha.outputs.sha }}
             CLAUDE_CODE_VERSION=${{ steps.fullargs.outputs.claude }}
 
-      - name: Verify baked bd is the Dockerfile's release
+      - name: Verify the image carries no bd and no dolt
         run: |
           IMG="ghcr.io/robin831/forge:${{ steps.rel.outputs.tag }}-skybert"
-          WANT=$(sed -n 's/^ARG BD_VERSION=//p' Dockerfile)
-          [ -n "$WANT" ] || { echo "no ARG BD_VERSION in Dockerfile" >&2; exit 1; }
           docker pull "$IMG"
-          BD_VER=$(docker run --rm --entrypoint bd "$IMG" version 2>&1 || true)
-          echo "bd: $BD_VER (want $WANT)"
-          echo "$BD_VER" | grep -q "bd version $WANT " || { echo "baked bd != $WANT" >&2; exit 1; }
+          # Beads go through Varde (DevInfra-rjb.6): a bd or dolt that came back would let a code path skip it unseen.
+          # 3 means found; any other non-zero is a check that did not run, which must not pass as «absent».
+          rc=0; docker run --rm --entrypoint sh "$IMG" -c 'if command -v bd || command -v dolt; then exit 3; fi' || rc=$?
+          [ "$rc" = 0 ] || { [ "$rc" = 3 ] && echo "bd or dolt is in the image" >&2 || echo "the check could not run (exit $rc)" >&2; exit 1; }
 
       # Kick off the forgeBench devbox image build for this release. This lives
       # here rather than in release.yml because the devbox image is
