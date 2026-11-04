@@ -1,8 +1,8 @@
 # Bead writes through Varde
 
 Without the two variables below nothing here applies: the Forge writes with bd exactly as 0.37.3 did, and its smiths
-get 0.37.2's beads environment and instructions. With them set in the daemon's environment, every bd write the Forge makes goes to Varde (DevInfra-gbx.8); reads stay
-on bd, so the Forge's database user can be read-only.
+get 0.37.2's beads environment and instructions. With them set in the daemon's environment, every bd write the Forge makes goes to Varde (DevInfra-gbx.8), and so does
+every read (DevInfra-rjb.6, below): the Forge runs no bd of its own.
 
 | Variable | Meaning |
 | --- | --- |
@@ -59,3 +59,33 @@ in the smith's final message; with another provider (a fallback after Claude) th
 smith lists what it finds because the tool is not there, as the prompt tells it to. Review, triage and the other stages never get the tools.
 
 The key file is readable to the smith's uid like the Forge's own; smiths under their own uid is DevInfra-rjb.1.
+
+## Bead reads through Varde
+
+In the same mode `executil.BdCommand` runs every bd command that is not a write as
+`forge --config <forge.yaml> bd-varde --base <dir> --read -- <bd arguments>`, in the caller's directory (the anvil's).
+`bd-varde --read` finds the anvil from that directory, the anvil's Varde pool, and calls Varde's `beads_bd_read`
+(`{pool, args}`; the Forge's key, scopes `beads:read` and `beads:forge`). Varde runs `bd --readonly --sandbox <args>`
+live in the pool's workspace, so the answer is as fresh as bd's own. `bd-varde` prints bd's stdout and stderr as Varde
+passed them and exits with bd's exit code, so every parser of bd's output works unchanged, bd's not-found JSON on exit 1
+included.
+
+The reads Varde runs, and so the only ones the Forge sends: `ready`, `list`, `show` (positional ids or `--id=`, up to
+200, with `--include-dependents`) and `comments <id>`, with `--json`, `--limit`, `--label`, `--exclude-label` (ready),
+`--status` (list) and `--id` (show). A list of closed beads needs a `--limit` above 0. `vardebeads.IsRead` mirrors
+Varde's whitelist (`varde/app/bd-read.mjs`); anything else is refused by `bd-varde` before it reaches Varde, and is never
+handed to a local bd.
+
+- **Refusals:** `Refused (503)` (Varde's read queue full, or a wait over 10 s) and `Refused (504)` (bd over 30 s) are
+  retried after 1 s, 3 s and 6 s, within the caller's bd timeout. Any other refusal (400: not a read Varde runs, or an
+  id from another pool; 404: no such pool; 502: bd failed or the answer is over 4 MB) is one stderr line and exit 1.
+- **The pool:** an anvil's `varde_pool`, else read from its git-tracked `.beads` files, following `.beads/redirect`:
+  `issue-prefix` in `config.yaml`, the id prefix of `issues.jsonl`, then the database named at the end of
+  `sync.remote`, each matched against Varde's pools (`munin`: `Fhi.Metadata`, `heimdall`: `Heimdall`, `devinfra`:
+  `DevInfra`). With none of them naming one, the read fails and says to set `varde_pool`.
+- **What changes in the Forge:** the anvil health check (Dolt `sql` for merge conflicts) is skipped, logged once: there
+  is no local clone to wedge, and Varde stops its own writes on a dirty pool. depcheck and the ledger go straight to their
+  `bd list` fallbacks instead of `bd sql`. `forge doctor` checks each anvil's reads through Varde
+  (`beads_bd_read list --limit 1`) instead of bd on PATH, its dependents flag and the database.
+- **Varde down:** reads fail as writes do, so the poller finds no work and nothing is dispatched until Varde answers.
+  There is no fallback to bd.

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/Robin831/Forge/internal/executil"
+	"github.com/Robin831/Forge/internal/vardebeads"
 )
 
 // consolidatedBeadTitlePrefix is the common prefix shared by all consolidated
@@ -517,10 +518,13 @@ func showBead(ctx context.Context, anvilPath, beadID string) (*bdBead, error) {
 // not send the other anvil's bead back over the wire. It is only a filter:
 // selectConsolidatedBead decides.
 func fetchConsolidatedCandidates(ctx context.Context, anvilPath, anvilName string) ([]bdBead, error) {
-	if out, err := fetchSQL(ctx, anvilPath, consolidatedCandidatesQuery(anvilName)); err == nil {
-		var beads []bdBead
-		if json.Unmarshal(out, &beads) == nil {
-			return beads, nil
+	// Varde runs no sql (DevInfra-rjb.6): straight to the list.
+	if !vardebeads.Enabled() {
+		if out, err := fetchSQL(ctx, anvilPath, consolidatedCandidatesQuery(anvilName)); err == nil {
+			var beads []bdBead
+			if json.Unmarshal(out, &beads) == nil {
+				return beads, nil
+			}
 		}
 	}
 

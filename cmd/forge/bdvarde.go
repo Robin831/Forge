@@ -4,15 +4,17 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/Robin831/Forge/internal/config"
 	"github.com/Robin831/Forge/internal/vardebeads"
 	"github.com/spf13/cobra"
 )
 
-// bdVardeCmd is what a bd write becomes when the Forge's bead writes go through Varde (DevInfra-gbx.8): the daemon
-// runs it in place of bd, in the anvil's directory, and it answers as bd would.
+// bdVardeCmd is what a bd command becomes when the Forge's beads go through Varde: the daemon runs it in place of bd, in
+// the anvil's directory, and it answers as bd would. A write goes to Varde's bead tools (DevInfra-gbx.8); with --read,
+// a read goes to beads_bd_read in the anvil's pool (DevInfra-rjb.6).
 var bdVardeCmd = &cobra.Command{
-	Use:          "bd-varde -- <bd write arguments>",
-	Short:        "Run one bd write through Varde (used by the daemon)",
+	Use:          "bd-varde [--read] -- <bd arguments>",
+	Short:        "Run one bd command through Varde (used by the daemon)",
 	Hidden:       true,
 	SilenceUsage: true,
 	Args:         cobra.MinimumNArgs(1),
@@ -30,28 +32,63 @@ var bdVardeCmd = &cobra.Command{
 		if ctx == nil {
 			ctx = cmd.Context()
 		}
-		return vardebeads.Run(ctx, client, args, session, anvilParentForCwd(vardeBase), cmd.OutOrStdout())
+		anvil, path := anvilForCwd(vardeBase)
+		if vardeRead {
+			pool, err := poolForCwd(anvil, path)
+			if err != nil {
+				return err
+			}
+			// bd's exit code is the answer (1 with the not-found JSON, say), so it leaves as this process's own.
+			if code := vardebeads.RunRead(ctx, client, pool, args, cmd.OutOrStdout(), cmd.ErrOrStderr(), vardebeads.ReadBackoff); code != 0 {
+				os.Exit(code)
+			}
+			return nil
+		}
+		return vardebeads.Run(ctx, client, args, session, anvil.BeadsParent, cmd.OutOrStdout())
 	},
 }
 
-var vardeBase string
+var (
+	vardeBase string
+	vardeRead bool
+)
 
 func init() {
 	bdVardeCmd.Flags().StringVar(&vardeBase, "base", "", "The daemon's working directory, which relative anvil paths are read against")
+	bdVardeCmd.Flags().BoolVar(&vardeRead, "read", false, "A bd read, sent to Varde's beads_bd_read in the anvil's pool")
 }
 
-// anvilParentForCwd is the beads_parent of the anvil whose path is the working directory (or holds it). A relative
-// anvil path is read against base, the daemon's working directory, not this process's.
+// poolForCwd is the Varde pool of the anvil the working directory is in; outside every anvil, the pool of the
+// directory itself, read from its .beads.
+func poolForCwd(anvil config.AnvilConfig, path string) (string, error) {
+	if path == "" {
+		wd, err := os.Getwd()
+		if err != nil {
+			return "", err
+		}
+		path = wd
+	}
+	return vardebeads.ResolvePool(anvil.VardePool, path)
+}
+
+// anvilParentForCwd is the beads_parent of the anvil whose path is the working directory (or holds it).
 func anvilParentForCwd(base string) string {
+	anvil, _ := anvilForCwd(base)
+	return anvil.BeadsParent
+}
+
+// anvilForCwd is the anvil whose path is the working directory (or holds it), with that path. A relative anvil path
+// is read against base, the daemon's working directory, not this process's.
+func anvilForCwd(base string) (config.AnvilConfig, string) {
 	wd, err := os.Getwd()
 	if err != nil || cfg == nil {
-		return ""
+		return config.AnvilConfig{}, ""
 	}
 	if real, err := filepath.EvalSymlinks(wd); err == nil {
 		wd = real
 	}
 	wd = filepath.Clean(wd)
-	best, parent := -1, ""
+	best, found, foundPath := -1, config.AnvilConfig{}, ""
 	for _, anvil := range cfg.Anvils {
 		if anvil.Path == "" {
 			continue
@@ -65,10 +102,10 @@ func anvilParentForCwd(base string) string {
 			path = real
 		}
 		if rel, err := filepath.Rel(path, wd); err == nil && rel != ".." && !startsDotDot(rel) && len(path) > best {
-			best, parent = len(path), anvil.BeadsParent
+			best, found, foundPath = len(path), anvil, path
 		}
 	}
-	return parent
+	return found, foundPath
 }
 
 func startsDotDot(rel string) bool {

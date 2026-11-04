@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/Robin831/Forge/internal/executil"
+	"github.com/Robin831/Forge/internal/vardebeads"
 )
 
 // bdBead is a minimal struct for parsing bd list/show --json output.
@@ -22,14 +23,15 @@ type bdBead struct {
 
 // fetchBeadList runs bd sql (fast) or falls back to bd list for the given status.
 func fetchBeadList(ctx context.Context, anvilPath, status string) ([]byte, error) {
-	// Try bd sql first (~6x faster than bd list on Dolt).
-	query := fmt.Sprintf(`SELECT * FROM issues WHERE status = '%s'`, status)
-	cmd, cancel := executil.BdCommand(ctx, "sql", "--json", query)
-	defer cancel()
-	cmd.Dir = anvilPath
-	out, err := cmd.Output()
-	if err == nil {
-		return out, nil
+	// Try bd sql first (~6x faster than bd list on Dolt); Varde runs no sql (DevInfra-rjb.6).
+	if !vardebeads.Enabled() {
+		query := fmt.Sprintf(`SELECT * FROM issues WHERE status = '%s'`, status)
+		cmd, cancel := executil.BdCommand(ctx, "sql", "--json", query)
+		defer cancel()
+		cmd.Dir = anvilPath
+		if out, err := cmd.Output(); err == nil {
+			return out, nil
+		}
 	}
 
 	// Fall back to bd list.
@@ -37,7 +39,7 @@ func fetchBeadList(ctx context.Context, anvilPath, status string) ([]byte, error
 		"list", fmt.Sprintf("--status=%s", status), "--limit", "0", "--json")
 	defer cancel2()
 	cmd2.Dir = anvilPath
-	out, err = cmd2.Output()
+	out, err := cmd2.Output()
 	if err != nil {
 		log.Printf("[depcheck] bd list --status=%s failed in %s: %v", status, anvilPath, err)
 		return nil, err

@@ -400,6 +400,8 @@ type Daemon struct {
 	// anvilHealth probes anvils for a beads database left mid-merge with
 	// unresolved conflicts (a "wedged" anvil). Swappable in tests.
 	anvilHealth *anvilhealth.Checker
+	// anvilHealthVardeOnce logs once that the check is skipped under Varde.
+	anvilHealthVardeOnce sync.Once
 	// wedgedWarned rate-limits the repeated "still wedged" WARN per anvil.
 	// map[anvilName]time.Time of the last emitted warning.
 	wedgedWarned sync.Map

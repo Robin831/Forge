@@ -652,3 +652,19 @@ func TestBeadExternalRefMissing(t *testing.T) {
 	require.NoError(t, json.Unmarshal([]byte(raw), &b))
 	assert.Equal(t, "", b.ExternalRef)
 }
+
+// Under Varde the ledger never asks for sql (Varde runs none, DevInfra-rjb.6): it goes straight to bd list.
+func TestFetchAnvilBeadsUnderVardeSendsNoSQL(t *testing.T) {
+	t.Setenv("FORGE_VARDE_URL", "https://varde.example")
+	t.Setenv("FORGE_VARDE_KEY_FILE", "/nonexistent")
+	var commands []string
+	execFn := func(ctx context.Context, anvilPath string, args ...string) ([]byte, error) {
+		commands = append(commands, args[0])
+		return []byte("[]"), nil
+	}
+	msg := fetchAnvilBeadsWithExec(execFn, "myAnvil", "/tmp/anvil", nil)()
+	update, ok := msg.(UpdateBeadsMsg)
+	require.True(t, ok)
+	assert.NoError(t, update.Err)
+	assert.Equal(t, []string{"list", "list", "list"}, commands)
+}

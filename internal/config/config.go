@@ -305,6 +305,9 @@ type AnvilConfig struct {
 	// BeadsParent is the epic the Forge files its own new beads under (scanners, quests) when its bead writes go
 	// through Varde, which files every bead under one (DevInfra-gbx.8).
 	BeadsParent string `mapstructure:"beads_parent" yaml:"beads_parent,omitempty"`
+	// VardePool is the Varde bead pool this anvil's beads live in, which its bd reads go to under Varde
+	// (DevInfra-rjb.6). Unset, it is read from the anvil's own .beads (vardebeads.ResolvePool).
+	VardePool string `mapstructure:"varde_pool" yaml:"varde_pool,omitempty"`
 	// Platform specifies the VCS hosting platform for this anvil.
 	// Valid values: "github" (default), "gitlab", "gitea", "bitbucket", "azuredevops".
 	// Determines which VCS provider is used for PR operations.

@@ -6,23 +6,38 @@ import (
 	"testing"
 )
 
-func TestVardeWritesRouteOnlyWrites(t *testing.T) {
+func TestVardeRoutesEveryBdCommand(t *testing.T) {
+	const prefix = "/opt/forge --config /etc/forge.yaml bd-varde --base /srv "
+	cases := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{"a write", []string{"update", "B-1", "--append-notes", "x"}, prefix + "-- update B-1 --append-notes x"},
+		{"a read", []string{"show", "B-1", "--json"}, prefix + "--read -- show B-1 --json"},
+		{"the poll", []string{"ready", "--json", "--limit", "100"}, prefix + "--read -- ready --json --limit 100"},
+		{"comments", []string{"comments", "B-1", "--json"}, prefix + "--read -- comments B-1 --json"},
+		// Not a read Varde runs: bd-varde refuses it itself rather than a local bd running it (DevInfra-rjb.6).
+		{"sql", []string{"sql", "--json", "SELECT 1"}, prefix + "--read -- sql --json SELECT 1"},
+	}
 	SetVardeWrites("/opt/forge", "/etc/forge.yaml", "/srv")
 	defer SetVardeWrites("", "", "")
-	write, cancel := BdCommand(context.Background(), "update", "B-1", "--append-notes", "x")
-	defer cancel()
-	if got := strings.Join(write.Args, " "); got != "/opt/forge --config /etc/forge.yaml bd-varde --base /srv -- update B-1 --append-notes x" {
-		t.Errorf("a write runs %q", got)
+	for _, c := range cases {
+		cmd, cancel := BdCommand(context.Background(), c.args...)
+		if got := strings.Join(cmd.Args, " "); got != c.want {
+			t.Errorf("%s runs %q, want %q", c.name, got, c.want)
+		}
+		cancel()
 	}
-	read, cancel2 := BdCommand(context.Background(), "show", "B-1", "--json")
-	defer cancel2()
-	if read.Args[0] != "bd" {
-		t.Errorf("a read runs %q, want bd", read.Args)
-	}
+}
+
+func TestOutsideVardeEveryBdCommandIsBd(t *testing.T) {
 	SetVardeWrites("", "", "")
-	off, cancel3 := BdCommand(context.Background(), "close", "B-1")
-	defer cancel3()
-	if off.Args[0] != "bd" {
-		t.Errorf("switched off, a write runs %q", off.Args)
+	for _, args := range [][]string{{"close", "B-1"}, {"show", "B-1", "--json"}, {"sql", "--json", "SELECT 1"}} {
+		cmd, cancel := BdCommand(context.Background(), args...)
+		if cmd.Args[0] != "bd" || strings.Join(cmd.Args[1:], " ") != strings.Join(args, " ") {
+			t.Errorf("switched off, %q runs %q", args, cmd.Args)
+		}
+		cancel()
 	}
 }
