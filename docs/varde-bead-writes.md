@@ -62,6 +62,8 @@ The key file is readable to the smith's uid like the Forge's own; smiths under t
 
 ## Bead reads through Varde
 
+Since DevInfra-rjb.6 3b the Forge image carries no bd and no dolt CLI: with Varde on, nothing in the pod needs them, and the release workflow fails if either comes back. A Forge without Varde (a laptop install) still uses the bd on its own PATH.
+
 In the same mode `executil.BdCommand` runs every bd command that is not a write as
 `forge --config <forge.yaml> bd-varde --base <dir> --read -- <bd arguments>`, in the caller's directory (the anvil's).
 `bd-varde --read` finds the anvil from that directory, the anvil's Varde pool, and calls Varde's `beads_bd_read`

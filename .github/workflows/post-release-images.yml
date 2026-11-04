@@ -122,15 +122,12 @@ jobs:
             COMMIT=${{ steps.sha.outputs.sha }}
             CLAUDE_CODE_VERSION=${{ steps.fullargs.outputs.claude }}
 
-      - name: Verify baked bd is the Dockerfile's release
+      - name: Verify the image carries no bd and no dolt
         run: |
           IMG="ghcr.io/robin831/forge:${{ steps.rel.outputs.tag }}-skybert"
-          WANT=$(sed -n 's/^ARG BD_VERSION=//p' Dockerfile)
-          [ -n "$WANT" ] || { echo "no ARG BD_VERSION in Dockerfile" >&2; exit 1; }
           docker pull "$IMG"
-          BD_VER=$(docker run --rm --entrypoint bd "$IMG" version 2>&1 || true)
-          echo "bd: $BD_VER (want $WANT)"
-          echo "$BD_VER" | grep -q "bd version $WANT " || { echo "baked bd != $WANT" >&2; exit 1; }
+          # Beads go through Varde (DevInfra-rjb.6): a bd or dolt that came back would let a code path skip it unseen.
+          if docker run --rm --entrypoint sh "$IMG" -c 'command -v bd || command -v dolt'; then echo "bd or dolt is in the image" >&2; exit 1; fi
 
       # Kick off the forgeBench devbox image build for this release. This lives
       # here rather than in release.yml because the devbox image is
