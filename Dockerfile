@@ -8,7 +8,7 @@
 #
 #   * forge       - built from source in the builder stage
 #   * claude      - Anthropic Claude Code CLI (npm)
-#   * bd          - FHI beads fork, built from source in its own stage
+#   * bd          - stock beads release (v1.3.2), downloaded and checked by sha256
 #                   (CGO_ENABLED=1 because bd's embedded Dolt requires CGO)
 #   * gh          - GitHub CLI
 #   * git         - worktree-aware
@@ -17,9 +17,8 @@
 #
 # Build-context expectations:
 #   - The full Forge source tree (cmd/, internal/, go.mod, go.sum, ...).
-#   - The bd binary is no longer staged from outside; bd-builder clones
-#     and compiles it inside the image build using the BEADS_REPO and
-#     BEADS_REF build args.
+#   - The bd binary is not staged from outside: bd-builder downloads the stock
+#     release named by BD_VERSION and checks it against BD_SHA256.
 #
 # Runtime behaviour:
 #   - The daemon runs in foreground mode (FORGE_FOREGROUND=1) so it survives
@@ -54,44 +53,20 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
         -o /out/forge ./cmd/forge
 
 # ============================================================================
-# Stage 1b: Build the bd (beads) binary from the FHI fork.
+# Stage 1b: bd (beads), stock upstream release v1.3.2, checked by sha256.
 # ============================================================================
-# Built with CGO_ENABLED=1 because bd's embedded Dolt store uses a SQLite
-# (and now go-mysql-server's storage path) C binding — `bd init --remote`
-# fails with "failed to open Dolt store: requires a CGO build" otherwise.
-# The gms_pure_go tag is still applied (it pure-Go's the SQL parser, which
-# stays useful) but CGO is what actually unblocks embedded Dolt.
-#
-# Override BEADS_REPO/BEADS_REF to test a different fork or branch:
-#   --build-arg BEADS_REPO=https://github.com/<fork>/beads
-#   --build-arg BEADS_REF=<branch-or-sha>
+# The same binary Varde runs (Fhi.Munin.DevInfra varde/Dockerfile.workspace): dolt-beads is on schema 66 since the
+# 03.11.2026 switch (DevInfra-o8m), which the fork's bd 1.1.2 refuses. The release build has CGO, so the embedded
+# store still works. Bump BD_VERSION and BD_SHA256 together, from the release's checksums.txt.
 FROM golang:1.26-bookworm AS bd-builder
 
-ARG BEADS_REPO=https://github.com/Robin831/beads
-ARG BEADS_REF=main
+ARG BD_VERSION=1.3.2
+ARG BD_SHA256=c6ea3281f6ff82628351b2d0967c9eb85862c8a0ec0ebc24e63e645c8b02462e
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-        git ca-certificates gcc libc6-dev \
-    && rm -rf /var/lib/apt/lists/*
-
-WORKDIR /src
-# Use init + fetch (not `git clone --branch`) so BEADS_REF works with EITHER
-# a branch name (e.g. `main`) OR a concrete commit SHA. `git clone --branch`
-# only accepts refnames (branches/tags) — passing a SHA fails with "Remote
-# branch <sha> not found in upstream origin". The build pipeline pins
-# BEADS_REF to a resolved SHA so podman's layer cache invalidates whenever
-# the fork moves; without the init+fetch form, that pinning breaks the build.
-RUN git init -b main . && \
-    git remote add origin "${BEADS_REPO}" && \
-    git fetch --depth=1 origin "${BEADS_REF}" && \
-    git reset --hard FETCH_HEAD
-
-RUN --mount=type=cache,target=/root/.cache/go-build \
-    --mount=type=cache,target=/root/go/pkg/mod \
-    CGO_ENABLED=1 GOOS=linux go build \
-        -tags gms_pure_go \
-        -trimpath -ldflags='-s -w' \
-        -o /out/bd ./cmd/bd
+RUN set -eux; \
+    curl -fsSL -o /tmp/bd.tgz "https://github.com/gastownhall/beads/releases/download/v${BD_VERSION}/beads_${BD_VERSION}_linux_amd64.tar.gz"; \
+    echo "${BD_SHA256}  /tmp/bd.tgz" | sha256sum -c -; \
+    mkdir -p /out && tar -xzf /tmp/bd.tgz -C /out bd && /out/bd version
 
 # ============================================================================
 # Stage 2: Runtime image with all CLIs the daemon and Smith subprocesses need
@@ -184,8 +159,7 @@ RUN set -eux; \
     apt-get clean; \
     rm -rf /var/lib/apt/lists/* /root/.npm
 
-# Copy the bd binary built in stage 1b. Pure-Go embedded Dolt courtesy of
-# the gms_pure_go build tag — no CGO, statically linked.
+# Copy the stock bd release from stage 1b (a CGO build, linked against glibc).
 COPY --from=bd-builder --chmod=0755 /out/bd /usr/local/bin/bd
 
 # Install the standalone dolt CLI. The bootstrap initContainer needs it to

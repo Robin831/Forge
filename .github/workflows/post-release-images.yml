@@ -3,7 +3,7 @@
 # Why this is a separate workflow instead of steps in release.yml:
 #
 #   The `-skybert` image is the FULL devbox image (dolt + bd from the
-#   Robin831/beads fork + claude + ttyd). It is a convenience image for the
+#   stock bd release + claude + ttyd). It is a convenience image for the
 #   skybert cluster, NOT a release artifact — nothing in the release itself
 #   (binaries, checksums, SBOMs, GitHub release, Homebrew/Scoop taps, the
 #   minimal `ghcr.io/robin831/forge:<tag>` image) depends on it. Building it
@@ -98,18 +98,15 @@ jobs:
 
       # Build the FULL cluster image. The GoReleaser images built by release.yml
       # are the minimal alpine binary (Dockerfile.minimal); the skybert cluster
-      # needs the full Dockerfile (dolt + bd from the Robin831/beads fork +
+      # needs the full Dockerfile (dolt + stock bd v1.3.2 +
       # claude + ttyd). Pushed under a distinct `-skybert` tag so it never
       # collides with the minimal images.
       # Deploy (no laptop build): update-skybert.ps1 -SkipBuild -ImageTag <tag>-skybert
       - name: Resolve full-image build args
         id: fullargs
         run: |
-          BEADS_REF=$(git ls-remote https://github.com/Robin831/beads main | cut -f1)
-          [ -n "$BEADS_REF" ] || { echo "could not resolve Robin831/beads main ref" >&2; exit 1; }
           CLAUDE_VER=$(npm view @anthropic-ai/claude-code version)
           [ -n "$CLAUDE_VER" ] || { echo "could not resolve claude-code version" >&2; exit 1; }
-          echo "beads_ref=$BEADS_REF" >> "$GITHUB_OUTPUT"
           echo "claude=@$CLAUDE_VER" >> "$GITHUB_OUTPUT"
 
       - name: Build and push full skybert image
@@ -123,17 +120,17 @@ jobs:
           build-args: |
             VERSION=${{ steps.rel.outputs.tag }}
             COMMIT=${{ steps.sha.outputs.sha }}
-            BEADS_REF=${{ steps.fullargs.outputs.beads_ref }}
             CLAUDE_CODE_VERSION=${{ steps.fullargs.outputs.claude }}
 
-      - name: Verify baked bd matches the beads fork
+      - name: Verify baked bd is the Dockerfile's release
         run: |
           IMG="ghcr.io/robin831/forge:${{ steps.rel.outputs.tag }}-skybert"
+          WANT=$(sed -n 's/^ARG BD_VERSION=//p' Dockerfile)
+          [ -n "$WANT" ] || { echo "no ARG BD_VERSION in Dockerfile" >&2; exit 1; }
           docker pull "$IMG"
           BD_VER=$(docker run --rm --entrypoint bd "$IMG" version 2>&1 || true)
-          SHORT="${{ steps.fullargs.outputs.beads_ref }}"; SHORT="${SHORT:0:9}"
-          echo "bd: $BD_VER (want $SHORT)"
-          echo "$BD_VER" | grep -q "$SHORT" || { echo "baked bd != fork ref $SHORT" >&2; exit 1; }
+          echo "bd: $BD_VER (want $WANT)"
+          echo "$BD_VER" | grep -q "bd version $WANT " || { echo "baked bd != $WANT" >&2; exit 1; }
 
       # Kick off the forgeBench devbox image build for this release. This lives
       # here rather than in release.yml because the devbox image is
