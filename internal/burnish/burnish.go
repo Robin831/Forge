@@ -336,7 +336,8 @@ func BatchFix(ctx context.Context, p BatchFixParams) *FixResult {
 		result.Duration = time.Since(start)
 		return result
 	}
-	if failed := endIfNoNewCommit(ctx, verifyParams{prNumber: p.PRNumber, beadID: p.BeadID, anvilName: p.AnvilName, branch: p.Branch, worktreePath: p.WorktreePath, workerID: p.WorkerID, db: p.DB}, p.Stopped, baseHead, result); failed {
+	baseVP := verifyParams{prNumber: p.PRNumber, beadID: p.BeadID, anvilName: p.AnvilName, worktreePath: p.WorktreePath, db: p.DB}
+	if failed := endIfNoNewCommit(ctx, baseVP, p.Stopped, baseHead, result); failed {
 		result.Duration = time.Since(start)
 		return result
 	}
@@ -732,7 +733,8 @@ func Fix(ctx context.Context, p FixParams) *FixResult {
 			}
 			continue
 		}
-		if failed := endIfNoNewCommit(ctx, verifyParams{prNumber: p.PRNumber, beadID: p.BeadID, anvilName: p.AnvilName, branch: p.Branch, worktreePath: p.WorktreePath, workerID: p.WorkerID, db: p.DB}, p.Stopped, baseHead, result); failed {
+		baseVP := verifyParams{prNumber: p.PRNumber, beadID: p.BeadID, anvilName: p.AnvilName, worktreePath: p.WorktreePath, db: p.DB}
+		if failed := endIfNoNewCommit(ctx, baseVP, p.Stopped, baseHead, result); failed {
 			result.Duration = time.Since(start)
 			return result
 		}
@@ -1330,7 +1332,11 @@ var ErrNoNewCommit = errors.New("the review-fix smith made no new commit")
 // ErrBellowsStopped when a stop killed it, else ErrNoNewCommit; a commit Smith made goes on to the usual checks.
 func endIfNoNewCommit(ctx context.Context, vp verifyParams, stopped func() bool, baseHead string, result *FixResult) bool {
 	head, _ := gitRevParseFn(ctx, vp.worktreePath, "HEAD")
-	if baseHead == "" || head != baseHead {
+	if baseHead == "" {
+		log.Printf("[burnish] PR #%d bead=%s: no HEAD read before Smith ran; the no-new-commit check is skipped", vp.prNumber, vp.beadID)
+		return false
+	}
+	if head != baseHead {
 		return false
 	}
 	result.HeadSHA = head
