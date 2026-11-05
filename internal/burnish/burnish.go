@@ -239,6 +239,7 @@ func BatchFix(ctx context.Context, p BatchFixParams) *FixResult {
 	providers := p.Providers
 
 	syncToRemoteFn(ctx, p.WorktreePath, p.Branch, p.PRNumber)
+	baseHead, _ := gitRevParseFn(ctx, p.WorktreePath, "HEAD")
 	prompt := buildBatchReviewPrompt(p.PRNumber, p.Branch, p.BeadID, actionable)
 
 	if p.DB != nil {
@@ -332,6 +333,10 @@ func BatchFix(ctx context.Context, p BatchFixParams) *FixResult {
 				fmt.Sprintf("PR #%d: batch Smith exit %d", p.PRNumber, smithResult.ExitCode),
 				p.BeadID, p.AnvilName)
 		}
+		result.Duration = time.Since(start)
+		return result
+	}
+	if failed := endIfNoNewCommit(ctx, verifyParams{prNumber: p.PRNumber, beadID: p.BeadID, anvilName: p.AnvilName, branch: p.Branch, worktreePath: p.WorktreePath, workerID: p.WorkerID, db: p.DB}, p.Stopped, baseHead, result); failed {
 		result.Duration = time.Since(start)
 		return result
 	}
@@ -606,6 +611,7 @@ func Fix(ctx context.Context, p FixParams) *FixResult {
 	activeProviderIdx := 0
 
 	var lastTemperFailure *temper.Result
+	baseHead, _ := gitRevParseFn(ctx, p.WorktreePath, "HEAD")
 
 	for attempt := 1; attempt <= p.MaxAttempts; attempt++ {
 		result.Attempts = attempt
@@ -725,6 +731,10 @@ func Fix(ctx context.Context, p FixParams) *FixResult {
 					p.BeadID, p.AnvilName)
 			}
 			continue
+		}
+		if failed := endIfNoNewCommit(ctx, verifyParams{prNumber: p.PRNumber, beadID: p.BeadID, anvilName: p.AnvilName, branch: p.Branch, worktreePath: p.WorktreePath, workerID: p.WorkerID, db: p.DB}, p.Stopped, baseHead, result); failed {
+			result.Duration = time.Since(start)
+			return result
 		}
 
 		// Smith succeeded — verify locally before pushing.
@@ -1311,6 +1321,31 @@ var syncToRemoteFn = syncToRemote
 // ErrBellowsStopped is the error of a fix whose PR was detached with
 // `forge bellows stop` while it ran: the commit is kept, never pushed.
 var ErrBellowsStopped = errors.New("bellows was stopped for this PR while the fix ran; the fix was not pushed")
+
+// ErrNoNewCommit is the error of a fix whose Smith exited without committing: there is nothing to verify, push or
+// resolve threads for, and «HEAD matches origin» then means only that nothing changed (Fhi.Metadata-srl7z).
+var ErrNoNewCommit = errors.New("the review-fix smith made no new commit")
+
+// endIfNoNewCommit ends a fix cycle right after Smith exits when HEAD is still the head Smith started from, as
+// ErrBellowsStopped when a stop killed it, else ErrNoNewCommit; a commit Smith made goes on to the usual checks.
+func endIfNoNewCommit(ctx context.Context, vp verifyParams, stopped func() bool, baseHead string, result *FixResult) bool {
+	head, _ := gitRevParseFn(ctx, vp.worktreePath, "HEAD")
+	if baseHead == "" || head != baseHead {
+		return false
+	}
+	result.HeadSHA = head
+	result.Error = ErrNoNewCommit
+	if err := checkNotStopped(stopped); err != nil {
+		result.Error = err
+	}
+	log.Printf("[burnish] PR #%d bead=%s: smith made no new commit (HEAD still %s, %v); threads stay open",
+		vp.prNumber, vp.beadID, shortSHA(head), result.Error)
+	if vp.db != nil {
+		_ = vp.db.LogEvent(state.EventBurnishFailed,
+			fmt.Sprintf("PR #%d: review fix ended with no new commit: %v", vp.prNumber, result.Error), vp.beadID, vp.anvilName)
+	}
+	return true
+}
 
 func checkNotStopped(stopped func() bool) error {
 	if stopped != nil && stopped() {

@@ -145,13 +145,24 @@ func noRevParse(_ context.Context, _, _ string) (string, error) {
 	return "", fmt.Errorf("not a git repo")
 }
 
+// fixedRevParse answers HEAD with a distinct head on its first call, the one burnish reads before Smith runs, so a
+// stub Smith counts as having committed; sameHeadRevParse is the Smith that made no commit.
 func fixedRevParse(local, remote string) func(context.Context, string, string) (string, error) {
+	first := true
 	return func(_ context.Context, _ string, ref string) (string, error) {
 		if strings.HasPrefix(ref, "origin/") {
 			return remote, nil
 		}
+		if first {
+			first = false
+			return "head-before-smith", nil
+		}
 		return local, nil
 	}
+}
+
+func sameHeadRevParse(head string) func(context.Context, string, string) (string, error) {
+	return func(context.Context, string, string) (string, error) { return head, nil }
 }
 
 func defaultFixParams(db *state.DB, vcsP vcs.Provider) FixParams {
