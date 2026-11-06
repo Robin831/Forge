@@ -16,8 +16,10 @@ const repoGuidanceFile = "REVIEW.md"
 
 // maxRepoGuidanceBytes caps the amount of REVIEW.md content forwarded into each
 // pass prompt. A runaway document is truncated at a rune boundary with a marker
-// so the model still receives the head of the guidance.
-const maxRepoGuidanceBytes = 16 * 1024
+// so the model still receives the head of the guidance. A cut loses the rules at
+// the end of the file, so the cap sits well above a real guide: Munin's is about
+// 20 KB (DevInfra-0f5.26).
+const maxRepoGuidanceBytes = 32 * 1024
 
 // loadRepoGuidance reads REVIEW.md from the anvil root and returns its trimmed,
 // size-capped content. An empty result (missing file, unreadable, blank, or

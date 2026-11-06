@@ -1,0 +1,2 @@
+category: Changed
+- **Assay forwards up to 32 KB of REVIEW.md** - Assay cut a repository's REVIEW.md at 16 KB, which dropped the last rules of Munin's guide (about 20 KB: the closing «Always check» items, such as exception status mapping, seeds run twice and aggregates over joins). The cap is now 32 KB; a longer guide is still cut at a rune boundary with the «REVIEW.md truncated» marker. (DevInfra-0f5.26)
