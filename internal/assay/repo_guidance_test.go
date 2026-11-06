@@ -67,7 +67,7 @@ func TestLoadRepoGuidance_OversizedFileTruncated(t *testing.T) {
 	}
 }
 
-// A guide the size of Munin's (about 20 KB) reaches every pass whole, its last
+// A guide the size of Munin's (about 20 KB) is loaded whole, its last
 // rule included (DevInfra-0f5.26).
 func TestLoadRepoGuidance_TwentyKBGuideNotTruncated(t *testing.T) {
 	dir := t.TempDir()
