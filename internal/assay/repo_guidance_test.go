@@ -67,6 +67,28 @@ func TestLoadRepoGuidance_OversizedFileTruncated(t *testing.T) {
 	}
 }
 
+// A guide the size of Munin's (about 20 KB) is loaded whole, its last
+// rule included (DevInfra-0f5.26).
+func TestLoadRepoGuidance_TwentyKBGuideNotTruncated(t *testing.T) {
+	dir := t.TempDir()
+	guide := strings.Repeat("- **A rule.** Flag what breaks it.\n", 20*1024/35) + "- **The last rule.** Aggregates over joins."
+	if err := os.WriteFile(filepath.Join(dir, repoGuidanceFile), []byte(guide), 0o644); err != nil {
+		t.Fatalf("writing REVIEW.md: %v", err)
+	}
+
+	got := loadRepoGuidance(dir)
+
+	if len(guide) < 20*1024-64 {
+		t.Fatalf("test guide is only %d bytes", len(guide))
+	}
+	if got != strings.TrimSpace(guide) {
+		t.Errorf("expected the whole %d-byte guide, got %d bytes", len(guide), len(got))
+	}
+	if strings.Contains(got, "REVIEW.md truncated") || !strings.HasSuffix(got, "Aggregates over joins.") {
+		t.Errorf("expected no truncation and the last rule kept")
+	}
+}
+
 func TestRepoGuidanceSection_EmptyWhenNoGuidance(t *testing.T) {
 	if s := repoGuidanceSection(ReviewRequest{}); s != "" {
 		t.Errorf("expected empty section for empty RepoGuidance, got %q", s)
