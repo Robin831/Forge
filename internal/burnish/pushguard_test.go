@@ -9,6 +9,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/Robin831/Forge/internal/state"
+	"github.com/Robin831/Forge/internal/temper"
 )
 
 // pushRepo is a bare origin with a PR branch, and a worktree cloned from it on
@@ -219,5 +222,51 @@ func TestFix_StoppedAfterSmithPushedIsNotUnpushed(t *testing.T) {
 	result := Fix(context.Background(), params)
 	if errors.Is(result.Error, ErrBellowsStopped) || result.UnpushedHead != "" {
 		t.Errorf("error = %v, UnpushedHead = %q; want neither for a fix already on the PR", result.Error, result.UnpushedHead)
+	}
+}
+
+// A smith that exits without a new commit, killed by a stop or not, never verifies, pushes or resolves a thread:
+// «HEAD matches origin» only says nothing changed (Fhi.Metadata-srl7z, DevInfra #175 on 2026-10-12).
+func TestFix_NoNewCommit_ResolvesNoThread_OnBothEntryPoints(t *testing.T) {
+	for _, stoppedRun := range []bool{false, true} {
+		for _, batch := range []bool{false, true} {
+			h := newTestHarness()
+			db := openTestDB(t)
+			smithSpawnFn = makeSmithStub(0)
+			temperRuns := 0
+			temperRunFn = func(context.Context, string, temper.Config, *state.DB, string, string) *temper.Result {
+				temperRuns++
+				return &temper.Result{Passed: true}
+			}
+			gitRevParseFn = sameHeadRevParse("unchanged-head")
+			gitPushFn = func(context.Context, string, string) error { t.Error("no push expected"); return nil }
+			stopped := func() bool { return stoppedRun }
+			v := changesRequested()
+			v.comments[0].ThreadID = "thread-1"
+
+			var result *FixResult
+			if batch {
+				result = BatchFix(context.Background(), BatchFixParams{
+					WorktreePath: os.TempDir(), BeadID: "test-1", AnvilName: "test-anvil", PRNumber: 42, Branch: "forge/test",
+					DB: db, Providers: defaultFixParams(db, v).Providers, Comments: v.comments, VCS: v, Stopped: stopped,
+				})
+			} else {
+				params := defaultFixParams(db, v)
+				params.Stopped = stopped
+				result = Fix(context.Background(), params)
+			}
+			h.restore()
+
+			want := ErrNoNewCommit
+			if stoppedRun {
+				want = ErrBellowsStopped
+			}
+			if result.Addressed || !errors.Is(result.Error, want) {
+				t.Errorf("stopped=%t batch=%t: Addressed=%t error=%v, want not addressed and %v", stoppedRun, batch, result.Addressed, result.Error, want)
+			}
+			if len(v.resolved) != 0 || temperRuns != 0 || result.UnpushedHead != "" {
+				t.Errorf("stopped=%t batch=%t: resolved=%v temper runs=%d unpushed=%q, want none", stoppedRun, batch, v.resolved, temperRuns, result.UnpushedHead)
+			}
+		}
 	}
 }
