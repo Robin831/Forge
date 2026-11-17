@@ -9,6 +9,16 @@ Unreleased changes live as fragments in `changelog.d/` and are assembled at
 release time by `scripts/assemble-changelog.sh`.
 
 
+## [0.39.2] - 2026-11-17
+
+### Changed
+
+- **The smith does not write a Fixes-PR line** - The bead description carries `Fixes-PR: #N` when an earlier PR brought the bug, and the Forge copies it into the PR body unchanged; the smith prompt says not to add one, since a smith would have to guess the PR. (DevInfra-0f5.23)
+
+### Fixed
+
+- **A review fix that makes no commit resolves no thread** - when the review-fix smith exits without a new commit, because `forge bellows stop` killed it or because it changed nothing, burnish ends the cycle there: no verification, no push and no thread resolved, so the threads stay open and bellows dispatches the fix again on its next poll. The error is `ErrBellowsStopped` after a stop, else the new `ErrNoNewCommit`. Before, «HEAD matches origin» was taken as «Smith already pushed», so a stop during a fix could resolve the threads with no fix on the PR (DevInfra #175, 2026-10-12). A stop after Smith has pushed a real fix still counts the fix, as since #945. (Fhi.Metadata-srl7z)
+
 ## [0.39.1] - 2026-11-06
 
 ### Changed
