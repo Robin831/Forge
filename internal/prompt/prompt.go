@@ -265,6 +265,7 @@ environment for other workers.
 5. **Commit your changes** with a clear commit message referencing the bead:
    - Format: "feat: <description>" or "fix: <description>"
    - Include "Bead: {{.Bead.BeadID}}" in the commit body
+   - Do not write a "Fixes-PR:" line yourself: when the bug came from an earlier PR, the bead description names it, and the Forge copies that into the PR body
 6. **Push your branch** to the remote: git push -u origin {{.Bead.Branch}}
 7. **Do not create a PR** — that will be handled by the orchestrator
 8. **Do not close the bead** — the orchestrator closes it automatically after the PR merges

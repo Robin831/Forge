@@ -242,6 +242,27 @@ func TestBuild_CombinedModeWithLoadedWardenRules(t *testing.T) {
 	assert.Contains(t, result, "pattern: password|secret")
 }
 
+// The bead writer knows which merged PR brought the bug; a smith would have to guess, and Varde counts every Fixes-PR line.
+func TestBuild_TellsTheSmithNotToWriteFixesPR(t *testing.T) {
+	b := NewBuilder()
+	ctx := BeadContext{
+		BeadID:       "test-fixespr",
+		Title:        "Test bead",
+		Description:  "Do the thing",
+		IssueType:    "bug",
+		Priority:     2,
+		Branch:       "forge/test-fixespr",
+		AnvilName:    "test-anvil",
+		AnvilPath:    t.TempDir(),
+		WorktreePath: t.TempDir(),
+	}
+
+	result, err := b.Build(ctx)
+	require.NoError(t, err)
+
+	assert.Contains(t, result, `Do not write a "Fixes-PR:" line yourself`)
+}
+
 func TestBuild_ExternalRefRenderedWhenSet(t *testing.T) {
 	b := NewBuilder()
 	ctx := BeadContext{
