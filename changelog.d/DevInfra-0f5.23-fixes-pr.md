@@ -1,2 +1,2 @@
 category: Changed
-- **The smith does not write a Fixes-PR line** - The smith prompt says so next to the commit-body rule. A bead whose bug an earlier merged PR brought in carries `Fixes-PR: #N` on its own line in its description, which the Forge copies into the PR body under «Original Issue», where Varde's «Gjennomgang» counts it; the closing-reference demotion leaves the line alone, since `Fixes-PR:` is not a closing keyword. A smith would have to guess the PR. (DevInfra-0f5.23)
+- **The smith does not write a Fixes-PR line** - The bead description carries `Fixes-PR: #N` when an earlier PR brought the bug, and the Forge copies it into the PR body unchanged; the smith prompt says not to add one, since a smith would have to guess the PR. (DevInfra-0f5.23)

@@ -242,7 +242,7 @@ func TestBuild_CombinedModeWithLoadedWardenRules(t *testing.T) {
 	assert.Contains(t, result, "pattern: password|secret")
 }
 
-// The bead writer knows which merged PR brought the bug; a smith would have to guess, and Varde counts every Fixes-PR line.
+// The bead writer knows which merged PR brought the bug; a smith would have to guess it.
 func TestBuild_TellsTheSmithNotToWriteFixesPR(t *testing.T) {
 	b := NewBuilder()
 	ctx := BeadContext{
